@@ -1,0 +1,266 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 4,
+  "workers": 8,
+  "seed_base": 2026081900,
+  "seed_offset": 200000,
+  "seed_stride": 1,
+  "bot_seed_base": 202670190000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "baseline_label": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+  "entries": {
+    "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+      "path": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040/main.py",
+      "opponent": "bots/claude_v284/main.py"
+    },
+    "v060_v254_active_multiaction_value_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v060_v254_active_multiaction_value_p045_h32/main.py",
+      "opponent": "bots/claude_v284/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "seed": 2026281900,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202670190000,
+          202670190001
+        ],
+        "mirror": [
+          202670200000,
+          202670200001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 1192.0,
+        "v060_v254_active_multiaction_value_p045_h32": 2033.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -14850.0,
+          "bot1_chips": 14850.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -14850.0,
+          "bot1_chips": 14850.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 16042.0,
+          "bot1_chips": -16042.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 16883.0,
+          "bot1_chips": -16883.0
+        }
+      }
+    },
+    {
+      "idx": 1,
+      "seed": 2026281901,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202670210000,
+          202670210001
+        ],
+        "mirror": [
+          202670220000,
+          202670220001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 10026.0,
+        "v060_v254_active_multiaction_value_p045_h32": 10026.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 10103.0,
+          "bot1_chips": -10103.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 10103.0,
+          "bot1_chips": -10103.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -77.0,
+          "bot1_chips": 77.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -77.0,
+          "bot1_chips": 77.0
+        }
+      }
+    },
+    {
+      "idx": 2,
+      "seed": 2026281902,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202670230000,
+          202670230001
+        ],
+        "mirror": [
+          202670240000,
+          202670240001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 15221.0,
+        "v060_v254_active_multiaction_value_p045_h32": 15221.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 15472.0,
+          "bot1_chips": -15472.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 15472.0,
+          "bot1_chips": -15472.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -251.0,
+          "bot1_chips": 251.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -251.0,
+          "bot1_chips": 251.0
+        }
+      }
+    },
+    {
+      "idx": 3,
+      "seed": 2026281903,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202670250000,
+          202670250001
+        ],
+        "mirror": [
+          202670260000,
+          202670260001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": -20180.0,
+        "v060_v254_active_multiaction_value_p045_h32": -20180.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -102.0,
+          "bot1_chips": 102.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -102.0,
+          "bot1_chips": 102.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -20078.0,
+          "bot1_chips": 20078.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -20078.0,
+          "bot1_chips": 20078.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+      "path": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040/main.py",
+      "opponent": "bots/claude_v284/main.py",
+      "net_chips": [
+        1192.0,
+        10026.0,
+        15221.0,
+        -20180.0
+      ],
+      "samples": 4,
+      "mean_net": 1564.75,
+      "median_net": 5609.0,
+      "stddev_net": 15610.456012450972,
+      "stderr_net": 7805.228006225486,
+      "ci95_low": -13733.496892201953,
+      "ci95_high": 16862.996892201954,
+      "mean_per_70_hands": 782.375,
+      "ci95_low_per_70_hands": -6866.748446100976,
+      "ci95_high_per_70_hands": 8431.498446100977,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "v060_v254_active_multiaction_value_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v060_v254_active_multiaction_value_p045_h32/main.py",
+      "opponent": "bots/claude_v284/main.py",
+      "net_chips": [
+        2033.0,
+        10026.0,
+        15221.0,
+        -20180.0
+      ],
+      "samples": 4,
+      "mean_net": 1775.0,
+      "median_net": 6029.5,
+      "stddev_net": 15609.425635386673,
+      "stderr_net": 7804.712817693337,
+      "ci95_low": -13522.23712267894,
+      "ci95_high": 17072.23712267894,
+      "mean_per_70_hands": 887.5,
+      "ci95_low_per_70_hands": -6761.11856133947,
+      "ci95_high_per_70_hands": 8536.11856133947,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v060_v254_active_multiaction_value_p045_h32": {
+      "baseline": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+      "candidate": "v060_v254_active_multiaction_value_p045_h32",
+      "delta_net_chips": [
+        841.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "samples": 4,
+      "mean_net": 210.25,
+      "median_net": 0.0,
+      "stddev_net": 420.5,
+      "stderr_net": 210.25,
+      "ci95_low": -201.83999999999997,
+      "ci95_high": 622.3399999999999,
+      "mean_per_70_hands": 105.125,
+      "ci95_low_per_70_hands": -100.91999999999999,
+      "ci95_high_per_70_hands": 311.16999999999996,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}
