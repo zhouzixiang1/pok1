@@ -86,6 +86,12 @@ Practical takeaways for this repo:
 - Move from one-off binary gates to replayable multi-action targets:
   `legal_mask + action_delta/regret_vector + sampled_strategy`. This should be
   generated at one decision point across the same deck and bot RNG seeds.
+- The first local version of that target path is
+  `tools/multi_action_counterfactual_probe.py`: it enumerates the fixed
+  RLCard-style labels, sends only sanitized final actions into the local judge,
+  and records both fixed-label vectors and unique final-action branch counts.
+  Use it to build small verified vector-target shards before committing to a
+  larger actor/learner rewrite.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner
