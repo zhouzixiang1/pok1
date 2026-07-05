@@ -1,0 +1,1554 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 32,
+  "workers": 4,
+  "seed_base": 2026083400,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "bot_seed_base": 202660340000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "baseline_label": "v061_v254_active_value_interaction_override_p045_h32",
+  "entries": {
+    "v061_v254_active_value_interaction_override_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v061_v254_active_value_interaction_override_p045_h32/main.py",
+      "opponent": "bots/claude_v285/main.py"
+    },
+    "v064_v254_lowint_h16_min020_inter088": {
+      "path": "bots/neural_national_lab/versions/v064_v254_lowint_h16_min020_inter088/main.py",
+      "opponent": "bots/claude_v285/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "seed": 2026083400,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660340000,
+          202660340001
+        ],
+        "mirror": [
+          202660350000,
+          202660350001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 8474.0,
+        "v064_v254_lowint_h16_min020_inter088": 8454.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -57.0,
+          "bot1_chips": 57.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -77.0,
+          "bot1_chips": 77.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 8531.0,
+          "bot1_chips": -8531.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 8531.0,
+          "bot1_chips": -8531.0
+        }
+      }
+    },
+    {
+      "idx": 1,
+      "seed": 2026083401,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660360000,
+          202660360001
+        ],
+        "mirror": [
+          202660370000,
+          202660370001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 29399.0,
+        "v064_v254_lowint_h16_min020_inter088": 29399.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 14600.0,
+          "bot1_chips": -14600.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 14600.0,
+          "bot1_chips": -14600.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 14799.0,
+          "bot1_chips": -14799.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 14799.0,
+          "bot1_chips": -14799.0
+        }
+      }
+    },
+    {
+      "idx": 2,
+      "seed": 2026083402,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660380000,
+          202660380001
+        ],
+        "mirror": [
+          202660390000,
+          202660390001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 13598.0,
+        "v064_v254_lowint_h16_min020_inter088": 14632.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 9159.0,
+          "bot1_chips": -9159.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 10193.0,
+          "bot1_chips": -10193.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 4439.0,
+          "bot1_chips": -4439.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 4439.0,
+          "bot1_chips": -4439.0
+        }
+      }
+    },
+    {
+      "idx": 3,
+      "seed": 2026083403,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660400000,
+          202660400001
+        ],
+        "mirror": [
+          202660410000,
+          202660410001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 24049.0,
+        "v064_v254_lowint_h16_min020_inter088": 24049.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 14749.0,
+          "bot1_chips": -14749.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 14749.0,
+          "bot1_chips": -14749.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 9300.0,
+          "bot1_chips": -9300.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 9300.0,
+          "bot1_chips": -9300.0
+        }
+      }
+    },
+    {
+      "idx": 4,
+      "seed": 2026083404,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660420000,
+          202660420001
+        ],
+        "mirror": [
+          202660430000,
+          202660430001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": -8108.0,
+        "v064_v254_lowint_h16_min020_inter088": -8108.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 9418.0,
+          "bot1_chips": -9418.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 9418.0,
+          "bot1_chips": -9418.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -17526.0,
+          "bot1_chips": 17526.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -17526.0,
+          "bot1_chips": 17526.0
+        }
+      }
+    },
+    {
+      "idx": 5,
+      "seed": 2026083405,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660440000,
+          202660440001
+        ],
+        "mirror": [
+          202660450000,
+          202660450001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 6196.0,
+        "v064_v254_lowint_h16_min020_inter088": 6196.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 15403.0,
+          "bot1_chips": -15403.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 15403.0,
+          "bot1_chips": -15403.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -9207.0,
+          "bot1_chips": 9207.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -9207.0,
+          "bot1_chips": 9207.0
+        }
+      }
+    },
+    {
+      "idx": 6,
+      "seed": 2026083406,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660460000,
+          202660460001
+        ],
+        "mirror": [
+          202660470000,
+          202660470001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 19246.0,
+        "v064_v254_lowint_h16_min020_inter088": 19246.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 4615.0,
+          "bot1_chips": -4615.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 4615.0,
+          "bot1_chips": -4615.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 14631.0,
+          "bot1_chips": -14631.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 14631.0,
+          "bot1_chips": -14631.0
+        }
+      }
+    },
+    {
+      "idx": 7,
+      "seed": 2026083407,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660480000,
+          202660480001
+        ],
+        "mirror": [
+          202660490000,
+          202660490001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 15481.0,
+        "v064_v254_lowint_h16_min020_inter088": 15481.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 631.0,
+          "bot1_chips": -631.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 631.0,
+          "bot1_chips": -631.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 14850.0,
+          "bot1_chips": -14850.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 14850.0,
+          "bot1_chips": -14850.0
+        }
+      }
+    },
+    {
+      "idx": 8,
+      "seed": 2026083408,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660500000,
+          202660500001
+        ],
+        "mirror": [
+          202660510000,
+          202660510001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 8164.0,
+        "v064_v254_lowint_h16_min020_inter088": 8164.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -8201.0,
+          "bot1_chips": 8201.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -8201.0,
+          "bot1_chips": 8201.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 16365.0,
+          "bot1_chips": -16365.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 16365.0,
+          "bot1_chips": -16365.0
+        }
+      }
+    },
+    {
+      "idx": 9,
+      "seed": 2026083409,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660520000,
+          202660520001
+        ],
+        "mirror": [
+          202660530000,
+          202660530001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 26343.0,
+        "v064_v254_lowint_h16_min020_inter088": 26343.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 15375.0,
+          "bot1_chips": -15375.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 15375.0,
+          "bot1_chips": -15375.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 10968.0,
+          "bot1_chips": -10968.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 10968.0,
+          "bot1_chips": -10968.0
+        }
+      }
+    },
+    {
+      "idx": 10,
+      "seed": 2026083410,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660540000,
+          202660540001
+        ],
+        "mirror": [
+          202660550000,
+          202660550001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 21901.0,
+        "v064_v254_lowint_h16_min020_inter088": 21901.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 12243.0,
+          "bot1_chips": -12243.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 12243.0,
+          "bot1_chips": -12243.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 9658.0,
+          "bot1_chips": -9658.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 9658.0,
+          "bot1_chips": -9658.0
+        }
+      }
+    },
+    {
+      "idx": 11,
+      "seed": 2026083411,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660560000,
+          202660560001
+        ],
+        "mirror": [
+          202660570000,
+          202660570001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": -32851.0,
+        "v064_v254_lowint_h16_min020_inter088": -32851.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -14850.0,
+          "bot1_chips": 14850.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -14850.0,
+          "bot1_chips": 14850.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -18001.0,
+          "bot1_chips": 18001.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -18001.0,
+          "bot1_chips": 18001.0
+        }
+      }
+    },
+    {
+      "idx": 12,
+      "seed": 2026083412,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660580000,
+          202660580001
+        ],
+        "mirror": [
+          202660590000,
+          202660590001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 27767.0,
+        "v064_v254_lowint_h16_min020_inter088": 27767.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 14907.0,
+          "bot1_chips": -14907.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 14907.0,
+          "bot1_chips": -14907.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 12860.0,
+          "bot1_chips": -12860.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 12860.0,
+          "bot1_chips": -12860.0
+        }
+      }
+    },
+    {
+      "idx": 13,
+      "seed": 2026083413,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660600000,
+          202660600001
+        ],
+        "mirror": [
+          202660610000,
+          202660610001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": -2326.0,
+        "v064_v254_lowint_h16_min020_inter088": -2326.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -1978.0,
+          "bot1_chips": 1978.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -1978.0,
+          "bot1_chips": 1978.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -348.0,
+          "bot1_chips": 348.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -348.0,
+          "bot1_chips": 348.0
+        }
+      }
+    },
+    {
+      "idx": 14,
+      "seed": 2026083414,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660620000,
+          202660620001
+        ],
+        "mirror": [
+          202660630000,
+          202660630001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 153.0,
+        "v064_v254_lowint_h16_min020_inter088": 153.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 16153.0,
+          "bot1_chips": -16153.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 16153.0,
+          "bot1_chips": -16153.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -16000.0,
+          "bot1_chips": 16000.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -16000.0,
+          "bot1_chips": 16000.0
+        }
+      }
+    },
+    {
+      "idx": 15,
+      "seed": 2026083415,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660640000,
+          202660640001
+        ],
+        "mirror": [
+          202660650000,
+          202660650001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 21632.0,
+        "v064_v254_lowint_h16_min020_inter088": 21632.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 10105.0,
+          "bot1_chips": -10105.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 10105.0,
+          "bot1_chips": -10105.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 11527.0,
+          "bot1_chips": -11527.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 11527.0,
+          "bot1_chips": -11527.0
+        }
+      }
+    },
+    {
+      "idx": 16,
+      "seed": 2026083416,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660660000,
+          202660660001
+        ],
+        "mirror": [
+          202660670000,
+          202660670001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 10145.0,
+        "v064_v254_lowint_h16_min020_inter088": 10142.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 10173.0,
+          "bot1_chips": -10173.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 10173.0,
+          "bot1_chips": -10173.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -28.0,
+          "bot1_chips": 28.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -31.0,
+          "bot1_chips": 31.0
+        }
+      }
+    },
+    {
+      "idx": 17,
+      "seed": 2026083417,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660680000,
+          202660680001
+        ],
+        "mirror": [
+          202660690000,
+          202660690001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 30233.0,
+        "v064_v254_lowint_h16_min020_inter088": 30233.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 14996.0,
+          "bot1_chips": -14996.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 14996.0,
+          "bot1_chips": -14996.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 15237.0,
+          "bot1_chips": -15237.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 15237.0,
+          "bot1_chips": -15237.0
+        }
+      }
+    },
+    {
+      "idx": 18,
+      "seed": 2026083418,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660700000,
+          202660700001
+        ],
+        "mirror": [
+          202660710000,
+          202660710001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 13724.0,
+        "v064_v254_lowint_h16_min020_inter088": 13724.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 15301.0,
+          "bot1_chips": -15301.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 15301.0,
+          "bot1_chips": -15301.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -1577.0,
+          "bot1_chips": 1577.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -1577.0,
+          "bot1_chips": 1577.0
+        }
+      }
+    },
+    {
+      "idx": 19,
+      "seed": 2026083419,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660720000,
+          202660720001
+        ],
+        "mirror": [
+          202660730000,
+          202660730001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 321.0,
+        "v064_v254_lowint_h16_min020_inter088": 321.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 433.0,
+          "bot1_chips": -433.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 433.0,
+          "bot1_chips": -433.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -112.0,
+          "bot1_chips": 112.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -112.0,
+          "bot1_chips": 112.0
+        }
+      }
+    },
+    {
+      "idx": 20,
+      "seed": 2026083420,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660740000,
+          202660740001
+        ],
+        "mirror": [
+          202660750000,
+          202660750001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": -25987.0,
+        "v064_v254_lowint_h16_min020_inter088": -25987.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -6762.0,
+          "bot1_chips": 6762.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -6762.0,
+          "bot1_chips": 6762.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -19225.0,
+          "bot1_chips": 19225.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -19225.0,
+          "bot1_chips": 19225.0
+        }
+      }
+    },
+    {
+      "idx": 21,
+      "seed": 2026083421,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660760000,
+          202660760001
+        ],
+        "mirror": [
+          202660770000,
+          202660770001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 349.0,
+        "v064_v254_lowint_h16_min020_inter088": 349.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 15208.0,
+          "bot1_chips": -15208.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 15208.0,
+          "bot1_chips": -15208.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -14859.0,
+          "bot1_chips": 14859.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -14859.0,
+          "bot1_chips": 14859.0
+        }
+      }
+    },
+    {
+      "idx": 22,
+      "seed": 2026083422,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660780000,
+          202660780001
+        ],
+        "mirror": [
+          202660790000,
+          202660790001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 19898.0,
+        "v064_v254_lowint_h16_min020_inter088": 19898.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 19086.0,
+          "bot1_chips": -19086.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 19086.0,
+          "bot1_chips": -19086.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 812.0,
+          "bot1_chips": -812.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 812.0,
+          "bot1_chips": -812.0
+        }
+      }
+    },
+    {
+      "idx": 23,
+      "seed": 2026083423,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660800000,
+          202660800001
+        ],
+        "mirror": [
+          202660810000,
+          202660810001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": -20135.0,
+        "v064_v254_lowint_h16_min020_inter088": -20135.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -2648.0,
+          "bot1_chips": 2648.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -2648.0,
+          "bot1_chips": 2648.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -17487.0,
+          "bot1_chips": 17487.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -17487.0,
+          "bot1_chips": 17487.0
+        }
+      }
+    },
+    {
+      "idx": 24,
+      "seed": 2026083424,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660820000,
+          202660820001
+        ],
+        "mirror": [
+          202660830000,
+          202660830001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 2463.0,
+        "v064_v254_lowint_h16_min020_inter088": 2463.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 13754.0,
+          "bot1_chips": -13754.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 13754.0,
+          "bot1_chips": -13754.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -11291.0,
+          "bot1_chips": 11291.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -11291.0,
+          "bot1_chips": 11291.0
+        }
+      }
+    },
+    {
+      "idx": 25,
+      "seed": 2026083425,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660840000,
+          202660840001
+        ],
+        "mirror": [
+          202660850000,
+          202660850001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": -8715.0,
+        "v064_v254_lowint_h16_min020_inter088": -8715.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -4999.0,
+          "bot1_chips": 4999.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -4999.0,
+          "bot1_chips": 4999.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -3716.0,
+          "bot1_chips": 3716.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -3716.0,
+          "bot1_chips": 3716.0
+        }
+      }
+    },
+    {
+      "idx": 26,
+      "seed": 2026083426,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660860000,
+          202660860001
+        ],
+        "mirror": [
+          202660870000,
+          202660870001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 10840.0,
+        "v064_v254_lowint_h16_min020_inter088": 10840.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 10860.0,
+          "bot1_chips": -10860.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 10860.0,
+          "bot1_chips": -10860.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -20.0,
+          "bot1_chips": 20.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -20.0,
+          "bot1_chips": 20.0
+        }
+      }
+    },
+    {
+      "idx": 27,
+      "seed": 2026083427,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660880000,
+          202660880001
+        ],
+        "mirror": [
+          202660890000,
+          202660890001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 10175.0,
+        "v064_v254_lowint_h16_min020_inter088": 10175.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 826.0,
+          "bot1_chips": -826.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 826.0,
+          "bot1_chips": -826.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 9349.0,
+          "bot1_chips": -9349.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 9349.0,
+          "bot1_chips": -9349.0
+        }
+      }
+    },
+    {
+      "idx": 28,
+      "seed": 2026083428,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660900000,
+          202660900001
+        ],
+        "mirror": [
+          202660910000,
+          202660910001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": -21502.0,
+        "v064_v254_lowint_h16_min020_inter088": -21502.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -20058.0,
+          "bot1_chips": 20058.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -20058.0,
+          "bot1_chips": 20058.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -1444.0,
+          "bot1_chips": 1444.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -1444.0,
+          "bot1_chips": 1444.0
+        }
+      }
+    },
+    {
+      "idx": 29,
+      "seed": 2026083429,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660920000,
+          202660920001
+        ],
+        "mirror": [
+          202660930000,
+          202660930001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 28215.0,
+        "v064_v254_lowint_h16_min020_inter088": 28215.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 10232.0,
+          "bot1_chips": -10232.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 10232.0,
+          "bot1_chips": -10232.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 17983.0,
+          "bot1_chips": -17983.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 17983.0,
+          "bot1_chips": -17983.0
+        }
+      }
+    },
+    {
+      "idx": 30,
+      "seed": 2026083430,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660940000,
+          202660940001
+        ],
+        "mirror": [
+          202660950000,
+          202660950001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": -3497.0,
+        "v064_v254_lowint_h16_min020_inter088": -3869.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 12601.0,
+          "bot1_chips": -12601.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 12229.0,
+          "bot1_chips": -12229.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -16098.0,
+          "bot1_chips": 16098.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 1,
+          "bot0_chips": -16098.0,
+          "bot1_chips": 16098.0
+        }
+      }
+    },
+    {
+      "idx": 31,
+      "seed": 2026083431,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660960000,
+          202660960001
+        ],
+        "mirror": [
+          202660970000,
+          202660970001
+        ]
+      },
+      "net_chips": {
+        "v061_v254_active_value_interaction_override_p045_h32": 26220.0,
+        "v064_v254_lowint_h16_min020_inter088": 26220.0
+      },
+      "normal": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 16466.0,
+          "bot1_chips": -16466.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 16466.0,
+          "bot1_chips": -16466.0
+        }
+      },
+      "mirror": {
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 9754.0,
+          "bot1_chips": -9754.0
+        },
+        "v064_v254_lowint_h16_min020_inter088": {
+          "winner": 0,
+          "bot0_chips": 9754.0,
+          "bot1_chips": -9754.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "v061_v254_active_value_interaction_override_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v061_v254_active_value_interaction_override_p045_h32/main.py",
+      "opponent": "bots/claude_v285/main.py",
+      "net_chips": [
+        8474.0,
+        29399.0,
+        13598.0,
+        24049.0,
+        -8108.0,
+        6196.0,
+        19246.0,
+        15481.0,
+        8164.0,
+        26343.0,
+        21901.0,
+        -32851.0,
+        27767.0,
+        -2326.0,
+        153.0,
+        21632.0,
+        10145.0,
+        30233.0,
+        13724.0,
+        321.0,
+        -25987.0,
+        349.0,
+        19898.0,
+        -20135.0,
+        2463.0,
+        -8715.0,
+        10840.0,
+        10175.0,
+        -21502.0,
+        28215.0,
+        -3497.0,
+        26220.0
+      ],
+      "samples": 32,
+      "mean_net": 7870.78125,
+      "median_net": 10160.0,
+      "stddev_net": 16980.463206065386,
+      "stderr_net": 3001.7501701743745,
+      "ci95_low": 1987.3509164582265,
+      "ci95_high": 13754.211583541774,
+      "mean_per_70_hands": 3935.390625,
+      "ci95_low_per_70_hands": 993.6754582291132,
+      "ci95_high_per_70_hands": 6877.105791770887,
+      "significant_positive_95": true,
+      "significant_negative_95": false
+    },
+    "v064_v254_lowint_h16_min020_inter088": {
+      "path": "bots/neural_national_lab/versions/v064_v254_lowint_h16_min020_inter088/main.py",
+      "opponent": "bots/claude_v285/main.py",
+      "net_chips": [
+        8454.0,
+        29399.0,
+        14632.0,
+        24049.0,
+        -8108.0,
+        6196.0,
+        19246.0,
+        15481.0,
+        8164.0,
+        26343.0,
+        21901.0,
+        -32851.0,
+        27767.0,
+        -2326.0,
+        153.0,
+        21632.0,
+        10142.0,
+        30233.0,
+        13724.0,
+        321.0,
+        -25987.0,
+        349.0,
+        19898.0,
+        -20135.0,
+        2463.0,
+        -8715.0,
+        10840.0,
+        10175.0,
+        -21502.0,
+        28215.0,
+        -3869.0,
+        26220.0
+      ],
+      "samples": 32,
+      "mean_net": 7890.75,
+      "median_net": 10158.5,
+      "stddev_net": 17000.833930210032,
+      "stderr_net": 3005.3512394694644,
+      "ci95_low": 2000.26157063985,
+      "ci95_high": 13781.23842936015,
+      "mean_per_70_hands": 3945.375,
+      "ci95_low_per_70_hands": 1000.130785319925,
+      "ci95_high_per_70_hands": 6890.619214680075,
+      "significant_positive_95": true,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v064_v254_lowint_h16_min020_inter088": {
+      "baseline": "v061_v254_active_value_interaction_override_p045_h32",
+      "candidate": "v064_v254_lowint_h16_min020_inter088",
+      "delta_net_chips": [
+        -20.0,
+        0.0,
+        1034.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -3.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -372.0,
+        0.0
+      ],
+      "samples": 32,
+      "mean_net": 19.96875,
+      "median_net": 0.0,
+      "stddev_net": 196.35295481072654,
+      "stderr_net": 34.710626463170115,
+      "ci95_low": -48.064077867813424,
+      "ci95_high": 88.00157786781342,
+      "mean_per_70_hands": 9.984375,
+      "ci95_low_per_70_hands": -24.032038933906712,
+      "ci95_high_per_70_hands": 44.00078893390671,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}
