@@ -13,7 +13,7 @@ import type { WorkerInfo } from "../components/evolution/WorkerProgress";
 import { ToolCard, ThinkingBlock } from "../components/evolution/ToolCard";
 import type { ConvMsg } from "../components/evolution/ToolCard";
 import { CrossIcon, CopyIcon } from "../components/evolution/icons";
-import { cn } from "../lib/utils";
+import { cn, compactBotName } from "../lib/utils";
 
 type TabKey = "pipeline" | "metrics" | "history";
 
@@ -257,7 +257,7 @@ export default function EvolutionMonitor() {
     const failInterval = setInterval(refreshFailures, 30000);
     const disconnect = connect();
     return () => { clearInterval(lbInterval); clearInterval(pipeInterval); clearInterval(failInterval); disconnect(); };
-  }, []);
+  }, [connect]);
 
   useEffect(() => {
     if (autoScroll && ioRef.current) {
@@ -548,7 +548,7 @@ export default function EvolutionMonitor() {
                             ) : (
                               <span className="text-gray-400 mr-1">#{bot.rank}</span>
                             )}
-                            {bot.name.replace("claude_", "")}
+                            {compactBotName(bot.name)}
                           </span>
                           <span className="font-mono text-gray-800 dark:text-gray-200 shrink-0 ml-2">
                             {(bot.selection_score ?? bot.leaderboard_score) != null ? (bot.selection_score ?? bot.leaderboard_score)!.toFixed(4) : "—"}
