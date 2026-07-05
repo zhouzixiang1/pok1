@@ -112,6 +112,14 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
         target_v = next_v
         if target_v is None:
             target_v = master_plan.get("next_v") or master_plan.get("target_v") or "unknown"
+        try:
+            from evidence_snapshot import h2h_snapshot_contract_text
+            h2h_snapshot_contract = h2h_snapshot_contract_text(target_v, include_json=True)
+        except Exception:
+            h2h_snapshot_contract = (
+                "Stable H2H snapshot unavailable. Do not compare plan citations "
+                "against a live head_to_head.json file that may have changed after planning."
+            )
 
         identity_errors = []
         if next_v is not None:
@@ -156,6 +164,7 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
             "direction_audit": direction_audit_text,
             "source_v": str(source_v),
             "next_v": str(target_v),
+            "h2h_snapshot_contract": h2h_snapshot_contract,
             "branch_from_note": (
                 f"This generation evolves FROM v{source_v}. The source ancestor is "
                 f"decided automatically by the system in prepare_generation; the Master "

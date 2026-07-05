@@ -1392,11 +1392,34 @@ async def run_master(args):
                 audit_attempt=_audit_attempt,
             )
             try:
-                audit_result = await _run_master_plan_audit(data, source_v, ui, next_v=next_v)
-            except TypeError as _audit_te:
-                if "next_v" not in str(_audit_te) and "keyword" not in str(_audit_te):
-                    raise
-                audit_result = await _run_master_plan_audit(data, source_v, ui)
+                from evidence_snapshot import validate_h2h_citations_against_snapshot
+                _h2h_citation_errors = validate_h2h_citations_against_snapshot(data, next_v)
+            except Exception:
+                _h2h_citation_errors = []
+            if _h2h_citation_errors:
+                audit_result = {
+                    "plan_coherent": False,
+                    "contradiction_found": True,
+                    "contradictions": _h2h_citation_errors[:10],
+                    "experience_alignment": "misaligned",
+                    "direction_novelty": "incremental",
+                    "overall_pass": False,
+                    "feedback": (
+                        "Master plan H2H citations disagree with the stable generation "
+                        "H2H snapshot. Correct the cited raw games/a_wins/b_wins counts "
+                        "against web/core/results/v{}/evidence_snapshot/head_to_head.json: "
+                        "{}".format(next_v, "; ".join(_h2h_citation_errors[:6]))
+                    ),
+                    "retry_recommended": True,
+                    "deterministic_h2h_snapshot_check": True,
+                }
+            else:
+                try:
+                    audit_result = await _run_master_plan_audit(data, source_v, ui, next_v=next_v)
+                except TypeError as _audit_te:
+                    if "next_v" not in str(_audit_te) and "keyword" not in str(_audit_te):
+                        raise
+                    audit_result = await _run_master_plan_audit(data, source_v, ui)
             master_audit_ctx = audit_result  # Save for audit_context chain
             if audit_result.get("overall_pass", True):
                 break  # plan passed audit

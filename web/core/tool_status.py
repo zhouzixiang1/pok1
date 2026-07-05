@@ -323,6 +323,19 @@ async def get_h2h(args):
     opponent = args.get("opponent")
 
     h2h_file = _infra_path("H2H_FILE")
+    h2h_source = "live"
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+        ckpt = read_pipeline_checkpoint() or {}
+        next_v = ckpt.get("next_v")
+        if next_v is not None:
+            from evidence_snapshot import ensure_generation_h2h_snapshot
+            snapshot = ensure_generation_h2h_snapshot(next_v)
+            if snapshot.get("available"):
+                h2h_file = Path(snapshot["h2h_path"])
+                h2h_source = "generation_snapshot"
+    except Exception:
+        pass
     if not h2h_file.exists():
         return _json_tool_result({"error": "No H2H data yet", "bot_name": bot_name})
 
@@ -354,7 +367,7 @@ async def get_h2h(args):
         return _json_tool_result({"bot_name": bot_name, "opponents": {}, "message": "No H2H data found"})
 
     sorted_results = dict(sorted(results.items(), key=lambda x: x[1]["win_rate"]))
-    return _json_tool_result({"bot_name": bot_name, "opponents": sorted_results})
+    return _json_tool_result({"bot_name": bot_name, "opponents": sorted_results, "source": h2h_source})
 
 
 class GetBotStatsInput(TypedDict):

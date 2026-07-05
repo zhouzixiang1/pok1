@@ -1,0 +1,187 @@
+import asyncio
+import json
+from pathlib import Path
+
+
+class _UI:
+    def __init__(self):
+        self.history = []
+
+    def clear_io(self):
+        pass
+
+    def log_history(self, msg, level="info"):
+        self.history.append((level, msg))
+
+    def get_output(self):
+        return ""
+
+    def log_io(self, *_args, **_kwargs):
+        pass
+
+
+def _patch_h2h_paths(monkeypatch, tmp_path, payload):
+    import evolution_infra
+
+    results = tmp_path / "web" / "core" / "results"
+    results.mkdir(parents=True)
+    h2h_file = results / "head_to_head.json"
+    h2h_file.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results)
+    monkeypatch.setattr(evolution_infra, "H2H_FILE", h2h_file)
+    return h2h_file
+
+
+def test_generation_h2h_snapshot_freezes_live_file(monkeypatch, tmp_path):
+    import evidence_snapshot
+
+    first = {
+        "national_v17 vs national_v20": {
+            "games": 45,
+            "a_wins": 29,
+            "b_wins": 16,
+            "draws": 0,
+            "win_rate": 0.6444,
+        }
+    }
+    live = _patch_h2h_paths(monkeypatch, tmp_path, first)
+
+    snapshot = evidence_snapshot.ensure_generation_h2h_snapshot(24)
+    live.write_text(
+        json.dumps({
+            "national_v17 vs national_v20": {
+                "games": 50,
+                "a_wins": 31,
+                "b_wins": 19,
+                "draws": 0,
+                "win_rate": 0.62,
+            }
+        }),
+        encoding="utf-8",
+    )
+    reused = evidence_snapshot.ensure_generation_h2h_snapshot(24)
+
+    assert reused["reused"] is True
+    assert reused["h2h_relpath"] == "web/core/results/v24/evidence_snapshot/head_to_head.json"
+    frozen = json.loads(Path(snapshot["h2h_path"]).read_text(encoding="utf-8"))
+    assert frozen["national_v17 vs national_v20"]["games"] == 45
+    assert frozen["national_v17 vs national_v20"]["a_wins"] == 29
+    assert frozen["national_v17 vs national_v20"]["b_wins"] == 16
+
+
+def test_h2h_citation_validation_uses_snapshot_not_live(monkeypatch, tmp_path):
+    import evidence_snapshot
+
+    live = _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v17 vs national_v20": {
+            "games": 45,
+            "a_wins": 29,
+            "b_wins": 16,
+            "draws": 0,
+            "win_rate": 0.6444,
+        }
+    })
+    evidence_snapshot.ensure_generation_h2h_snapshot(24)
+    live.write_text(
+        json.dumps({
+            "national_v17 vs national_v20": {
+                "games": 50,
+                "a_wins": 31,
+                "b_wins": 19,
+                "draws": 0,
+                "win_rate": 0.62,
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    good_plan = {
+        "analysis": "national_v17 vs national_v20 = 45g, a_wins=29, b_wins=16",
+    }
+    bad_plan = {
+        "analysis": "national_v17 vs national_v20 = 50g, a_wins=31, b_wins=19",
+    }
+
+    assert evidence_snapshot.validate_h2h_citations_against_snapshot(good_plan, 24) == []
+    errors = evidence_snapshot.validate_h2h_citations_against_snapshot(bad_plan, 24)
+    assert "snapshot has games=45" in "; ".join(errors)
+    assert "snapshot has a_wins=29" in "; ".join(errors)
+    assert "snapshot has b_wins=16" in "; ".join(errors)
+
+
+def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
+    import agent_master
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v1 vs national_v2": {"games": 2, "a_wins": 1, "b_wins": 1, "draws": 0}
+    })
+    captured = {}
+    valid_plan = {
+        "analysis": "use stable snapshot",
+        "targeted_failure": "one leak",
+        "expected_behavior_change": "one changed decision",
+        "do_not_touch": ["opponent.py"],
+        "measurement_plan": "compare to parent",
+        "tasks": [{
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy.py"],
+            "difficulty": "medium",
+            "skill_layer": "spr",
+            "worker_prompt": "Change strategy.py in the target bot.",
+        }],
+    }
+
+    async def fake_run_claude_query(prompt, *_args, **_kwargs):
+        captured["prompt"] = prompt
+        return "```json\n" + json.dumps(valid_plan) + "\n```", 0.0, {}
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+
+    result = asyncio.run(agent_master._run_master_analysis(20, 24, "flat", _UI()))
+
+    assert result is not None
+    assert "web/core/results/v24/evidence_snapshot/head_to_head.json" in captured["prompt"]
+    assert "Do not reject a plan because the live `web/core/results/head_to_head.json` changed" in captured["prompt"]
+
+
+def test_master_plan_audit_prompt_includes_snapshot_json(monkeypatch, tmp_path):
+    import audit_agents
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v11 vs national_v20": {
+            "games": 55,
+            "a_wins": 32,
+            "b_wins": 23,
+            "draws": 0,
+            "win_rate": 0.5818,
+        }
+    })
+    captured = {}
+
+    async def fake_run_claude_query(prompt, *_args, **_kwargs):
+        captured["prompt"] = prompt
+        return (
+            "```json\n"
+            + json.dumps({
+                "plan_coherent": True,
+                "contradiction_found": False,
+                "contradictions": [],
+                "experience_alignment": "aligned",
+                "direction_novelty": "novel",
+                "overall_pass": True,
+                "feedback": "",
+                "retry_recommended": False,
+            })
+            + "\n```"
+        ), 0.0, {}
+
+    monkeypatch.setattr(audit_agents, "run_claude_query", fake_run_claude_query)
+
+    result = asyncio.run(audit_agents._run_master_plan_audit({"tasks": []}, 20, _UI(), next_v=24))
+
+    assert result["overall_pass"] is True
+    assert "Stable H2H Snapshot Contract" in captured["prompt"]
+    assert "national_v11 vs national_v20" in captured["prompt"]
+    assert "live-file drift after snapshot creation is not" in captured["prompt"]
