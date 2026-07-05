@@ -1,0 +1,191 @@
+{
+  "mode": "multi_opponent_common_deck_mirror_pair",
+  "baseline": {
+    "label": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+    "path": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040/main.py"
+  },
+  "candidates": {
+    "v061_v254_active_value_interaction_override_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v061_v254_active_value_interaction_override_p045_h32/main.py"
+    }
+  },
+  "opponents": [
+    {
+      "label": "claude_v279",
+      "path": "bots/claude_v279/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v279.json",
+      "seed_offset": 0,
+      "bot_seed_base": 202650200000
+    },
+    {
+      "label": "claude_v283",
+      "path": "bots/claude_v283/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v283.json",
+      "seed_offset": 100000,
+      "bot_seed_base": 202660200000
+    },
+    {
+      "label": "claude_v284",
+      "path": "bots/claude_v284/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v284.json",
+      "seed_offset": 200000,
+      "bot_seed_base": 202670200000
+    },
+    {
+      "label": "claude_v285",
+      "path": "bots/claude_v285/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v285.json",
+      "seed_offset": 300000,
+      "bot_seed_base": 202680200000
+    },
+    {
+      "label": "claude_v288",
+      "path": "bots/claude_v288/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v288.json",
+      "seed_offset": 400000,
+      "bot_seed_base": 202690200000
+    }
+  ],
+  "games_per_opponent": 8,
+  "workers_per_opponent": 8,
+  "seed_base": 2026082000,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "opponent_seed_stride": 100000,
+  "bot_seed_base": 202650200000,
+  "bot_seed_stride": 10000,
+  "opponent_bot_seed_stride": 10000000,
+  "max_hands": 70,
+  "aggregate_vs_baseline": {
+    "v061_v254_active_value_interaction_override_p045_h32": {
+      "baseline": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+      "candidate": "v061_v254_active_value_interaction_override_p045_h32",
+      "delta_net_chips": [
+        0.0,
+        17826.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        54.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        26.0
+      ],
+      "split": {
+        "positive": 3,
+        "zero": 37,
+        "negative": 0
+      },
+      "by_opponent": [
+        {
+          "opponent": "claude_v279",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v279.json",
+          "samples": 8,
+          "mean_per_70_hands": 1114.125,
+          "ci95_low_per_70_hands": -1069.56,
+          "ci95_high_per_70_hands": 3297.81,
+          "split": {
+            "positive": 1,
+            "zero": 7,
+            "negative": 0
+          }
+        },
+        {
+          "opponent": "claude_v283",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v283.json",
+          "samples": 8,
+          "mean_per_70_hands": 0.0,
+          "ci95_low_per_70_hands": 0.0,
+          "ci95_high_per_70_hands": 0.0,
+          "split": {
+            "positive": 0,
+            "zero": 8,
+            "negative": 0
+          }
+        },
+        {
+          "opponent": "claude_v284",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v284.json",
+          "samples": 8,
+          "mean_per_70_hands": 0.0,
+          "ci95_low_per_70_hands": 0.0,
+          "ci95_high_per_70_hands": 0.0,
+          "split": {
+            "positive": 0,
+            "zero": 8,
+            "negative": 0
+          }
+        },
+        {
+          "opponent": "claude_v285",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v285.json",
+          "samples": 8,
+          "mean_per_70_hands": 3.375,
+          "ci95_low_per_70_hands": -3.24,
+          "ci95_high_per_70_hands": 9.99,
+          "split": {
+            "positive": 1,
+            "zero": 7,
+            "negative": 0
+          }
+        },
+        {
+          "opponent": "claude_v288",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g008/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v288.json",
+          "samples": 8,
+          "mean_per_70_hands": 1.625,
+          "ci95_low_per_70_hands": -1.5599999999999996,
+          "ci95_high_per_70_hands": 4.81,
+          "split": {
+            "positive": 1,
+            "zero": 7,
+            "negative": 0
+          }
+        }
+      ],
+      "samples": 40,
+      "mean_net": 447.65,
+      "median_net": 0.0,
+      "stddev_net": 2818.229336357794,
+      "stderr_net": 445.60118357977046,
+      "ci95_low": -425.7283198163501,
+      "ci95_high": 1321.0283198163502,
+      "mean_per_70_hands": 223.825,
+      "ci95_low_per_70_hands": -212.86415990817505,
+      "ci95_high_per_70_hands": 660.5141599081751,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}

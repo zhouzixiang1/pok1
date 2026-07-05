@@ -950,6 +950,28 @@ v279 over 16 pairs it averaged `+397.25` chips per 70 hands with 95 percent CI
 This is the first multi-action value runtime candidate worth scaling, not a
 completed successor.
 
+Scaling v060 to five opponents at eight pairs each exposed the expected failure
+mode of a hard support gate. It remained positive overall (`+160.76` chips per
+70 hands) but had one v288 negative sample (`-5045` raw chips), making the split
+3 positive, 36 zero, 1 negative and the CI still wide
+(`[-296.14, +617.66]`). Trace replay showed v060 did not add a bad action; it
+blocked a v059 flop `raise_half` that had strong existing interaction support
+(`interaction_score=0.956`) because the new p045 value head scored it just
+below the hard threshold. `versions/v061_v254_active_value_interaction_override_p045_h32`
+therefore keeps the same multi-action value model but lets high interaction
+support (`>=0.90`) override the p045 value veto. It preserves the v279 positive
+veto case where interaction support was weaker (`0.774`) while restoring the
+v288 blocked raise.
+
+The v061 g008 five-opponent check repaired the v288 loss: mean `+223.83`
+chips per 70 hands, CI `[-212.86, +660.51]`, split 3 positive, 37 zero,
+0 negative. Extending the same deterministic run to g016x5 produced 80 paired
+samples with mean `+112.28`, CI `[-106.08, +330.63]`, split 4 positive,
+75 zero, 1 small negative (`-49` raw chips). v061 is safer than v060 and a
+better recorded candidate, but still not a statistically clear successor. The
+next useful step is more active sampling around low-interaction harmful v059
+raises, not a larger model.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass

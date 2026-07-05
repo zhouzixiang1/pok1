@@ -1,0 +1,450 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 8,
+  "workers": 8,
+  "seed_base": 2026082000,
+  "seed_offset": 100000,
+  "seed_stride": 1,
+  "bot_seed_base": 202660200000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "baseline_label": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+  "entries": {
+    "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+      "path": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040/main.py",
+      "opponent": "bots/claude_v283/main.py"
+    },
+    "v061_v254_active_value_interaction_override_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v061_v254_active_value_interaction_override_p045_h32/main.py",
+      "opponent": "bots/claude_v283/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "seed": 2026182000,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202660200000,
+          202660200001
+        ],
+        "mirror": [
+          202660210000,
+          202660210001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 33046.0,
+        "v061_v254_active_value_interaction_override_p045_h32": 33046.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 16543.0,
+          "bot1_chips": -16543.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 16543.0,
+          "bot1_chips": -16543.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 16503.0,
+          "bot1_chips": -16503.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 16503.0,
+          "bot1_chips": -16503.0
+        }
+      }
+    },
+    {
+      "idx": 1,
+      "seed": 2026182001,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660220000,
+          202660220001
+        ],
+        "mirror": [
+          202660230000,
+          202660230001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 28624.0,
+        "v061_v254_active_value_interaction_override_p045_h32": 28624.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 13172.0,
+          "bot1_chips": -13172.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 13172.0,
+          "bot1_chips": -13172.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 15452.0,
+          "bot1_chips": -15452.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 15452.0,
+          "bot1_chips": -15452.0
+        }
+      }
+    },
+    {
+      "idx": 2,
+      "seed": 2026182002,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660240000,
+          202660240001
+        ],
+        "mirror": [
+          202660250000,
+          202660250001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": -336.0,
+        "v061_v254_active_value_interaction_override_p045_h32": -336.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -39.0,
+          "bot1_chips": 39.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -39.0,
+          "bot1_chips": 39.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -297.0,
+          "bot1_chips": 297.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -297.0,
+          "bot1_chips": 297.0
+        }
+      }
+    },
+    {
+      "idx": 3,
+      "seed": 2026182003,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660260000,
+          202660260001
+        ],
+        "mirror": [
+          202660270000,
+          202660270001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 9196.0,
+        "v061_v254_active_value_interaction_override_p045_h32": 9196.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 8105.0,
+          "bot1_chips": -8105.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 8105.0,
+          "bot1_chips": -8105.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 1091.0,
+          "bot1_chips": -1091.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 1091.0,
+          "bot1_chips": -1091.0
+        }
+      }
+    },
+    {
+      "idx": 4,
+      "seed": 2026182004,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660280000,
+          202660280001
+        ],
+        "mirror": [
+          202660290000,
+          202660290001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": -9375.0,
+        "v061_v254_active_value_interaction_override_p045_h32": -9375.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -9094.0,
+          "bot1_chips": 9094.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -9094.0,
+          "bot1_chips": 9094.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -281.0,
+          "bot1_chips": 281.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -281.0,
+          "bot1_chips": 281.0
+        }
+      }
+    },
+    {
+      "idx": 5,
+      "seed": 2026182005,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660300000,
+          202660300001
+        ],
+        "mirror": [
+          202660310000,
+          202660310001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": -14671.0,
+        "v061_v254_active_value_interaction_override_p045_h32": -14671.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -1960.0,
+          "bot1_chips": 1960.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -1960.0,
+          "bot1_chips": 1960.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -12711.0,
+          "bot1_chips": 12711.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -12711.0,
+          "bot1_chips": 12711.0
+        }
+      }
+    },
+    {
+      "idx": 6,
+      "seed": 2026182006,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660320000,
+          202660320001
+        ],
+        "mirror": [
+          202660330000,
+          202660330001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 2297.0,
+        "v061_v254_active_value_interaction_override_p045_h32": 2297.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -17729.0,
+          "bot1_chips": 17729.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -17729.0,
+          "bot1_chips": 17729.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 20026.0,
+          "bot1_chips": -20026.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 20026.0,
+          "bot1_chips": -20026.0
+        }
+      }
+    },
+    {
+      "idx": 7,
+      "seed": 2026182007,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202660340000,
+          202660340001
+        ],
+        "mirror": [
+          202660350000,
+          202660350001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 28252.0,
+        "v061_v254_active_value_interaction_override_p045_h32": 28252.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 15251.0,
+          "bot1_chips": -15251.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 15251.0,
+          "bot1_chips": -15251.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 13001.0,
+          "bot1_chips": -13001.0
+        },
+        "v061_v254_active_value_interaction_override_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 13001.0,
+          "bot1_chips": -13001.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+      "path": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040/main.py",
+      "opponent": "bots/claude_v283/main.py",
+      "net_chips": [
+        33046.0,
+        28624.0,
+        -336.0,
+        9196.0,
+        -9375.0,
+        -14671.0,
+        2297.0,
+        28252.0
+      ],
+      "samples": 8,
+      "mean_net": 9629.125,
+      "median_net": 5746.5,
+      "stddev_net": 18364.8382859163,
+      "stderr_net": 6492.950843682873,
+      "ci95_low": -3097.058653618431,
+      "ci95_high": 22355.30865361843,
+      "mean_per_70_hands": 4814.5625,
+      "ci95_low_per_70_hands": -1548.5293268092155,
+      "ci95_high_per_70_hands": 11177.654326809215,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "v061_v254_active_value_interaction_override_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v061_v254_active_value_interaction_override_p045_h32/main.py",
+      "opponent": "bots/claude_v283/main.py",
+      "net_chips": [
+        33046.0,
+        28624.0,
+        -336.0,
+        9196.0,
+        -9375.0,
+        -14671.0,
+        2297.0,
+        28252.0
+      ],
+      "samples": 8,
+      "mean_net": 9629.125,
+      "median_net": 5746.5,
+      "stddev_net": 18364.8382859163,
+      "stderr_net": 6492.950843682873,
+      "ci95_low": -3097.058653618431,
+      "ci95_high": 22355.30865361843,
+      "mean_per_70_hands": 4814.5625,
+      "ci95_low_per_70_hands": -1548.5293268092155,
+      "ci95_high_per_70_hands": 11177.654326809215,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v061_v254_active_value_interaction_override_p045_h32": {
+      "baseline": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+      "candidate": "v061_v254_active_value_interaction_override_p045_h32",
+      "delta_net_chips": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "samples": 8,
+      "mean_net": 0.0,
+      "median_net": 0.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": 0.0,
+      "ci95_high": 0.0,
+      "mean_per_70_hands": 0.0,
+      "ci95_low_per_70_hands": 0.0,
+      "ci95_high_per_70_hands": 0.0,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}
