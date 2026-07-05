@@ -899,6 +899,19 @@ against v285. The h16 CUDA head fit this mixed data better than h32
 The next useful data step is broader active sampling by opponent and board
 texture; do not promote a v060 runtime multi-action head from this p048 shard.
 
+The second-window expansion added p008 shards for `claude_v279`, `claude_v283`,
+`claude_v284`, `claude_v285`, and the newer `claude_v288`, producing p088.
+All 40 new rows were valid, but the aggregate remained too noisy for runtime:
+most label medians stayed at `0`, `raise_half` was only `+54.75`, and all-in
+had a `-19900` minimum with `-793.93` mean. `build_multi_action_value_data.py`
+now reports min/max/p10/p90 and `masked_best_label_counts` so these outliers
+are visible. Because v059 does not allow runtime all-in, a no-allin p088 target
+set was also built with `--drop-label allin`; it changed target mean from
+`-124.73` to `+9.10`. The noallin h16/h32 CUDA heads improved over all-label
+h16 but still had weak best-label validation (`0.22` and `0.33`). This confirms
+the immediate next step: collect active, nonzero, noallin vector rows by
+opponent/board texture before creating v060.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass

@@ -14,6 +14,28 @@ from typing import Any
 LABELS = ("fold", "call", "raise_half", "raise_pot", "raise_2pot", "allin")
 
 
+def _target_stats(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"samples": 0, "mean": 0.0, "median": 0.0, "min": None, "max": None, "p10": None, "p90": None}
+    ordered = sorted(values)
+
+    def pct(q: float) -> float:
+        if len(ordered) == 1:
+            return float(ordered[0])
+        idx = round((len(ordered) - 1) * q)
+        return float(ordered[max(0, min(len(ordered) - 1, idx))])
+
+    return {
+        "samples": len(values),
+        "mean": statistics.mean(values),
+        "median": statistics.median(values),
+        "min": min(values),
+        "max": max(values),
+        "p10": pct(0.10),
+        "p90": pct(0.90),
+    }
+
+
 def _iter_inputs(paths: list[Path]) -> list[Path]:
     files: list[Path] = []
     for path in paths:
@@ -52,6 +74,7 @@ def _row_from_target(
     feature_set: str,
     target: str,
     require_full_vector: bool,
+    drop_label_ids: set[int],
 ) -> dict[str, Any] | None:
     if row.get("status") != "ok":
         return None
@@ -69,6 +92,13 @@ def _row_from_target(
     if not isinstance(legal_mask, list) or len(legal_mask) != len(LABELS):
         legal_mask = target_mask
     legal_mask = [1 if int(value) else 0 for value in legal_mask]
+    for label_id in drop_label_ids:
+        if 0 <= label_id < len(LABELS):
+            target_mask[label_id] = 0
+            legal_mask[label_id] = 0
+            filled[label_id] = 0.0
+    if not any(target_mask):
+        return None
     magnitude = max(abs(value) for value in filled) if filled else 0.0
     return {
         "features": features,
@@ -103,16 +133,22 @@ def _summary(
     feature_set: str,
     target: str,
     require_full_vector: bool,
+    dropped_labels: list[str],
 ) -> dict[str, Any]:
     target_values: list[float] = []
     by_label: dict[str, list[float]] = {label: [] for label in LABELS}
     by_source_label: dict[str, dict[str, list[float]]] = {}
     best_counts = Counter(str(row.get("best_label")) for row in rows if row.get("best_label"))
+    masked_best_counts: Counter[str] = Counter()
     stage_counts = Counter(str(row.get("stage")) for row in rows)
     source_counts = Counter(str(row.get("source")) for row in rows)
     for row in rows:
         source = str(row.get("source"))
         by_source_label.setdefault(source, {label: [] for label in LABELS})
+        valid = [(idx, float(value)) for idx, value in enumerate(row["targets"]) if row["target_mask"][idx]]
+        if valid:
+            best_idx, _ = max(valid, key=lambda item: item[1])
+            masked_best_counts[LABELS[best_idx]] += 1
         for idx, value in enumerate(row["targets"]):
             if row["target_mask"][idx]:
                 target_values.append(float(value))
@@ -124,6 +160,7 @@ def _summary(
         "feature_set": feature_set,
         "target": target,
         "require_full_vector": require_full_vector,
+        "dropped_labels": dropped_labels,
         "scanned_rows": scanned,
         "skipped_rows": skipped,
         "rows": len(rows),
@@ -137,21 +174,16 @@ def _summary(
         "negative_targets": sum(1 for value in target_values if value < 0.0),
         "off_menu_rule_rows": sum(1 for row in rows if not row.get("rule_final_in_menu", True)),
         "best_label_counts": dict(sorted(best_counts.items())),
+        "masked_best_label_counts": dict(sorted(masked_best_counts.items())),
         "stage_counts": dict(sorted(stage_counts.items())),
         "source_counts": dict(sorted(source_counts.items())),
         "target_samples_by_label": {
-            label: {
-                "samples": len(values),
-                "mean": statistics.mean(values) if values else 0.0,
-            }
+            label: _target_stats(values)
             for label, values in by_label.items()
         },
         "target_samples_by_source_label": {
             source: {
-                label: {
-                    "samples": len(values),
-                    "mean": statistics.mean(values) if values else 0.0,
-                }
+                label: _target_stats(values)
                 for label, values in label_values.items()
             }
             for source, label_values in sorted(by_source_label.items())
@@ -171,9 +203,23 @@ def main() -> None:
         default="delta_vs_rule",
     )
     parser.add_argument("--allow-incomplete-vector", action="store_true")
+    parser.add_argument(
+        "--drop-label",
+        action="append",
+        default=[],
+        help="Exclude a label from target loss and best-label metrics, e.g. --drop-label allin.",
+    )
     args = parser.parse_args()
 
     inputs = _iter_inputs(args.input)
+    drop_label_ids: set[int] = set()
+    for raw in args.drop_label:
+        text = str(raw)
+        if text in LABELS:
+            drop_label_ids.add(int(LABELS.index(text)))
+        else:
+            drop_label_ids.add(int(text))
+    dropped_labels = [LABELS[idx] for idx in sorted(drop_label_ids) if 0 <= idx < len(LABELS)]
     rows: list[dict[str, Any]] = []
     scanned = 0
     skipped = 0
@@ -187,6 +233,7 @@ def main() -> None:
                 args.feature_set,
                 args.target,
                 require_full_vector=not args.allow_incomplete_vector,
+                drop_label_ids=drop_label_ids,
             )
             if out is None:
                 skipped += 1
@@ -208,6 +255,7 @@ def main() -> None:
         args.feature_set,
         args.target,
         require_full_vector=not args.allow_incomplete_vector,
+        dropped_labels=dropped_labels,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

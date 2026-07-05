@@ -105,6 +105,11 @@ Practical takeaways for this repo:
   positive against v279/v285 but flipped negative against v283/v284. A larger
   model overfits this small mixed set; h16 outperformed h32 on validation MAE.
   Expand active vector sampling before attempting v060 runtime integration.
+- The p088 second-window follow-up adds v288 and confirms that all-in and a few
+  high-magnitude rows dominate naive value regression. Training with
+  `--drop-label allin` better matches the v059 runtime action set, but
+  best-label validation remains weak. Next data collection should actively seek
+  nonzero noallin rows and stratify by opponent and board texture.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner
