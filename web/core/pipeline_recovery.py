@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from bot_namespace import bot_relpath
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT
 from evaluation_contract import evaluate_head_drift
 from evolution_scope import classify_status_entries
@@ -90,7 +91,7 @@ def _target_available_for_resume(root: Path, stage: str | None, next_v: int | No
         return True
     if next_v is None:
         return False
-    return (root / "bots" / f"claude_v{next_v}").exists()
+    return (root / bot_relpath(next_v)).exists()
 
 
 def _current_branch_alias_resume_allowed(
@@ -151,7 +152,7 @@ def _current_branch_unrelated_head_resume_allowed(
     if not drift.get("head_drift_paths_available"):
         return False, {"current_branch_head_paths_available": False}
     contract_paths = list(drift.get("head_contract_paths") or [])
-    candidate_prefix = f"bots/claude_v{next_v}/" if next_v is not None else ""
+    candidate_prefix = bot_relpath(next_v) + "/" if next_v is not None else ""
     candidate_entries = [
         f"?? {path}" for path in contract_paths
         if candidate_prefix and path.startswith(candidate_prefix)
@@ -371,7 +372,7 @@ def checkpoint_recovery_diagnostics(
             repo_diag["baseline_evaluation_contract_unchanged"] = contract_unchanged
             repo_diag["baseline_head_contract_paths"] = contract_diag.get("head_contract_paths", [])[:40]
             repo_diag["baseline_head_external_paths"] = contract_diag.get("head_external_paths", [])[:40]
-        target_dir = root / "bots" / f"claude_v{next_v}" if next_v is not None else None
+        target_dir = root / bot_relpath(next_v) if next_v is not None else None
         branch_compatible = (
             current_branch == EVOLUTION_BRANCH
             and (not baseline_branch or baseline_branch == current_branch or baseline_branch_alias_allowed)
@@ -402,7 +403,7 @@ def checkpoint_recovery_diagnostics(
             issues.append("repo_baseline_head_mismatch")
 
     if stage in TARGET_DIR_STAGES and next_v is not None:
-        target_dir = root / "bots" / f"claude_v{next_v}"
+        target_dir = root / bot_relpath(next_v)
         diag["target"] = {
             "path": str(target_dir),
             "exists": target_dir.exists(),

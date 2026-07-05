@@ -9,6 +9,7 @@ import time
 from logging_config import get_logger
 _log = get_logger("review")
 
+from bot_namespace import bot_name
 from llm_failure import is_llm_infra_error, infra_payload
 
 from evolution_infra import (
@@ -192,11 +193,11 @@ def reconcile_critic_calibration(ratings, bot_stats, rd_threshold=60, min_games=
                 rows.append(row)
                 continue
 
-            bot_name = f"claude_v{version}"
-            source_name = f"claude_v{source_v}" if source_v is not None else None
+            review_bot_name = bot_name(version)
+            source_name = bot_name(source_v) if source_v is not None else None
 
-            bot_player = ratings.get(bot_name)
-            bot_games = bot_stats.get(bot_name, {}).get("games", 0)
+            bot_player = ratings.get(review_bot_name)
+            bot_games = bot_stats.get(review_bot_name, {}).get("games", 0)
 
             if bot_player is None or bot_games < min_games:
                 rows.append(row)
@@ -269,7 +270,7 @@ async def _run_performance_verification(source_v, ratings, ui):
             _log.warning("Failed to read rating history for perf verification: %s", e)
 
     # ── Win-rate summary for source_v (last 30 matches) ──
-    bot_name = f"claude_v{source_v}"
+    source_bot_name = bot_name(source_v)
     win_rate_lines = []
     if MATCH_HISTORY_FILE.exists():
         try:
@@ -281,15 +282,15 @@ async def _run_performance_verification(source_v, ratings, ui):
                     entry = json.loads(line.strip())
                     b0, b1 = entry.get("bot0"), entry.get("bot1")
                     w0, w1 = entry.get("bot0_wins", 0), entry.get("bot1_wins", 0)
-                    if b0 == bot_name:
+                    if b0 == source_bot_name:
                         wins += w0; losses += w1
-                    elif b1 == bot_name:
+                    elif b1 == source_bot_name:
                         wins += w1; losses += w0
                 except (json.JSONDecodeError, KeyError):
                     continue
             total = wins + losses
             if total > 0:
-                win_rate_lines.append(f"  {bot_name} recent: {wins}W / {losses}L ({wins*100//total}% win rate)")
+                win_rate_lines.append(f"  {source_bot_name} recent: {wins}W / {losses}L ({wins*100//total}% win rate)")
         except Exception as e:
             _log.warning("Failed to read match history for perf verification: %s", e)
 
@@ -318,14 +319,14 @@ async def _run_performance_verification(source_v, ratings, ui):
                 if len(parts) != 2:
                     continue
                 a_name, b_name = parts
-                if bot_name not in (a_name, b_name):
+                if source_bot_name not in (a_name, b_name):
                     continue
-                opponent = b_name if bot_name == a_name else a_name
+                opponent = b_name if source_bot_name == a_name else a_name
                 g = v.get("games", 0)
                 if g == 0:
                     continue
                 # Figure out which side our bot is
-                if bot_name == a_name:
+                if source_bot_name == a_name:
                     bot_w = v.get("a_wins", 0)
                 else:
                     bot_w = v.get("b_wins", 0)
@@ -347,17 +348,17 @@ async def _run_performance_verification(source_v, ratings, ui):
         try:
             with locked_file(BOT_STATS_FILE, "r") as bsf:
                 bs_data = json.load(bsf)
-            bs = bs_data.get(bot_name, {})
+            bs = bs_data.get(source_bot_name, {})
             g = bs.get("games", 0)
             wr = bs.get("win_rate", 0.0)
             if g > 0:
-                bot_stats_line = f"  {bot_name}: {wr:.0%} overall ({g} games)"
+                bot_stats_line = f"  {source_bot_name}: {wr:.0%} overall ({g} games)"
         except Exception as e:
             _log.warning("Failed to read bot stats for perf verification: %s", e)
 
     # ── Build prompt ──
     # Check rd (rating deviation) for the current bot to flag unreliable data
-    bot_rd = ratings.get(bot_name, Glicko2Player()).rd if ratings else 350
+    bot_rd = ratings.get(source_bot_name, Glicko2Player()).rd if ratings else 350
     rd_warning = ""
     if bot_rd > 200:
         rd_warning = (
@@ -377,7 +378,7 @@ async def _run_performance_verification(source_v, ratings, ui):
         return ""
     prompt = template_file.read_text()
     prompt = substitute_template(prompt, {
-        "bot_name": bot_name,
+        "bot_name": source_bot_name,
         "rd_warning": rd_warning,
         "performance_history": "\n".join(gen_trend_lines) if gen_trend_lines else "  No history available",
         "bot_stats": bot_stats_line if bot_stats_line else "  No stats available",

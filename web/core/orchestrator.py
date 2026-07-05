@@ -37,6 +37,8 @@ from claude_agent_sdk import (
     ProcessError,
     ClaudeSDKError,
 )
+
+from bot_namespace import bot_relpath
 from tools import evolution_server, inject_ui
 from llm_failure import is_llm_infra_error, is_shutdown_cancel_error as _is_shutdown_cancel_error
 from shutdown_manager import ShutdownManager
@@ -1599,7 +1601,7 @@ def _runtime_head_drift_unrelated_allowed(expected_head: str, current_head: str)
         checkpoint=checkpoint if isinstance(checkpoint, dict) else None,
     )
     contract_paths = list(payload.get("head_contract_paths") or [])
-    candidate_prefix = f"bots/claude_v{candidate_v}/" if candidate_v is not None else ""
+    candidate_prefix = bot_relpath(candidate_v) + "/" if candidate_v is not None else ""
     payload.update({
         "candidate_v": candidate_v,
         "head_candidate_entries": [

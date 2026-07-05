@@ -18,7 +18,7 @@ git remote get-url origin
 Committed infrastructure state is synchronized only by git:
 
 1. A change made in `/home/zzx/project/pok` is committed, pushed to `origin/main`, then fetched/merged into `/home/zzx/project/pok/.evolution_pok` at a safe point.
-2. A bot version produced in `/home/zzx/project/pok/.evolution_pok` is complete only after `commit_bot` commits it, creates `bot-v{N}`, and pushes both `main` and the tag. The outer checkout must then fetch tags and merge or rebase `origin/main` before editing related bot/evaluation code.
+2. A bot version produced in `/home/zzx/project/pok/.evolution_pok` is complete only after `commit_bot` commits it, creates `national-bot-v{N}`, and pushes both `main` and the tag. The outer checkout must then fetch tags and merge or rebase `origin/main` before editing related bot/evaluation code.
 3. If either checkout is ahead of or behind `origin/main`, do not start new infrastructure work until the intended sync direction is explicit.
 4. Before starting any task, update remote state first. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`. If the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/main`; do not begin from a stale local HEAD.
 
@@ -37,7 +37,7 @@ Infrastructure edits belong in the outer project checkout:
 Autonomous evolution runtime state belongs only in `.evolution_pok`:
 
 - active `python web/main.py` and `elo_daemon.py` processes
-- candidate `bots/claude_v{N}/` directories before `commit_bot`
+- candidate `bots/national_v{N}/` directories before `commit_bot`
 - `web/core/results/`
 - `web/logs/`
 - generated match/replay/runtime outputs
@@ -94,4 +94,4 @@ Merge or rebase `origin/main` into the outer branch before editing bots or evalu
 - Do not stage `.evolution_pok/` from the outer checkout.
 - Do not run evolution from both checkouts at the same time.
 - Do not make infrastructure edits directly in `.evolution_pok` while a generation is active unless the edit is an emergency repair and the generation is restarted afterward.
-- Do not assume a highest-numbered `bots/claude_v*` directory is complete. The annotated `bot-v{N}` tag is the completion proof.
+- Do not assume a highest-numbered `bots/national_v*` directory is complete. The annotated `national-bot-v{N}` tag is the completion proof.

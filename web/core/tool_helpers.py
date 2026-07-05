@@ -12,6 +12,7 @@ from pathlib import Path
 
 log = logging.getLogger("pok.tools")
 
+from bot_namespace import bot_name as active_bot_name, parse_bot_version
 from evolution_core import (
     BaseUI,
     get_active_bots,
@@ -366,12 +367,10 @@ def _critic_gate_ok(checkpoint):
 
 
 def _bot_main(bot_name):
-    v_str = bot_name.replace("claude_v", "")
-    try:
-        v = int(v_str)
-    except ValueError:
-        return PROJECT_ROOT / "bots" / bot_name / "main.py"
-    return get_bot_dir(v) / "main.py"
+    version = parse_bot_version(str(bot_name))
+    if version is None:
+        return PROJECT_ROOT / "bots" / str(bot_name) / "main.py"
+    return get_bot_dir(version) / "main.py"
 
 
 def _load_h2h_data():
@@ -530,8 +529,8 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
     With mirror_battle taking ~10-15 min per opponent and a 3600s cycle timeout,
     4 opponents ≈ 40-60 min which fits within the limit.
     """
-    candidate = f"claude_v{version}"
-    parent = f"claude_v{source_v}"
+    candidate = active_bot_name(version)
+    parent = active_bot_name(source_v)
     active = [b for b in get_active_bots() if b != candidate and _bot_main(b).exists()]
     ratings = load_ratings()
     h2h = _load_h2h_data()

@@ -37,7 +37,7 @@ Use `/home/zzx/project/pok` for normal infrastructure, prompt, test, and
 documentation edits. Before editing here, pull remote state with
 `git pull --ff-only --tags` on a clean tracked branch. If unfinished bot
 directories appear in the outer checkout without `.completed`, a committed bot
-directory, and the matching `bot-v{N}` tag, treat them as stale abandoned
+directory, and the matching `national-bot-v{N}` tag, treat them as stale abandoned
 candidates: inspect logs/checkpoints, remove the untracked candidate, and clear
 any stale active checkpoint instead of resuming it from the operator checkout.
 
@@ -132,7 +132,7 @@ Credentials via `BOTZONE_EMAIL` / `BOTZONE_PASSWORD` env vars.
 ### Utilities
 
 ```bash
-python merge_bot.py bots/claude_v49/             # Merge multi-file bot into single file
+python merge_bot.py bots/national_v49/           # Merge multi-file bot into single file
 python merge_bot.py --all                        # Batch merge all bot directories
 ```
 
@@ -143,7 +143,7 @@ cd sever && python main.py                    # Start TCP :10001 + Web :18080
 cd sever && python main.py --tcp-port 20001 --web-port 28080
 cd sever && python test_client.py 127.0.0.1 10001 BotA
 cd sever && python test_client.py 127.0.0.1 10001 BotB
-cd sever && python bot_adapter.py --bot ../bots/claude_v224 --name test  # Bridge bot to TCP server
+cd sever && python bot_adapter.py --bot ../archive/evolution_epochs/<epoch>/legacy_bots/claude_v224 --name legacy-test  # Legacy bridge only
 python -m pytest sever/tests -q               # Protocol regression suite
 ```
 
@@ -170,7 +170,7 @@ The Orchestrator LLM calls these MCP tools in order:
 7. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
 8. **Critic** (`prompts/critic_prompt.md`): Independent strategic review. It records strategic risk and can feed feedback into retries, but the current pipeline treats precommit evaluation as the final regression gate.
 9. **Pre-commit Eval**: Mirror battle regression check vs parent + top opponents.
-10. **Commit**: Git commit + `bot-v{N}` annotated tag. Tags are authoritative completion proof.
+10. **Commit**: Git commit + `national-bot-v{N}` annotated tag. Tags are authoritative completion proof.
 11. **Archivist**: Snapshot, rotate, and verify old generation files.
 
 ### LLM Integration
@@ -211,7 +211,7 @@ Note: Stagnation Analyst and Performance Analyst have been merged into `combined
 ### Data Flow
 
 ```
-Workers edit bots/claude_v{N}/  (LLM-driven code changes)
+Workers edit bots/national_v{N}/  (LLM-driven code changes)
         ↓
 elo_daemon.py  ← Background subprocess, runs mirror battles via engine/battle.py
         ↓           ProcessPoolExecutor, per-game Glicko-2 updates
@@ -399,10 +399,10 @@ After `allin` is called, the server runs out remaining public cards, records the
 
 ### Bot Versioning & Conventions
 
-- Bots: `bots/claude_v{N}/` (N monotonically increasing). Treat active evolved versions as non-continuous: the highest `claude_v*` directory is not necessarily completed, tagged, or committed.
-- Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed gates, committed the bot, and created the annotated `bot-v{N}` tag.
+- Active evolution epoch: `national_native_v1`. Bots live in `bots/national_v{N}/` and completion tags are `national-bot-v{N}`. Old `claude_v*` directories and `bot-v*` tags are legacy history and must not affect active version numbering, source selection, ratings, H2H, prompt memory, or pass/fail gates.
+- Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed gates, committed the bot, and created the annotated `national-bot-v{N}` tag.
 - Pool capped at 30 active; weakest culled by conservative Glicko score (`r - 2*rd`) to `bots/graveyard/`, with sample-starved bots protected until the hard overflow rules apply. H2H average win rate is reported as context, not the primary reap key.
-- Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only for active, completion-backed bots (`.completed` plus `bot-v{N}` tag); rejected suggestions emit `pipeline.source_selection_rejected`.
+- Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only for active, completion-backed bots (`.completed` plus `national-bot-v{N}` tag); rejected suggestions emit `pipeline.source_selection_rejected`.
 - Reap logs and tool results include `selection_key=conservative_glicko`, `conservative_rating`, `leaderboard_score`, and `h2h_avg_wr` so the actual cull key is distinguishable from contextual H2H/leaderboard evidence.
 - Botzone game ID: `63dcfaddee1bce5e6c8f4b53`.
 
@@ -698,7 +698,7 @@ The intended local layout has two checkouts under `/home/zzx/project/pok`:
 - `/home/zzx/project/pok` is the operator/infrastructure checkout. Make ordinary code, prompt, test, and documentation changes here, or in a temporary ignored worktree under this directory.
 - `/home/zzx/project/pok/.evolution_pok` is a separate clone reserved for the autonomous evolution process. Long-running `web/main.py`, the rating daemon, live candidate bot directories, and runtime result files belong there.
 
-Synchronize both checkouts only through `origin/main`; do not copy files between them. Infrastructure changes from the outer checkout must be pushed and then fetched/merged into `.evolution_pok` at a safe point. Completed evolution bots from `.evolution_pok` must be pushed with `bot-v{N}` tags and then fetched/merged into the outer checkout before related work continues. See `docs/evolution-dual-checkout-sync-policy.md` for the full policy and command checklist.
+Synchronize both checkouts only through `origin/main`; do not copy files between them. Infrastructure changes from the outer checkout must be pushed and then fetched/merged into `.evolution_pok` at a safe point. Completed evolution bots from `.evolution_pok` must be pushed with `national-bot-v{N}` tags and then fetched/merged into the outer checkout before related work continues. See `docs/evolution-dual-checkout-sync-policy.md` for the full policy and command checklist.
 
 Before starting work, update remote state. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`; if the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/main` instead of working from a stale local HEAD.
 
@@ -734,7 +734,7 @@ Do not revert, reset, restore, or checkout unrelated changes unless the user exp
 
 Stage only the files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Runtime/generated paths such as `web/core/results/`, `web/logs/`, `web/frontend/dist/`, `web/server/static/`, `results/*.json`, `ladder_results/`, `bots/graveyard/`, and `.completed` sentinels should not be staged unless the task is specifically about them.
 
-Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
+Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `national-bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
 
 `ref/DanLM` and `ref/neuron_poker` are gitlinks in this checkout, but `.gitmodules` is currently absent. `git submodule status` may fail or report noise; do not repair or stage gitlink changes unless the task is specifically about references/submodules.
 

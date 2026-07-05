@@ -15,10 +15,12 @@ The old `web/tui.py` Textual TUI no longer exists. Treat `web/main.py` as a web 
 
 The main goal is to build, evaluate, and evolve heads-up No-Limit Texas Hold'em bots. There are two protocol families:
 
-- Botzone/local protocol: bots are Python subprocesses that read JSON from stdin and write JSON to stdout. This is implemented by `engine/` and used by most `bots/claude_v*/` code.
+- Botzone/local protocol: bots are Python subprocesses that read JSON from stdin and write JSON to stdout. This is implemented by `engine/` and kept for legacy regression and archived Botzone-era bots.
 - National competition protocol: AI engines connect to a TCP server and exchange line-delimited strings such as `preflop|SMALLBLIND|<0,3><1,3>`, `raise 200`, `call`, `check`, `fold`, `allin`. This is implemented by `sever/`.
 
-The evolution pipeline lives under `web/core/`. It uses LLM agents, Glicko-2 ratings, mirror battles, quality gates, precommit regression evaluation, and accumulated strategy lessons to generate new bot versions.
+The active evolution epoch is `national_native_v1`. New evolution output must be native national TCP bots under `bots/national_v<N>/` with completion tags `national-bot-v<N>`. Old `claude_v*` directories and `bot-v*` tags are legacy history and must not determine current version numbers, active pool membership, ratings, H2H, experience injection, or precommit pass/fail.
+
+The evolution pipeline lives under `web/core/`. It uses LLM agents, Glicko-2 ratings, national TCP native battles, quality gates, precommit regression evaluation, and accumulated strategy lessons to generate new bot versions.
 
 ---
 
@@ -35,7 +37,7 @@ The evolution pipeline lives under `web/core/`. It uses LLM agents, Glicko-2 rat
 | RL experiments | torch, numpy, gymnasium |
 | National TCP server | asyncio TCP server + FastAPI/SSE dashboard |
 
-Most production-style bots and the local battle engine should stay stdlib-only for portability. Exceptions already exist: `engine/aivat.py` optionally uses numpy, `bots/neural_bot/` uses numpy/torch, and `rl/` depends on torch/numpy/gymnasium.
+Most production-style bots and the local battle engine should stay stdlib-only for portability. Exceptions already exist: `engine/aivat.py` optionally uses numpy, `bots/neural_national_lab/` uses experiment data, archived `bots/neural_bot/` used numpy/torch, and `rl/` depends on torch/numpy/gymnasium.
 
 ---
 
@@ -49,7 +51,7 @@ Most production-style bots and the local battle engine should stay stdlib-only f
 │   ├── ladder.py               # Round-robin ELO tournament for botN directories
 │   ├── anchor_runner.py        # One anchor bot vs discovered opponents
 │   └── aivat.py                # Variance-reduction helpers, optional numpy acceleration
-├── bots/                       # Baseline, evolved, mixture, neural, and graveyard bots
+├── bots/                       # Active national_v<N> bots plus neural_national_lab experiments
 ├── web/                        # Evolution system + FastAPI backend + React dashboard
 │   ├── main.py                 # Web launcher only
 │   ├── core/                   # Evolution pipeline, daemon, MCP tools, ratings, prompts
@@ -68,8 +70,8 @@ Most production-style bots and the local battle engine should stay stdlib-only f
 ├── docs/                       # Architecture, audit, research, and fix documents
 ├── ref/                        # Botzone refs plus DanLM/neuron_poker reference code
 ├── archive/                    # Deprecated or preserved historical code/logs
-├── results/                    # Local battle outputs, gitignored JSONs
-└── ladder_results/             # Ladder/anchor outputs
+├── results/                    # Fresh epoch local outputs; legacy payload archived
+└── ladder_results/             # Fresh epoch ladder outputs; legacy payload archived
 ```
 
 `ref/DanLM` and `ref/neuron_poker` are gitlinks in the index, but this checkout currently has no `.gitmodules`; `git submodule status` may fail until that is repaired.
@@ -82,7 +84,7 @@ split is intentional:
 - `/home/zzx/project/pok` is the operator/infrastructure checkout. Make normal code, prompt, test, and documentation changes here, or in a temporary ignored worktree under this directory.
 - `/home/zzx/project/pok/.evolution_pok` is the actual long-running autonomous evolution checkout. The active `web/main.py`, rating daemon, candidate bot directories, and runtime result files belong there. When monitoring or restarting evolution, use this directory unless the user explicitly says otherwise.
 
-The two checkouts must be synchronized through `origin/main`; never copy files between them by hand. Infrastructure changes made from the outer checkout must be pushed, then fetched/merged into `.evolution_pok` at a safe point. Bot versions produced by `.evolution_pok` must be pushed with their `bot-v{N}` tags, then fetched/merged back into the outer checkout before related infrastructure or bot work continues. The detailed policy is in `docs/evolution-dual-checkout-sync-policy.md`.
+The two checkouts must be synchronized through `origin/main`; never copy files between them by hand. Infrastructure changes made from the outer checkout must be pushed, then fetched/merged into `.evolution_pok` at a safe point. Bot versions produced by `.evolution_pok` must be pushed with their `national-bot-v{N}` tags, then fetched/merged back into the outer checkout before related infrastructure or bot work continues. The detailed policy is in `docs/evolution-dual-checkout-sync-policy.md`.
 
 Before starting work, update remote state. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`; if the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/main` instead of working from a stale local HEAD.
 
@@ -90,7 +92,7 @@ Do not switch branches, reset, or directly develop infrastructure inside `.evolu
 
 If stale unfinished bot directories appear in the outer checkout, treat them as
 operator checkout debris unless they have both a committed bot directory and the
-matching annotated `bot-v{N}` tag. Do not promote or hand-complete such bots.
+matching annotated `national-bot-v{N}` tag. Do not promote or hand-complete such bots.
 Investigate the checkpoint/logs, then remove the untracked candidate and clear
 any stale active checkpoint so the outer checkout cannot resume an abandoned
 generation by accident.
@@ -103,16 +105,16 @@ generation by accident.
 
 ```bash
 # Standard battle. Each game is 70 hands by default.
-python engine/battle.py bots/bot5/main.py bots/bot4/main.py -n 50 -v -d
+python engine/battle.py archive/evolution_epochs/<epoch>/legacy_bots/bot5/main.py archive/evolution_epochs/<epoch>/legacy_bots/bot4/main.py -n 50 -v -d
 
-# Ladder. Discovery is primarily botN directories, not all claude_v* directories.
+# Legacy ladder. Active national-native evaluation is owned by web/core national TCP gates.
 python engine/ladder.py -v
 python engine/ladder.py -b 1 4 7 -n 20 -j 4
 python engine/ladder.py --continue ladder_results/ladder_XXX/checkpoint.json -v
 
 # Anchor runner.
 python engine/anchor_runner.py 5 -n 100 -j 24
-python engine/anchor_runner.py bot5 --dry-run
+python engine/anchor_runner.py archive/evolution_epochs/<epoch>/legacy_bots/bot5 --dry-run
 ```
 
 ### Evolution Web App
@@ -160,7 +162,7 @@ cd sever && python test_client.py 127.0.0.1 10001 BotA
 cd sever && python test_client.py 127.0.0.1 10001 BotB
 
 # Bridge an existing Botzone-style bot to the TCP platform.
-cd sever && python bot_adapter.py --bot ../bots/claude_v224 --name test
+cd sever && python bot_adapter.py --bot ../archive/evolution_epochs/<epoch>/legacy_bots/claude_v224 --name legacy-test
 
 # National protocol regression tests.
 python -m pytest sever/tests -q
@@ -172,13 +174,13 @@ python -m pytest sever/tests -q
 python -m rl.scripts.train
 python -m rl.scripts.train --model transformer
 python -m rl.scripts.evaluate --checkpoint rl/checkpoints/best_model.pt
-python engine/battle.py bots/bot5/main.py rl/scripts/rl_bot.py -n 50 -v
+python engine/battle.py archive/evolution_epochs/<epoch>/legacy_bots/bot5/main.py rl/scripts/rl_bot.py -n 50 -v
 ```
 
 ### Botzone
 
 ```bash
-python scripts/botzone_upload_match.py upload --source bots/bot5/main.py --bot-name test --execute
+python scripts/botzone_upload_match.py upload --source archive/evolution_epochs/<epoch>/legacy_bots/bot5/main.py --bot-name test --execute
 python scripts/botzone_upload_match.py rank-match --bot-name test --execute
 python scripts/botzone_upload_match.py run-room-series --bot-name test --execute
 python scripts/reset_evolution.py --force --keep 6
@@ -235,7 +237,7 @@ Bot implementation guidance:
 - Sanitize actions before returning.
 - Never write debug text to stdout; use stderr if needed.
 - Bound Monte Carlo counts and CPU usage.
-- Treat active evolved versions as non-continuous. The highest `claude_v*` directory is not necessarily completed, tagged, or committed.
+- Treat active evolved versions as non-continuous. The highest `national_v*` directory is not necessarily completed, tagged, or committed.
 
 ---
 
@@ -327,9 +329,11 @@ Important current thresholds:
 - `run_quality_gates` also runs `sever/tests/test_national_alignment.py` so prompt/adapter/platform regressions are caught before bot commits.
 - Worker concurrency is capped by `MAX_PARALLEL_WORKERS = 3`, with adaptive throttling under API pressure.
 - `run_precommit_eval` is the final regression gate; critic is advisory in the current orchestrator prompt.
-- Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only when they point to an active bot backed by normal completion discovery (`.completed` plus `bot-v{N}` tag); rejected suggestions are logged as `pipeline.source_selection_rejected`.
+- Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only when they point to an active bot backed by normal completion discovery (`.completed` plus `national-bot-v{N}` tag); rejected suggestions are logged as `pipeline.source_selection_rejected`.
 
 The daemon writes live data under `web/core/results/`, including Glicko ratings, H2H matrix, match history, replays, scheduler files, costs, and system events. These files are runtime data and are gitignored.
+
+Legacy Botzone-era runtime data was archived out of the active results directories when `national_native_v1` was created. See `docs/national-native-epoch-reset.md`.
 
 ---
 
@@ -418,7 +422,7 @@ Do not revert, reset, restore, or checkout unrelated changes unless the user exp
 
 Stage only the files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Runtime/generated paths such as `web/core/results/`, `web/logs/`, `web/frontend/dist/`, `web/server/static/`, `results/*.json`, `ladder_results/`, `bots/graveyard/`, and `.completed` sentinels should not be staged unless the task is specifically about them.
 
-Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
+Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `national-bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
 
 `ref/DanLM` and `ref/neuron_poker` are gitlinks in this checkout, but `.gitmodules` is currently absent. `git submodule status` may fail or report noise; do not repair or stage gitlink changes unless the task is specifically about references/submodules.
 

@@ -6,9 +6,11 @@ import subprocess
 import re
 from pathlib import Path
 
+from bot_namespace import ACTIVE_BOT_PREFIX
+
 _LAST_SNAPSHOT: dict | None = None
 
-_GENERATED_BOT_DIR_RE = re.compile(r"^\?\? bots/claude_v\d+/$")
+_GENERATED_BOT_DIR_RE = re.compile(rf"^\?\? bots/{re.escape(ACTIVE_BOT_PREFIX)}\d+/$")
 
 
 def get_last_snapshot() -> dict | None:
@@ -32,7 +34,7 @@ def _classify_entries(entries: list[str]) -> dict:
             "entry_classes": [],
         }
 
-    # A freshly generated candidate directory appears as "?? bots/claude_vN/".
+    # A freshly generated candidate directory appears as "?? bots/national_vNNN/".
     # Without a current candidate version, evolution_scope conservatively marks
     # it foreign. Snapshot logging should keep the existing generated-dir signal
     # and avoid calling that normal runtime state protected.

@@ -12,8 +12,8 @@ Read these files FIRST to understand current state:
 - `web/core/results/bot_stats.json` — Per-bot aggregate stats. Useful as a broad signal, but frequency-weighted by scheduler choices.
 - `web/core/results/rating_history.jsonl` — Performance snapshots over time
 - `web/core/experience_pool.md` — Strategic lessons from past generations (prioritise: RECENT_LESSONS, OPPONENT_MODELING, [POSSIBLY EXHAUSTED] entries)
-- `bots/claude_v{source_v}/` — Current source bot code; read-only parent/reference
-- `bots/claude_v{next_v}/` — Target bot directory; workers must edit and verify this directory
+- `bots/national_v{source_v}/` — Current source bot code; read-only parent/reference
+- `bots/national_v{next_v}/` — Target bot directory; workers must edit and verify this directory
 - `web/core/reference_bots/bot1/` … `bot6/` — 6 reference bots
 </data_files>
 
@@ -192,10 +192,10 @@ The source ancestor to evolve from is decided automatically by the system in pre
 </source_selection>
 
 <target_path_rules>
-This generation evolves source `bots/claude_v{source_v}/` into target `bots/claude_v{next_v}/`.
+This generation evolves source `bots/national_v{source_v}/` into target `bots/national_v{next_v}/`.
 
 In every `worker_prompt`, edit/compile/import/smoke/wc commands MUST point at
-`bots/claude_v{next_v}/`, never `bots/claude_v{source_v}/`. The source path is
+`bots/national_v{next_v}/`, never `bots/national_v{source_v}/`. The source path is
 only a read-only reference for comparison; do not ask workers to edit, patch,
 compile, import from, or run checks inside the source bot directory. The worker
 wrapper already supplies correct parent-vs-target diff commands, so your

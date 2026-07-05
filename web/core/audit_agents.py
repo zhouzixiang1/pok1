@@ -19,6 +19,7 @@ import difflib
 import asyncio
 from pathlib import Path
 
+from bot_namespace import bot_name, bot_tag
 from evolution_infra import (
     PROMPTS_DIR, RESULTS_DIR, EXPERIENCE_FILE,
     get_bot_dir, get_logs_dir,
@@ -87,7 +88,7 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
             if latest_v:
                 import subprocess
                 result = subprocess.run(
-                    ["git", "log", f"bot-v{latest_v}", "-5", "--format=%h %s"],
+                    ["git", "log", bot_tag(latest_v), "-5", "--format=%h %s"],
                     capture_output=True, text=True, timeout=10,
                     cwd=str(Path(__file__).resolve().parent.parent.parent),
                 )
@@ -591,8 +592,8 @@ async def _run_crossover_compatibility_audit(parent_a_v, parent_b_v, ui):
         # Get ratings (load_ratings returns {name: Glicko2Player} objects)
         from evolution_infra import load_ratings
         ratings = load_ratings() or {}
-        ra = ratings.get(f"claude_v{parent_a_v}")
-        rb = ratings.get(f"claude_v{parent_b_v}")
+        ra = ratings.get(bot_name(parent_a_v))
+        rb = ratings.get(bot_name(parent_b_v))
         rating_a = f"{ra.rating:.1f}" if ra and hasattr(ra, 'rating') else "unknown"
         rating_b = f"{rb.rating:.1f}" if rb and hasattr(rb, 'rating') else "unknown"
 
@@ -666,7 +667,7 @@ async def _run_experience_pool_audit(pool_content, current_ratings, ui):
             if latest_v:
                 import subprocess
                 result = subprocess.run(
-                    ["git", "log", f"bot-v{latest_v}", "-5", "--format=%h %s"],
+                    ["git", "log", bot_tag(latest_v), "-5", "--format=%h %s"],
                     capture_output=True, text=True, timeout=10,
                     cwd=str(Path(__file__).resolve().parent.parent.parent),
                 )

@@ -231,7 +231,7 @@ def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
     compiled, meta = plan_compiler.compile_master_plan(
         plan,
         next_v=300,
-        target_dir=tmp_path / "claude_v300",
+        target_dir=tmp_path / "national_v300",
         project_root=tmp_path,
     )
 
@@ -247,7 +247,7 @@ def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
 def test_plan_compiler_clears_stale_task_context_for_short_plan(tmp_path):
     import plan_compiler
 
-    target = tmp_path / "claude_v301"
+    target = tmp_path / "national_v301"
     stale_dir = target / ".task_context"
     stale_dir.mkdir(parents=True)
     (stale_dir / "w1.md").write_text("stale next_v: 290", encoding="utf-8")
@@ -278,7 +278,7 @@ def test_plan_compiler_clears_stale_task_context_for_short_plan(tmp_path):
 def test_plan_compiler_clears_stale_task_context_for_invalid_task_shape(tmp_path):
     import plan_compiler
 
-    target = tmp_path / "claude_v302"
+    target = tmp_path / "national_v302"
     stale_dir = target / ".task_context"
     stale_dir.mkdir(parents=True)
     (stale_dir / "w1.md").write_text("stale next_v: 290", encoding="utf-8")
@@ -437,7 +437,7 @@ def test_repo_state_snapshot_classifies_dirty_untracked_and_protected(monkeypatc
         " M web/core/tool_gates.py",
         " M sever/server/tcp_server.py",
         " M sever/国赛平台/通信协议.docx",
-        "?? bots/claude_v245/",
+        "?? bots/national_v245/",
         "?? web/logs/restart.log",
         "?? bots/neural_national_lab/data/run.jsonl",
     ])
@@ -453,7 +453,7 @@ def test_repo_state_snapshot_classifies_dirty_untracked_and_protected(monkeypatc
     assert snapshot["branch"] == "codex/test...origin/main"
     assert snapshot["dirty_count"] == 3
     assert snapshot["untracked_count"] == 3
-    assert snapshot["generated_bot_dirs"] == ["?? bots/claude_v245/"]
+    assert snapshot["generated_bot_dirs"] == ["?? bots/national_v245/"]
     assert snapshot["protected_entries"] == [
         " M web/core/tool_gates.py",
         " M sever/server/tcp_server.py",
@@ -513,7 +513,7 @@ def test_repo_state_delta_emits_branch_and_worktree_events(monkeypatch):
                 " M docs/notes.md",
                 " M sever/国赛平台/通信协议.docx",
                 " M sever/server/tcp_server.py",
-                "?? bots/claude_v251/",
+                "?? bots/national_v251/",
             ],
         },
     ])
@@ -544,8 +544,8 @@ def test_repo_state_delta_emits_branch_and_worktree_events(monkeypatch):
     assert " M sever/server/tcp_server.py" in worktree_event[3]["new_protected_entries"]
     assert " M docs/notes.md" in worktree_event[3]["new_ignored_entries"]
     assert " M sever/国赛平台/通信协议.docx" in worktree_event[3]["new_ignored_entries"]
-    assert "?? bots/claude_v251/" in worktree_event[3]["new_generated_bot_dirs"]
-    assert "?? bots/claude_v251/" not in worktree_event[3]["new_protected_entries"]
+    assert "?? bots/national_v251/" in worktree_event[3]["new_generated_bot_dirs"]
+    assert "?? bots/national_v251/" not in worktree_event[3]["new_protected_entries"]
 
 
 def test_repo_state_external_worktree_delta_is_info(monkeypatch):
@@ -573,7 +573,7 @@ def test_repo_state_external_worktree_delta_is_info(monkeypatch):
                 " M docs/notes.md",
                 " M sever/国赛平台/通信协议.docx",
                 "?? bots/neural_national_lab/data/run.jsonl",
-                "?? bots/claude_v251/",
+                "?? bots/national_v251/",
             ],
         },
     ])
@@ -654,13 +654,13 @@ def test_runtime_guard_allows_current_candidate_dir(monkeypatch):
             "ok": True,
             "branch": "main...origin/main",
             "head": "abc123",
-            "entries": ["?? bots/claude_v300/"],
+            "entries": ["?? bots/national_v300/"],
         },
         {
             "ok": True,
             "branch": "main...origin/main",
             "head": "abc123",
-            "entries": ["?? bots/claude_v300/"],
+            "entries": ["?? bots/national_v300/"],
         },
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
@@ -684,13 +684,13 @@ def test_runtime_guard_cleanup_tools_infer_authoritative_next_v(monkeypatch):
             "ok": True,
             "branch": "main...origin/main",
             "head": "abc123",
-            "entries": ["?? bots/claude_v301/"],
+            "entries": ["?? bots/national_v301/"],
         },
         {
             "ok": True,
             "branch": "main...origin/main",
             "head": "abc123",
-            "entries": ["?? bots/claude_v301/"],
+            "entries": ["?? bots/national_v301/"],
         },
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
@@ -714,7 +714,7 @@ def test_runtime_guard_blocks_unexpected_system_dirty(monkeypatch):
         "ok": True,
         "branch": "main...origin/main",
         "head": "abc123",
-        "entries": [" M web/core/tool_gates.py", "?? bots/claude_v300/"],
+        "entries": [" M web/core/tool_gates.py", "?? bots/national_v300/"],
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
@@ -741,7 +741,7 @@ def test_runtime_guard_allows_unrelated_inplace_dirty_entries(monkeypatch):
             " M docs/notes.md",
             " M sever/国赛平台/通信协议.docx",
             "?? bots/neural_national_lab/data/run.jsonl",
-            "?? bots/claude_v300/",
+            "?? bots/national_v300/",
         ],
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
@@ -758,7 +758,7 @@ def test_runtime_guard_allows_unrelated_inplace_dirty_entries(monkeypatch):
     assert " M sever/国赛平台/通信协议.docx" in payload["ignored_entries"]
 
 
-def test_runtime_guard_blocks_foreign_claude_bot_dir(monkeypatch):
+def test_runtime_guard_blocks_foreign_national_bot_dir(monkeypatch):
     import tool_runtime_guard
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
@@ -766,7 +766,7 @@ def test_runtime_guard_blocks_foreign_claude_bot_dir(monkeypatch):
         "ok": True,
         "branch": "main...origin/main",
         "head": "abc123",
-        "entries": ["?? bots/claude_v299/", "?? bots/claude_v300/"],
+        "entries": ["?? bots/national_v299/", "?? bots/national_v300/"],
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
@@ -778,7 +778,7 @@ def test_runtime_guard_blocks_foreign_claude_bot_dir(monkeypatch):
 
     assert ok is False
     assert payload["reason"] == "unexpected_worktree_entries"
-    assert "?? bots/claude_v299/" in payload["unexpected_entries"]
+    assert "?? bots/national_v299/" in payload["unexpected_entries"]
 
 
 def test_runtime_guard_blocks_truncated_snapshot(monkeypatch):
@@ -789,7 +789,7 @@ def test_runtime_guard_blocks_truncated_snapshot(monkeypatch):
         "ok": True,
         "branch": "main...origin/main",
         "head": "abc123",
-        "entries": ["?? bots/claude_v300/"] * 40,
+        "entries": ["?? bots/national_v300/"] * 40,
         "entry_count": 41,
         "truncated": True,
     }
@@ -814,7 +814,7 @@ def test_runtime_guard_blocks_head_drift(monkeypatch):
         "ok": True,
         "branch": "main...origin/main",
         "head": "new456",
-        "entries": ["?? bots/claude_v300/"],
+        "entries": ["?? bots/national_v300/"],
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
@@ -836,8 +836,8 @@ def test_runtime_guard_allows_unrelated_head_drift(monkeypatch):
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
@@ -863,8 +863,8 @@ def test_runtime_guard_blocks_source_bot_contract_head_drift(monkeypatch):
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
@@ -872,7 +872,7 @@ def test_runtime_guard_blocks_source_bot_contract_head_drift(monkeypatch):
     monkeypatch.setattr(
         evaluation_contract,
         "changed_paths_between_heads",
-        lambda *_args, **_kwargs: ["bots/claude_v299/main.py"],
+        lambda *_args, **_kwargs: ["bots/national_v299/main.py"],
     )
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
@@ -883,7 +883,7 @@ def test_runtime_guard_blocks_source_bot_contract_head_drift(monkeypatch):
     assert ok is False
     assert payload["reason"] == "head_changed_during_generation"
     assert payload["evaluation_contract_unchanged"] is False
-    assert "bots/claude_v299/main.py" in payload["head_contract_paths"]
+    assert "bots/national_v299/main.py" in payload["head_contract_paths"]
 
 
 def test_evaluation_contract_classifies_dynamic_bot_versions():
@@ -897,7 +897,7 @@ def test_evaluation_contract_classifies_dynamic_bot_versions():
             "gate_results": {
                 "precommit_eval": {
                     "opponents": [
-                        {"name": "claude_v45"},
+                        {"name": "national_v45"},
                         {"name": "bots/neural_national_lab/versions/v058"},
                     ]
                 }
@@ -907,9 +907,9 @@ def test_evaluation_contract_classifies_dynamic_bot_versions():
     scope = evaluation_contract.classify_contract_paths(
         [
             "engine/battle.py",
-            "bots/claude_v300/main.py",
-            "bots/claude_v299/main.py",
-            "bots/claude_v45/main.py",
+            "bots/national_v300/main.py",
+            "bots/national_v299/main.py",
+            "bots/national_v45/main.py",
             "bots/neural_national_lab/data/run.json",
             "sever/server/tcp_server.py",
             "sever/国赛平台/通信协议.docx",
@@ -919,9 +919,9 @@ def test_evaluation_contract_classifies_dynamic_bot_versions():
     )
 
     assert "engine/battle.py" in scope["contract_paths"]
-    assert "bots/claude_v300/main.py" in scope["contract_paths"]
-    assert "bots/claude_v299/main.py" in scope["contract_paths"]
-    assert "bots/claude_v45/main.py" in scope["contract_paths"]
+    assert "bots/national_v300/main.py" in scope["contract_paths"]
+    assert "bots/national_v299/main.py" in scope["contract_paths"]
+    assert "bots/national_v45/main.py" in scope["contract_paths"]
     assert "sever/server/tcp_server.py" in scope["contract_paths"]
     assert "sever/国赛平台/通信协议.docx" in scope["external_paths"]
     assert "bots/neural_national_lab/data/run.json" in scope["external_paths"]
@@ -963,8 +963,8 @@ def test_runtime_guard_uses_persisted_checkpoint_baseline_after_restart(monkeypa
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -990,8 +990,8 @@ def test_runtime_guard_allows_execute_workers_after_repair_head_drift(monkeypatc
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1018,8 +1018,8 @@ def test_runtime_guard_allows_execute_workers_after_master_planned_head_drift(mo
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1050,8 +1050,8 @@ def test_runtime_guard_allows_direction_audit_after_prepared_head_drift(monkeypa
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1081,8 +1081,8 @@ def test_runtime_guard_allows_master_after_direction_audited_head_drift(monkeypa
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1144,8 +1144,8 @@ def test_runtime_guard_allows_quality_after_workers_done_head_drift(monkeypatch)
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1175,8 +1175,8 @@ def test_runtime_guard_allows_review_after_post_quality_head_drift(monkeypatch):
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1205,8 +1205,8 @@ def test_runtime_guard_allows_review_repair_workers_after_post_quality_head_drif
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1235,8 +1235,8 @@ def test_runtime_guard_allows_commit_after_verified_head_drift(monkeypatch):
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1266,7 +1266,7 @@ def test_runtime_guard_blocks_clean_branch_drift_without_auto_checkout(monkeypat
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     monkeypatch.delenv("POK_RUNTIME_EXPECTED_HEAD", raising=False)
-    snapshot = {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]}
+    snapshot = {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/national_v300/"]}
     commands = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
@@ -1290,8 +1290,8 @@ def test_runtime_guard_allows_non_commit_tool_on_same_head_branch_alias(monkeypa
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "abc123")
     snapshots = iter([
-        {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/national_v300/"]},
     ])
     events = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
@@ -1315,8 +1315,8 @@ def test_runtime_guard_allows_pre_master_head_resume_on_same_head_branch_alias(m
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "new456")
     snapshots = iter([
-        {"ok": True, "branch": "codex/refactor", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "codex/refactor", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "codex/refactor", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "codex/refactor", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1344,7 +1344,7 @@ def test_runtime_guard_blocks_commit_on_same_head_branch_alias(monkeypatch):
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "abc123")
-    snapshot = {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]}
+    snapshot = {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/national_v300/"]}
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
     monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
@@ -1366,8 +1366,8 @@ def test_runtime_guard_allows_non_commit_tool_on_branch_with_unrelated_head_drif
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "old123")
     snapshots = iter([
-        {"ok": True, "branch": "codex/docs", "head": "new456", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "codex/docs", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "codex/docs", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "codex/docs", "head": "new456", "entries": ["?? bots/national_v300/"]},
     ])
     events = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
@@ -1400,7 +1400,7 @@ def test_runtime_guard_blocks_commit_on_branch_with_unrelated_head_drift(monkeyp
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "old123")
-    snapshot = {"ok": True, "branch": "codex/docs", "head": "new456", "entries": ["?? bots/claude_v300/"]}
+    snapshot = {"ok": True, "branch": "codex/docs", "head": "new456", "entries": ["?? bots/national_v300/"]}
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
     monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
@@ -1427,7 +1427,7 @@ def test_write_pipeline_checkpoint_persists_repo_baseline(tmp_path, monkeypatch)
         "entry_count": 1,
         "dirty_count": 0,
         "untracked_count": 1,
-        "entries": ["?? bots/claude_v300/"],
+        "entries": ["?? bots/national_v300/"],
         "truncated": False,
     })
 
@@ -1451,7 +1451,7 @@ def test_write_pipeline_checkpoint_refreshes_baseline_on_rework(tmp_path, monkey
             "entry_count": 1,
             "dirty_count": 0,
             "untracked_count": 1,
-            "entries": ["?? bots/claude_v300/"],
+            "entries": ["?? bots/national_v300/"],
             "truncated": False,
         },
         {
@@ -1460,7 +1460,7 @@ def test_write_pipeline_checkpoint_refreshes_baseline_on_rework(tmp_path, monkey
             "entry_count": 1,
             "dirty_count": 0,
             "untracked_count": 1,
-            "entries": ["?? bots/claude_v300/"],
+            "entries": ["?? bots/national_v300/"],
             "truncated": False,
         },
     ])
@@ -1477,7 +1477,7 @@ def test_write_pipeline_checkpoint_refreshes_baseline_on_rework(tmp_path, monkey
 def test_checkpoint_recovery_diagnostics_allows_workers_done_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
     checkpoint = {
         "next_v": 257,
         "source_v": 197,
@@ -1504,7 +1504,7 @@ def test_checkpoint_recovery_diagnostics_allows_same_head_branch_alias(tmp_path,
     import pipeline_recovery
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
-    (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
     checkpoint = {
         "next_v": 257,
         "source_v": 197,
@@ -1532,7 +1532,7 @@ def test_checkpoint_recovery_diagnostics_blocks_verified_branch_alias(tmp_path, 
     import pipeline_recovery
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
-    (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
     checkpoint = {
         "next_v": 257,
         "source_v": 197,
@@ -1559,7 +1559,7 @@ def test_checkpoint_recovery_diagnostics_allows_main_resume_from_alias_after_anc
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
     monkeypatch.setattr(pipeline_recovery, "_head_is_ancestor", lambda *_args: True)
-    (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v281").mkdir(parents=True)
     checkpoint = {
         "next_v": 281,
         "source_v": 279,
@@ -1592,7 +1592,7 @@ def test_checkpoint_recovery_diagnostics_blocks_main_resume_from_alias_after_non
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
     monkeypatch.setattr(pipeline_recovery, "_head_is_ancestor", lambda *_args: False)
-    (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v281").mkdir(parents=True)
     checkpoint = {
         "next_v": 281,
         "source_v": 279,
@@ -1629,7 +1629,7 @@ def test_checkpoint_recovery_diagnostics_allows_branch_with_unrelated_head_drift
             "bots/neural_national_lab/versions/v026/main.py",
         ],
     )
-    (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v281").mkdir(parents=True)
     checkpoint = {
         "next_v": 281,
         "source_v": 279,
@@ -1666,7 +1666,7 @@ def test_checkpoint_recovery_diagnostics_blocks_branch_with_critical_head_drift(
         "changed_paths_between_heads",
         lambda *_args: ["web/core/orchestrator.py"],
     )
-    (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v281").mkdir(parents=True)
     checkpoint = {
         "next_v": 281,
         "source_v": 279,
@@ -1691,7 +1691,7 @@ def test_checkpoint_recovery_diagnostics_blocks_branch_with_critical_head_drift(
 def test_checkpoint_recovery_diagnostics_allows_master_planned_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
     checkpoint = {
         "next_v": 257,
         "source_v": 197,
@@ -1745,7 +1745,7 @@ def test_checkpoint_recovery_diagnostics_allows_pre_master_head_mismatch(tmp_pat
     import pipeline_recovery
 
     for stage in ("prepared", "direction_audited"):
-        (tmp_path / "bots" / "claude_v257").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "bots" / "national_v257").mkdir(parents=True, exist_ok=True)
         checkpoint = {
             "next_v": 257,
             "source_v": 197,
@@ -1771,7 +1771,7 @@ def test_checkpoint_recovery_diagnostics_allows_pre_master_head_mismatch(tmp_pat
 def test_checkpoint_recovery_diagnostics_blocks_preparing_repo_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
     checkpoint = {
         "next_v": 257,
         "source_v": 197,
@@ -1795,7 +1795,7 @@ def test_checkpoint_recovery_diagnostics_blocks_preparing_repo_head_mismatch(tmp
 def test_checkpoint_recovery_diagnostics_allows_repair_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "claude_v269").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v269").mkdir(parents=True)
     checkpoint = {
         "next_v": 269,
         "source_v": 237,
@@ -1820,7 +1820,7 @@ def test_checkpoint_recovery_diagnostics_allows_repair_head_mismatch(tmp_path):
 def test_checkpoint_recovery_diagnostics_allows_post_quality_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "claude_v269").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v269").mkdir(parents=True)
     checkpoint = {
         "next_v": 269,
         "source_v": 237,
@@ -1845,7 +1845,7 @@ def test_checkpoint_recovery_diagnostics_allows_post_quality_head_mismatch(tmp_p
 def test_checkpoint_recovery_diagnostics_allows_verified_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "claude_v269").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v269").mkdir(parents=True)
     checkpoint = {
         "next_v": 269,
         "source_v": 237,
@@ -1870,7 +1870,7 @@ def test_checkpoint_recovery_diagnostics_allows_verified_head_mismatch(tmp_path)
 def test_checkpoint_recovery_diagnostics_allows_matching_active_checkpoint(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "claude_v258").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v258").mkdir(parents=True)
     checkpoint = {
         "next_v": 258,
         "source_v": 254,
@@ -1893,7 +1893,7 @@ def test_checkpoint_recovery_diagnostics_allows_matching_active_checkpoint(tmp_p
 def test_checkpoint_recovery_diagnostics_ignores_unrelated_dirty_entries(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "claude_v258").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v258").mkdir(parents=True)
     checkpoint = {
         "next_v": 258,
         "source_v": 254,
@@ -1907,7 +1907,7 @@ def test_checkpoint_recovery_diagnostics_ignores_unrelated_dirty_entries(tmp_pat
         "entries": [
             " M docs/notes.md",
             "?? bots/neural_national_lab/data/run.jsonl",
-            "?? bots/claude_v258/",
+            "?? bots/national_v258/",
         ],
     }
 
@@ -1925,7 +1925,7 @@ def test_checkpoint_recovery_diagnostics_ignores_unrelated_dirty_entries(tmp_pat
 def test_checkpoint_recovery_diagnostics_blocks_critical_dirty_entries(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "claude_v258").mkdir(parents=True)
+    (tmp_path / "bots" / "national_v258").mkdir(parents=True)
     checkpoint = {
         "next_v": 258,
         "source_v": 254,
@@ -1936,7 +1936,7 @@ def test_checkpoint_recovery_diagnostics_blocks_critical_dirty_entries(tmp_path)
         "ok": True,
         "branch": "main...origin/main",
         "head": "same123",
-        "entries": [" M sever/server/tcp_server.py", "?? bots/claude_v258/"],
+        "entries": [" M sever/server/tcp_server.py", "?? bots/national_v258/"],
     }
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -2324,7 +2324,7 @@ def test_checkpoint_recovery_diagnostics_tracks_rework_target_dirs(tmp_path):
     import pipeline_recovery
 
     for stage in ("quality_failed", "repair_planned", "rework_running"):
-        (tmp_path / "bots" / "claude_v259").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "bots" / "national_v259").mkdir(parents=True, exist_ok=True)
         checkpoint = {
             "next_v": 259,
             "source_v": 254,

@@ -11,6 +11,7 @@ import time
 
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag_glob
 from evolution_infra import locked_file, RESULTS_DIR, MAX_PRECOMMIT_RETRIES
 from failure_classification import classify_precommit_gate
 from pipeline_state import route_policy
@@ -480,12 +481,12 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             f"Current generation: v{gen_ctx.current_v}",
             f"Next generation: v{gen_ctx.next_v}",
             f"Strategy: {gen_ctx.strategy}",
-            f"Source bot: claude_v{gen_ctx.source_v}",
+            f"Source bot: {bot_name(gen_ctx.source_v)}",
             f"Active bots: {len(get_active_bots())}",
             f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         ]
         if gen_ctx.strategy == "crossover" and gen_ctx.crossover_parents:
-            lines.append(f"Crossover parents: claude_v{gen_ctx.crossover_parents[0]} x claude_v{gen_ctx.crossover_parents[1]}")
+            lines.append(f"Crossover parents: {bot_name(gen_ctx.crossover_parents[0])} x {bot_name(gen_ctx.crossover_parents[1])}")
 
         # Tool reference — prevents ToolSearch when session is fresh/resumed
         lines.append("\nAVAILABLE TOOLS (call by exact name):")
@@ -515,8 +516,8 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         try:
             from eval_rounds import EvalRoundManager
             _erm = EvalRoundManager()
-            bot_name = f"claude_v{gen_ctx.source_v}"
-            eval_summary = _erm.get_last_round_summary(bot_name)
+            source_bot_name = bot_name(gen_ctx.source_v)
+            eval_summary = _erm.get_last_round_summary(source_bot_name)
             if eval_summary:
                 lines.append(f"\n{eval_summary}")
         except Exception:
@@ -561,7 +562,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     lines.append("\nAVAILABLE TOOLS (call by exact name):")
     lines.append("  prepare_next_gen | run_direction_audit | run_literature_probe | run_master | execute_workers | run_quality_gates | run_review | run_critic | run_precommit_eval | commit_bot | run_archivist | run_crossover")
 
-    bot_name = f"claude_v{current_v}"
+    current_bot_name = bot_name(current_v)
 
     # Current bot action stats (fold/call/raise frequencies by street)
     bot_action_stats_file = RESULTS_DIR / "bot_action_stats.json"
@@ -569,9 +570,9 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         try:
             with locked_file(bot_action_stats_file, "r") as f:
                 action_stats = json.load(f)
-            bot_stats = action_stats.get(bot_name)
+            bot_stats = action_stats.get(current_bot_name)
             if bot_stats:
-                lines.append(f"\nCurrent bot action stats ({bot_name}):")
+                lines.append(f"\nCurrent bot action stats ({current_bot_name}):")
                 for street in ("preflop", "flop", "turn", "river"):
                     st = bot_stats.get(street)
                     if st:
@@ -587,7 +588,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             pass
 
     # Current bot rating reliability
-    cur_p = ratings.get(f"claude_v{current_v}")
+    cur_p = ratings.get(current_bot_name)
     if cur_p:
         # Load bot_stats for games-based reliability
         bot_stats_file = RESULTS_DIR / "bot_stats.json"
@@ -597,8 +598,8 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             try:
                 with locked_file(bot_stats_file, "r") as f:
                     bs = json.load(f)
-                games = bs.get(bot_name, {}).get("games", 0)
-                wr = bs.get(bot_name, {}).get("win_rate", 0.0)
+                games = bs.get(current_bot_name, {}).get("games", 0)
+                wr = bs.get(current_bot_name, {}).get("win_rate", 0.0)
             except Exception:
                 pass
         reliable = "RELIABLE" if games >= 100 else f"UNRELIABLE ({games}/100 games — wait for more matches)"
@@ -607,24 +608,24 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             from tool_helpers import load_h2h_avg_winrates, load_strength_scores
             h2h_wrs = load_h2h_avg_winrates()
             strength_scores = load_strength_scores()
-            h2h_wr = h2h_wrs.get(bot_name, 0.5)
-            score = strength_scores.get(bot_name, 0.5)
+            h2h_wr = h2h_wrs.get(current_bot_name, 0.5)
+            score = strength_scores.get(current_bot_name, 0.5)
             h2h_str = f"leaderboard_score={score:.4f}, h2h_avg_wr={h2h_wr:.2%}"
         except Exception:
             h2h_str = "leaderboard_score=N/A, h2h_avg_wr=N/A"
-        lines.append(f"Current bot {bot_name}: {h2h_str}, r={cur_p.r:.1f}, rd={cur_p.rd:.1f}, wr={wr:.0%} ({games} games) [{reliable}]")
+        lines.append(f"Current bot {current_bot_name}: {h2h_str}, r={cur_p.r:.1f}, rd={cur_p.rd:.1f}, wr={wr:.0%} ({games} games) [{reliable}]")
 
     # Incomplete bot detection — previous cycle may have been interrupted
     next_dir = get_bot_dir(next_v)
     if next_dir.exists() and not (next_dir / ".completed").exists():
         lines.append(
-            f"WARNING: claude_v{next_v} directory exists but is NOT completed "
+            f"WARNING: {bot_name(next_v)} directory exists but is NOT completed "
             f"(previous cycle was interrupted). Decide: resume workers or clean up and restart."
         )
 
     # Recent completed generations (from git tags)
     try:
-        tag_output = _git("tag", "-l", "bot-v*", "--sort=-version:refname", check=False)
+        tag_output = _git("tag", "-l", bot_tag_glob(), "--sort=-version:refname", check=False)
         recent_tags = [t.strip() for t in tag_output.splitlines() if t.strip()][:5]
         if recent_tags:
             lines.append(f"Recent completed gens: {', '.join(recent_tags)}")
@@ -692,7 +693,7 @@ def _make_precompact_hook():
         lines = ["=== EVOLUTION STATE — PRESERVE DURING COMPACTION ==="]
         try:
             current_v = find_current_v()
-            lines.append(f"Current completed bot: claude_v{current_v}")
+            lines.append(f"Current completed bot: {bot_name(current_v)}")
             checkpoint = read_pipeline_checkpoint()
             if checkpoint:
                 stage = checkpoint.get("stage", "unknown")
@@ -721,7 +722,7 @@ def _make_bot_dir_guard_hook():
 
     Root cause of the v218 gate-bypass: the H6 cross-gen circuit breaker tripped
     and execute_workers returned an error, but the orchestrator LLM then used its
-    built-in Bash tool (6 calls in one cycle) to hand-edit bots/claude_v218/*.py.
+    built-in Bash tool (6 calls in one cycle) to hand-edit active bot code.
     This completely bypassed execute_workers and every gate it enforces (circuit
     breaker, boundary validation, CoT audit, file_size check). The bot then
     passed quality gates on the hand-edited code and was committed — defeating
@@ -743,7 +744,7 @@ def _make_bot_dir_guard_hook():
     spend an active cycle inspecting instead of calling the required MCP tool.
     """
     import os
-    # Bot code lives under PROJECT_ROOT/bots/claude_v*. Resolve once.
+    # Bot code lives under PROJECT_ROOT/bots/{ACTIVE_BOT_PREFIX}*. Resolve once.
     try:
         from evolution_infra import PROJECT_ROOT, RESULTS_DIR
         _bots_root = str((PROJECT_ROOT / "bots").resolve())
@@ -776,12 +777,12 @@ def _make_bot_dir_guard_hook():
 
     def _targets_protected(text):
         """True if the command/text references a protected path:
-        bots/claude_v* (bot code) OR a pipeline-critical state file."""
+        active bot code OR a pipeline-critical state file."""
         if not text:
             return False
         low = str(text).lower()
         # Bot code dir
-        if "bots/claude_v" in low or "bots\\claude_v" in low:
+        if f"bots/{ACTIVE_BOT_PREFIX}" in low or f"bots\\{ACTIVE_BOT_PREFIX}" in low:
             return True
         if _bots_root and _bots_root.lower() in low:
             return True

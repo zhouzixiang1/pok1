@@ -6,6 +6,8 @@ import shutil
 import glob
 from pathlib import Path
 
+from bot_namespace import active_bot_glob, bot_tag_glob, parse_bot_version, parse_tag_version
+
 CORE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CORE_DIR.parent.parent
 RESULTS_DIR = CORE_DIR / "results"
@@ -48,57 +50,49 @@ Lessons from previous iterations. Read before planning next generation.
 
 
 def _find_max_version():
-    """Find the highest claude_v{N} version number in bots/."""
+    """Find the highest active bot version number in bots/."""
     max_v = 0
     if BOTS_DIR.exists():
         for d in os.listdir(BOTS_DIR):
-            if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
-                try:
-                    v = int(d.split("_v")[1])
-                    max_v = max(max_v, v)
-                except (ValueError, IndexError):
-                    pass
+            v = parse_bot_version(d)
+            if v is not None and os.path.isdir(BOTS_DIR / d):
+                max_v = max(max_v, v)
     return max_v
 
 
 def _delete_bot_dirs(keep_versions):
-    """Delete bots/claude_v{N} for N > keep_versions. Returns list of deleted versions."""
+    """Delete active bot dirs for N > keep_versions. Returns list of deleted versions."""
     deleted = []
-    for d in sorted(os.listdir(BOTS_DIR)):
-        if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
-            try:
-                v = int(d.split("_v")[1])
-                if v > keep_versions:
-                    shutil.rmtree(BOTS_DIR / d)
-                    deleted.append(v)
-            except (ValueError, IndexError):
-                pass
+    for d in sorted(BOTS_DIR.glob(active_bot_glob())):
+        if not d.is_dir():
+            continue
+        v = parse_bot_version(d.name)
+        if v is not None and v > keep_versions:
+            shutil.rmtree(d)
+            deleted.append(v)
     return sorted(deleted)
 
 
 def _delete_git_tags(keep_versions):
-    """Delete bot-v{N} tags for N > keep_versions. Returns list of deleted tags."""
+    """Delete active-epoch tags for N > keep_versions. Returns list of deleted tags."""
     deleted = []
     import subprocess
     try:
         result = subprocess.run(
-            ["git", "tag", "-l", "bot-v*"],
+            ["git", "tag", "-l", bot_tag_glob()],
             cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False,
         )
         for tag in result.stdout.strip().splitlines():
             tag = tag.strip()
             if not tag:
                 continue
-            try:
-                v = int(tag.split("-v")[1])
-                if v > keep_versions:
-                    subprocess.run(
-                        ["git", "tag", "-d", tag],
-                        cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False,
-                    )
-                    deleted.append(tag)
-            except (ValueError, IndexError):
-                pass
+            v = parse_tag_version(tag)
+            if v is not None and v > keep_versions:
+                subprocess.run(
+                    ["git", "tag", "-d", tag],
+                    cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False,
+                )
+                deleted.append(tag)
     except Exception:
         pass
     return sorted(deleted)
@@ -131,17 +125,15 @@ def _clear_directory(path):
 def _ensure_completed_sentinels(keep_versions):
     """Ensure all kept bot dirs have .completed sentinel files."""
     ensured = []
-    for d in sorted(os.listdir(BOTS_DIR)):
-        if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
-            try:
-                v = int(d.split("_v")[1])
-                if v <= keep_versions:
-                    sentinel = BOTS_DIR / d / ".completed"
-                    if not sentinel.exists():
-                        sentinel.touch()
-                        ensured.append(v)
-            except (ValueError, IndexError):
-                pass
+    for d in sorted(BOTS_DIR.glob(active_bot_glob())):
+        if not d.is_dir():
+            continue
+        v = parse_bot_version(d.name)
+        if v is not None and v <= keep_versions:
+            sentinel = d / ".completed"
+            if not sentinel.exists():
+                sentinel.touch()
+                ensured.append(v)
     return sorted(ensured)
 
 

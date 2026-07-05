@@ -16,6 +16,7 @@ from pathlib import Path
 
 log = logging.getLogger("pok.workers")
 
+from bot_namespace import bot_relpath
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code,
     locked_file, get_bot_dir, get_logs_dir,
@@ -172,9 +173,9 @@ def _infer_current_generation():
 
 
 def _version_refs(entry):
-    """Return unique generation numbers referenced by vN/claude_vN/bot-vN tokens."""
+    """Return unique generation numbers referenced by active or legacy version tokens."""
     versions = set()
-    for match in re.finditer(r"\b(?:v|claude_v|bot-v)(\d+)\b", entry, re.IGNORECASE):
+    for match in re.finditer(r"\b(?:v|claude_v|national_v|bot-v|national-bot-v)(\d+)\b", entry, re.IGNORECASE):
         try:
             versions.add(int(match.group(1)))
         except ValueError:
@@ -545,7 +546,7 @@ async def _run_debug_agent(error_output, changed_diff, target_file, next_v, ui):
         prompt_template = prompt_template_file.read_text(encoding="utf-8")
 
         target_rel = _target_rel(target_file, next_v) or str(target_file or "").strip()
-        target_display = f"bots/claude_v{next_v}/{target_rel}" if target_rel else str(target_file or "")
+        target_display = f"{bot_relpath(next_v)}/{target_rel}" if target_rel else str(target_file or "")
         target_abs = get_bot_dir(next_v) / target_rel if target_rel else get_bot_dir(next_v)
 
         debug_prompt = (

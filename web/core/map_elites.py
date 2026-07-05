@@ -35,6 +35,7 @@ import json
 import time
 from pathlib import Path
 
+from bot_namespace import parse_bot_version
 from evolution_infra import RESULTS_DIR, read_locked_json, write_locked_json, REPLAY_DIR
 
 BEHAVIOR_ARCHIVE_FILE = RESULTS_DIR / "behavior_archive.json"
@@ -187,11 +188,8 @@ def _quantile_edges(values, n_buckets=5):
 
 
 def _bot_version(name):
-    """Extract integer version from 'claude_v<N>'; None if unparseable."""
-    try:
-        return int(str(name).replace("claude_v", ""))
-    except (ValueError, TypeError):
-        return None
+    """Extract integer version from an active bot name; None if unparseable."""
+    return parse_bot_version(str(name))
 
 
 def _load_acc_cache():

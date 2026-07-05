@@ -15,6 +15,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from bot_namespace import ACTIVE_BOT_PREFIX, active_bot_glob, bot_name, parse_bot_version, version_sort_key
 from pipeline_schema import NationalAcceptanceResult
 
 
@@ -140,13 +141,7 @@ class MatrixGameEngine(GameEngine):
 
 
 def _bot_version(label: str) -> int:
-    if label.startswith("claude_v"):
-        suffix = label.removeprefix("claude_v")
-    elif label.startswith("v"):
-        suffix = label.removeprefix("v")
-    else:
-        suffix = ""
-    return int(suffix) if suffix.isdigit() else -1
+    return parse_bot_version(label) or -1
 
 
 def resolve_bot(token: str | Path) -> BotSpec:
@@ -156,11 +151,11 @@ def resolve_bot(token: str | Path) -> BotSpec:
     if raw.exists():
         candidates.append(raw)
     if token_str.startswith("v") and token_str[1:].isdigit():
-        candidates.append(ROOT / "bots" / f"claude_v{token_str[1:]}")
+        candidates.append(ROOT / "bots" / bot_name(token_str[1:]))
     if token_str.isdigit():
-        candidates.append(ROOT / "bots" / f"claude_v{token_str}")
+        candidates.append(ROOT / "bots" / bot_name(token_str))
         candidates.append(ROOT / "bots" / f"bot{token_str}")
-    if token_str.startswith("claude_v") or token_str.startswith("bot"):
+    if token_str.startswith(ACTIVE_BOT_PREFIX) or token_str.startswith("claude_v") or token_str.startswith("bot"):
         candidates.append(ROOT / "bots" / token_str)
 
     for path in candidates:
@@ -171,20 +166,20 @@ def resolve_bot(token: str | Path) -> BotSpec:
     raise ValueError(f"bot not found or missing main.py: {token_str}")
 
 
-def _completed_claude_bots() -> list[BotSpec]:
+def _completed_active_bots() -> list[BotSpec]:
     bots_dir = ROOT / "bots"
     specs = []
-    for path in bots_dir.glob("claude_v*"):
+    for path in bots_dir.glob(active_bot_glob()):
         if not path.is_dir() or not (path / "main.py").exists():
             continue
         if not (path / ".completed").exists():
             continue
         specs.append(BotSpec(path.name, path.resolve()))
-    return sorted(specs, key=lambda b: _bot_version(b.label), reverse=True)
+    return sorted(specs, key=lambda b: version_sort_key(b.label), reverse=True)
 
 
-def _is_completed_claude_bot(spec: BotSpec) -> bool:
-    if not spec.label.startswith("claude_v"):
+def _is_completed_active_bot(spec: BotSpec) -> bool:
+    if not spec.label.startswith(ACTIVE_BOT_PREFIX):
         return True
     bot_dir = spec.path if spec.path.is_dir() else spec.path.parent
     return (bot_dir / ".completed").exists()
@@ -199,7 +194,7 @@ def default_bots(limit: int) -> list[BotSpec]:
             chosen.append(spec)
             seen.add(spec.label)
 
-    completed = _completed_claude_bots()
+    completed = _completed_active_bots()
     if completed:
         add(completed[0])
 
@@ -212,11 +207,13 @@ def default_bots(limit: int) -> list[BotSpec]:
             reverse=True,
         )
         for label, _ in ranked:
+            if not label.startswith(ACTIVE_BOT_PREFIX):
+                continue
             try:
                 spec = resolve_bot(label)
             except ValueError:
                 continue
-            if not _is_completed_claude_bot(spec):
+            if not _is_completed_active_bot(spec):
                 continue
             add(spec)
             if len(chosen) >= limit:
@@ -240,7 +237,7 @@ def select_acceptance_opponents(candidate: BotSpec, source_v: int | None, limit:
 
     if source_v is not None:
         try:
-            add(resolve_bot(f"claude_v{source_v}"))
+            add(resolve_bot(bot_name(source_v)))
         except ValueError:
             pass
     for spec in default_bots(limit + 2):

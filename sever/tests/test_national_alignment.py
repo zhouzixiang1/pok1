@@ -347,13 +347,13 @@ def test_bot_adapter_telemetry_counts_clamped_raise():
     assert adapter.telemetry["would_be_illegal_raise"] == 1
 
 
-def test_national_acceptance_matrix_skips_incomplete_default_claude_bots(tmp_path, monkeypatch):
+def test_national_acceptance_matrix_skips_incomplete_default_national_bots(tmp_path, monkeypatch):
     matrix = _load_module_from_path(
         "national_acceptance_matrix_default_test",
         ROOT / "scripts" / "national_acceptance_matrix.py",
     )
-    completed = tmp_path / "bots" / "claude_v10"
-    incomplete = tmp_path / "bots" / "claude_v11"
+    completed = tmp_path / "bots" / "national_v10"
+    incomplete = tmp_path / "bots" / "national_v11"
     _write_call_bot(completed)
     _write_call_bot(incomplete)
     (completed / ".completed").write_text("", encoding="utf-8")
@@ -362,14 +362,14 @@ def test_national_acceptance_matrix_skips_incomplete_default_claude_bots(tmp_pat
     ratings_dir.mkdir(parents=True)
     (ratings_dir / "glicko_ratings.json").write_text(
         json.dumps({
-            "claude_v11": {"r": 3000, "rd": 30},
-            "claude_v10": {"r": 1200, "rd": 50},
+            "national_v11": {"r": 3000, "rd": 30},
+            "national_v10": {"r": 1200, "rd": 50},
         }),
         encoding="utf-8",
     )
     monkeypatch.setattr(matrix, "ROOT", tmp_path)
 
-    assert [bot.label for bot in matrix.default_bots(limit=2)] == ["claude_v10"]
+    assert [bot.label for bot in matrix.default_bots(limit=2)] == ["national_v10"]
 
 
 def test_national_acceptance_strict_blocks_adapter_allin_conversion():

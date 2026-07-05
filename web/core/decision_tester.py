@@ -9,8 +9,8 @@ Dynamic Regression Test Generation (B3):
     changed constants and new conditional branches. No LLM calls needed.
 
 Usage:
-    python evolution_workspace/decision_tester.py bots/claude_v11/main.py
-    python evolution_workspace/decision_tester.py bots/claude_v11/main.py --verbose
+    python evolution_workspace/decision_tester.py bots/national_v11/main.py
+    python evolution_workspace/decision_tester.py bots/national_v11/main.py --verbose
 """
 
 import json

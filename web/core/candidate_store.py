@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import evolution_infra
+from bot_namespace import bot_name
 from evolution_infra import append_locked_jsonl, locked_file
 from pipeline_schema import ArtifactRef, CandidateRecord, GateResult, ScoreCard
 
@@ -292,8 +293,8 @@ def make_candidate_id(version: int | None, source_v: int | None = None) -> str:
     if version is None:
         return f"candidate_unknown_{int(time.time())}"
     if source_v is None:
-        return f"claude_v{version}"
-    return f"claude_v{version}_from_v{source_v}"
+        return bot_name(version)
+    return f"{bot_name(version)}_from_{bot_name(source_v)}"
 
 
 def _scorecard_payload(scorecard: ScoreCard | dict[str, Any] | None) -> dict[str, Any]:

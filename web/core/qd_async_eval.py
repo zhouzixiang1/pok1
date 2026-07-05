@@ -33,6 +33,8 @@ Outstanding->0 guarantee (two layers):
 import json
 import logging
 import threading
+
+from bot_namespace import bot_name, parse_bot_version
 import time
 import traceback
 from typing import Optional
@@ -166,7 +168,7 @@ def _select_eval_opponents(source_v: int, max_opponents: int = 3):
         from glicko2 import Glicko2Player
         scored = []
         for name in active:
-            if f"claude_v{source_v}" == name:
+            if bot_name(source_v) == name:
                 continue
             try:
                 rec = ratings.get(name)
@@ -184,8 +186,10 @@ def _select_eval_opponents(source_v: int, max_opponents: int = 3):
             if len(paths) >= max_opponents:
                 break
             try:
-                v = int(str(name).replace("claude_v", ""))
-            except (ValueError, TypeError):
+                v = parse_bot_version(str(name))
+                if v is None:
+                    continue
+            except TypeError:
                 continue
             d = get_bot_dir(v)
             m = d / "main.py"
@@ -371,10 +375,10 @@ def launch_qd_eval(bot_v: int, source_v: int, *, k: int = 3, n_games: int = 8,
                 archive = read_behavior_archive() or {}
                 niches = archive.get("niches") if isinstance(archive, dict) else None
                 if isinstance(niches, dict):
-                    bot_name = f"claude_v{_bot_v}"
+                    archive_bot_name = bot_name(_bot_v)
                     updated = False
                     for key, entry in niches.items():
-                        if entry.get("bot") == bot_name:
+                        if entry.get("bot") == archive_bot_name:
                             entry["fitness_samples"] = result["fitness_samples"]
                             entry["fitness_median"] = result["fitness_median"]
                             entry["eval_mode"] = "k3"

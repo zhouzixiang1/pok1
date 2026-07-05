@@ -239,7 +239,7 @@ def compute_decision_fingerprint(bot_name: str, match_history_file=None) -> np.n
     vpip, showdown_rate) from match_history.jsonl, then RFF to D=64.
 
     Args:
-        bot_name: Bot name like "claude_v49".
+        bot_name: Bot name like "national_v49".
         match_history_file: Optional override for match history path.
 
     Returns:
@@ -425,7 +425,7 @@ def get_niche_for_bot(bot_name: str, fingerprints: dict[str, np.ndarray] = None,
     """Get the niche assignment for a bot.
 
     Args:
-        bot_name: Bot name like "claude_v49".
+        bot_name: Bot name like "national_v49".
         fingerprints: Optional pre-loaded fingerprint dict.
         n_bins: Number of bins per dimension for niche assignment.
 

@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_relpath, parse_bot_version
 from evolution_scope import (
     CRITICAL_EXACT,
     CRITICAL_PREFIXES,
@@ -24,9 +25,9 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 1
-_BOT_NAME_RE = re.compile(r"^claude_v(?P<version>\d+)$")
-_BOT_PATH_RE = re.compile(r"^bots/claude_v(?P<version>\d+)(?:/|$)")
+CONTRACT_VERSION = 2
+_BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
+_BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
 
 def _as_int(value: Any) -> int | None:
@@ -44,7 +45,7 @@ def bot_version_from_name(value: Any) -> int | None:
     match = _BOT_NAME_RE.match(text)
     if not match:
         return None
-    return _as_int(match.group("version"))
+    return parse_bot_version(text)
 
 
 def bot_version_from_path(path: str) -> int | None:
@@ -120,7 +121,7 @@ def build_evaluation_contract(
         checkpoint=checkpoint,
         extra_versions=extra_versions,
     )
-    prefixes = list(CRITICAL_PREFIXES) + [f"bots/claude_v{version}/" for version in bot_versions]
+    prefixes = list(CRITICAL_PREFIXES) + [bot_relpath(version) + "/" for version in bot_versions]
     exact = sorted(CRITICAL_EXACT)
     contract = {
         "version": CONTRACT_VERSION,
@@ -197,7 +198,7 @@ def _iter_contract_files(root: Path, contract: dict[str, Any]) -> list[str]:
         if is_contract_path(rel, contract)
     }
     for prefix in contract.get("path_prefixes") or []:
-        if not prefix.startswith("bots/claude_v"):
+        if not prefix.startswith(f"bots/{ACTIVE_BOT_PREFIX}"):
             continue
         base = root / prefix.rstrip("/")
         if not base.exists():

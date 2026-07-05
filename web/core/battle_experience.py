@@ -990,7 +990,7 @@ def _tag_stale_observations(content: str) -> str:
 
     # Build a map: version_name -> generation_number (from tag/v-number)
     def _bot_gen(name: str) -> int | None:
-        """Extract generation number from bot name (e.g. 'claude_v143' -> 143)."""
+        """Extract generation number from bot name (e.g. 'national_v143' -> 143)."""
         m = re.search(r'v(\d+)$', name)
         return int(m.group(1)) if m else None
 
@@ -1062,7 +1062,7 @@ def _tag_stale_observations(content: str) -> str:
 
     # Build a map: version_name -> generation_number (from tag/v-number)
     def _bot_gen(name: str) -> int | None:
-        """Extract generation number from bot name (e.g. 'claude_v143' -> 143)."""
+        """Extract generation number from bot name (e.g. 'national_v143' -> 143)."""
         m = re.search(r'v(\d+)$', name)
         return int(m.group(1)) if m else None
 

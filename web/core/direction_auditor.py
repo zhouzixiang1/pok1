@@ -7,6 +7,7 @@ if the evolution system is stuck repeating the same approach.
 import json
 import re
 
+from bot_namespace import bot_tag_glob, parse_tag_version
 from evolution_infra import (
     run_claude_query, parse_json_output,
     locked_file, get_logs_dir,
@@ -38,15 +39,13 @@ async def _run_direction_audit(source_v, ui):
     history_lines = []
     try:
         from evolution_infra import _git, git_get_parent
-        tag_output = _git("tag", "-l", "bot-v*", "--sort=version:refname", check=False)
+        tag_output = _git("tag", "-l", bot_tag_glob(), "--sort=version:refname", check=False)
         tags = [t.strip() for t in tag_output.splitlines() if t.strip()]
         recent_tags = tags[-6:] if len(tags) > 6 else tags
 
         for tag in recent_tags:
-            v_str = tag.replace("bot-v", "")
-            try:
-                v = int(v_str)
-            except ValueError:
+            v = parse_tag_version(tag)
+            if v is None:
                 continue
             # Get full commit body for richer context — LLM will parse semantically
             try:
