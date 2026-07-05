@@ -16,12 +16,14 @@ population-diversity signal: Master planning and crossover parent selection
 consult it to avoid repeatedly sampling the same filled niche. It remains
 advisory for gates/reap, but it is no longer write-only.
 
-KNOWN LIMITATION: extract_behavior_fingerprint reads
-`output.display.last_action.action`, which bot_action_stats.py documents as
-misattributing some actions (it echoes the previous player's action). The
-fingerprint-derived BC is therefore a noisy estimate of true aggression/VPIP.
-This is acceptable for an advisory diversity signal; we annotate it on every
-niche entry. Do NOT use these BCs as ground truth for sizing decisions.
+KNOWN LIMITATION: legacy Botzone replay logs use `output.display.last_action`,
+which bot_action_stats.py documents as misattributing some actions (it can echo
+the previous player's action). National/native replay events use explicit
+`events_tail[].player_idx` records and are cleaner, but may only contain the
+recorded event tail rather than every hand action. The fingerprint-derived BC is
+therefore a noisy estimate of true aggression/VPIP. This is acceptable for an
+advisory diversity signal; we annotate it on every niche entry. Do NOT use these
+BCs as ground truth for sizing decisions.
 
 All I/O is best-effort (advisory): write_behavior_archive never raises; a read
 failure returns {}. The archive is recomputed wholesale from replays each

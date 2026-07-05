@@ -7,15 +7,22 @@ Phase 2 additions (trace-first behavior fingerprints, for later Phase 3
 FAMOU/MAP-Elites nemesis selection and population diversity):
   - extract_behavior_fingerprint: structured per-street action frequencies +
     aggression/call-down/VPIP features from a replay's game logs.
-  - fingerprint_distance: normalized distance ∈ [0,1] between two fingerprints
+  - fingerprint_distance: normalized distance in [0,1] between two fingerprints
     (cosine over the per-street action-frequency vector + scalar feature diffs).
-extract_street_patterns (the string-summary used by summarize_replay_for_analysis)
-is left UNCHANGED.
+
+Both legacy Botzone replay logs and national/native replay summaries feed the
+same action/chip extraction helpers so analyst prompts and behavior fingerprints
+do not silently collapse to all-draw, zero-action defaults when the replay schema
+changes.
 """
 
 import json
 import math
 from collections import defaultdict
+
+STREETS = ("preflop", "flop", "turn", "river")
+# Canonical action categories used in per-street frequency vectors.
+_FP_ACTIONS = ("fold", "raise", "call", "allin")
 
 
 def _num_public_cards_to_street(n):
@@ -23,17 +30,53 @@ def _num_public_cards_to_street(n):
     return {0: "preflop", 3: "flop", 4: "turn", 5: "river"}.get(n, f"street_{n}")
 
 
-def extract_street_patterns(games, bot_idx):
-    """Extract per-street action frequencies from a list of game dicts.
+def _as_float(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
-    Returns a dict mapping street name → action counts, plus a compact text summary.
-    Used by summarize_replay_for_analysis() to detect street-specific weaknesses.
-    """
-    streets = {s: defaultdict(int) for s in ("preflop", "flop", "turn", "river")}
 
-    for g in games:
-        for log in g.get("logs", []):
-            out = log.get("output")
+def _normalize_street(street):
+    if street is None:
+        return None
+    value = str(street).strip().lower()
+    return value if value in STREETS else None
+
+
+def _action_category(action):
+    """Map legacy integer and national string actions to canonical categories."""
+    if isinstance(action, str):
+        value = action.strip().lower()
+        if value == "fold":
+            return "fold"
+        if value in {"raise", "bet"}:
+            return "raise"
+        if value in {"call", "check"}:
+            return "call"
+        if value == "allin":
+            return "allin"
+        return None
+
+    try:
+        value = float(action)
+    except (TypeError, ValueError):
+        return None
+    if value == -1:
+        return "fold"
+    if value == -2:
+        return "allin"
+    if value > 0:
+        return "raise"
+    return "call"
+
+
+def _iter_bot_actions(games, bot_idx):
+    """Yield canonical action records for ``bot_idx`` across supported schemas."""
+    for game in games:
+        logs = game.get("logs") or []
+        for log in logs:
+            out = log.get("output") if isinstance(log, dict) else None
             if not out or not isinstance(out, dict):
                 continue
             display = out.get("display")
@@ -45,28 +88,57 @@ def extract_street_patterns(games, bot_idx):
             if action_info.get("player_id") != bot_idx:
                 continue
 
-            # Determine street from number of community cards present BEFORE this action
-            n_community = len(display.get("public_cards", []))
-            street = _num_public_cards_to_street(n_community)
-            if street not in streets:
+            street = _num_public_cards_to_street(len(display.get("public_cards", [])))
+            street = _normalize_street(street)
+            category = _action_category(action_info.get("action", 0))
+            if not street or not category:
                 continue
+            yield {
+                "street": street,
+                "category": category,
+                "amount": _as_float(action_info.get("action")),
+                "pot": _as_float(display.get("pot"), 0.0),
+            }
 
-            act_val = action_info.get("action", 0)
-            if act_val == -1:
-                streets[street]["fold"] += 1
-            elif act_val == -2:
-                streets[street]["allin"] += 1
-            elif act_val > 0:
-                streets[street]["raise"] += 1
-                # Track raise size relative to pot (pot available from display)
-                pot = display.get("pot", 0)
-                if pot > 0:
-                    streets[street]["raise_size_sum"] += act_val
-                    streets[street]["raise_size_pot_sum"] += act_val / pot
-                    streets[street]["raise_size_count"] += 1
-            elif act_val == 0:
-                streets[street]["call"] += 1
-            # Other values (e.g. timeout) are ignored
+        events = game.get("events_tail") or []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "action":
+                continue
+            if event.get("player_idx") != bot_idx:
+                continue
+            street = _normalize_street(event.get("stage"))
+            category = _action_category(event.get("action"))
+            if not street or not category:
+                continue
+            yield {
+                "street": street,
+                "category": category,
+                "amount": _as_float(event.get("amount")),
+                "pot": _as_float(event.get("pot"), 0.0),
+            }
+
+
+def extract_street_patterns(games, bot_idx):
+    """Extract per-street action frequencies from a list of game dicts.
+
+    Returns a dict mapping street name → action counts, plus a compact text summary.
+    Used by summarize_replay_for_analysis() to detect street-specific weaknesses.
+    """
+    streets = {s: defaultdict(int) for s in ("preflop", "flop", "turn", "river")}
+
+    for action in _iter_bot_actions(games, bot_idx):
+        street = action["street"]
+        category = action["category"]
+        streets[street][category] += 1
+        if category == "raise":
+            amount = action.get("amount")
+            pot = action.get("pot") or 0
+            if amount is not None and pot > 0:
+                streets[street]["raise_size_sum"] += amount
+                streets[street]["raise_size_pot_sum"] += amount / pot
+                streets[street]["raise_size_count"] += 1
 
     # Build compact text lines
     lines = []
@@ -93,12 +165,6 @@ def extract_street_patterns(games, bot_idx):
 # ──────────────────────────────────────────────
 # Phase 2: structured behavior fingerprints (trace-first)
 # ──────────────────────────────────────────────
-
-STREETS = ("preflop", "flop", "turn", "river")
-# Canonical action categories used in per-street frequency vectors.
-_FP_ACTIONS = ("fold", "raise", "call", "allin")
-
-
 def _empty_fingerprint():
     """Return a zero/None fingerprint for the empty-games edge case."""
     return {
@@ -137,68 +203,50 @@ def _new_fingerprint_accumulator():
 def _accumulate_fingerprint_counts(games, bot_idx, acc):
     """Fold the action counts for ``bot_idx`` from ``games`` into ``acc`` in place.
 
-    This is the streaming core: it walks the replay log structure once and adds
-    to the mutable accumulator ``acc`` (a _new_fingerprint_accumulator() dict),
-    WITHOUT retaining the games. Memory peak = size of one game set, not the
-    full replay history. Counts are additive so calling this across multiple
+    This is the streaming core: it walks supported replay action structures once
+    and adds to the mutable accumulator ``acc`` (a _new_fingerprint_accumulator()
+    dict), WITHOUT retaining the games. Memory peak = size of one game set, not
+    the full replay history. Counts are additive so calling this across multiple
     files then normalizing yields the same fingerprint as a single big pass.
     """
     counts = acc["counts"]
     raise_size_sum = acc["raise_size_sum"]
     raise_size_pot_sum = acc["raise_size_pot_sum"]
     raise_size_count = acc["raise_size_count"]
-    for g in games:
-        for log in g.get("logs", []):
-            out = log.get("output")
-            if not out or not isinstance(out, dict):
-                continue
-            display = out.get("display")
-            if not display or not isinstance(display, dict):
-                continue
-            action_info = display.get("last_action")
-            if not action_info or not isinstance(action_info, dict):
-                continue
-            if action_info.get("player_id") != bot_idx:
-                continue
+    for action in _iter_bot_actions(games, bot_idx):
+        street = action["street"]
+        category = action["category"]
+        acc["total_actions"] += 1
+        counts[street][category] += 1.0
 
-            n_community = len(display.get("public_cards", []))
-            street = _num_public_cards_to_street(n_community)
-            if street not in counts:
-                continue
-
-            act_val = action_info.get("action", 0)
-            acc["total_actions"] += 1
-            if act_val == -1:
-                counts[street]["fold"] += 1.0
-            elif act_val == -2:
-                counts[street]["allin"] += 1.0
-                acc["global_allin"] += 1
-                if street == "preflop":
-                    acc["preflop_raise"] += 1  # all-in is a voluntary preflop investment
-                elif street == "river":
-                    acc["river_allin"] += 1
-            elif act_val > 0:
-                counts[street]["raise"] += 1.0
-                acc["global_raise"] += 1
-                pot = display.get("pot", 0)
-                if pot and pot > 0:
-                    raise_size_sum[street] += float(act_val)
-                    raise_size_pot_sum[street] += float(act_val) / float(pot)
-                    raise_size_count[street] += 1
-                if street == "preflop":
-                    acc["preflop_raise"] += 1
-            elif act_val == 0:
-                counts[street]["call"] += 1.0
-                acc["global_call"] += 1
-                if street == "preflop":
-                    acc["preflop_call"] += 1
-                elif street == "river":
-                    acc["river_call"] += 1
-            # Tally per-street denominator for VPIP/call-down.
+        if category == "allin":
+            acc["global_allin"] += 1
             if street == "preflop":
-                acc["preflop_total"] += 1
+                acc["preflop_raise"] += 1  # all-in is a voluntary preflop investment
             elif street == "river":
-                acc["river_total"] += 1
+                acc["river_allin"] += 1
+        elif category == "raise":
+            acc["global_raise"] += 1
+            amount = action.get("amount")
+            pot = action.get("pot") or 0
+            if amount is not None and pot > 0:
+                raise_size_sum[street] += float(amount)
+                raise_size_pot_sum[street] += float(amount) / float(pot)
+                raise_size_count[street] += 1
+            if street == "preflop":
+                acc["preflop_raise"] += 1
+        elif category == "call":
+            acc["global_call"] += 1
+            if street == "preflop":
+                acc["preflop_call"] += 1
+            elif street == "river":
+                acc["river_call"] += 1
+
+        # Tally per-street denominator for VPIP/call-down.
+        if street == "preflop":
+            acc["preflop_total"] += 1
+        elif street == "river":
+            acc["river_total"] += 1
 
 
 def _fingerprint_from_accumulator(acc):
@@ -327,6 +375,57 @@ def fingerprint_distance(fp1, fp2):
     return sum(d * w for d, w in components) / total_w
 
 
+def _bot_chip_delta(game, bot_idx, bot_name):
+    """Return this bot's chip delta for one replay game/match, if available."""
+    legacy_key = f"bot{bot_idx}_chips"
+    if legacy_key in game:
+        return _as_float(game.get(legacy_key))
+
+    per_player = game.get("per_player")
+    if isinstance(per_player, dict):
+        pdata = per_player.get(bot_name)
+        if isinstance(pdata, dict) and "earnings" in pdata:
+            return _as_float(pdata.get("earnings"))
+
+    if game.get("bot_a") == bot_name and "net_chips_a" in game:
+        return _as_float(game.get("net_chips_a"))
+    if game.get("bot_b") == bot_name and "net_chips_b" in game:
+        return _as_float(game.get("net_chips_b"))
+
+    # National replay rows conventionally mirror top-level bot0/bot1 as bot_a/b.
+    native_key = "net_chips_a" if bot_idx == 0 else "net_chips_b"
+    if native_key in game:
+        return _as_float(game.get(native_key))
+
+    return None
+
+
+def _bot_game_outcome(game, bot_idx, opp_idx, chip_delta):
+    """Return 1 win, -1 loss, 0 draw for ``bot_idx`` in one game/match."""
+    winner = game.get("winner")
+    if winner is not None:
+        if winner == bot_idx:
+            return 1
+        if winner == opp_idx:
+            return -1
+        return 0
+
+    if chip_delta is None:
+        return 0
+    if chip_delta > 0:
+        return 1
+    if chip_delta < 0:
+        return -1
+    return 0
+
+
+def _game_label(game, fallback_idx):
+    for key in ("game", "repeat", "hand", "match"):
+        if key in game:
+            return game[key]
+    return fallback_idx
+
+
 def summarize_replay_for_analysis(replay_data, bot_name):
     """Extract structured statistics from replay JSON for LLM analysis.
 
@@ -348,12 +447,23 @@ def summarize_replay_for_analysis(replay_data, bot_name):
     if total_games == 0:
         return ""
 
-    wins = sum(1 for g in games if g.get("winner") == bot_idx)
-    chip_deltas = [g.get(f"bot{bot_idx}_chips", 0.0) for g in games]
+    game_rows = []
+    for idx, game in enumerate(games):
+        chip_delta = _bot_chip_delta(game, bot_idx, bot_name)
+        outcome = _bot_game_outcome(game, bot_idx, opp_idx, chip_delta)
+        game_rows.append({
+            "game": game,
+            "delta": chip_delta if chip_delta is not None else 0.0,
+            "outcome": outcome,
+            "label": _game_label(game, idx),
+        })
+
+    wins = sum(1 for row in game_rows if row["outcome"] > 0)
+    losses = sum(1 for row in game_rows if row["outcome"] < 0)
+    draws = total_games - wins - losses
+    chip_deltas = [row["delta"] for row in game_rows]
 
     lines = []
-    draws = total_games - wins - sum(1 for g in games if g.get("winner") == opp_idx)
-    losses = total_games - wins - draws
     result_str = f"{wins}W/{draws}D/{losses}L" if draws else f"{wins}W/{losses}L"
     lines.append(f"Match: {replay_data['bot0']} vs {replay_data['bot1']}, "
                  f"Result: {result_str} out of {total_games} games")
@@ -367,42 +477,20 @@ def summarize_replay_for_analysis(replay_data, bot_name):
     allin_count = 0
     big_pot_losses = []  # games where bot lost big pots
 
-    for g in games:
-        game_chip = g.get(f"bot{bot_idx}_chips", 0.0)
-        logs = g.get("logs", [])
+    for action in _iter_bot_actions(games, bot_idx):
+        category = action["category"]
+        if category == "fold":
+            fold_count += 1
+        elif category == "allin":
+            allin_count += 1
+        elif category == "raise":
+            raise_count += 1
+        elif category == "call":
+            call_count += 1
 
-        for log in logs:
-            out = log.get("output")
-            if not out or not isinstance(out, dict):
-                continue
-
-            # Count from request content (bot's own actions)
-            content = out.get("content", {})
-            if isinstance(content, dict):
-                player_data = content.get(str(bot_idx), {})
-                if isinstance(player_data, dict):
-                    history = player_data.get("history", [])
-                    continue
-
-            # Count from display data
-            display = out.get("display")
-            if display and isinstance(display, dict):
-                action = display.get("last_action")
-                if action and isinstance(action, dict):
-                    pid = action.get("player_id")
-                    if pid == bot_idx:
-                        act_val = action.get("action", 0)
-                        if act_val == -1:
-                            fold_count += 1
-                        elif act_val == -2:
-                            allin_count += 1
-                        elif act_val > 0:
-                            raise_count += 1
-                        else:
-                            call_count += 1
-
-        if game_chip < -5000:
-            big_pot_losses.append((g.get("game", "?"), game_chip))
+    for row in game_rows:
+        if row["delta"] < -5000:
+            big_pot_losses.append((row["label"], row["delta"]))
 
     total_actions = fold_count + raise_count + call_count + allin_count
     if total_actions > 0:

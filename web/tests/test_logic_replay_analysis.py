@@ -7,7 +7,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 
-from replay_analysis import _num_public_cards_to_street, extract_street_patterns, summarize_replay_for_analysis
+from replay_analysis import (
+    _num_public_cards_to_street,
+    extract_behavior_fingerprint,
+    extract_street_patterns,
+    summarize_replay_for_analysis,
+)
 
 
 # ── _num_public_cards_to_street ──
@@ -93,6 +98,28 @@ class TestExtractStreetPatterns:
         assert "Preflop" in result
         assert "Flop" in result
         assert "Turn" in result
+
+    def test_national_events_feed_behavior_fingerprint(self):
+        games = [{
+            "events_tail": [
+                {
+                    "type": "action",
+                    "player_idx": 1,
+                    "action": "raise",
+                    "stage": "preflop",
+                    "amount": 300,
+                    "pot": 450,
+                },
+                {"type": "action", "player_idx": 1, "action": "call", "stage": "river"},
+                {"type": "action", "player_idx": 0, "action": "fold", "stage": "river"},
+            ],
+        }]
+        fp = extract_behavior_fingerprint(games, 1)
+        assert fp["total_actions"] == 2
+        assert fp["per_street_freq"]["preflop"]["raise"] == 1.0
+        assert fp["per_street_freq"]["river"]["call"] == 1.0
+        assert fp["vpip"] == 1.0
+        assert fp["call_down_rate"] == 1.0
 
 
 # ── summarize_replay_for_analysis ──
@@ -183,3 +210,77 @@ class TestSummarizeReplayForAnalysis:
         replay = self._make_replay("A", "B", games)
         summary = summarize_replay_for_analysis(replay, "A")
         assert "fold=" in summary
+
+    def test_national_native_summary_uses_net_chips(self):
+        games = [
+            {
+                "bot_a": "A",
+                "bot_b": "B",
+                "repeat": 0,
+                "net_chips_a": 13470,
+                "net_chips_b": -13470,
+                "per_player": {
+                    "A": {"earnings": 13470},
+                    "B": {"earnings": -13470},
+                },
+            },
+            {
+                "bot_a": "A",
+                "bot_b": "B",
+                "repeat": 1,
+                "net_chips_a": -16668,
+                "net_chips_b": 16668,
+                "per_player": {
+                    "A": {"earnings": -16668},
+                    "B": {"earnings": 16668},
+                },
+            },
+        ]
+        replay = self._make_replay("A", "B", games)
+        summary = summarize_replay_for_analysis(replay, "B")
+        assert "1W/1L" in summary
+        assert "0W/2D/0L" not in summary
+        assert "best=16668" in summary
+        assert "worst=-13470" in summary
+
+    def test_national_native_events_feed_action_summary(self):
+        games = [{
+            "bot_a": "A",
+            "bot_b": "B",
+            "net_chips_a": -1000,
+            "net_chips_b": 1000,
+            "events_tail": [
+                {
+                    "type": "action",
+                    "player_idx": 1,
+                    "action": "raise",
+                    "stage": "preflop",
+                    "amount": 300,
+                    "pot": 450,
+                },
+                {
+                    "type": "action",
+                    "player_idx": 1,
+                    "action": "check",
+                    "stage": "flop",
+                    "pot": 600,
+                },
+                {
+                    "type": "action",
+                    "player_idx": 1,
+                    "action": "fold",
+                    "stage": "turn",
+                    "pot": 1200,
+                },
+            ],
+        }]
+        replay = self._make_replay("A", "B", games)
+        summary = summarize_replay_for_analysis(replay, "B")
+        assert "Actions:" in summary
+        assert "fold=1" in summary
+        assert "call=1" in summary
+        assert "raise=1" in summary
+        assert "Per-street actions" in summary
+        assert "Preflop" in summary
+        assert "Flop" in summary
+        assert "Turn" in summary
