@@ -142,6 +142,11 @@ Practical takeaways for this repo:
   despite passing the local gate replay. Promote boundary heads only after
   replaying named historical failures and running a paired smoke against the
   previous safe candidate.
+- Scaling the safer h64 p073 head to g032x5 kept the average positive, but the
+  confidence interval still crossed zero and v279 added a `-1429` negative
+  divergence. Treat boundary-head evaluation as an active-learning loop: turn
+  both the new negative v279 windows and the high-positive v285/v288 windows
+  into replayable counterfactual rows before increasing games or model size.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner
