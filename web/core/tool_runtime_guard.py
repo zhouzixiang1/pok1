@@ -19,30 +19,10 @@ from repo_state import get_last_snapshot, git_worktree_snapshot, is_generated_bo
 from evolution_scope import (
     classify_status_entries,
 )
+from pipeline_state import head_drift_allowed_tools, head_drift_resume_policy
 
 _BOT_DIR_RE = re.compile(rf"^\?\? bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)/$")
 _HEAD_CHANGE_ALLOWED_TOOLS = {"run_archivist"}
-_HEAD_DRIFT_REPAIR_STAGES = {
-    "quality_failed",
-    "precommit_failed",
-    "repair_planned",
-    "rework_running",
-}
-_HEAD_DRIFT_TOOL_BY_STAGE = {
-    "selected": {"prepare_next_gen", "run_crossover"},
-    "prepared": {"run_direction_audit"},
-    "direction_audited": {"run_literature_probe", "run_master"},
-    "master_planned": {"execute_workers"},
-    "workers_done": {"run_quality_gates"},
-    "quality_failed": {"execute_workers"},
-    "precommit_failed": {"execute_workers"},
-    "repair_planned": {"execute_workers"},
-    "rework_running": {"execute_workers"},
-    "quality_passed": {"run_review", "execute_workers"},
-    "reviewed": {"run_critic"},
-    "critic_checked": {"run_precommit_eval"},
-    "verified": {"commit_bot"},
-}
 
 
 def _json_tool_result(data: dict[str, Any]) -> dict[str, Any]:
@@ -163,9 +143,10 @@ def _head_change_allowed_for_checkpoint_resume(
     except Exception:
         return False, {}
     stage = str(checkpoint.get("stage") or "")
-    allowed_tools = _HEAD_DRIFT_TOOL_BY_STAGE.get(stage, set())
+    allowed_tools = head_drift_allowed_tools(stage)
     if tool_name not in allowed_tools:
         return False, {}
+    resume_policy = head_drift_resume_policy(stage) or {}
     current_branch = _branch_name(str(snapshot.get("branch") or ""))
     branch_alias_allowed = _branch_alias_allowed_for_tool(tool_name, snapshot)
     if current_branch != EVOLUTION_BRANCH and not branch_alias_allowed:
@@ -173,18 +154,6 @@ def _head_change_allowed_for_checkpoint_resume(
     unexpected = _unexpected_entries(snapshot, candidate_v)
     if unexpected:
         return False, {"unexpected_entries": unexpected[:40]}
-    if stage == "selected":
-        resume_kind = "selected"
-    elif stage in {"prepared", "direction_audited"}:
-        resume_kind = "pre_master"
-    elif stage == "master_planned":
-        resume_kind = "initial_workers"
-    elif stage == "workers_done":
-        resume_kind = "gate"
-    elif stage in _HEAD_DRIFT_REPAIR_STAGES:
-        resume_kind = "repair"
-    else:
-        resume_kind = "post_quality"
     return True, {
         "stage": stage,
         "candidate_v": candidate_v,
@@ -192,7 +161,8 @@ def _head_change_allowed_for_checkpoint_resume(
         "current_head": current_head,
         "branch": snapshot.get("branch"),
         "branch_alias_allowed": branch_alias_allowed,
-        "resume_kind": resume_kind,
+        "allowed_tools": sorted(allowed_tools),
+        "resume_kind": resume_policy.get("resume_kind", "checkpoint"),
     }
 
 

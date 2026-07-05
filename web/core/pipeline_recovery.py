@@ -11,6 +11,7 @@ from bot_namespace import bot_relpath
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT
 from evaluation_contract import evaluate_head_drift
 from evolution_scope import classify_status_entries
+from pipeline_state import head_drift_resume_policy, head_drift_resume_stages
 from repo_state import git_worktree_snapshot
 
 INACTIVE_STAGES = {None, "archived", "abandoned", "timed_out"}
@@ -49,13 +50,17 @@ HEAD_DRIFT_GATE_STAGES = {
 }
 HEAD_DRIFT_SELECTED_STAGES = {"selected"}
 HEAD_DRIFT_PRE_MASTER_STAGES = {"prepared", "direction_audited"}
-HEAD_DRIFT_RESUME_STAGES = (
-    HEAD_DRIFT_REPAIR_STAGES
-    | HEAD_DRIFT_POST_QUALITY_STAGES
-    | HEAD_DRIFT_GATE_STAGES
-    | HEAD_DRIFT_SELECTED_STAGES
-    | HEAD_DRIFT_PRE_MASTER_STAGES
-)
+HEAD_DRIFT_RESUME_STAGES = head_drift_resume_stages()
+
+
+def _resume_policy(stage: str | None) -> dict[str, Any] | None:
+    return head_drift_resume_policy(stage)
+
+
+def _resume_warning(stage: str | None) -> str:
+    policy = _resume_policy(stage) or {}
+    suffix = str(policy.get("warning_suffix") or "checkpoint")
+    return f"repo_baseline_head_mismatch_{suffix}_resume"
 
 
 def branch_name(branch_status: str | None) -> str:
@@ -87,7 +92,8 @@ def _snapshot_for_recovery(root: Path) -> dict[str, Any]:
 
 
 def _target_available_for_resume(root: Path, stage: str | None, next_v: int | None) -> bool:
-    if stage in HEAD_DRIFT_SELECTED_STAGES:
+    policy = _resume_policy(stage)
+    if policy and not policy.get("requires_target", True):
         return True
     if next_v is None:
         return False
@@ -104,9 +110,10 @@ def _current_branch_alias_resume_allowed(
     blocking_entries: list[str],
 ) -> bool:
     """Allow recovery on a temporary branch name when files are unchanged."""
+    policy = _resume_policy(stage)
     return bool(
-        stage in HEAD_DRIFT_RESUME_STAGES
-        and stage != "verified"
+        policy
+        and policy.get("branch_alias_allowed", True)
         and current_branch
         and current_branch != EVOLUTION_BRANCH
         and current_head
@@ -130,9 +137,10 @@ def _current_branch_unrelated_head_resume_allowed(
     blocking_entries: list[str],
 ) -> tuple[bool, dict[str, Any]]:
     """Allow checkpoint recovery on a temporary branch with unrelated HEAD drift."""
+    policy = _resume_policy(stage)
     if not (
-        stage in HEAD_DRIFT_RESUME_STAGES
-        and stage != "verified"
+        policy
+        and policy.get("branch_alias_allowed", True)
         and current_branch
         and current_branch != EVOLUTION_BRANCH
         and current_head
@@ -210,7 +218,7 @@ def _baseline_branch_alias_resume_allowed(
     if current_branch_alias_allowed:
         return True, {"baseline_branch_alias_reason": "current_branch_alias_same_head"}
     if not (
-        stage in HEAD_DRIFT_RESUME_STAGES
+        _resume_policy(stage)
         and current_branch == EVOLUTION_BRANCH
         and baseline_branch != EVOLUTION_BRANCH
         and target_available
@@ -378,27 +386,19 @@ def checkpoint_recovery_diagnostics(
             and (not baseline_branch or baseline_branch == current_branch or baseline_branch_alias_allowed)
         ) or current_branch_unrelated_head_allowed
         can_resume = (
-            stage in HEAD_DRIFT_RESUME_STAGES
+            _resume_policy(stage) is not None
             and branch_compatible
             and not worktree_scope.get("blocking_entries")
             and target_dir is not None
-            and (stage in HEAD_DRIFT_SELECTED_STAGES or target_dir.exists())
+            and target_available
             and (not contract_baseline_present or contract_unchanged or current_branch_unrelated_head_allowed)
         )
         if can_resume:
-            if stage in HEAD_DRIFT_REPAIR_STAGES:
-                warnings.append("repo_baseline_head_mismatch_repair_resume")
-            elif stage in HEAD_DRIFT_SELECTED_STAGES:
-                warnings.append("repo_baseline_head_mismatch_selected_resume")
-            elif stage in HEAD_DRIFT_PRE_MASTER_STAGES:
-                warnings.append("repo_baseline_head_mismatch_pre_master_resume")
-            elif stage == "master_planned":
-                warnings.append("repo_baseline_head_mismatch_initial_workers_resume")
-            elif stage in HEAD_DRIFT_GATE_STAGES:
-                warnings.append("repo_baseline_head_mismatch_gate_resume")
-            else:
-                warnings.append("repo_baseline_head_mismatch_post_quality_resume")
+            policy = _resume_policy(stage) or {}
+            warnings.append(_resume_warning(stage))
             repo_diag["baseline_head_mismatch_allowed"] = True
+            repo_diag["head_drift_resume_kind"] = policy.get("resume_kind", "checkpoint")
+            repo_diag["head_drift_allowed_tools"] = list(policy.get("allowed_tools") or [])
         else:
             issues.append("repo_baseline_head_mismatch")
 

@@ -70,6 +70,130 @@ NEXT_TOOL_BY_STAGE = {
 _STAGE_RANK = {stage: idx for idx, stage in enumerate(STAGE_ORDER)}
 
 
+HEAD_DRIFT_RESUME_POLICY = {
+    "selected": {
+        "allowed_tools": ("prepare_next_gen", "run_crossover"),
+        "resume_kind": "selected",
+        "warning_suffix": "selected",
+        "requires_target": False,
+        "branch_alias_allowed": True,
+    },
+    "prepared": {
+        "allowed_tools": ("run_direction_audit",),
+        "resume_kind": "pre_master",
+        "warning_suffix": "pre_master",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "crossover_running": {
+        "allowed_tools": ("run_crossover",),
+        "resume_kind": "crossover",
+        "warning_suffix": "crossover",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "direction_audited": {
+        "allowed_tools": ("run_literature_probe", "run_master"),
+        "resume_kind": "pre_master",
+        "warning_suffix": "pre_master",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "master_planned": {
+        "allowed_tools": ("execute_workers",),
+        "resume_kind": "initial_workers",
+        "warning_suffix": "initial_workers",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "workers_done": {
+        "allowed_tools": ("run_quality_gates",),
+        "resume_kind": "gate",
+        "warning_suffix": "gate",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "quality_failed": {
+        "allowed_tools": ("execute_workers",),
+        "resume_kind": "repair",
+        "warning_suffix": "repair",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "quality_passed": {
+        "allowed_tools": ("run_review", "execute_workers"),
+        "resume_kind": "post_quality",
+        "warning_suffix": "post_quality",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "reviewed": {
+        "allowed_tools": ("run_critic",),
+        "resume_kind": "post_quality",
+        "warning_suffix": "post_quality",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "critic_checked": {
+        "allowed_tools": ("run_precommit_eval",),
+        "resume_kind": "post_quality",
+        "warning_suffix": "post_quality",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "precommit_failed": {
+        "allowed_tools": ("execute_workers",),
+        "resume_kind": "repair",
+        "warning_suffix": "repair",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "repair_planned": {
+        "allowed_tools": ("execute_workers",),
+        "resume_kind": "repair",
+        "warning_suffix": "repair",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "rework_running": {
+        "allowed_tools": ("execute_workers",),
+        "resume_kind": "repair",
+        "warning_suffix": "repair",
+        "requires_target": True,
+        "branch_alias_allowed": True,
+    },
+    "verified": {
+        "allowed_tools": ("commit_bot",),
+        "resume_kind": "post_quality",
+        "warning_suffix": "post_quality",
+        "requires_target": True,
+        "branch_alias_allowed": False,
+    },
+}
+
+
+def head_drift_resume_policy(stage: str | None) -> dict | None:
+    """Return the authoritative HEAD-drift recovery policy for a stage."""
+    policy = HEAD_DRIFT_RESUME_POLICY.get(stage)
+    return dict(policy) if policy else None
+
+
+def head_drift_resume_stages() -> set[str]:
+    return set(HEAD_DRIFT_RESUME_POLICY)
+
+
+def head_drift_allowed_tools(stage: str | None) -> set[str]:
+    policy = head_drift_resume_policy(stage)
+    if not policy:
+        return set()
+    return set(policy.get("allowed_tools") or ())
+
+
+def stage_requires_target_for_head_resume(stage: str | None) -> bool:
+    policy = head_drift_resume_policy(stage)
+    return True if not policy else bool(policy.get("requires_target", True))
+
+
 def _active_workflow_profile_info() -> tuple[str, str]:
     try:
         from workflow_profiles import get_workflow_profile

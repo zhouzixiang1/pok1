@@ -758,6 +758,31 @@ def test_runtime_guard_allows_unrelated_inplace_dirty_entries(monkeypatch):
     assert " M sever/国赛平台/通信协议.docx" in payload["ignored_entries"]
 
 
+def test_runtime_guard_allows_noncritical_web_core_dirty_entries(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "abc123",
+        "entries": [
+            " M web/core/replay_spotlight.py",
+            "?? bots/national_v300/",
+        ],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "execute_workers",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert " M web/core/replay_spotlight.py" in payload["ignored_entries"]
+
+
 def test_runtime_guard_blocks_foreign_national_bot_dir(monkeypatch):
     import tool_runtime_guard
 
@@ -907,6 +932,7 @@ def test_evaluation_contract_classifies_dynamic_bot_versions():
     scope = evaluation_contract.classify_contract_paths(
         [
             "engine/battle.py",
+            "web/core/replay_spotlight.py",
             "bots/national_v300/main.py",
             "bots/national_v299/main.py",
             "bots/national_v45/main.py",
@@ -923,9 +949,33 @@ def test_evaluation_contract_classifies_dynamic_bot_versions():
     assert "bots/national_v299/main.py" in scope["contract_paths"]
     assert "bots/national_v45/main.py" in scope["contract_paths"]
     assert "sever/server/tcp_server.py" in scope["contract_paths"]
+    assert "web/core/replay_spotlight.py" in scope["external_paths"]
     assert "sever/国赛平台/通信协议.docx" in scope["external_paths"]
     assert "bots/neural_national_lab/data/run.json" in scope["external_paths"]
     assert "docs/notes.md" in scope["external_paths"]
+
+
+def test_evaluation_contract_allows_noncritical_web_core_head_drift(monkeypatch):
+    import evaluation_contract
+
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: ["web/core/replay_spotlight.py"],
+    )
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+    )
+
+    assert allowed is True
+    assert payload["evaluation_contract_unchanged"] is True
+    assert payload["head_contract_paths"] == []
+    assert payload["head_external_paths"] == ["web/core/replay_spotlight.py"]
 
 
 def test_evaluation_contract_hash_ignores_non_contract_national_docs(tmp_path, monkeypatch):
@@ -1137,6 +1187,36 @@ def test_runtime_guard_allows_crossover_after_selected_head_drift(monkeypatch):
     assert payload["stage"] == "selected"
     assert payload["baseline_head"] == "old123"
     assert payload["current_head"] == "new456"
+
+
+def test_runtime_guard_allows_crossover_running_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 250,
+        "stage": "crossover_running",
+        "parent2_v": 240,
+        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_crossover",
+        {"target_v": 300, "parent_a": 250, "parent_b": 240},
+    )
+
+    assert ok is True
+    assert payload["head_drift_resume_allowed"] is True
+    assert payload["head_drift_repair_allowed"] is False
+    assert payload["resume_kind"] == "crossover"
+    assert payload["stage"] == "crossover_running"
 
 
 def test_runtime_guard_allows_quality_after_workers_done_head_drift(monkeypatch):
@@ -1739,6 +1819,34 @@ def test_checkpoint_recovery_diagnostics_allows_selected_head_mismatch_without_t
     assert "repo_baseline_head_mismatch_selected_resume" in diag["warnings"]
     assert diag["repo"]["baseline_head_mismatch_allowed"] is True
     assert "target" not in diag
+
+
+def test_checkpoint_recovery_diagnostics_allows_crossover_running_head_mismatch(tmp_path):
+    import pipeline_recovery
+
+    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 257,
+        "source_v": 197,
+        "stage": "crossover_running",
+        "parent2_v": 188,
+        "repo_baseline": {"branch": "main", "head": "old123"},
+    }
+    snapshot = {"ok": True, "branch": "main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["active"] is True
+    assert diag["recoverable"] is True
+    assert "repo_baseline_head_mismatch" not in diag["issues"]
+    assert "repo_baseline_head_mismatch_crossover_resume" in diag["warnings"]
+    assert diag["repo"]["baseline_head_mismatch_allowed"] is True
+    assert diag["repo"]["head_drift_resume_kind"] == "crossover"
+    assert diag["target"]["exists"] is True
 
 
 def test_checkpoint_recovery_diagnostics_allows_pre_master_head_mismatch(tmp_path):
