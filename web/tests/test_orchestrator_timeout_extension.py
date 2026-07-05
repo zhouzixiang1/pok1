@@ -866,6 +866,162 @@ def test_deterministic_route_abandons_after_precommit_rework_circuit_breaker(mon
     assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
 
 
+def test_actionable_recovery_calls_prepare_next_gen_from_selected(monkeypatch):
+    """selected-stage recovery should dispatch prepare_next_gen."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    fake_prepare = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({"success": True}),
+                }]
+            }
+        )
+    )
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "prepare_next_gen"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_gates",
+        SimpleNamespace(prepare_next_gen=fake_prepare),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "selected",
+            "next_v": 280,
+            "source_v": 279,
+        },
+    }
+    ui = _FakeUI()
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, ui)
+    )
+
+    assert handled is True
+    fake_prepare.handler.assert_awaited_once_with({"source_v": 279, "next_v": 280})
+    assert any(e[0] == "pipeline.deterministic_route_prepare_next_gen" for e in events)
+    assert any(e[0] == "pipeline.deterministic_route_done" for e in events)
+    assert "selected" in ui.events[0][1]
+
+
+def test_actionable_recovery_calls_run_crossover_from_selected(monkeypatch):
+    """selected crossover state should dispatch run_crossover deterministically."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    fake_run = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({"success": True}),
+                }]
+            }
+        )
+    )
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "run_crossover"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_commit",
+        SimpleNamespace(run_crossover=fake_run),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "selected",
+            "next_v": 300,
+            "source_v": 299,
+            "parent2_v": 205,
+        },
+    }
+    ui = _FakeUI()
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, ui)
+    )
+
+    assert handled is True
+    fake_run.handler.assert_awaited_once_with(
+        {"parent_a": 299, "parent_b": 205, "target_v": 300}
+    )
+    assert any(e[0] == "pipeline.deterministic_route_run_crossover" for e in events)
+    assert any(e[0] == "pipeline.deterministic_route_done" for e in events)
+
+
+def test_actionable_recovery_run_crossover_requires_parent2(monkeypatch):
+    """run_crossover deterministic route requires parent2_v from checkpoint."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    fake_run = SimpleNamespace(handler=AsyncMock(return_value={"content": []}))
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "run_crossover"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_commit",
+        SimpleNamespace(run_crossover=fake_run),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "selected",
+            "next_v": 300,
+            "source_v": 299,
+        },
+    }
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    assert handled is False
+    assert fake_run.handler.await_count == 0
+
+
 def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch):
     """A gate-produced quality_failed checkpoint should hand off before Bash wandering."""
     from claude_agent_sdk import AssistantMessage, TextBlock

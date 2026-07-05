@@ -158,13 +158,34 @@ from evolution_infra import find_current_v  # noqa: E402
 from llm_query import extract_result_error  # noqa: E402
 
 
-_ACTIONABLE_STALL_STAGES = frozenset({
-    "master_planned",
-    "quality_failed",
-    "precommit_failed",
-    "repair_planned",
-    "rework_running",
+_DETERMINISTIC_RECOVERY_TOOLS = frozenset({
+    "execute_workers",
+    "prepare_next_gen",
+    "run_crossover",
 })
+
+
+def _resolve_recovery_route(checkpoint):
+    """Return deterministic checkpoint route only for known recovery-safe tools."""
+    if not checkpoint:
+        return None
+    try:
+        from pipeline_state import route_policy
+        route = route_policy(checkpoint)
+    except Exception:
+        return None
+    next_tool = route.get("next_tool")
+    if next_tool not in _DETERMINISTIC_RECOVERY_TOOLS:
+        return None
+    return {
+        "next_tool": next_tool,
+        "directive": route.get("directive"),
+        "next_v": checkpoint.get("next_v"),
+        "source_v": checkpoint.get("source_v"),
+        "stage": checkpoint.get("stage"),
+        "parent2_v": checkpoint.get("parent2_v"),
+        "route": route,
+    }
 
 
 def _detect_actionable_stage_stall(timeout_sec=None):
@@ -174,15 +195,12 @@ def _detect_actionable_stage_stall(timeout_sec=None):
         return None
     try:
         from evolution_core import read_pipeline_checkpoint
-        from pipeline_state import route_policy
         checkpoint = read_pipeline_checkpoint()
     except Exception:
         return None
     if not checkpoint:
         return None
     stage = checkpoint.get("stage")
-    if stage not in _ACTIONABLE_STALL_STAGES:
-        return None
     last_ts = (
         float(checkpoint.get("last_stage_change_ts") or 0.0)
         or float(checkpoint.get("last_update_ts") or 0.0)
@@ -192,7 +210,9 @@ def _detect_actionable_stage_stall(timeout_sec=None):
     elapsed = time.time() - last_ts
     if elapsed < timeout:
         return None
-    route = route_policy(checkpoint)
+    route = _resolve_recovery_route(checkpoint)
+    if not route:
+        return None
     return {
         "next_v": checkpoint.get("next_v"),
         "source_v": checkpoint.get("source_v"),
@@ -208,8 +228,6 @@ def _detect_actionable_stage_handoff():
     """Return route data when an MCP gate has just produced a deterministic step."""
     stall = _detect_actionable_stage_stall(timeout_sec=0)
     if not stall:
-        return None
-    if stall.get("next_tool") != "execute_workers":
         return None
     return stall
 
@@ -1248,31 +1266,71 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
     if not recovery or recovery.get("action") != "resume":
         return False
     checkpoint = recovery.get("checkpoint") or {}
-    stage = checkpoint.get("stage")
-    if stage not in _ACTIONABLE_STALL_STAGES:
+    route = _resolve_recovery_route(checkpoint)
+    if not route:
         return False
+
+    next_tool = route.get("next_tool")
+    next_v = route.get("next_v")
+    source_v = route.get("source_v")
+    parent2_v = route.get("parent2_v")
+    stage = route.get("stage")
+
     saved_session_id = _load_orchestrator_session()
-    if saved_session_id and stage == "master_planned":
-        _clear_orchestrator_session(reason="deterministic_master_planned_route")
-    elif saved_session_id:
-        return False
+    if saved_session_id:
+        session_clear_reason = (
+            "deterministic_master_planned_route"
+            if stage == "master_planned"
+            else f"deterministic_{next_tool}_route"
+        )
+        _clear_orchestrator_session(reason=session_clear_reason)
 
-    try:
-        from pipeline_state import route_policy
-        route = route_policy(checkpoint)
-    except Exception:
-        route = {}
-    if route.get("next_tool") != "execute_workers":
-        return False
-
-    next_v = checkpoint.get("next_v")
-    source_v = checkpoint.get("source_v")
     if next_v is None or source_v is None:
+        return False
+
+    if next_tool == "run_crossover":
+        try:
+            parent2_v = int(parent2_v) if parent2_v is not None else None
+        except (TypeError, ValueError):
+            parent2_v = None
+        if parent2_v is None:
+            return False
+
+    if next_tool == "execute_workers":
+        handler = None
+        args = {"next_v": next_v, "source_v": source_v}
+        try:
+            from tool_planning import execute_workers
+            handler = execute_workers.handler
+        except Exception:
+            handler = None
+    elif next_tool == "prepare_next_gen":
+        args = {"source_v": source_v, "next_v": next_v}
+        try:
+            from tool_gates import prepare_next_gen
+            handler = prepare_next_gen.handler
+        except Exception:
+            handler = None
+    elif next_tool == "run_crossover":
+        args = {
+            "parent_a": source_v,
+            "parent_b": parent2_v,
+            "target_v": next_v,
+        }
+        try:
+            from tool_commit import run_crossover
+            handler = run_crossover.handler
+        except Exception:
+            handler = None
+    else:
+        return False
+
+    if not callable(handler):
         return False
 
     msg = (
         f"[Recovery] Deterministically routing v{next_v} at {stage} "
-        "to execute_workers with checkpoint gate feedback."
+        f"to {next_tool}."
     )
     if ui:
         ui.log_history(msg, "warn")
@@ -1280,7 +1338,7 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
         log.warning(msg)
     try:
         log_system_event(
-            "pipeline.deterministic_route_execute_workers",
+            f"pipeline.deterministic_route_{next_tool}",
             "warn",
             msg,
             {
@@ -1294,13 +1352,15 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
     except Exception:
         pass
 
-    from tool_planning import execute_workers
-    result = await execute_workers.handler({"next_v": next_v, "source_v": source_v})
+    result = await handler(args)
     data = _extract_tool_result_json(result)
     error = data.get("error")
     success = data.get("success")
     if error:
-        if _is_worker_circuit_breaker_result(data) or _is_precommit_rework_circuit_breaker_result(data):
+        if next_tool == "execute_workers" and (
+            _is_worker_circuit_breaker_result(data)
+            or _is_precommit_rework_circuit_breaker_result(data)
+        ):
             from tool_bot_management import _do_abandon_generation
 
             abandon_reason = (
@@ -1335,7 +1395,7 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
                 pass
             return abandoned
 
-        detail = f"Deterministic execute_workers route failed for v{next_v}: {str(error)[:180]}"
+        detail = f"Deterministic {next_tool} route failed for v{next_v}: {str(error)[:180]}"
         if ui:
             ui.log_history(f"[Recovery] {detail}", "error")
         else:
@@ -1355,7 +1415,7 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
         log_system_event(
             "pipeline.deterministic_route_done",
             "success" if success else "warn",
-            f"Deterministic execute_workers route completed for v{next_v}",
+            f"Deterministic {next_tool} route completed for v{next_v}",
             {"next_v": next_v, "source_v": source_v, "stage": stage, "success": success},
         )
     except Exception:
