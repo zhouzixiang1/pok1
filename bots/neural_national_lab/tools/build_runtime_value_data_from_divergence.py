@@ -54,6 +54,7 @@ def _iter_rows(
     all_divergences: bool,
     target_mode: str,
     rule_action_source: str,
+    extra_features: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for pair in payload.get("pairs", []):
@@ -90,6 +91,13 @@ def _iter_rows(
                 features = _advantage_features(req, state, rule_action, top_label, top_conf, probs)
                 if features is None:
                     continue
+                if extra_features == "hand_strength_v1":
+                    hand_strength_fn = getattr(neural_mod, "_hand_strength_features", None)
+                    if hand_strength_fn is None:
+                        raise ValueError("selected hand_strength_v1 but bot has no _hand_strength_features")
+                    features = features + [float(value) for value in hand_strength_fn(req)]
+                elif extra_features != "none":
+                    raise ValueError(f"unknown extra feature set: {extra_features}")
                 rows.append({
                     "source": source,
                     "opponent": pair.get("opponent_label"),
@@ -121,6 +129,7 @@ def _summary(
     version: str,
     target_mode: str,
     rule_action_source: str,
+    extra_features: str,
 ) -> dict[str, Any]:
     deltas = [float(row["delta"]) for row in rows]
     templates = Counter(f"{row['baseline_action']}->{row['candidate_action']}|{row['side']}" for row in rows)
@@ -131,6 +140,7 @@ def _summary(
         "version": version,
         "target_mode": target_mode,
         "rule_action_source": rule_action_source,
+        "extra_features": extra_features,
         "rows": len(rows),
         "input_dim": dim,
         "positive": sum(1 for value in deltas if value > 0),
@@ -161,6 +171,12 @@ def main() -> None:
         default="baseline",
         help="Which recorded action should represent the pre-neural rule action in runtime gate features.",
     )
+    parser.add_argument(
+        "--extra-features",
+        choices=["none", "hand_strength_v1"],
+        default="none",
+        help="Optional runtime feature suffix to append after the base advantage features.",
+    )
     args = parser.parse_args()
 
     version_path = _resolve(args.version)
@@ -186,6 +202,7 @@ def main() -> None:
                 args.all_divergences,
                 args.target_mode,
                 args.rule_action_source,
+                args.extra_features,
             )
         )
     if rows:
@@ -200,7 +217,14 @@ def main() -> None:
         "\n".join(json.dumps(row, separators=(",", ":")) for row in rows) + ("\n" if rows else ""),
         encoding="utf-8",
     )
-    summary = _summary(rows, input_labels, str(version_path), args.target_mode, args.rule_action_source)
+    summary = _summary(
+        rows,
+        input_labels,
+        str(version_path),
+        args.target_mode,
+        args.rule_action_source,
+        args.extra_features,
+    )
     if args.summary_output:
         summary_out = _resolve(args.summary_output)
         summary_out.parent.mkdir(parents=True, exist_ok=True)
