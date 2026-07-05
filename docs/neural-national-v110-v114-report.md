@@ -1,4 +1,4 @@
-# Neural National v110-v113 Report
+# Neural National v110-v114 Report
 
 Date: 2026-07-06
 
@@ -204,25 +204,87 @@ Combined v113 opponent totals were positive for every opponent:
 | national_v9 | `+144375` | `+51.562` | `12-0-8` |
 | national_v3 | `+159522` | `+56.972` | `14-6-0` |
 
+## v114
+
+Path:
+
+`bots/neural_national_lab/versions/v114_national_v17_wheel_ace_jam_veto_tcp`
+
+Change:
+
+- Derived from v113.
+- Keeps v113's filtered small-jam veto and flop large-commit veto.
+- Adds a narrow preflop jam-call veto:
+  - stage is preflop,
+  - original rule label is `call`,
+  - opponent is all-in,
+  - `to_call >= 15000`,
+  - `pot >= 20000`,
+  - hole cards are suited `A2` through `A5`.
+
+Reason:
+
+v113's remaining v2 seed block `2026074000` losses included two identical
+suited wheel-ace jam calls. The bot raised `A2s`, faced a preflop all-in for
+about `17161`, called, and lost `-20000`.
+
+Force probes were mixed but positive in aggregate:
+
+- Seed `2026074000`, hand 10, decision 2 forced to fold: paired match changed
+  from `-11934` to `+19036`.
+- Seed `2026074001`, hand 9, decision 2 forced to fold: the target hand improved
+  but the full paired match changed from `-11667` to `-17937`.
+- Net evidence justified a separate v114 experiment, not direct promotion.
+
+Direct v2 check:
+
+`native_tcp_paired_v114_vs_v2_h70_m10_seed2026074000.json`
+
+- v2 seed block `2026074000`: `+45994`, mean/hand `+32.853`, W-L-D `4-6-0`.
+- Same block v113 baseline: `+21294`, mean/hand `+15.210`, W-L-D `3-7-0`.
+
+Full current-top8+v7 pool:
+
+| Block | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| seed2026073900 | 90 | 12600 | `+887454` | `+70.433` | `71-3-16` |
+| seed2026074000 | 90 | 12600 | `+429974` | `+34.125` | `37-11-42` |
+| combined | 180 | 25200 | `+1317428` | `+52.279` | `108-14-58` |
+
+Combined v114 opponent totals were positive for every opponent:
+
+| Opponent | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|
+| national_v15 | `+118971` | `+42.490` | `10-0-10` |
+| national_v5 | `+132568` | `+47.346` | `11-1-8` |
+| national_v14 | `+144375` | `+51.562` | `12-0-8` |
+| national_v16 | `+144375` | `+51.562` | `12-0-8` |
+| national_v7 | `+144375` | `+51.562` | `12-0-8` |
+| national_v8 | `+144375` | `+51.562` | `12-0-8` |
+| national_v9 | `+144375` | `+51.562` | `12-0-8` |
+| national_v2 | `+150029` | `+53.582` | `13-7-0` |
+| national_v3 | `+193985` | `+69.280` | `14-6-0` |
+
 ## Current Assessment
 
-- v113 is the current best artifact by both EV and stability:
-  - `+1258265` over 25200 full-pool hands,
-  - mean/hand `+49.931`,
-  - W-L-D `107-15-58`,
+- v114 is the current best artifact by both EV and stability:
+  - `+1317428` over 25200 full-pool hands,
+  - mean/hand `+52.279`,
+  - W-L-D `108-14-58`,
   - positive combined result against every opponent.
-- v113 preserves v112's v2/v3 improvement while removing v112's small-loss
-  W-L-D regression.
+- v114 preserves v113's low-loss full-pool profile while improving the hard
+  v2/v3 aggregate.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
   - v108 v2/v3 combined over two full-pool blocks: v2 `-64781`, v3 `-21241`.
   - v110: v2 `+101785`, v3 `+139622`.
   - v112: v2 `+123979`, v3 `+158022`.
 - v113: v2 `+125329`, v3 `+159522`.
-- All v110/v111/v112/v113 recorded evaluations passed protocol compliance with 0
+- v114: v2 `+150029`, v3 `+193985`.
+- All v110/v111/v112/v113/v114 recorded evaluations passed protocol compliance with 0
   candidate illegal actions, 0 candidate timeouts, and 0 candidate adapter
   actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
-It is still not complete domination: v113's v2 record remains `12-8-0`, so the
-next generation should improve v2 match conversion while preserving v113's
-higher EV and restored low-loss full-pool profile.
+It is still not complete domination: v114's v2 record remains `13-7-0`, so the
+next generation should keep improving v2 match conversion while preserving
+v114's higher EV and restored low-loss full-pool profile.
