@@ -1,4 +1,4 @@
-# Neural National v110-v112 Report
+# Neural National v110-v113 Report
 
 Date: 2026-07-06
 
@@ -153,22 +153,76 @@ Combined v112 opponent totals were positive for every opponent:
 | national_v9 | `+142125` | `+50.759` | `12-5-3` |
 | national_v3 | `+158022` | `+56.436` | `14-6-0` |
 
+## v113
+
+Path:
+
+`bots/neural_national_lab/versions/v113_national_v17_filtered_small_jam_veto_tcp`
+
+Change:
+
+- Derived from v112.
+- Keeps v112's high-value preflop small-pot all-in veto, but filters out
+  blind-level small-jam vetoes by adding:
+  - `preflop_small_jam_veto_min_to_call = 150`,
+  - `preflop_small_jam_veto_min_pot = 300`.
+
+Reason:
+
+Trace-aligned deltas against v110 showed that v112's W-L-D regression came from
+blind-level all-in vetoes at `to_call=50`, `pot=150`, typically changing `+100`
+hands into `-50` hands. The large v2 gain came from `to_call=183`, `pot=383`
+vetoes, changing two hands from `-20000` to `-100`.
+
+Direct checks on seed block `2026074000`:
+
+- v2: `+21294`, mean/hand `+15.210`, W-L-D `3-7-0`.
+- v5: `+41676`, mean/hand `+29.769`, W-L-D `4-0-6`.
+- Same block baselines:
+  - v110 v2 `-2250`, v5 `+41676`;
+  - v112 v2 `+20094`, v5 `+39876`.
+
+Full current-top8+v7 pool:
+
+| Block | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| seed2026073900 | 90 | 12600 | `+887454` | `+70.433` | `71-3-16` |
+| seed2026074000 | 90 | 12600 | `+370811` | `+29.429` | `36-12-42` |
+| combined | 180 | 25200 | `+1258265` | `+49.931` | `107-15-58` |
+
+Combined v113 opponent totals were positive for every opponent:
+
+| Opponent | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|
+| national_v15 | `+118971` | `+42.490` | `10-0-10` |
+| national_v2 | `+125329` | `+44.760` | `12-8-0` |
+| national_v5 | `+132568` | `+47.346` | `11-1-8` |
+| national_v14 | `+144375` | `+51.562` | `12-0-8` |
+| national_v16 | `+144375` | `+51.562` | `12-0-8` |
+| national_v7 | `+144375` | `+51.562` | `12-0-8` |
+| national_v8 | `+144375` | `+51.562` | `12-0-8` |
+| national_v9 | `+144375` | `+51.562` | `12-0-8` |
+| national_v3 | `+159522` | `+56.972` | `14-6-0` |
+
 ## Current Assessment
 
-- v110 is the cleaner stability artifact: lower total EV than v112, but much
-  better match W-L-D (`107-15-58` over two full-pool blocks).
-- v112 is the highest measured EV artifact: `+1239515` over 25200 full-pool
-  hands and positive against every opponent, but it trades many prior draws for
-  small losses (`107-50-23`).
+- v113 is the current best artifact by both EV and stability:
+  - `+1258265` over 25200 full-pool hands,
+  - mean/hand `+49.931`,
+  - W-L-D `107-15-58`,
+  - positive combined result against every opponent.
+- v113 preserves v112's v2/v3 improvement while removing v112's small-loss
+  W-L-D regression.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
   - v108 v2/v3 combined over two full-pool blocks: v2 `-64781`, v3 `-21241`.
   - v110: v2 `+101785`, v3 `+139622`.
   - v112: v2 `+123979`, v3 `+158022`.
-- All v110/v111/v112 recorded evaluations passed protocol compliance with 0
+- v113: v2 `+125329`, v3 `+159522`.
+- All v110/v111/v112/v113 recorded evaluations passed protocol compliance with 0
   candidate illegal actions, 0 candidate timeouts, and 0 candidate adapter
   actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
-It is still not complete domination: v112's W-L-D regression and v2's remaining
-`12-8-0` match record mean the next generation should reduce small-loss
-frequency while preserving the higher v2/v3 EV.
+It is still not complete domination: v113's v2 record remains `12-8-0`, so the
+next generation should improve v2 match conversion while preserving v113's
+higher EV and restored low-loss full-pool profile.
