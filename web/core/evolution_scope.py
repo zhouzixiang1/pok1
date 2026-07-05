@@ -16,7 +16,11 @@ NON_CONTRACT_PREFIXES = (
     # local evaluation unless the Python server/engine code changes too.
     "sever/国赛平台/",
 )
-CRITICAL_EXACT = {
+# No broad source directory is a contract path. Keep this list file-scoped so a
+# dashboard/doc/logging change can drift without interrupting a running
+# generation. Add a file here only when changing it can alter bot selection,
+# candidate mutation, national legality, or gate/precommit outcomes.
+CRITICAL_ENGINE_EXACT = frozenset({
     # Local evaluator and mirror-battle semantics.
     "engine/aivat.py",
     "engine/battle.py",
@@ -24,6 +28,9 @@ CRITICAL_EXACT = {
     "web/core/engine/aivat.py",
     "web/core/engine/battle.py",
     "web/core/engine/judge.py",
+})
+
+CRITICAL_NATIONAL_PLATFORM_EXACT = frozenset({
     # National TCP platform logic that native gates and precommit execute.
     "sever/bot_adapter.py",
     "sever/engine/deck.py",
@@ -31,33 +38,46 @@ CRITICAL_EXACT = {
     "sever/engine/game.py",
     "sever/engine/thp_recorder.py",
     "sever/engine/validator.py",
-    "sever/main.py",
     "sever/server/protocol.py",
     "sever/server/tcp_server.py",
     "sever/tests/test_national_alignment.py",
     "scripts/national_acceptance_matrix.py",
-    # Web entrypoint and runtime/evolution orchestration.
-    "web/main.py",
+})
+
+CRITICAL_EVALUATION_GATE_EXACT = frozenset({
+    # Gate and precommit logic whose output defines whether a bot is publishable.
+    "web/core/battle_scheduler.py",
+    "web/core/candidate_hygiene.py",
+    "web/core/code_verification.py",
+    "web/core/decision_tester.py",
+    "web/core/elo_daemon.py",
+    "web/core/eval_stats.py",
+    "web/core/fix_verification.py",
+    "web/core/national_acceptance.py",
+    "web/core/national_eval.py",
+    "web/core/national_native.py",
+    "web/core/protected_contracts.py",
+    "web/core/smoke_tester.py",
+    "web/core/tool_commit.py",
+    "web/core/tool_eval.py",
+    "web/core/tool_gates.py",
+    "web/core/worker_boundary.py",
+})
+
+CRITICAL_GENERATION_EXACT = frozenset({
+    # Evolution decisions, worker boundaries, recovery, and publish safety.
     "web/core/agent_master.py",
     "web/core/agent_review.py",
     "web/core/agent_workers.py",
-    "web/core/api_concurrency.py",
     "web/core/audit_agents.py",
     "web/core/battle_experience.py",
     "web/core/battle_memory.py",
-    "web/core/battle_scheduler.py",
     "web/core/behavior_diversity.py",
     "web/core/bot_action_stats.py",
     "web/core/bot_namespace.py",
-    "web/core/candidate_hygiene.py",
-    "web/core/code_verification.py",
     "web/core/combined_analyst.py",
-    "web/core/daemon_management.py",
-    "web/core/decision_tester.py",
     "web/core/direction_auditor.py",
-    "web/core/elo_daemon.py",
     "web/core/evaluation_contract.py",
-    "web/core/event_bus.py",
     "web/core/evolution_infra.py",
     "web/core/evolution_scope.py",
     "web/core/experience_archivist.py",
@@ -65,46 +85,33 @@ CRITICAL_EXACT = {
     "web/core/experience_pool.py",
     "web/core/failure_classification.py",
     "web/core/fix_injection.py",
-    "web/core/fix_verification.py",
     "web/core/generation_scheduler.py",
     "web/core/llm_failure.py",
     "web/core/llm_query.py",
-    "web/core/national_acceptance.py",
-    "web/core/national_eval.py",
-    "web/core/national_native.py",
-    "web/core/observe_policy.py",
     "web/core/orchestrator.py",
     "web/core/orchestrator_context.py",
-    "web/core/orchestrator_session.py",
     "web/core/output_schema.py",
     "web/core/pipeline_intents.py",
     "web/core/pipeline_recovery.py",
     "web/core/pipeline_schema.py",
     "web/core/pipeline_state.py",
     "web/core/plan_compiler.py",
-    "web/core/protected_contracts.py",
     "web/core/publish_reconcile.py",
-    "web/core/rate_limiter.py",
     "web/core/repo_state.py",
     "web/core/research_governance.py",
-    "web/core/shutdown_manager.py",
     "web/core/skill_library.py",
-    "web/core/smoke_tester.py",
     "web/core/spot_analyzer.py",
     "web/core/stagnation_analyzer.py",
-    "web/core/system_log.py",
     "web/core/tool_bot_management.py",
-    "web/core/tool_commit.py",
-    "web/core/tool_eval.py",
-    "web/core/tool_gates.py",
     "web/core/tool_helpers.py",
     "web/core/tool_pipeline.py",
     "web/core/tool_planning.py",
     "web/core/tool_runtime_guard.py",
-    "web/core/tool_status.py",
     "web/core/tools.py",
-    "web/core/web_ui.py",
     "web/core/workflow_profiles.py",
+})
+
+CRITICAL_PROMPT_EXACT = frozenset({
     # Active LLM prompts. Prompt edits change future generation behavior.
     "web/core/prompts/archivist.md",
     "web/core/prompts/battle_experience_incremental.md",
@@ -134,7 +141,15 @@ CRITICAL_EXACT = {
     "web/core/prompts/stagnation_analyzer.md",
     "web/core/prompts/worker_cot_check.md",
     "web/core/prompts/worker_prompt.md",
-}
+})
+
+CRITICAL_EXACT = frozenset().union(
+    CRITICAL_ENGINE_EXACT,
+    CRITICAL_NATIONAL_PLATFORM_EXACT,
+    CRITICAL_EVALUATION_GATE_EXACT,
+    CRITICAL_GENERATION_EXACT,
+    CRITICAL_PROMPT_EXACT,
+)
 RUNTIME_PREFIXES = (
     "web/core/results/",
     "web/logs/",

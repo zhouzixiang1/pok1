@@ -48,12 +48,14 @@ Do not run the long-lived evolution process from the outer checkout. Do not use 
 
 The current implementation uses an evaluation-contract guard rather than a blanket "any remote change blocks evolution" rule:
 
-- `web/core/evaluation_contract.py` defines evaluation-sensitive paths: `engine/`, `sever/`, `web/core/`, `web/tests/`, `web/main.py`, plus the active candidate/source/opponent bot versions recorded in the checkpoint.
+- `web/core/evolution_scope.py` defines file-scoped evaluation-sensitive paths. `CRITICAL_PREFIXES` must stay empty unless a future change has a specific path-pattern reason; do not lock all of `engine/`, `sever/`, `web/core/`, or `web/tests/`.
+- The hard contract is the union of named exact-file groups for local engine semantics, national TCP/platform rule semantics, gate/precommit logic, generation/recovery/publish logic, and active prompt templates. Runtime observability files such as `web/core/event_bus.py`, `web/core/system_log.py`, `web/core/web_ui.py`, launcher files such as `web/main.py` and `sever/main.py`, docs, frontend assets, and unrelated experiments are contract-neutral unless they are promoted into a named exact-file group with tests.
+- `web/core/evaluation_contract.py` builds the active contract from those exact files plus only the active candidate/source/parent/opponent bot versions recorded in the checkpoint.
 - `web/core/evolution_infra.py` writes that contract into `web/core/results/pipeline_state.json` as `repo_baseline.evaluation_contract`.
 - `web/core/tool_runtime_guard.py`, `web/core/orchestrator.py`, and `web/core/pipeline_recovery.py` allow unrelated HEAD drift only when the changed paths do not touch the active evaluation contract.
 - `web/core/publish_reconcile.py` retries a rejected push by fetching `origin/main`; it auto-merges remote changes only when they are evaluation-contract neutral. If remote changes touch the contract, it blocks with `remote_contract_changed`.
 
-This means documentation-only or unrelated experiment changes can usually be reconciled automatically, but changes to the national server, local engine, evolution core, tests, or active bots require an explicit restart/resume decision.
+This means documentation-only, observability-only, launcher-only, frontend, or unrelated experiment changes can usually be reconciled automatically. Changes to the named rule/evaluation/generation contract files or active bot versions require an explicit restart/resume decision.
 
 ## Sync Procedures
 
