@@ -33,6 +33,22 @@ from feature_spec import LABELS, encode_features, label_action  # noqa: E402
 from national_native import run_native_tcp_pair  # noqa: E402
 
 
+OPPONENT_PROFILE_KEYS = (
+    "confidence",
+    "actions_total_norm",
+    "fold_rate",
+    "call_rate",
+    "check_rate",
+    "raise_rate",
+    "allin_rate",
+    "aggression",
+    "preflop_actions_norm",
+    "preflop_raise_rate",
+    "postflop_actions_norm",
+    "postflop_raise_rate",
+)
+
+
 def _resolve(path: str) -> Path:
     raw = Path(path)
     return raw if raw.is_absolute() else (ROOT / raw).resolve()
@@ -167,12 +183,76 @@ def _legal_alternatives(row: dict[str, Any], max_alternatives: int) -> list[int]
     return deduped
 
 
+def _filter_alternatives(
+    alternatives: list[int],
+    req: dict[str, Any],
+    allowed_labels: set[int],
+) -> list[int]:
+    if not allowed_labels:
+        return alternatives
+    return [action for action in alternatives if _label_id(int(action), req) in allowed_labels]
+
+
+def _passes_decision_filters(
+    args: argparse.Namespace,
+    *,
+    stage: str,
+    req: dict[str, Any],
+    state: dict[str, Any],
+    profile: dict[str, Any],
+    rule_label: int,
+) -> bool:
+    if args.allowed_rule_label_ids and rule_label not in args.allowed_rule_label_ids:
+        return False
+    actions_total = int(profile.get("actions_total", 0) or 0)
+    if actions_total < int(args.min_opponent_actions):
+        return False
+    if int(args.max_opponent_actions) > 0 and actions_total > int(args.max_opponent_actions):
+        return False
+    if args.max_opponent_raise_rate is not None:
+        if _clip01(profile.get("raise_rate", 0.0)) > float(args.max_opponent_raise_rate):
+            return False
+    if args.initial_sb_only:
+        if stage != "preflop":
+            return False
+        try:
+            my_id = int(req.get("my_id", 0) or 0)
+            dealer_id = int(req.get("dealer_id", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        if my_id != dealer_id:
+            return False
+        if req.get("history"):
+            return False
+        to_call = float(state.get("to_call", req.get("to_call", 0.0)) or 0.0)
+        if to_call > float(args.initial_sb_max_to_call):
+            return False
+    return True
+
+
 def _empty_targets() -> list[float | None]:
     return [None for _ in LABELS]
 
 
 def _target_mask(targets: list[float | None]) -> list[int]:
     return [1 if value is not None else 0 for value in targets]
+
+
+def _clip01(value: Any, default: float = 0.0) -> float:
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        x = float(default)
+    if x != x:
+        x = float(default)
+    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+
+def _opponent_profile_features(req: dict[str, Any]) -> list[float]:
+    profile = req.get("opponent_profile") or {}
+    if not isinstance(profile, dict):
+        profile = {}
+    return [_clip01(profile.get(key, 0.0)) for key in OPPONENT_PROFILE_KEYS]
 
 
 def _row_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -235,14 +315,30 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
         if stage_filter and stage != stage_filter:
             continue
         hand = int(decision.get("hand", 0) or 0)
+        if hand < int(args.min_hand):
+            continue
         if hand <= 0 or hand not in settlements:
             continue
         alternatives = _legal_alternatives(decision, int(args.max_alternatives))
-        if not alternatives:
-            continue
         req = decision.get("request") or {}
+        profile = req.get("opponent_profile") or {}
+        if not isinstance(profile, dict):
+            profile = {}
         final_action = int(decision.get("final_action", 0) or 0)
         rule_label = _label_id(final_action, req)
+        state = decision.get("state") or {}
+        if not _passes_decision_filters(
+            args,
+            stage=stage,
+            req=req,
+            state=state,
+            profile=profile,
+            rule_label=rule_label,
+        ):
+            continue
+        alternatives = _filter_alternatives(alternatives, req, args.allowed_alternative_label_ids)
+        if not alternatives:
+            continue
         targets = _empty_targets()
         targets[rule_label] = 0.0
         action_values = _empty_targets()
@@ -291,6 +387,8 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             continue
         selected += 1
         features = [float(value) for value in encode_features(req, None)]
+        opponent_profile_features = _opponent_profile_features(req)
+        native_context_features = features + opponent_profile_features
         train_targets = [0.0 if value is None else float(value) for value in targets]
         row = {
             "status": "ok" if all(record["status"] == "ok" for record in probe_records) else "partial",
@@ -306,6 +404,9 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             "rule_label": LABELS[rule_label],
             "rule_value": int(settlements[hand]),
             "state_features": features,
+            "opponent_profile_features": opponent_profile_features,
+            "native_context_features": native_context_features,
+            "opponent_profile": profile,
             "delta_vs_rule": targets,
             "action_values": action_values,
             "target_mask": _target_mask(targets),
@@ -317,7 +418,7 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             "target": "delta_vs_rule",
             "weight": max(0.05, min(5.0, max(abs(value) for value in train_targets) / 1000.0)),
             "request": req,
-            "state": decision.get("state") or {},
+            "state": state,
             "probes": probe_records,
         }
         rows.append(row)
@@ -330,6 +431,17 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
         "hands": int(args.hands),
         "deck_seed_base": args.seed_base,
         "bot_seed_base": args.bot_seed_base,
+        "filters": {
+            "stage": args.stage,
+            "min_hand": int(args.min_hand),
+            "min_opponent_actions": int(args.min_opponent_actions),
+            "max_opponent_actions": int(args.max_opponent_actions),
+            "max_opponent_raise_rate": args.max_opponent_raise_rate,
+            "rule_labels": list(args.rule_label),
+            "alternative_labels": list(args.alternative_label),
+            "initial_sb_only": bool(args.initial_sb_only),
+            "initial_sb_max_to_call": float(args.initial_sb_max_to_call),
+        },
         "trace_decisions": len(trace),
         "baseline_net_chips": baseline.get("net_chips_a"),
         "baseline_passed_compliance": baseline.get("passed_compliance"),
@@ -347,12 +459,34 @@ def main() -> int:
     parser.add_argument("--seed-base", type=int, default=None)
     parser.add_argument("--bot-seed-base", type=int, default=None)
     parser.add_argument("--stage", choices=["any", "preflop", "flop", "turn", "river"], default="any")
+    parser.add_argument("--min-hand", type=int, default=1)
+    parser.add_argument("--min-opponent-actions", type=int, default=0)
+    parser.add_argument("--max-opponent-actions", type=int, default=0)
+    parser.add_argument("--max-opponent-raise-rate", type=float, default=None)
+    parser.add_argument("--initial-sb-only", action="store_true")
+    parser.add_argument("--initial-sb-max-to-call", type=float, default=60.0)
     parser.add_argument("--max-decisions", type=int, default=8)
     parser.add_argument("--max-alternatives", type=int, default=2)
+    parser.add_argument(
+        "--rule-label",
+        action="append",
+        default=[],
+        choices=list(LABELS),
+        help="Limit baseline decisions by their final rule label. Repeatable; default accepts all labels.",
+    )
+    parser.add_argument(
+        "--alternative-label",
+        action="append",
+        default=[],
+        choices=list(LABELS),
+        help="Limit forced alternatives to these labels. Repeatable; default probes all generated alternatives.",
+    )
     parser.add_argument("--timeout-sec", type=float, default=90.0)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--jsonl-output", type=Path)
     args = parser.parse_args()
+    args.allowed_rule_label_ids = {int(LABELS.index(label)) for label in args.rule_label}
+    args.allowed_alternative_label_ids = {int(LABELS.index(label)) for label in args.alternative_label}
 
     payload = asyncio.run(_collect(args))
     args.output.parent.mkdir(parents=True, exist_ok=True)

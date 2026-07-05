@@ -93,6 +93,35 @@ Current native TCP evidence, using paired reports where available:
   were negative, and all non-v3 opponents regressed. It is not a strength
   breakthrough; it shows the next model needs opponent/style-conditioned gates
   rather than a global preflop fold-to-call rescue.
+- `v085_national_v17_profile_trace_tcp` adds native TCP opponent-profile
+  features to trace requests without changing default rule behavior. The
+  counterfactual probe can now export `native_context_features`, which are the
+  regular 48 state features plus 12 opponent-profile features.
+- The first opponent-conditioned dataset,
+  `native_tcp_value_v085_profile_fc_d18_context_clip2000.jsonl`, has 18
+  preflop rows and 35 masked fold/call targets. The h16 model
+  `native_tcp_value_v085_profile_fc_context_h16_seed1301.json` trained on CUDA
+  with validation MAE `0.0522`, but the data is still very small.
+- `v086_national_v17_native_context_value_fc_tcp` wired that 60-dimensional
+  value head into native TCP runtime and allowed preflop fold/call proposals
+  plus a raise-to-fold veto. It reproduced one positive same-seed spot against
+  `national_v3` (`+292` chips versus v082 on seed `2026071301`), but broad
+  paired evaluation against `national_v3`, `national_v9`, `national_v17`, and
+  `national_v18` was decisively negative versus v082:
+  `native_tcp_diff_v086_minus_v082_top_rules_h70_m5_seed2026071250.json`
+  has `sum=-59926`, 17 negative rows, 2 zero rows, and only 1 positive row.
+  This version is a failed runtime probe, not a candidate.
+- `v087_national_v17_native_context_early_veto_tcp` narrows v086 to only the
+  early small-blind open-raise veto with 2-3 observed opponent actions and zero
+  observed opponent raise rate. It preserves the `+292` seed-2026071301
+  diagnostic, but the same 2800-hand top-rule paired evaluation is exactly
+  neutral versus v082 (`sum=0`, all 20 rows zero). Additional filtered probes
+  found one matching negative example (`-150`) and mostly no matching spots,
+  so this bucket is too sparse and noisy to promote.
+- `tools/native_tcp_counterfactual_probe.py` now supports rule-label filters,
+  max opponent action filters, opponent raise-rate filters, and an
+  `--initial-sb-only` scope. Use those filters for targeted native TCP
+  action-value collection before enabling any new runtime neural gate.
 
 This is not a promotion-grade strength breakthrough. The current evidence says
 the old v254/Botzone-trained action advice does not transfer to native national
