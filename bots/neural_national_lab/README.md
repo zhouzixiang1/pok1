@@ -177,17 +177,44 @@ Current native TCP evidence, using paired reports where available:
   same threshold to `0.75`. It reduced the loss only slightly: `+138928`
   absolute chips, but `-53119` versus v082, with no positive diff rows. Higher
   scalar thresholds are therefore not a strength path for this head.
+- `build_multi_action_value_data.py` now supports
+  `--feature-set native_context_action`, which appends 18 rule-action context
+  features to the existing 60-dimensional native context vector. This gives the
+  value head the rule action label and sizing context instead of forcing all
+  `raise_pot` decisions into one bucket.
+- The action-context d128 dataset
+  `native_tcp_value_v085_profile_fc_leaders_d128_context_action_rulebase_clip4000.jsonl`
+  has 128 preflop rows, 78 input features, and 326 clipped action targets. The
+  h64 head `native_tcp_value_v085_profile_fc_leaders_action_rulebase_h64_seed1731.json`
+  trained on CUDA with validation MAE `0.1728` and validation best-label
+  accuracy `0.5769`.
+- `v095_national_v17_native_context_action_h64_call_t040_tcp` wired that h64
+  head into the native TCP runtime with a call-only `raise_pot -> call`
+  threshold/margin of `0.40`. On the current `.evolution_pok`
+  conservative-Glicko top5 at test time (`national_v1`, `national_v7`,
+  `national_v3`, `national_v2`, `national_v11`) it scored `+111611` chips over
+  3500 paired native TCP hands. The same seed/control v082 report scored
+  `+101371`, so the paired diff was `+10240`, with 15 positive rows, 0
+  negative rows, and 10 zero rows. This is the first clean positive
+  native-neural increment over the v082/v17 rule baseline on the current
+  protocol leader pool, but it is not a domination result.
+- `v096_national_v17_native_context_action_h64_call_t015_tcp` lowered the same
+  threshold/margin to `0.15` because the offline scan still looked clean. The
+  online paired report rejected that relaxation: v096 scored `+97604`, or
+  `-3767` versus v082 and `-14007` versus v095, with new negative windows
+  against `national_v7` and `national_v11`. Keep v095's stricter gate unless
+  new data explains those failures.
 
 This is not a promotion-grade strength breakthrough. The current evidence says
 the old v254/Botzone-trained action advice does not transfer to native national
-opponents, and the first native opponent-conditioned value head is still
-overfit. The native TCP counterfactual path now works, GPU training works, and
-there are real local positive buckets, but no neural runtime version beats the
-strong v082/v17 rule baseline across both outer-checkout rule tests and
-`.evolution_pok` rating leaders. The next scale step should collect much larger
-explicit action-value data that includes the `.evolution_pok` Glicko leaders,
-then train a model with held-out opponent groups; continuing scalar threshold
-tweaks on the d77 dataset is not justified.
+opponents. The native TCP counterfactual path now works, GPU training works,
+and action-context features finally produced a clean positive neural increment
+over v082 on the current `.evolution_pok` leader pool. It still does not meet
+the project strength bar of comprehensive rule-bot domination: v095 has neutral
+opponents, losing rows, and only a modest `+10240` paired diff over 3500 hands.
+The next scale step should collect much larger explicit action-value data that
+includes the `.evolution_pok` Glicko leaders, then train with held-out opponent
+groups and explicit gates for the v7/v11 failure modes.
 
 ## Scale-Up Gate
 
