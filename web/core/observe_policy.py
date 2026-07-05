@@ -40,6 +40,13 @@ LEGACY_EXPECTED_CANCELS = {
     ("battle_experience", None),
 }
 
+EXPECTED_SDK_STREAM_ERRORS = {
+    # Deterministic orchestrator handoff: once prepare lands on an actionable
+    # stage, the current Claude stream is intentionally stopped so recovery can
+    # call the exact next MCP tool. This is control flow, not an LLM/SDK fault.
+    "_OrchActionableStageTimeout",
+}
+
 
 def is_expected_event(event):
     """Return True for noisy-but-planned events that should not alert/fail."""
@@ -47,6 +54,8 @@ def is_expected_event(event):
     data = event.get("data") or {}
     role = str(data.get("role") or "")
     stage = data.get("stage")
+    if event_type == "pipeline.sdk_stream_error":
+        return str(data.get("exception_type") or "") in EXPECTED_SDK_STREAM_ERRORS
     if event_type in PARENT_TIMEOUT_EVENTS:
         return True
     if event_type in {"pipeline.llm_role_cancelled", "pipeline.llm_role_stream_cancelled"}:

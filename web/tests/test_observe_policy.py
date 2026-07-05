@@ -49,6 +49,34 @@ def test_subagent_guard_block_alerts_but_is_not_fatal():
     assert observe_policy.is_fatal_event(event) is False
 
 
+def test_actionable_stage_handoff_sdk_error_is_expected():
+    event = {
+        "type": "pipeline.sdk_stream_error",
+        "data": {
+            "exception_type": "_OrchActionableStageTimeout",
+            "stage": "selected",
+        },
+    }
+
+    assert observe_policy.is_expected_event(event) is True
+    assert observe_policy.should_alert(event) is False
+    assert observe_policy.is_fatal_event(event) is False
+
+
+def test_generic_sdk_stream_error_still_alerts():
+    event = {
+        "type": "pipeline.sdk_stream_error",
+        "data": {
+            "exception_type": "SomeOtherSdkError",
+            "stage": "selected",
+        },
+    }
+
+    assert observe_policy.is_expected_event(event) is False
+    assert observe_policy.should_alert(event) is True
+    assert observe_policy.is_fatal_event(event) is False
+
+
 def test_precommit_eval_only_alerts_when_failed():
     assert observe_policy.should_alert({
         "type": "pipeline.precommit_eval",
