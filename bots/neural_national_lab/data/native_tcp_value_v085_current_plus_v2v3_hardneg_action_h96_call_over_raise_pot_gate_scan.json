@@ -1,0 +1,688 @@
+{
+  "input": "bots/neural_national_lab/data/native_tcp_value_v085_current_plus_v2v3_hardneg_d307_context_action_clip4000_noallin.jsonl",
+  "label": "call",
+  "rule_label": "raise_pot",
+  "thresholds": [
+    0.05,
+    0.1,
+    0.15,
+    0.2,
+    0.25,
+    0.3,
+    0.35,
+    0.4,
+    0.5,
+    0.6,
+    0.75
+  ],
+  "models": [
+    {
+      "model": "bots/neural_national_lab/data/native_tcp_value_v085_current_plus_v2v3_hardneg_action_h96_seed3422.json",
+      "samples": 307,
+      "thresholds": [
+        {
+          "threshold": 0.05,
+          "samples": 27,
+          "mean": 1193.888888888889,
+          "median": 268.0,
+          "min": -200.0,
+          "max": 4000.0,
+          "positive": 17,
+          "negative": 7,
+          "zero": 3,
+          "by_opponent": {
+            "national_v16": {
+              "samples": 2,
+              "mean": 2101.0,
+              "median": 2101.0,
+              "min": 202.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v2": {
+              "samples": 7,
+              "mean": 939.5714285714286,
+              "median": 0.0,
+              "min": -200.0,
+              "max": 4000.0,
+              "positive": 3,
+              "negative": 2,
+              "zero": 2
+            },
+            "national_v3": {
+              "samples": 9,
+              "mean": 55.44444444444444,
+              "median": 0.0,
+              "min": -200.0,
+              "max": 652.0,
+              "positive": 4,
+              "negative": 4,
+              "zero": 1
+            },
+            "national_v5": {
+              "samples": 3,
+              "mean": 1490.6666666666667,
+              "median": 522.0,
+              "min": -50.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 1,
+              "zero": 0
+            },
+            "national_v7": {
+              "samples": 2,
+              "mean": 2000.5,
+              "median": 2000.5,
+              "min": 1.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 3,
+              "mean": 2828.0,
+              "median": 4000.0,
+              "min": 484.0,
+              "max": 4000.0,
+              "positive": 3,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.1,
+          "samples": 13,
+          "mean": 2049.6923076923076,
+          "median": 2077.0,
+          "min": -200.0,
+          "max": 4000.0,
+          "positive": 10,
+          "negative": 3,
+          "zero": 0,
+          "by_opponent": {
+            "national_v16": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v2": {
+              "samples": 5,
+              "mean": 1315.4,
+              "median": 800.0,
+              "min": -200.0,
+              "max": 4000.0,
+              "positive": 3,
+              "negative": 2,
+              "zero": 0
+            },
+            "national_v3": {
+              "samples": 2,
+              "mean": 34.0,
+              "median": 34.0,
+              "min": -200.0,
+              "max": 268.0,
+              "positive": 1,
+              "negative": 1,
+              "zero": 0
+            },
+            "national_v7": {
+              "samples": 2,
+              "mean": 2000.5,
+              "median": 2000.5,
+              "min": 1.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 2,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.15,
+          "samples": 8,
+          "mean": 2950.0,
+          "median": 4000.0,
+          "min": -200.0,
+          "max": 4000.0,
+          "positive": 6,
+          "negative": 2,
+          "zero": 0,
+          "by_opponent": {
+            "national_v16": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v2": {
+              "samples": 2,
+              "mean": 1900.0,
+              "median": 1900.0,
+              "min": -200.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 1,
+              "zero": 0
+            },
+            "national_v3": {
+              "samples": 1,
+              "mean": -200.0,
+              "median": -200.0,
+              "min": -200.0,
+              "max": -200.0,
+              "positive": 0,
+              "negative": 1,
+              "zero": 0
+            },
+            "national_v7": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 2,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.2,
+          "samples": 7,
+          "mean": 3400.0,
+          "median": 4000.0,
+          "min": -200.0,
+          "max": 4000.0,
+          "positive": 6,
+          "negative": 1,
+          "zero": 0,
+          "by_opponent": {
+            "national_v16": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v2": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v3": {
+              "samples": 1,
+              "mean": -200.0,
+              "median": -200.0,
+              "min": -200.0,
+              "max": -200.0,
+              "positive": 0,
+              "negative": 1,
+              "zero": 0
+            },
+            "national_v7": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 2,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.25,
+          "samples": 7,
+          "mean": 3400.0,
+          "median": 4000.0,
+          "min": -200.0,
+          "max": 4000.0,
+          "positive": 6,
+          "negative": 1,
+          "zero": 0,
+          "by_opponent": {
+            "national_v16": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v2": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v3": {
+              "samples": 1,
+              "mean": -200.0,
+              "median": -200.0,
+              "min": -200.0,
+              "max": -200.0,
+              "positive": 0,
+              "negative": 1,
+              "zero": 0
+            },
+            "national_v7": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 2,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.3,
+          "samples": 6,
+          "mean": 4000.0,
+          "median": 4000.0,
+          "min": 4000.0,
+          "max": 4000.0,
+          "positive": 6,
+          "negative": 0,
+          "zero": 0,
+          "by_opponent": {
+            "national_v16": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v2": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v7": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 2,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.35,
+          "samples": 6,
+          "mean": 4000.0,
+          "median": 4000.0,
+          "min": 4000.0,
+          "max": 4000.0,
+          "positive": 6,
+          "negative": 0,
+          "zero": 0,
+          "by_opponent": {
+            "national_v16": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v2": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v7": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 2,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.4,
+          "samples": 6,
+          "mean": 4000.0,
+          "median": 4000.0,
+          "min": 4000.0,
+          "max": 4000.0,
+          "positive": 6,
+          "negative": 0,
+          "zero": 0,
+          "by_opponent": {
+            "national_v16": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v2": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v7": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 2,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.5,
+          "samples": 4,
+          "mean": 4000.0,
+          "median": 4000.0,
+          "min": 4000.0,
+          "max": 4000.0,
+          "positive": 4,
+          "negative": 0,
+          "zero": 0,
+          "by_opponent": {
+            "national_v7": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 2,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.6,
+          "samples": 4,
+          "mean": 4000.0,
+          "median": 4000.0,
+          "min": 4000.0,
+          "max": 4000.0,
+          "positive": 4,
+          "negative": 0,
+          "zero": 0,
+          "by_opponent": {
+            "national_v7": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v8": {
+              "samples": 2,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 2,
+              "negative": 0,
+              "zero": 0
+            },
+            "national_v9": {
+              "samples": 1,
+              "mean": 4000.0,
+              "median": 4000.0,
+              "min": 4000.0,
+              "max": 4000.0,
+              "positive": 1,
+              "negative": 0,
+              "zero": 0
+            }
+          }
+        },
+        {
+          "threshold": 0.75,
+          "samples": 0,
+          "mean": 0.0,
+          "median": 0.0,
+          "min": null,
+          "max": null,
+          "positive": 0,
+          "negative": 0,
+          "zero": 0,
+          "by_opponent": {}
+        }
+      ]
+    }
+  ]
+}

@@ -229,17 +229,46 @@ Current native TCP evidence, using paired reports where available:
   v095 losses, but v098 still scored `-333482` absolute and lost `-168524`
   each to `national_v2` and `national_v3`. Both v098 reports had 0 illegal
   actions, 0 timeouts, and 0 adapter actions.
+- The v2/v3 hard-negative round collected a protocol-native counterfactual
+  batch against `.evolution_pok/bots/national_v2` and `national_v3`. The merge
+  landed 120 rows, 119 ok rows, and 286 raw target samples. The mixed dataset
+  `native_tcp_value_v085_current_plus_v2v3_hardneg_d307_context_action_clip4000_noallin.jsonl`
+  combines that hard-negative data with the v098 current-pool data: 307 rows,
+  933 clipped action targets, 78 input features, no all-in target. The selected
+  h64 head `native_tcp_value_v085_current_plus_v2v3_hardneg_action_h64_seed3421.json`
+  trained on CUDA with validation MAE `0.1333` and validation best-label
+  accuracy `0.5323`.
+- `v099_national_v17_v2v3_raise_pot_pairgate_tcp` added version-local
+  pair-specific value-proposal thresholds and opened preflop `call/fold ->
+  raise_pot` at threshold/margin `0.15`. It improved seed block `2026073300`
+  versus v098 by `+40125`, but broad fold-raise pollution kept the full-pool
+  absolute score at `-293357`.
+- `v100_national_v17_v2v3_fold_raise_t025_tcp` kept only
+  `fold -> raise_pot` at threshold/margin `0.25`. It reduced the pollution and
+  scored `-195583` on the same seed block, a `+137899` diff versus v098 and
+  `+97774` versus v099, but still lost every paired match.
+- `v101_national_v17_v2v3_fold_raise_t015_tcp` lowered the fold-raise
+  threshold back to `0.15`. Online evaluation rejected it: `-322408`, or
+  `-126825` versus v100. This isolates the lower fold threshold as the bad
+  pool-wide branch.
+- `v102_national_v17_v2v3_call_raise_t015_fold_t025_tcp` kept v100's
+  conservative fold threshold and re-enabled only `call -> raise_pot` at
+  threshold/margin `0.15`. On the tuned seed block `2026073300`, it scored
+  `-165428`, improving v100 by `+30155` and v098 by `+168054`. More
+  importantly, on holdout seed block `2026073200`, it scored `+15685` absolute
+  over 45 paired native TCP matches / 6300 hands, while v098 scored `-195235`;
+  the paired diff was `+210920`. Both v102 reports had 0 illegal actions,
+  0 timeouts, and 0 adapter actions.
 
-This is not a promotion-grade strength breakthrough. The native TCP
-counterfactual path works, GPU training works, and action-context features can
-produce clean positive neural increments over earlier neural controls on
-protocol-native opponents. It still does not meet the project strength bar of
-comprehensive rule-bot domination: the newest v098 retest is still deeply
-negative in absolute terms against the current `.evolution_pok` leaders,
-especially `national_v2` and `national_v3`. The next scale step should collect
-larger explicit action-value data from those hard-negative buckets, train with
-held-out opponent groups, and avoid promoting another scalar threshold variant
-until the v2/v3 losses are directly reduced.
+This is now a clear, protocol-native neural performance result, not just an
+integration proof: v102 turns one held-out full-pool seed block positive while
+remaining stdlib runtime and native national TCP. It still does not meet the
+project strength bar of comprehensive rule-bot domination. On the holdout
+block v102 was `5/27/13` by paired match result, remained negative against
+`national_v3`, and took small losses against most non-v2 opponents. The next
+scale step should preserve v102 as the current best neural artifact, collect
+more v3-specific hard-negative action-value data, and train/evaluate with
+explicit held-out seed and opponent groups before widening more raise branches.
 
 ## Scale-Up Gate
 
