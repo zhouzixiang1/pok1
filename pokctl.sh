@@ -8,6 +8,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 ROOT_REAL="$(pwd -P)"
+ROOT_GIT_TOP="$(git -C "$ROOT_REAL" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$ROOT_GIT_TOP" ]; then
+    ROOT_GIT_TOP="$(cd "$ROOT_GIT_TOP" && pwd -P)"
+else
+    ROOT_GIT_TOP="$ROOT_REAL"
+fi
+PROC_ROOT="${POKCTL_PROC_ROOT:-/proc}"
 
 # ── 路径定义 ──
 LOG_DIR="web/logs"
@@ -48,24 +55,38 @@ read_pid() {
 
 is_alive() {
     local pid="$1"
-    [ -n "$pid" ] && [ -d "/proc/$pid" ] 2>/dev/null
+    [ -n "$pid" ] && [ -d "$PROC_ROOT/$pid" ] 2>/dev/null
 }
 
 proc_cwd() {
     local pid="$1"
-    readlink -f "/proc/$pid/cwd" 2>/dev/null || true
+    readlink -f "$PROC_ROOT/$pid/cwd" 2>/dev/null || true
 }
 
 proc_cmdline() {
     local pid="$1"
-    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true
+    tr '\0' ' ' < "$PROC_ROOT/$pid/cmdline" 2>/dev/null || true
 }
 
 path_is_in_checkout() {
     local path="$1"
+    local real_path git_top
     [ -n "$path" ] || return 1
-    [ "$path" = "$ROOT_REAL" ] && return 0
-    case "$path" in
+    real_path="$(readlink -f "$path" 2>/dev/null || true)"
+    [ -n "$real_path" ] || return 1
+
+    git_top="$(git -C "$real_path" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$git_top" ]; then
+        git_top="$(cd "$git_top" && pwd -P)"
+        [ "$git_top" = "$ROOT_GIT_TOP" ]
+        return
+    fi
+
+    # Fallback for non-git deployments. In the normal repository layout the
+    # git-top check above prevents nested checkouts such as .evolution_pok from
+    # being treated as this checkout merely because they share a path prefix.
+    [ "$real_path" = "$ROOT_REAL" ] && return 0
+    case "$real_path" in
         "$ROOT_REAL"/*) return 0 ;;
         *) return 1 ;;
     esac
@@ -87,9 +108,9 @@ pid_matches_checkout_program() {
 
     path_is_in_checkout "$cwd" && return 0
     case "$cmd" in
-        *"$ROOT_REAL/"*) return 0 ;;
-        *) return 1 ;;
+        *"$ROOT_REAL/$rel_program"*) return 0 ;;
     esac
+    return 1
 }
 
 pid_is_checkout_server() {
