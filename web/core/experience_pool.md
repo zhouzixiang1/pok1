@@ -42,6 +42,9 @@
 - Anti-lock trash gate must be tournament-safe: hands_left>3, my_chips>15BB, low fold_to_raise before suppressing trash jams; short-stack trash jams can be necessary double-up escapes.
 
 ## RECENT_LESSONS
+- **v291**: New function parameters must be wired into ALL live call sites before claiming behavioral effect — v291's spr_commitment_gate(board_texture=...) is dormant in production because strategy.py:1300 still passes 5 positional args; quality gates should grep call sites, not just rely on self-tests.
+- **v291**: Crossover source selection should verify the source beats the target's ACTIVE nemeses, not just any nemesis: v43 helps vs v197/v36 but does NOT help vs v290's actual bleed cluster v286 (20% wr) and v288 (32% wr).
+- **v291 归档建议**: Next iteration: update strategy.py:1300 to forward board_texture=board_texture into spr_commitment_gate (gating on flush_pressure>=1.0 OR straight_pressure>=1.0 with factor 3, not the broader 'dynamic' flag at 2.5, per v290 归档建议) so the dynamic TPTK tightening actually fires against v286/v288 where v290 bleeds 20-32% wr.
 - **v290**: SPR commitment thresholds are a structurally new turn/river axis DISTINCT from the three CLOSED fold-side directions — treat TPTK/overpair/two_pair commitment gating as an open tuning surface, not a closed direction.
 - **v290**: Bypassing all five fold gates (incl. board_texture-aware should_fold_postflop) means committed hands never see flush_pressure/straight_pressure on dynamic boards — revisit if v290 loses to polarized jammers on wet textures.
 - **v290 归档建议**: If live mirror battles show v290 beats jam-mergers (v287) but loses to polarized jammers, add opponent_model.fold_to_jam_rate gating on the TPTK threshold (drop 4→3 when flush_pressure>=1.0 OR straight_pressure>=1.0) rather than weakening baseline commitment levels.
@@ -50,3 +53,4 @@
 - **v288 归档建议**: Before treating v288 as a v46/v36 counter, run ≥30g stderr telemetry to confirm PREFLOP_JAM_DEFENSE.wide_jammer fires vs v46/v36 — and cite one replay hand (GxHx#anchor) proving v287 folded a +EV spot to a preflop jam (over-fold diagnosis unproven at n=15).
 - **v287**: Strategic-axis changes (immediate-raise vs historical-raise vs archetype) can stack on the same call_threshold and double-count EV — gate new axes to fire only on cross-axis disagreement, or document bounded stacking magnitudes.
 - **v287**: Before tuning bb_vs_raise / defense thresholds, profile the nemesis's actual open-size distribution via replay — if nemeses classify 'standard'/'unknown' (raise_samples<4), the historical axis is inert; pivot to a different street/mechanism.
+
