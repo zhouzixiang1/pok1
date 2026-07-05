@@ -679,6 +679,8 @@ The intended local layout has two checkouts under `/home/zzx/project/pok`:
 
 Synchronize both checkouts only through `origin/main`; do not copy files between them. Infrastructure changes from the outer checkout must be pushed and then fetched/merged into `.evolution_pok` at a safe point. Completed evolution bots from `.evolution_pok` must be pushed with `bot-v{N}` tags and then fetched/merged into the outer checkout before related work continues. See `docs/evolution-dual-checkout-sync-policy.md` for the full policy and command checklist.
 
+Before starting work, update remote state. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`; if the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/main` instead of working from a stale local HEAD.
+
 Do not switch branches, reset, or do normal infrastructure development inside `.evolution_pok` while a generation is running. Contract-neutral changes may be tolerated by `web/core/evaluation_contract.py` and `web/core/publish_reconcile.py`; changes touching `engine/`, `sever/`, `web/core/`, `web/tests/`, `web/main.py`, or active bot versions require an explicit evolution restart/resume decision.
 
 Important generated or runtime locations:
@@ -702,6 +704,7 @@ Do not revert, reset, restore, or checkout unrelated changes unless the user exp
 本仓库改代码规范：
 
 - 先确认模块边界再改代码：`engine/` 是本地 JSON battle，`web/` 是进化系统，`sever/` 是国赛 TCP 平台，`rl/` 是实验；不要把协议和职责混在一起。
+- 开始工作前必须先拉取远端状态：干净可快进的工作区先运行 `git pull --ff-only --tags`；如果当前工作区有用户脏改、在用户分支上、或不能安全快进，则先 `git fetch --tags origin`，再从最新 `origin/main` 开临时 worktree 工作。
 - 改代码前先从 `main` 开任务分支，默认命名 `codex/<task-name>`；在分支内完成修改和提交，再切回 `main` 合并、push，然后删除该任务分支。任务分支只用于隔离开发，合并后即失去意义，不要长期保留已合并的 `codex/*` 分支。
 - 只改当前任务需要的文件，不顺手重构、不统一无关风格、不碰运行产物。
 - 协议、adapter、THP、card mapping、质量门、进化提示词等边界变更必须配套测试或至少明确的冒烟验证。

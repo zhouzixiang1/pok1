@@ -1,0 +1,10 @@
+{
+  "source": "bots/neural_national_lab/data/runtime_support_v043_v058_positive_guard_p065_rulebase_hs_seed2026071503_2026083000.jsonl",
+  "rows": 115,
+  "unique_rows": 65,
+  "input_dim": 88,
+  "positive": 55,
+  "negative": 60,
+  "mean_delta": 1486.0782608695652,
+  "balance": "negative rows copied 6x; positive weights capped at 2.0"
+}

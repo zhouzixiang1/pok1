@@ -45,37 +45,76 @@ the 6-class action abstraction, then use it conservatively as a runtime advisor.
 
 ## External Clone Scan
 
-Scanned shallow clones under ignored `external/`:
+The July 2026 scan keeps full reference clones under ignored
+`bots/neural_national_lab/external/` and commits only distilled notes:
 
-- `EricSteinberger/PokerRL`: useful for evaluation discipline. Its tournament
-  runner evaluates both seats and reports a confidence interval, which matches
-  the variance problem in 70-hand matches better than a single ordinary battle.
-- `datamllab/rlcard`: its no-limit Hold'em abstraction uses fold, check/call,
-  half-pot raise, pot raise, and all-in. This supports keeping the neural policy
-  head compact and translating raise buckets into the national raise-to-total
-  protocol only after legal-action validation.
-- `tamlhp/deepbot-poker`: useful for feature design rather than runtime code.
-  It combines street one-hots, equity, pot/call ratios, stack/blind context, and
-  opponent action memory. A small recurrent opponent model is the main idea to
-  borrow later; direct PyTorch/LSTM runtime is too heavy for portable bot
-  submissions.
-- `mzarejko/pokerBot`: Deep CFR implementation for HULH. It separates regret
-  networks, average strategy memory, legal-action sampling, and periodic model
-  checkpoints. This is a good template for an offline trainer, not for direct
-  stdlib runtime.
+- `EricSteinberger/Deep-CFR`: useful for the offline training architecture, not
+  for direct runtime code. `DeepCFR/workers/driver/Driver.py` creates learner
+  actors plus per-player parameter servers; `TrainingProfile.py` separates
+  inference, training, parameter-server devices, traversal count, mini-batch
+  count, and reservoir sizes; `workers/la/buffers/*ReservoirBuffer.py` stores
+  public observation, range index, legal action mask, iteration weight, and
+  advantage or average-strategy targets.
+- `EricSteinberger/PokerRL`: useful for engineering discipline. It wraps local
+  workers for Ray-style multi-core/cluster execution, has no-limit bet sets as
+  pot-fraction action abstractions in `PokerRL/game/bet_sets.py`, and evaluates
+  head-to-head by playing both seats and reporting a 95 percent confidence
+  interval in `PokerRL/game/AgentTournament.py`.
+- `google-deepmind/open_spiel`: useful as a compact Deep CFR and CFR target
+  reference. `open_spiel/python/pytorch/deep_cfr.py` separates advantage memory
+  from strategy memory, uses reservoir sampling, applies regret matching over
+  legal actions, and trains with much larger buffers than the current p059-p105
+  diagnostic sets. Its CFR/MCCFR algorithms confirm that the useful target is a
+  legal-action advantage vector, not a single binary gate label.
+- `datamllab/rlcard`: useful as a small no-limit action menu reference. Its
+  no-limit Hold'em environment uses `fold`, `check/call`, `raise_half_pot`,
+  `raise_pot`, and `all_in`. This matches the current six-label contract well
+  enough for the next counterfactual target generator.
+- `tansey/pycfr` and `b-inary/poker-cfr`: useful for CFR sanity checks and
+  fast small abstractions. pyCFR explicitly warns that full Texas Hold'em is
+  too slow in pure Python; poker-cfr shows the value of precomputed heads-up
+  equity and multi-threaded CFR+ for preflop/push-fold abstractions.
+- `facebookresearch/REBEL`: useful as architecture evidence only. The official
+  repository contains a Liar's Dice implementation, not HUNL poker code. The
+  transferable ideas are CPU/GPU data generation, TorchScript value export,
+  recursive/subgame solving, and public-belief-style features.
 
 Practical takeaways for this repo:
 
 - Keep the national bot runtime native and stdlib-only where possible. Export
   neural weights to JSON and run a small MLP in pure Python.
-- Use the neural model first as an advisor that can rescue narrow rule mistakes,
-  then measure `raw_changed`, `final_changed`, and actual response mismatches.
-- Move evaluation toward mirrored seat batches with confidence intervals before
-  promoting a neural variant; one-seat samples can hide variance.
-- Add sequence or opponent-memory features offline, but compile them into simple
-  rolling counters for runtime.
-- If moving beyond imitation, train Deep-CFR-style raise-bucket policies against
-  the local engine, then pass every action through the native national sanitizer.
+- Move from one-off binary gates to replayable multi-action targets:
+  `legal_mask + action_delta/regret_vector + sampled_strategy`. This should be
+  generated at one decision point across the same deck and bot RNG seeds.
+- The first local version of that target path is
+  `tools/multi_action_counterfactual_probe.py`: it enumerates the fixed
+  RLCard-style labels, sends only sanitized final actions into the local judge,
+  and records both fixed-label vectors and unique final-action branch counts.
+  Use it to build small verified vector-target shards before committing to a
+  larger actor/learner rewrite.
+- `tools/multi_action_shard_runner.py` turns that into the first parallel actor
+  path. It preserves the fixed six-label target contract while separately
+  evaluating off-menu rule raises as the `delta_vs_rule` baseline, which avoids
+  confusing action abstraction with protocol or rule-strategy raise sizing.
+- `tools/build_multi_action_value_data.py` and
+  `tools/train_multi_action_value.py` are the matching learner prototype. The
+  first p024 CUDA run was useful for validating the six-output target contract
+  and showing a local `raise_half` signal, but it is too small and too
+  single-opponent to justify a runtime bot change.
+- Build a lightweight actor-learner loop before reaching for Ray: actor workers
+  scan divergence windows, enumerate abstract legal actions, run
+  counterfactual branches, and append reservoir-style JSONL shards; the learner
+  consumes those shards on CUDA and exports JSON weights.
+- Use PokerRL/RLCard-style action abstraction, but adapt it to national
+  protocol semantics. `raise X` is raise-to-stage-total, not a delta; off-tree
+  opponent raise sizes should be included in the current legal menu before any
+  nearest-bucket projection.
+- Add public-belief/range features incrementally: range buckets, board texture,
+  betting line, showdown-revealed correction, and opponent fold/call/raise
+  frequencies. Do not call an LLM or run a large PyTorch model during play.
+- Promotion remains paired common-deck evaluation with both seats, bot RNG
+  seeds, multi-opponent smoke, median and CI checks, and national protocol
+  alignment tests.
 
 ## Advisor-Line Findings
 

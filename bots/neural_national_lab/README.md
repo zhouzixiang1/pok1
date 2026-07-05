@@ -6,7 +6,7 @@ Neural-enhanced national bot experiments.
   experiment version.
 - `tools/`: teacher-data collection, tiny-MLP training, and mirror evaluation.
 - `data/`: small generated datasets, metrics, and evaluation reports.
-- `external/`: ignored shallow clones for research scans.
+- `external/`: ignored external poker-AI reference clones for research scans.
 
 Runtime bots stay stdlib-only. Training may use PyTorch/NumPy. The neural model
 acts after the rule strategy and before `sanitize_action`; native TCP output is
@@ -785,6 +785,107 @@ microscopically versus v056 because the fix removes a single `-50` pair:
 `claude_v285` produced 32 zero deltas, so no cross-opponent regression was
 observed. Treat v058 as a cleaner/safely guarded v056-family artifact, not as
 a statistically promoted bot.
+
+`sweep_template_windows.py` batches `template_action_prefilter.py` across
+deterministic seed windows and is the first scalable active-search helper for
+the narrow `101->0` support family. A four-window `claude_v279` sweep
+(`seed_start=2026081000`, 32 paired seeds per window) scanned 128 paired tasks
+and found six v058 template hits across three windows. True active labels were
+mixed and exposed the weakness in v058's p059 guard: `+2`, `-2050`, `+784`,
+`-70`, `-5374`, and `-68`. That means the old support head could still let
+several bad small-raise recoveries through when the search moved outside the
+original v056 window.
+
+`build_runtime_value_data_from_divergence.py` now supports
+`--extra-features hand_strength_v1`, appending the same compact hand-strength
+feature suffix used by earlier interaction/value work. Rebuilding the v058
+sweep labels added six new rows to the positive-support pool. The combined
+p065 support set has 65 rows, 55 positive and 10 negative; the hand-strength
+variant has 88 input features. Because positives still dominated, the selected
+training set oversamples negatives into
+`runtime_support_v043_v058_positive_guard_p105_rulebase_hs_negbal_seed2026071503_2026083000.jsonl`
+(115 rows, 55 positive and 60 negative). The chosen CUDA h32 model
+(`support_gate_v043_v058_p105_rulebase_hs_negbal_h32_seed661`) had validation
+MAE `0.1656` and sign accuracy `0.7826`. This was selected for conservative
+blocking behavior, not for maximizing the number of recovered raises.
+
+`v059_v254_cf_support_guard_hs_negbal_h32_s040` keeps the v058/v056 runtime
+structure but swaps the support model for that hand-strength, negative-balanced
+h32 head and raises the support threshold to `0.40`. Targeted replay preserved
+the large positive v279 pockets at idx18 `+4166` and idx29 `+6590`, fixed the
+newly discovered bad sweep rows to zero, and kept idx6, idx3, pair21, and idx36
+neutral. It deliberately sacrifices weaker positives such as idx10 and pair48
+to avoid opening new negative raise recoveries. The same 48-pair v279 window
+remains positive but not significant: `+112.04` chips per 70 hands, 95 percent
+CI `[-45.60, +269.68]`. Treat v059 as a safer v058-family artifact and a
+better data point for the next sampler, not as a promoted strength jump. The
+four-opponent 8-pair smoke on the v053/v055 validation window remained inactive:
+32 zero deltas against `claude_v279`, `claude_v283`, `claude_v284`, and
+`claude_v285`.
+
+The July 2026 full-clone scan under `external/` sharpens the scale-up path.
+Deep-CFR, PokerRL, OpenSpiel, RLCard, pyCFR, poker-cfr, and ReBeL all point to
+the same local next step: keep the national runtime compact and native, but
+turn the offline loop into parallel actor sampling plus a GPU learner over
+legal action masks and vector action-value targets. Concretely, the next
+neural generation should stop adding one-off binary gates and instead collect,
+for each replayable decision point, a legal abstract action menu
+(`fold`, `check/call`, half-pot/small raise, pot raise, overpot/all-in as
+legal) plus a delta or regret value for every legal action. The national
+raise-to-total sanitizer must remain the only component that turns a raise
+bucket into protocol text.
+
+`multi_action_counterfactual_probe.py` is the first concrete implementation of
+that vector-target path. It enumerates the six fixed abstract labels at one
+bot0 decision, sanitizes each candidate through the version under test, runs
+each legal unique final action from the same judge prefix/deck/bot RNG seeds,
+and exports `state_features`, `advantage_features`, `legal_mask`,
+`action_values`, `delta_vs_rule`, and `regret_vs_mean`. It also records
+`unique_final_actions` and `final_action_counts` so a learner can tell the
+difference between fixed-label training outputs and sanitizer-collapsed branch
+actions. The v059 versus `claude_v279` smoke at `seed_base=2026080100` wrote
+two ok flop rows with six legal labels and six unique final actions per row.
+This validates the data contract only; it is not a performance claim.
+
+`multi_action_shard_runner.py` is the multicore actor wrapper for that probe:
+
+```bash
+python bots/neural_national_lab/tools/multi_action_shard_runner.py \
+  --version bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040 \
+  --opponent bots/claude_v279 \
+  --shards 8 \
+  --workers 8 \
+  --games-per-shard 2 \
+  --max-rows-per-shard 8 \
+  --stage flop \
+  --branch-scope hand \
+  --seed-base 2026080200 \
+  --bot-seed-base 202650020000 \
+  --output bots/neural_national_lab/data/multiaction_shards_v059_vs_v279_seed2026080200.json
+```
+
+The first 2-shard/2-worker smoke wrote
+`data/multiaction_shards_v059_vs_v279_smoke_s002_seed2026080200.json`: 2 ok
+rows, 6 fixed legal labels per row, mean 6.5 evaluated branches, and one
+off-menu rule baseline (`raise 107`). Off-menu rule raises are evaluated as
+`rule_branch` for a correct `delta_vs_rule` baseline, but they are not added to
+the fixed six-label training vector.
+
+`build_multi_action_value_data.py` and `train_multi_action_value.py` are the
+first learner side of the same path. The builder turns multi-action rows into
+JSONL records with a fixed six-output target vector and target mask; the
+trainer fits a compact JSON-exported MLP with one value/regret output per
+abstract label. A first p024 CUDA run used eight shards, four workers, and
+`seed_base=2026080300` against `claude_v279`. It produced 24 ok flop rows,
+including five off-menu rule baselines. The delta-vs-rule data had a positive
+`raise_half` bucket (`+85.04` chips/hand-scope decision, 95 percent CI
+`[+9.67, +160.41]`) and a very noisy negative all-in bucket. The h16 delta
+model (`multiaction_value_v059_vs_v279_p024_delta_adv_h16_seed701_weights.json`)
+trained on CUDA with validation MAE `0.1777`; the regret-target comparison was
+weaker (`val_best_label_acc=0.20`). Treat these as learner-contract artifacts,
+not as runtime bot weights. The next v060 attempt needs larger multi-opponent
+vector shards before wiring a multi-action head into the already conservative
+v059 gate stack.
 
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops

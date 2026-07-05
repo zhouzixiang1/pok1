@@ -1,0 +1,1256 @@
+{
+  "mode": "template_action_prefilter_v1",
+  "baseline": {
+    "label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+    "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py"
+  },
+  "candidate": {
+    "label": "v058_v254_cf_support_guard_p059_h16_s064",
+    "path": "bots/neural_national_lab/versions/v058_v254_cf_support_guard_p059_h16_s064/main.py"
+  },
+  "opponents": [
+    {
+      "label": "claude_v279",
+      "path": "bots/claude_v279/main.py"
+    }
+  ],
+  "indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ],
+  "workers": 12,
+  "executor": "process",
+  "seed_base": 2026082000,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "opponent_seed_stride": 100000,
+  "bot_seed_base": 202615000000,
+  "bot_seed_stride": 10000,
+  "opponent_bot_seed_stride": 10000000,
+  "max_hands": 70,
+  "max_own_decisions_per_side": 0,
+  "baseline_action": 101,
+  "candidate_action": 0,
+  "stage": "flop",
+  "max_hits_per_side": 1,
+  "stop_after_hits": 0,
+  "stop_pair_after_first_side": false,
+  "tasks_total": 32,
+  "tasks_existing": 0,
+  "tasks_submitted": 32,
+  "tasks_skipped": 0,
+  "tasks_completed": 32,
+  "tasks_remaining": 0,
+  "early_stopped": false,
+  "pairs": [
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 0,
+      "seed": 2026082000,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615000000,
+          202615000001
+        ],
+        "mirror": [
+          202615010000,
+          202615010001
+        ]
+      },
+      "has_hit": true,
+      "normal": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 60,
+        "compared_own_decisions": 31,
+        "hits": [
+          {
+            "decision_index": 30,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 11,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                23,
+                34,
+                1
+              ],
+              "my_cards": [
+                24,
+                9
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 261,
+        "compared_own_decisions": 130,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 1,
+      "seed": 2026082001,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615020000,
+          202615020001
+        ],
+        "mirror": [
+          202615030000,
+          202615030001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 265,
+        "compared_own_decisions": 136,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 234,
+        "compared_own_decisions": 109,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 2,
+      "seed": 2026082002,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615040000,
+          202615040001
+        ],
+        "mirror": [
+          202615050000,
+          202615050001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 275,
+        "compared_own_decisions": 130,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 193,
+        "compared_own_decisions": 87,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 3,
+      "seed": 2026082003,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615060000,
+          202615060001
+        ],
+        "mirror": [
+          202615070000,
+          202615070001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 207,
+        "compared_own_decisions": 94,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 297,
+        "compared_own_decisions": 151,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 4,
+      "seed": 2026082004,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615080000,
+          202615080001
+        ],
+        "mirror": [
+          202615090000,
+          202615090001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 214,
+        "compared_own_decisions": 100,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 241,
+        "compared_own_decisions": 117,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 5,
+      "seed": 2026082005,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615100000,
+          202615100001
+        ],
+        "mirror": [
+          202615110000,
+          202615110001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 316,
+        "compared_own_decisions": 156,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 311,
+        "compared_own_decisions": 153,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 6,
+      "seed": 2026082006,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615120000,
+          202615120001
+        ],
+        "mirror": [
+          202615130000,
+          202615130001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 291,
+        "compared_own_decisions": 151,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 253,
+        "compared_own_decisions": 121,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 7,
+      "seed": 2026082007,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615140000,
+          202615140001
+        ],
+        "mirror": [
+          202615150000,
+          202615150001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 231,
+        "compared_own_decisions": 120,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 255,
+        "compared_own_decisions": 120,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 8,
+      "seed": 2026082008,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615160000,
+          202615160001
+        ],
+        "mirror": [
+          202615170000,
+          202615170001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 199,
+        "compared_own_decisions": 104,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 284,
+        "compared_own_decisions": 139,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 9,
+      "seed": 2026082009,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615180000,
+          202615180001
+        ],
+        "mirror": [
+          202615190000,
+          202615190001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 262,
+        "compared_own_decisions": 134,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 112,
+        "compared_own_decisions": 38,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 10,
+      "seed": 2026082010,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615200000,
+          202615200001
+        ],
+        "mirror": [
+          202615210000,
+          202615210001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 300,
+        "compared_own_decisions": 150,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 171,
+        "compared_own_decisions": 74,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 11,
+      "seed": 2026082011,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615220000,
+          202615220001
+        ],
+        "mirror": [
+          202615230000,
+          202615230001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 231,
+        "compared_own_decisions": 111,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 263,
+        "compared_own_decisions": 134,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 12,
+      "seed": 2026082012,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615240000,
+          202615240001
+        ],
+        "mirror": [
+          202615250000,
+          202615250001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 258,
+        "compared_own_decisions": 125,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 253,
+        "compared_own_decisions": 124,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 13,
+      "seed": 2026082013,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615260000,
+          202615260001
+        ],
+        "mirror": [
+          202615270000,
+          202615270001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 236,
+        "compared_own_decisions": 110,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 265,
+        "compared_own_decisions": 130,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 14,
+      "seed": 2026082014,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615280000,
+          202615280001
+        ],
+        "mirror": [
+          202615290000,
+          202615290001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 259,
+        "compared_own_decisions": 126,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 250,
+        "compared_own_decisions": 125,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 15,
+      "seed": 2026082015,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615300000,
+          202615300001
+        ],
+        "mirror": [
+          202615310000,
+          202615310001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 265,
+        "compared_own_decisions": 131,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 246,
+        "compared_own_decisions": 124,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 16,
+      "seed": 2026082016,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615320000,
+          202615320001
+        ],
+        "mirror": [
+          202615330000,
+          202615330001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 258,
+        "compared_own_decisions": 125,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 259,
+        "compared_own_decisions": 126,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 17,
+      "seed": 2026082017,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615340000,
+          202615340001
+        ],
+        "mirror": [
+          202615350000,
+          202615350001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 275,
+        "compared_own_decisions": 138,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 262,
+        "compared_own_decisions": 129,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 18,
+      "seed": 2026082018,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615360000,
+          202615360001
+        ],
+        "mirror": [
+          202615370000,
+          202615370001
+        ]
+      },
+      "has_hit": true,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 278,
+        "compared_own_decisions": 137,
+        "hits": []
+      },
+      "mirror": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 79,
+        "compared_own_decisions": 40,
+        "hits": [
+          {
+            "decision_index": 39,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 16,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                21,
+                10,
+                35
+              ],
+              "my_cards": [
+                6,
+                31
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 19,
+      "seed": 2026082019,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615380000,
+          202615380001
+        ],
+        "mirror": [
+          202615390000,
+          202615390001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 296,
+        "compared_own_decisions": 148,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 253,
+        "compared_own_decisions": 126,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 20,
+      "seed": 2026082020,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615400000,
+          202615400001
+        ],
+        "mirror": [
+          202615410000,
+          202615410001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 261,
+        "compared_own_decisions": 128,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 302,
+        "compared_own_decisions": 147,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 21,
+      "seed": 2026082021,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615420000,
+          202615420001
+        ],
+        "mirror": [
+          202615430000,
+          202615430001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 275,
+        "compared_own_decisions": 136,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 199,
+        "compared_own_decisions": 89,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 22,
+      "seed": 2026082022,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615440000,
+          202615440001
+        ],
+        "mirror": [
+          202615450000,
+          202615450001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 266,
+        "compared_own_decisions": 128,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 242,
+        "compared_own_decisions": 120,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 23,
+      "seed": 2026082023,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615460000,
+          202615460001
+        ],
+        "mirror": [
+          202615470000,
+          202615470001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 228,
+        "compared_own_decisions": 117,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 218,
+        "compared_own_decisions": 102,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 24,
+      "seed": 2026082024,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615480000,
+          202615480001
+        ],
+        "mirror": [
+          202615490000,
+          202615490001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 267,
+        "compared_own_decisions": 128,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 281,
+        "compared_own_decisions": 133,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 25,
+      "seed": 2026082025,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615500000,
+          202615500001
+        ],
+        "mirror": [
+          202615510000,
+          202615510001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 261,
+        "compared_own_decisions": 127,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 283,
+        "compared_own_decisions": 144,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 26,
+      "seed": 2026082026,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615520000,
+          202615520001
+        ],
+        "mirror": [
+          202615530000,
+          202615530001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 244,
+        "compared_own_decisions": 118,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 279,
+        "compared_own_decisions": 141,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 27,
+      "seed": 2026082027,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615540000,
+          202615540001
+        ],
+        "mirror": [
+          202615550000,
+          202615550001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 186,
+        "compared_own_decisions": 101,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 169,
+        "compared_own_decisions": 73,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 28,
+      "seed": 2026082028,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615560000,
+          202615560001
+        ],
+        "mirror": [
+          202615570000,
+          202615570001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 240,
+        "compared_own_decisions": 122,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 279,
+        "compared_own_decisions": 137,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 29,
+      "seed": 2026082029,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615580000,
+          202615580001
+        ],
+        "mirror": [
+          202615590000,
+          202615590001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 215,
+        "compared_own_decisions": 102,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 68,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 30,
+      "seed": 2026082030,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202615600000,
+          202615600001
+        ],
+        "mirror": [
+          202615610000,
+          202615610001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 268,
+        "compared_own_decisions": 129,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 280,
+        "compared_own_decisions": 138,
+        "hits": []
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 31,
+      "seed": 2026082031,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202615620000,
+          202615620001
+        ],
+        "mirror": [
+          202615630000,
+          202615630001
+        ]
+      },
+      "has_hit": false,
+      "normal": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 250,
+        "compared_own_decisions": 121,
+        "hits": []
+      },
+      "mirror": {
+        "status": "finished",
+        "has_hit": false,
+        "steps": 274,
+        "compared_own_decisions": 138,
+        "hits": []
+      }
+    }
+  ],
+  "summary": {
+    "pairs": 32,
+    "hit_pairs": 2,
+    "hit_rate": 0.0625,
+    "side_hits": {
+      "normal": 1,
+      "mirror": 1
+    },
+    "side_statuses": {
+      "hit": 2,
+      "finished": 62
+    },
+    "by_opponent": {
+      "claude_v279": {
+        "pairs": 32,
+        "hit_pairs": 2
+      }
+    }
+  }
+}
