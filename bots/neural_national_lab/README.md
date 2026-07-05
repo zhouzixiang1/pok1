@@ -1106,11 +1106,15 @@ append an `opponent_context_v1` feature block derived from the runtime
 priors plus 13 full-request rows from v070-vs-v064 target windows. CUDA trained
 h16/h32/h64 heads; the h64 head was installed in
 `versions/v071_v254_opponent_context_support_p125_h64` as a support-only
-fallback while keeping v070's primary p087 head unchanged. Target replay and
-the full g032x5 run reproduced v070's action surface and score almost exactly:
+fallback while keeping v070's primary p087 head unchanged. The original
+workers>1 g032x5 run appeared to reproduce v070's sparse positive score:
 aggregate `+93.48` chips per 70 hands versus v064, CI `[-9.84, +196.79]`,
-split 11 positive, 147 zero, and 2 negative samples. v071 is therefore a
-successful context/plumbing artifact, not a significant strength improvement.
+split 11 positive, 147 zero, and 2 negative samples. After the process-worker
+fix below, the repaired `_proc_` v071 g032x5 scan over
+v279/v283/v284/v285/v288 found 160 zero-delta samples and zero divergence
+pairs. Treat the earlier v071 score as thread-worker contamination; v071 is
+therefore a successful context/plumbing artifact, not a demonstrated strength
+improvement.
 
 The v072-v074 follow-up exposed an evaluation safety bug before it produced a
 usable bot. `versions/v072_v254_context_support_p130_h64_min025` retrained the
@@ -1121,14 +1125,14 @@ large positive windows, but single-worker replay contradicted them. Root cause:
 the local `judge_func`, whose state is not thread-safe. Both tools now use
 process workers for `--workers > 1`, keeping multi-core speed while isolating
 judge state. The repaired `_proc_` v074 g032x5 scan over v279/v283/v284/v285/v288
-found 160 zero-delta samples and zero divergence pairs. Treat all pre-fix
+also found 160 zero-delta samples and zero divergence pairs. Treat all pre-fix
 workers>1 neural-lab paired/divergence files as exploratory only unless rerun
 with the process-worker tools or `--workers 1`.
 
-This v066-v074 sequence is a local-tuning plateau. The best artifacts reduce
-known bad windows and preserve some large positive outliers, but none clear the
-paired promotion bar and the aggregate mean is dominated by rare v285/v288
-samples. Do not keep spending cycles on scalar threshold sweeps in this family.
+This v066-v074 sequence is a local-tuning plateau. The repaired process-worker
+audits now show no proven action-surface advantage for v071-v074, and the
+remaining pre-fix positives should not drive promotion decisions. Do not keep
+spending cycles on scalar threshold sweeps in this family.
 The next useful branch should move to richer action-value targets: legal action
 masks, public/range features, branch-level value or regret vectors, and an
 actor/learner data loop that can produce many more reproducible disputed-gate

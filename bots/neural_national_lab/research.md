@@ -252,8 +252,10 @@ Recommended next architecture:
   full Botzone `requests` can be recorded, converted into opponent-model
   features, trained offline, and consumed by a native runtime support gate
   without touching national protocol action sanitation. It does not prove a new
-  edge: g032x5 remained `+93.48` chips per 70 hands versus v064 with CI
-  `[-9.84, +196.79]`, the same sparse pattern as v070.
+  edge. The original workers>1 g032x5 result reported `+93.48` chips per 70
+  hands versus v064 with CI `[-9.84, +196.79]`, but the repaired process-worker
+  rerun over v279/v283/v284/v285/v288 produced 160 zero-delta samples and zero
+  divergence pairs. Treat the old v071 score as thread-worker contamination.
 - The literature/open-source direction remains consistent: Deep CFR, Single
   Deep CFR, OpenSpiel's Deep CFR implementation, and PokerRL all spend most of
   their engineering budget on actor traversal, legal-action masks, replay
@@ -266,12 +268,13 @@ Recommended next architecture:
   too slow, nondeterministic, and weakly grounded in the national 60-second TCP
   protocol to be a decision engine.
 - The next meaningful implementation is a global evaluation/data-generation
-  scheduler, not another single-bot threshold sweep. The v072-v074 audit found
-  a stricter prerequisite: threaded workers around the local `judge_func` are
-  not deterministic under seeded replay, so workers>1 paired/divergence results
-  produced before the process-worker fix are exploratory only. Use process
-  workers or `--workers 1` before trusting any action-value label or promotion
-  result.
+  scheduler, not another single-bot threshold sweep. The v071-v074 process
+  audits show the current threshold/support family collapses to the v064 action
+  surface when replayed safely. A stricter prerequisite is now explicit:
+  threaded workers around the local `judge_func` are not deterministic under
+  seeded replay, so workers>1 paired/divergence results produced before the
+  process-worker fix are exploratory only. Use process workers or `--workers 1`
+  before trusting any action-value label or promotion result.
 
 ## Advisor-Line Findings
 
