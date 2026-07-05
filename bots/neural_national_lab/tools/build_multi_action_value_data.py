@@ -14,6 +14,50 @@ from typing import Any
 LABELS = ("fold", "call", "raise_half", "raise_pot", "raise_2pot", "allin")
 
 
+def _f(mapping: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(mapping.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _clip01(value: float) -> float:
+    if value != value:
+        return 0.0
+    return 0.0 if value < 0.0 else 1.0 if value > 1.0 else value
+
+
+def _action_context_features(row: dict[str, Any]) -> list[float]:
+    state = row.get("state") if isinstance(row.get("state"), dict) else {}
+    request = row.get("request") if isinstance(row.get("request"), dict) else {}
+    rule_label = int(row.get("rule_label_id", -1) or -1)
+    try:
+        rule_action = int(row.get("rule_final", 0) or 0)
+    except (TypeError, ValueError):
+        rule_action = 0
+    pot = max(1.0, _f(state, "pot", _f(request, "pot", 150.0)))
+    to_call = max(0.0, _f(state, "to_call", _f(request, "to_call", 0.0)))
+    min_raise = max(1.0, _f(state, "min_raise_action", _f(state, "round_raise", 100.0)))
+    stack = max(1.0, _f(request, "my_chips", 20000.0))
+    positive = max(0.0, float(rule_action))
+    denom = max(1.0, pot + to_call)
+    return [
+        *[1.0 if idx == rule_label else 0.0 for idx in range(len(LABELS))],
+        1.0 if rule_action == -1 else 0.0,
+        1.0 if rule_action == 0 else 0.0,
+        1.0 if rule_action > 0 else 0.0,
+        1.0 if rule_action == -2 else 0.0,
+        _clip01(positive / 20000.0),
+        _clip01(positive / stack),
+        _clip01(positive / denom),
+        _clip01(max(0.0, positive - to_call) / denom),
+        _clip01(positive / min_raise),
+        _clip01(to_call / 20000.0),
+        _clip01(to_call / denom),
+        1.0 if to_call <= 0.0 else 0.0,
+    ]
+
+
 def _target_stats(values: list[float]) -> dict[str, Any]:
     if not values:
         return {"samples": 0, "mean": 0.0, "median": 0.0, "min": None, "max": None, "p10": None, "p90": None}
@@ -53,6 +97,11 @@ def _features(row: dict[str, Any], feature_set: str) -> list[float] | None:
         values = row.get("state_features")
     elif feature_set == "native_context":
         values = row.get("native_context_features")
+    elif feature_set == "native_context_action":
+        values = row.get("native_context_features")
+        if isinstance(values, list):
+            return [float(value) for value in values] + _action_context_features(row)
+        return None
     else:
         raise ValueError(f"unknown feature set: {feature_set}")
     if not isinstance(values, list):
@@ -219,7 +268,7 @@ def main() -> None:
     parser.add_argument("--input", action="append", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--summary", type=Path)
-    parser.add_argument("--feature-set", choices=["advantage", "state", "native_context"], default="advantage")
+    parser.add_argument("--feature-set", choices=["advantage", "state", "native_context", "native_context_action"], default="advantage")
     parser.add_argument(
         "--target",
         choices=["delta_vs_rule", "regret_vs_mean", "action_values"],

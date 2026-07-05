@@ -811,3 +811,41 @@
   rating leaders. The next serious path needs either richer opponent/range
   features or a larger held-out counterfactual dataset; the h64 d128 head is
   not a promotion candidate.
+
+## Native TCP Round 4 Notes
+
+- Re-read `.evolution_pok` current conservative-Glicko ratings before the run.
+  The top five native protocol opponents were `national_v1`, `national_v7`,
+  `national_v3`, `national_v2`, and `national_v11`.
+- Added `native_context_action` training features to
+  `build_multi_action_value_data.py`. This keeps the existing 60 native context
+  features and appends 18 rule-action context features: rule-label one-hot,
+  fold/call/positive/allin flags, normalized rule action size, rule action
+  versus stack/pot/min-raise, to-call ratios, and free-action state.
+- Built
+  `native_tcp_value_v085_profile_fc_leaders_d128_context_action_rulebase_clip4000.jsonl`:
+  128 preflop rows, 78 input dimensions, and 326 clipped targets. The h64 model
+  `native_tcp_value_v085_profile_fc_leaders_action_rulebase_h64_seed1731.json`
+  trained on CUDA with validation MAE `0.1728` and validation best-label
+  accuracy `0.5769`. Offline runtime-style scan selected 11 all-positive
+  `raise_pot -> call` interventions at threshold `0.40`.
+- `v095_national_v17_native_context_action_h64_call_t040_tcp` wires that model
+  into native TCP runtime while keeping neural fold, raises, and all-ins
+  disabled. On the current Glicko top5, seed base `2026071900`, 5 paired
+  matches per opponent, it scored `+111611` chips over 3500 hands with 0
+  illegal actions, 0 timeouts, and 0 adapter actions. The v082 control on the
+  same seeds scored `+101371`; paired diff was `+10240`, split 15 positive, 0
+  negative, and 10 zero rows. This is a clean positive neural increment over
+  the strong rule baseline, but not comprehensive domination.
+- `v096_national_v17_native_context_action_h64_call_t015_tcp` tested whether
+  the offline-safe `0.15` threshold could add more value. It failed online:
+  `+97604` absolute, `-3767` versus v082, and `-14007` versus v095. The relaxed
+  gate opened negative windows against `national_v7` and `national_v11`,
+  including `-29880` paired rows. Keep v095's stricter threshold unless new
+  counterfactual data explains those buckets.
+- Current status: action-context features are the first native neural route
+  with a reproducible positive diff against the current protocol leader pool.
+  The remaining gap is strength and coverage: v095 is still not a top-pool
+  dominator. The next round should collect larger current-leader action-value
+  shards with held-out opponent groups and should explicitly model v7/v11 as
+  hard negatives before widening any runtime gate.
