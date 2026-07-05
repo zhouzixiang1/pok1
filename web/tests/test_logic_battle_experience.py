@@ -506,6 +506,41 @@ class TestApplyBatchResultsCumulative:
         assert pending_rows[0]["match_id"] == "p1"
         assert pending_rows[0]["status"] == "llm_pending"
 
+    def test_llm_disabled_flushes_successes_before_merge_threshold(self, monkeypatch):
+        """Disabled LLM mode persists each cycle instead of waiting for 24 summaries."""
+        monkeypatch.setattr(be, "BATTLE_EXPERIENCE_LLM_ENABLED", False)
+        pending = []
+        payload = {
+            "summary": "Short cycle summary for national_v16 vs national_v15",
+            "evidence": [
+                {
+                    "evidence_id": "ev_immediate_001",
+                    "match_id": "immediate_1",
+                    "bot": "national_v16",
+                    "opponent": "national_v15",
+                    "sample_n": 5,
+                    "wins": 3,
+                    "losses": 2,
+                    "draws": 0,
+                    "win_rate": 0.6,
+                    "avg_delta": 120.0,
+                    "spot_tags": ["positive_chip_ev"],
+                }
+            ],
+        }
+
+        written = be._accumulate_successful_summaries([
+            ({"id": "immediate_1", "bot0": "national_v16", "bot1": "national_v15"}, True, payload)
+        ], pending)
+
+        assert written == 1
+        assert pending == []
+        marker = be._read_markers()["immediate_1"]
+        assert marker["status"] == "summary_ready"
+        assert marker["evidence_ids"] == ["ev_immediate_001"]
+        assert be.BATTLE_EVIDENCE_FILE.exists()
+        assert be.BATTLE_PENDING_SUMMARIES_FILE.exists()
+
     def test_llm_markdown_output_records_structured_lessons(self, monkeypatch):
         """LLM markdown observations get stable lesson IDs and evidence refs."""
         monkeypatch.setattr(

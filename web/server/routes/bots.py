@@ -9,8 +9,10 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
 
 from server.cache import cached_read
-from server.routes._helpers import build_bot_summary, _bot_sort_key
+from server.routes._helpers import build_bot_summary
 from rating_snapshot import build_strength_rows
+from evolution_infra import get_active_bots
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version, version_sort_key
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BOTS_DIR = PROJECT_ROOT / "bots"
@@ -42,11 +44,11 @@ async def list_bots(include_graveyard: bool = Query(False)):
     graveyard = []
     active_dirs = []
 
-    if BOTS_DIR.exists():
-        for d in sorted(BOTS_DIR.iterdir(), key=lambda p: _bot_sort_key(p.name)):
-            if d.is_dir() and d.name.startswith("claude_v") and d.name != "claude_v0":
-                if (d / ".completed").exists():
-                    active_dirs.append(d)
+    active_dirs = [
+        BOTS_DIR / name
+        for name in get_active_bots()
+        if (BOTS_DIR / name).is_dir()
+    ]
     active_names = [d.name for d in active_dirs]
     strength_rows = {
         row["name"]: row
@@ -65,8 +67,8 @@ async def list_bots(include_graveyard: bool = Query(False)):
     if include_graveyard:
         graveyard_dir = BOTS_DIR / "graveyard"
         if graveyard_dir.exists():
-            for d in sorted(graveyard_dir.iterdir(), key=lambda p: _bot_sort_key(p.name)):
-                if d.is_dir() and d.name.startswith("claude_v"):
+            for d in sorted(graveyard_dir.iterdir(), key=lambda p: version_sort_key(p.name)):
+                if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX) and parse_bot_version(d.name):
                     s = build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data)
                     s["graveyard"] = True
                     graveyard.append(s)
@@ -80,9 +82,9 @@ def _resolve_bot_dir(version: int) -> Path:
     Prefers a ``.completed`` copy (the committed truth) and prefers the active
     pool over the graveyard when both exist. Raises 404 if unknown.
     """
-    bot_name = f"claude_v{version}"
-    active_dir = BOTS_DIR / bot_name
-    graveyard_dir = BOTS_DIR / "graveyard" / bot_name
+    name = bot_name(version)
+    active_dir = BOTS_DIR / name
+    graveyard_dir = BOTS_DIR / "graveyard" / name
     if active_dir.exists() and (active_dir / ".completed").exists():
         return active_dir
     if graveyard_dir.exists() and (graveyard_dir / ".completed").exists():
@@ -97,7 +99,7 @@ def _resolve_bot_dir(version: int) -> Path:
 @router.get("/{version}")
 async def bot_detail(version: int):
     """Get detailed info about a specific bot version."""
-    bot_name = f"claude_v{version}"
+    name = bot_name(version)
     bot_dir = _resolve_bot_dir(version)
 
     ratings = _load_ratings()
@@ -113,13 +115,13 @@ async def bot_detail(version: int):
             match_history_path=MATCH_HISTORY_FILE,
         )
     }
-    summary = build_bot_summary(bot_dir, bot_name, ratings, bot_stats_data, h2h_data, strength_rows)
+    summary = build_bot_summary(bot_dir, name, ratings, bot_stats_data, h2h_data, strength_rows)
 
     # Try to get git parent from tag
     try:
         import subprocess
         result = subprocess.run(
-            ["git", "tag", "-l", f"bot-v{version}", "--format=%(contents)"],
+            ["git", "tag", "-l", bot_tag(version), "--format=%(contents)"],
             capture_output=True, text=True, cwd=str(PROJECT_ROOT)
         )
         if result.returncode == 0 and result.stdout:
@@ -181,9 +183,9 @@ async def bot_code(version: int, filename: str):
     if not filename.endswith(".py") or "/" in filename or "\\" in filename:
         return PlainTextResponse("Invalid filename", status_code=400)
 
-    bot_name = f"claude_v{version}"
+    name = bot_name(version)
     # Check active and graveyard
-    for base in [BOTS_DIR / bot_name, BOTS_DIR / "graveyard" / bot_name]:
+    for base in [BOTS_DIR / name, BOTS_DIR / "graveyard" / name]:
         path = base / filename
         if path.is_file():
             return PlainTextResponse(path.read_text(errors="replace"))

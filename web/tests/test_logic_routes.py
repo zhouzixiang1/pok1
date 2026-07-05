@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
+from bot_namespace import bot_name
 
 
 # ── ratings.py: Ranking logic ──
@@ -92,12 +93,12 @@ class TestExperienceAppendLogic:
 class TestH2HFilterLogic:
     @pytest.mark.requires_active_bot
     def test_filtered_contains_only_specified_bot(self, client, active_bot_version):
-        bot_name = f"claude_v{active_bot_version}"
-        resp = client.get(f"/api/h2h?bot_name={bot_name}")
+        name = bot_name(active_bot_version)
+        resp = client.get(f"/api/h2h?bot_name={name}")
         assert resp.status_code == 200
         data = resp.json()
         for key in data:
-            assert bot_name in key
+            assert name in key
 
 
 # ── matches.py: Replay path traversal ──

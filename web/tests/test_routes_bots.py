@@ -1,6 +1,7 @@
 """Tests for /api/bots/* endpoints."""
 
 import pytest
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_name
 
 
 class TestListBots:
@@ -24,6 +25,14 @@ class TestListBots:
             assert "completed" in bot
             assert "files" in bot
 
+    @pytest.mark.requires_active_bot
+    def test_data_stream_bot_snapshot_uses_active_namespace(self):
+        from server.routes.data_stream import _get_bots
+
+        data = _get_bots()
+        assert data["active"]
+        assert all(bot["name"].startswith(ACTIVE_BOT_PREFIX) for bot in data["active"])
+
 
 class TestBotDetail:
     @pytest.mark.requires_active_bot
@@ -31,7 +40,7 @@ class TestBotDetail:
         resp = client.get(f"/api/bots/{active_bot_version}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["name"] == f"claude_v{active_bot_version}"
+        assert data["name"] == bot_name(active_bot_version)
         assert data["version"] == active_bot_version
         assert "files" in data
         assert "total_lines" in data
@@ -52,7 +61,7 @@ class TestBotDownload:
         assert resp.headers["content-type"] == "application/zip"
         cd = resp.headers["content-disposition"]
         assert "attachment" in cd
-        assert f"claude_v{active_bot_version}.zip" in cd
+        assert f"{bot_name(active_bot_version)}.zip" in cd
 
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             names = zf.namelist()
@@ -77,7 +86,7 @@ class TestBotDownloadSymlinkDefense:
         import zipfile
         from server.routes import bots as bots_mod
 
-        bot_dir = tmp_path / "claude_v9999"
+        bot_dir = tmp_path / bot_name(9999)
         bot_dir.mkdir()
         (bot_dir / "main.py").write_text("def main():\n    pass\n")
         (bot_dir / ".completed").touch()

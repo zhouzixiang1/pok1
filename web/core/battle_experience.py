@@ -395,7 +395,10 @@ def _experience_loop():
                             pass
                         batch_results.append((entry, False, None))
 
-            # Accumulate: move successful summaries into the pending buffer.
+            # Accumulate or persist successful summaries. When the advisory LLM
+            # path is disabled, deterministic replay memory should be durable
+            # immediately; otherwise a normal restart before MERGE_THRESHOLD
+            # would lose summaries that only lived in this thread's list.
             for entry, success, summary in batch_results:
                 if not success or summary is None:
                     # Failures bump fail_count immediately (not deferred)
@@ -403,8 +406,9 @@ def _experience_loop():
                     if fail_count >= 3:
                         log.warning("Match %s force-skipped after %d failures",
                                     entry.get("id", ""), fail_count)
-                else:
-                    _pending_summaries.append((entry, success, summary))
+            immediate_count = _accumulate_successful_summaries(batch_results, _pending_summaries)
+            if immediate_count:
+                _analyses_this_hour += 1
 
             log.debug("Accumulated %d/%d summaries before LLM merge",
                       len(_pending_summaries), MERGE_THRESHOLD)
@@ -539,6 +543,49 @@ def _record_lessons_from_markdown(markdown: str, evidence_ids: list[str]):
             battle_memory.append_lessons(records, paths=_memory_paths())
     except Exception as e:
         log.warning("Structured battle lesson write failed: %s", e)
+
+
+def _accumulate_successful_summaries(
+    batch_results: list[tuple[dict, bool, object | None]],
+    pending_summaries: list[tuple[dict, bool, object | None]],
+) -> int:
+    """Handle successful replay summaries according to the active LLM mode.
+
+    With battle-experience LLM enabled, summaries are queued for the batched
+    lesson merge. With it disabled, deterministic evidence and pending summaries
+    are flushed immediately and the match marker is closed as summary_ready.
+
+    Returns the number of summaries written immediately.
+    """
+    if BATTLE_EXPERIENCE_LLM_ENABLED:
+        for entry, success, summary in batch_results:
+            if success and summary is not None:
+                pending_summaries.append((entry, success, summary))
+        return 0
+
+    success_payloads = []
+    for entry, success, summary in batch_results:
+        if not success or summary is None:
+            continue
+        summary_text, evidence_records = _summary_payload_parts(summary)
+        if summary_text:
+            success_payloads.append((entry, summary_text, evidence_records))
+
+    if not success_payloads:
+        return 0
+
+    evidence_by_match = _record_structured_batch_memory(success_payloads)
+    for entry, _summary, _evidence_records in success_payloads:
+        match_id = str(entry.get("id", ""))
+        mark_summary_ready(
+            match_id,
+            evidence_ids=evidence_by_match.get(match_id, []),
+        )
+    log.debug(
+        "Recorded %d summaries as structured battle memory immediately (LLM disabled)",
+        len(success_payloads),
+    )
+    return len(success_payloads)
 
 
 def _apply_batch_results(results: list):

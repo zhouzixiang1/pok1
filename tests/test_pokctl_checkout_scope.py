@@ -99,3 +99,17 @@ def test_pokctl_accepts_current_checkout_absolute_web_program(tmp_path):
 
     assert result.returncode == 0
     assert f"PID: {pid}" in result.stdout
+
+
+def test_pokctl_no_build_requires_existing_static_bundle(tmp_path):
+    outer = tmp_path / "pok"
+    proc_root = tmp_path / "proc"
+
+    _init_git_repo(outer)
+    _install_pokctl(outer)
+
+    result = _run_pokctl(outer, proc_root, "start", "--no-build")
+
+    assert result.returncode == 1
+    assert "--no-build requested" in result.stdout
+    assert "web/server/static/index.html" in result.stdout

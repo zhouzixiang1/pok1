@@ -13,6 +13,8 @@ from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 
 from server.cache import cached_read
+from evolution_infra import get_active_bots
+from bot_namespace import ACTIVE_BOT_PREFIX, parse_bot_version, version_sort_key
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BOTS_DIR = PROJECT_ROOT / "bots"
@@ -56,19 +58,18 @@ def _get_daemon_status() -> dict:
 
 
 def _get_bots() -> dict:
-    from server.routes._helpers import _bot_sort_key, build_bot_summary
+    from server.routes._helpers import build_bot_summary
     from rating_snapshot import build_strength_rows
     ratings = cached_read("ds_ratings_bots", RATINGS_FILE) or {}
     bot_stats_data = cached_read("ds_bot_stats_bots", BOT_STATS_FILE) or {}
     h2h_data = cached_read("ds_h2h_bots", H2H_FILE) or {}
 
     active, graveyard = [], []
-    active_dirs = []
-    if BOTS_DIR.exists():
-        for d in sorted(BOTS_DIR.iterdir(), key=lambda p: _bot_sort_key(p.name)):
-            if d.is_dir() and d.name.startswith("claude_v") and d.name != "claude_v0":
-                if (d / ".completed").exists():
-                    active_dirs.append(d)
+    active_dirs = [
+        BOTS_DIR / name
+        for name in get_active_bots()
+        if (BOTS_DIR / name).is_dir()
+    ]
     active_names = [d.name for d in active_dirs]
     strength_rows = {
         row["name"]: row
@@ -84,8 +85,8 @@ def _get_bots() -> dict:
         active.append(build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data, strength_rows))
     graveyard_dir = BOTS_DIR / "graveyard"
     if graveyard_dir.exists():
-        for d in sorted(graveyard_dir.iterdir(), key=lambda p: _bot_sort_key(p.name)):
-            if d.is_dir() and d.name.startswith("claude_v"):
+        for d in sorted(graveyard_dir.iterdir(), key=lambda p: version_sort_key(p.name)):
+            if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX) and parse_bot_version(d.name):
                 s = build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data)
                 s["graveyard"] = True
                 graveyard.append(s)

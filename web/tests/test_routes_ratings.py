@@ -1,6 +1,7 @@
 """Tests for /api/ratings, /api/history, /api/experience, /api/daemon/status, /api/h2h, /api/bot-stats."""
 
 import pytest
+from bot_namespace import bot_name
 
 
 class TestGetRatings:
@@ -19,10 +20,11 @@ class TestGetRatings:
 
     @pytest.mark.requires_active_bot
     def test_detail_found(self, client, active_bot_version):
-        resp = client.get(f"/api/ratings/claude_v{active_bot_version}")
+        name = bot_name(active_bot_version)
+        resp = client.get(f"/api/ratings/{name}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["name"] == f"claude_v{active_bot_version}"
+        assert data["name"] == name
         assert "rating" in data
 
     def test_detail_404(self, client):
@@ -43,7 +45,7 @@ class TestHistory:
 
     @pytest.mark.requires_active_bot
     def test_filtered(self, client, active_bot_version):
-        resp = client.get(f"/api/history?bots=claude_v{active_bot_version}")
+        resp = client.get(f"/api/history?bots={bot_name(active_bot_version)}")
         assert resp.status_code == 200
 
     def test_summary(self, client):
@@ -103,12 +105,12 @@ class TestH2H:
 
     @pytest.mark.requires_active_bot
     def test_filtered(self, client, active_bot_version):
-        bot_name = f"claude_v{active_bot_version}"
-        resp = client.get(f"/api/h2h?bot_name={bot_name}")
+        name = bot_name(active_bot_version)
+        resp = client.get(f"/api/h2h?bot_name={name}")
         assert resp.status_code == 200
         data = resp.json()
         for key in data:
-            assert bot_name in key
+            assert name in key
 
 
 class TestBotStats:

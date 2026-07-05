@@ -154,6 +154,10 @@ PY
 fi
 
 START_ARGS=(--host "$HOST" --port "$PORT")
+if [ "$NO_BUILD" = "1" ] && [ ! -f "web/server/static/index.html" ]; then
+    log "frontend static build missing; ignoring --no-build for this restart"
+    NO_BUILD=0
+fi
 if [ "$NO_BUILD" = "1" ]; then
     START_ARGS+=(--no-build)
 fi

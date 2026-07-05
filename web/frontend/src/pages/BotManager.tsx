@@ -24,6 +24,8 @@ const strengthConfidenceText = (value?: string) => (
   value === "high" ? "强度高置信" : value === "medium" ? "强度中置信" : "强度低置信"
 );
 
+const compactBotName = (name: string) => name.replace(/^national_/, "").replace(/^claude_/, "");
+
 function RatingBadge({ r, rd, h2hWr, games }: { r: number; rd: number; h2hWr?: number; games?: number }) {
   const conf = rd < 50 ? "text-green-600" : rd < 100 ? "text-yellow-600" : "text-orange-500";
   return (
@@ -118,7 +120,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
     }
   };
 
-  const displayName = bot.name.replace("claude_", "");
+  const displayName = compactBotName(bot.name);
   const conserv = bot.rating ? bot.rating.conservative.toFixed(0) : "—";
   const fallbackStrength = bot.rating ? Math.max(0, Math.min(1, 0.5 + (bot.rating.conservative - 1500) / 800)) : null;
   const strengthValue = bot.selection_score ?? bot.leaderboard_score ?? fallbackStrength;
@@ -233,7 +235,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                     <div className="space-y-1">
                       {opponents.map((opp) => (
                         <div key={opp.name} className="flex items-center gap-2 text-xs">
-                          <span className="w-16 text-gray-600 dark:text-gray-400 truncate">{opp.name.replace("claude_", "")}</span>
+                          <span className="w-16 text-gray-600 dark:text-gray-400 truncate">{compactBotName(opp.name)}</span>
                           <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                             <div
                               className={`h-full rounded-full ${opp.wr > 0.6 ? "bg-green-500" : opp.wr < 0.4 ? "bg-red-500" : "bg-gray-400"}`}
