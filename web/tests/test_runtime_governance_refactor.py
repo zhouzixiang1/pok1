@@ -1041,6 +1041,99 @@ def test_evaluation_contract_blocks_gate_and_prompt_head_drift(monkeypatch):
     assert payload["head_external_paths"] == []
 
 
+def test_evaluation_contract_uses_stage_scoped_post_worker_contract(monkeypatch):
+    import evaluation_contract
+
+    changed_paths = [
+        "web/core/agent_master.py",
+        "web/core/eval_stats.py",
+        "web/core/prompts/master_prompt.md",
+        "web/core/prompts/worker_prompt.md",
+        "sever/server/tcp_server.py",
+    ]
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: list(changed_paths),
+    )
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+        checkpoint={"stage": "workers_done", "next_v": 300, "source_v": 299},
+    )
+
+    assert allowed is False
+    assert payload["evaluation_contract"]["stage"] == "workers_done"
+    assert payload["head_contract_paths"] == [
+        "sever/server/tcp_server.py",
+        "web/core/eval_stats.py",
+    ]
+    assert payload["head_external_paths"] == [
+        "web/core/agent_master.py",
+        "web/core/prompts/master_prompt.md",
+        "web/core/prompts/worker_prompt.md",
+    ]
+
+
+def test_evaluation_contract_tracks_generation_files_for_repair_stage(monkeypatch):
+    import evaluation_contract
+
+    changed_paths = [
+        "web/core/agent_master.py",
+        "web/core/prompts/worker_prompt.md",
+    ]
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: list(changed_paths),
+    )
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+        checkpoint={"stage": "precommit_failed", "next_v": 300, "source_v": 299},
+    )
+
+    assert allowed is False
+    assert payload["evaluation_contract"]["stage"] == "precommit_failed"
+    assert payload["head_contract_paths"] == sorted(changed_paths)
+    assert payload["head_external_paths"] == []
+
+
+def test_evaluation_contract_always_tracks_guard_files_after_workers(monkeypatch):
+    import evaluation_contract
+
+    changed_paths = [
+        "web/core/evaluation_contract.py",
+        "web/core/prompts/worker_prompt.md",
+    ]
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: list(changed_paths),
+    )
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+        checkpoint={"stage": "critic_checked", "next_v": 300, "source_v": 299},
+    )
+
+    assert allowed is False
+    assert payload["head_contract_paths"] == ["web/core/evaluation_contract.py"]
+    assert payload["head_external_paths"] == ["web/core/prompts/worker_prompt.md"]
+
+
 def test_worktree_scope_keeps_observability_nonblocking_but_gate_logic_blocking():
     import evolution_scope
 
