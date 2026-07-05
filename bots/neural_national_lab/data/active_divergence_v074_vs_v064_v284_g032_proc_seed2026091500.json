@@ -1,0 +1,2352 @@
+{
+  "mode": "active_divergence_scan_v1",
+  "baseline": {
+    "label": "v064_v254_lowint_h16_min020_inter088",
+    "path": "bots/neural_national_lab/versions/v064_v254_lowint_h16_min020_inter088/main.py"
+  },
+  "candidate": {
+    "label": "v074_v254_context_support_p130_h64_min015",
+    "path": "bots/neural_national_lab/versions/v074_v254_context_support_p130_h64_min015/main.py"
+  },
+  "opponents": [
+    {
+      "label": "claude_v284",
+      "path": "bots/claude_v284/main.py"
+    }
+  ],
+  "indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ],
+  "workers": 2,
+  "seed_base": 2026091500,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "opponent_seed_stride": 100000,
+  "bot_seed_base": 202672150000,
+  "bot_seed_stride": 10000,
+  "opponent_bot_seed_stride": 10000000,
+  "max_hands": 70,
+  "max_divergences_per_side": 3,
+  "include_full_requests": false,
+  "stop_after_divergence_pairs": 0,
+  "parallel_early_stop": true,
+  "tasks_total": 32,
+  "tasks_submitted": 32,
+  "tasks_skipped": 0,
+  "early_stopped": false,
+  "pairs": [
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 0,
+      "seed": 2026091500,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672150000,
+          202672150001
+        ],
+        "mirror": [
+          202672160000,
+          202672160001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 1,
+      "seed": 2026091501,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672170000,
+          202672170001
+        ],
+        "mirror": [
+          202672180000,
+          202672180001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 2,
+      "seed": 2026091502,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672190000,
+          202672190001
+        ],
+        "mirror": [
+          202672200000,
+          202672200001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 3,
+      "seed": 2026091503,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672210000,
+          202672210001
+        ],
+        "mirror": [
+          202672220000,
+          202672220001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 4,
+      "seed": 2026091504,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672230000,
+          202672230001
+        ],
+        "mirror": [
+          202672240000,
+          202672240001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 5,
+      "seed": 2026091505,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672250000,
+          202672250001
+        ],
+        "mirror": [
+          202672260000,
+          202672260001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 6,
+      "seed": 2026091506,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672270000,
+          202672270001
+        ],
+        "mirror": [
+          202672280000,
+          202672280001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 7,
+      "seed": 2026091507,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672290000,
+          202672290001
+        ],
+        "mirror": [
+          202672300000,
+          202672300001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 8,
+      "seed": 2026091508,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672310000,
+          202672310001
+        ],
+        "mirror": [
+          202672320000,
+          202672320001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 9,
+      "seed": 2026091509,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672330000,
+          202672330001
+        ],
+        "mirror": [
+          202672340000,
+          202672340001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 10,
+      "seed": 2026091510,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672350000,
+          202672350001
+        ],
+        "mirror": [
+          202672360000,
+          202672360001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 11,
+      "seed": 2026091511,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672370000,
+          202672370001
+        ],
+        "mirror": [
+          202672380000,
+          202672380001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 12,
+      "seed": 2026091512,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672390000,
+          202672390001
+        ],
+        "mirror": [
+          202672400000,
+          202672400001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 13,
+      "seed": 2026091513,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672410000,
+          202672410001
+        ],
+        "mirror": [
+          202672420000,
+          202672420001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 14,
+      "seed": 2026091514,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672430000,
+          202672430001
+        ],
+        "mirror": [
+          202672440000,
+          202672440001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 15,
+      "seed": 2026091515,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672450000,
+          202672450001
+        ],
+        "mirror": [
+          202672460000,
+          202672460001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 16,
+      "seed": 2026091516,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672470000,
+          202672470001
+        ],
+        "mirror": [
+          202672480000,
+          202672480001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 17,
+      "seed": 2026091517,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672490000,
+          202672490001
+        ],
+        "mirror": [
+          202672500000,
+          202672500001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 18,
+      "seed": 2026091518,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672510000,
+          202672510001
+        ],
+        "mirror": [
+          202672520000,
+          202672520001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 19,
+      "seed": 2026091519,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672530000,
+          202672530001
+        ],
+        "mirror": [
+          202672540000,
+          202672540001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 20,
+      "seed": 2026091520,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672550000,
+          202672550001
+        ],
+        "mirror": [
+          202672560000,
+          202672560001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 21,
+      "seed": 2026091521,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672570000,
+          202672570001
+        ],
+        "mirror": [
+          202672580000,
+          202672580001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 22,
+      "seed": 2026091522,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672590000,
+          202672590001
+        ],
+        "mirror": [
+          202672600000,
+          202672600001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 23,
+      "seed": 2026091523,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672610000,
+          202672610001
+        ],
+        "mirror": [
+          202672620000,
+          202672620001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 24,
+      "seed": 2026091524,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672630000,
+          202672630001
+        ],
+        "mirror": [
+          202672640000,
+          202672640001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 25,
+      "seed": 2026091525,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672650000,
+          202672650001
+        ],
+        "mirror": [
+          202672660000,
+          202672660001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 26,
+      "seed": 2026091526,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672670000,
+          202672670001
+        ],
+        "mirror": [
+          202672680000,
+          202672680001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 27,
+      "seed": 2026091527,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672690000,
+          202672690001
+        ],
+        "mirror": [
+          202672700000,
+          202672700001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 28,
+      "seed": 2026091528,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672710000,
+          202672710001
+        ],
+        "mirror": [
+          202672720000,
+          202672720001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 29,
+      "seed": 2026091529,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672730000,
+          202672730001
+        ],
+        "mirror": [
+          202672740000,
+          202672740001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 30,
+      "seed": 2026091530,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202672750000,
+          202672750001
+        ],
+        "mirror": [
+          202672760000,
+          202672760001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v284",
+      "opponent": "bots/claude_v284/main.py",
+      "idx": 31,
+      "seed": 2026091531,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202672770000,
+          202672770001
+        ],
+        "mirror": [
+          202672780000,
+          202672780001
+        ]
+      },
+      "baseline_net_chips": 5400.0,
+      "candidate_net_chips": 5400.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 2700.0,
+          "bot1_chips": -2700.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 35,
+          "candidate_decisions": 35,
+          "compared_decisions": 35,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    }
+  ],
+  "summary": {
+    "pairs": 32,
+    "divergence_pairs": 0,
+    "divergence_rate": 0.0,
+    "positive": 0,
+    "zero": 32,
+    "negative": 0,
+    "delta_stats": {
+      "samples": 32,
+      "mean_net": 0.0,
+      "median_net": 0.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": 0.0,
+      "ci95_high": 0.0,
+      "mean_per_70_hands": 0.0,
+      "ci95_low_per_70_hands": 0.0,
+      "ci95_high_per_70_hands": 0.0,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "by_opponent": {
+      "claude_v284": {
+        "pairs": 32,
+        "positive": 0,
+        "zero": 32,
+        "negative": 0,
+        "delta_stats": {
+          "samples": 32,
+          "mean_net": 0.0,
+          "median_net": 0.0,
+          "stddev_net": 0.0,
+          "stderr_net": 0.0,
+          "ci95_low": 0.0,
+          "ci95_high": 0.0,
+          "mean_per_70_hands": 0.0,
+          "ci95_low_per_70_hands": 0.0,
+          "ci95_high_per_70_hands": 0.0,
+          "significant_positive_95": false,
+          "significant_negative_95": false
+        }
+      }
+    },
+    "largest_abs_deltas": [
+      {
+        "opponent": "claude_v284",
+        "idx": 0,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      },
+      {
+        "opponent": "claude_v284",
+        "idx": 1,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      },
+      {
+        "opponent": "claude_v284",
+        "idx": 2,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      },
+      {
+        "opponent": "claude_v284",
+        "idx": 3,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      },
+      {
+        "opponent": "claude_v284",
+        "idx": 4,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      },
+      {
+        "opponent": "claude_v284",
+        "idx": 5,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      },
+      {
+        "opponent": "claude_v284",
+        "idx": 6,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      },
+      {
+        "opponent": "claude_v284",
+        "idx": 7,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      },
+      {
+        "opponent": "claude_v284",
+        "idx": 8,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      },
+      {
+        "opponent": "claude_v284",
+        "idx": 9,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      }
+    ]
+  }
+}
