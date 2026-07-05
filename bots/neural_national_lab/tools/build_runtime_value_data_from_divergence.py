@@ -53,6 +53,7 @@ def _iter_rows(
     neural_mod,
     all_divergences: bool,
     target_mode: str,
+    rule_action_source: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for pair in payload.get("pairs", []):
@@ -78,7 +79,13 @@ def _iter_rows(
                         "opponent_stage_bet": req.get("opponent_stage_bet", 0),
                         "opponent_allin": req.get("opponent_allin", False),
                     }
-                rule_action = int(divergence.get("candidate_action", 0))
+                if rule_action_source == "candidate":
+                    raw_rule_action = divergence.get("candidate_action", 0)
+                elif rule_action_source == "baseline":
+                    raw_rule_action = divergence.get("baseline_action", divergence.get("candidate_action", 0))
+                else:
+                    raise ValueError(f"unknown rule action source: {rule_action_source}")
+                rule_action = int(raw_rule_action)
                 probs, top_label, top_conf = _neural_probs(neural_mod, req, state)
                 features = _advantage_features(req, state, rule_action, top_label, top_conf, probs)
                 if features is None:
@@ -96,6 +103,8 @@ def _iter_rows(
                     "weight": max(0.05, min(5.0, abs(delta) / 1000.0)),
                     "baseline_action": divergence.get("baseline_action"),
                     "candidate_action": divergence.get("candidate_action"),
+                    "rule_action": rule_action,
+                    "rule_action_source": rule_action_source,
                     "same_request": divergence.get("same_request"),
                     "top_label": int(top_label) if top_label is not None else None,
                     "top_conf": float(top_conf),
@@ -106,7 +115,13 @@ def _iter_rows(
     return rows
 
 
-def _summary(rows: list[dict[str, Any]], inputs: list[str], version: str, target_mode: str) -> dict[str, Any]:
+def _summary(
+    rows: list[dict[str, Any]],
+    inputs: list[str],
+    version: str,
+    target_mode: str,
+    rule_action_source: str,
+) -> dict[str, Any]:
     deltas = [float(row["delta"]) for row in rows]
     templates = Counter(f"{row['baseline_action']}->{row['candidate_action']}|{row['side']}" for row in rows)
     top_labels = Counter(str(row.get("top_label")) for row in rows)
@@ -115,6 +130,7 @@ def _summary(rows: list[dict[str, Any]], inputs: list[str], version: str, target
         "inputs": inputs,
         "version": version,
         "target_mode": target_mode,
+        "rule_action_source": rule_action_source,
         "rows": len(rows),
         "input_dim": dim,
         "positive": sum(1 for value in deltas if value > 0),
@@ -139,6 +155,12 @@ def main() -> None:
         choices=["baseline_minus_candidate", "candidate_minus_baseline"],
         default="baseline_minus_candidate",
     )
+    parser.add_argument(
+        "--rule-action-source",
+        choices=["baseline", "candidate"],
+        default="baseline",
+        help="Which recorded action should represent the pre-neural rule action in runtime gate features.",
+    )
     args = parser.parse_args()
 
     version_path = _resolve(args.version)
@@ -155,7 +177,17 @@ def main() -> None:
             label = str(input_path)
         input_labels.append(label)
         payload = json.loads(input_path.read_text(encoding="utf-8"))
-        rows.extend(_iter_rows(payload, label, state_mod, neural_mod, args.all_divergences, args.target_mode))
+        rows.extend(
+            _iter_rows(
+                payload,
+                label,
+                state_mod,
+                neural_mod,
+                args.all_divergences,
+                args.target_mode,
+                args.rule_action_source,
+            )
+        )
     if rows:
         dim = len(rows[0]["features"])
         bad = [len(row["features"]) for row in rows if len(row["features"]) != dim]
@@ -168,7 +200,7 @@ def main() -> None:
         "\n".join(json.dumps(row, separators=(",", ":")) for row in rows) + ("\n" if rows else ""),
         encoding="utf-8",
     )
-    summary = _summary(rows, input_labels, str(version_path), args.target_mode)
+    summary = _summary(rows, input_labels, str(version_path), args.target_mode, args.rule_action_source)
     if args.summary_output:
         summary_out = _resolve(args.summary_output)
         summary_out.parent.mkdir(parents=True, exist_ok=True)
