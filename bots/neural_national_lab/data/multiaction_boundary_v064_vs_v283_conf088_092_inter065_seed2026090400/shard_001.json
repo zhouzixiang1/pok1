@@ -1,0 +1,154 @@
+{
+  "mode": "multi_action_counterfactual_probe_v1",
+  "target": "legal_mask_action_values_delta_vs_rule_regret_vs_mean",
+  "notes": [
+    "Each row forks one bot0 decision and enumerates abstract action labels.",
+    "Branches share the same judge prefix, deck seed, and branch bot RNG seed.",
+    "delta_vs_rule uses the sanitized rule action as the baseline value.",
+    "regret_vs_mean subtracts the mean value over successfully evaluated unique final actions.",
+    "Duplicate label-to-final-action mappings are recorded in final_action_counts and share a branch value.",
+    "If the rule baseline uses an off-menu raise size, it is evaluated as rule_branch but not added to the fixed action vector."
+  ],
+  "version": "bots/neural_national_lab/versions/v064_v254_lowint_h16_min020_inter088/main.py",
+  "opponent": "bots/claude_v283/main.py",
+  "labels": [
+    "fold",
+    "call",
+    "raise_half",
+    "raise_pot",
+    "raise_2pot",
+    "allin"
+  ],
+  "games": 2,
+  "max_rows": 8,
+  "max_scan_decisions": 900,
+  "seed_base": 2026090400,
+  "seed_offset": 2,
+  "seed_stride": 1,
+  "bot_seed_base": 202671080000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "branch_scope": "hand",
+  "scan_persistent": true,
+  "filters": {
+    "stage": "flop",
+    "min_unique_actions": 2,
+    "prefilter_rule_label": [
+      "call"
+    ],
+    "prefilter_top_label": [
+      "raise_half"
+    ],
+    "prefilter_min_top_conf": 0.88,
+    "prefilter_max_top_conf": 0.92,
+    "prefilter_free_action": true,
+    "prefilter_max_to_call": null,
+    "prefilter_min_interaction_score": null,
+    "prefilter_max_interaction_score": 0.65,
+    "active_target": "delta_vs_rule",
+    "active_drop_label": [
+      "allin"
+    ],
+    "active_min_targets": 1,
+    "active_min_positive_targets": 0,
+    "active_min_abs_target": 1e-09
+  },
+  "matches": [
+    {
+      "game": 0,
+      "seed": 2026090402,
+      "side": "g0:normal",
+      "decisions": 57,
+      "bot0_chips": -13302.0,
+      "version": "bots/neural_national_lab/versions/v064_v254_lowint_h16_min020_inter088",
+      "bot_seeds": [
+        202671080000,
+        202671080001
+      ],
+      "rejected_active_rows": 0,
+      "active_reject_reasons": {},
+      "rejected_prefilter_rows": 6,
+      "prefilter_reject_reasons": {
+        "max_interaction_score": 1,
+        "min_top_conf": 1,
+        "rule_label": 3,
+        "top_label": 1
+      }
+    },
+    {
+      "game": 0,
+      "seed": 2026090402,
+      "side": "g0:mirror",
+      "decisions": 105,
+      "bot0_chips": 3340.0,
+      "version": "bots/neural_national_lab/versions/v064_v254_lowint_h16_min020_inter088",
+      "bot_seeds": [
+        202671090000,
+        202671090001
+      ],
+      "rejected_active_rows": 0,
+      "active_reject_reasons": {},
+      "rejected_prefilter_rows": 14,
+      "prefilter_reject_reasons": {
+        "max_top_conf": 1,
+        "min_top_conf": 1,
+        "rule_label": 12
+      }
+    },
+    {
+      "game": 1,
+      "seed": 2026090403,
+      "side": "g1:normal",
+      "decisions": 54,
+      "bot0_chips": -15793.0,
+      "version": "bots/neural_national_lab/versions/v064_v254_lowint_h16_min020_inter088",
+      "bot_seeds": [
+        202671100000,
+        202671100001
+      ],
+      "rejected_active_rows": 0,
+      "active_reject_reasons": {},
+      "rejected_prefilter_rows": 6,
+      "prefilter_reject_reasons": {
+        "min_top_conf": 2,
+        "rule_label": 4
+      }
+    },
+    {
+      "game": 1,
+      "seed": 2026090403,
+      "side": "g1:mirror",
+      "decisions": 82,
+      "bot0_chips": 15918.0,
+      "version": "bots/neural_national_lab/versions/v064_v254_lowint_h16_min020_inter088",
+      "bot_seeds": [
+        202671110000,
+        202671110001
+      ],
+      "rejected_active_rows": 0,
+      "active_reject_reasons": {},
+      "rejected_prefilter_rows": 7,
+      "prefilter_reject_reasons": {
+        "min_top_conf": 1,
+        "rule_label": 5,
+        "top_label": 1
+      }
+    }
+  ],
+  "rows": [],
+  "summary": {
+    "rows": 0,
+    "ok_rows": 0,
+    "failed_rows": 0,
+    "mean_unique_final_action_count": 0.0,
+    "mean_evaluated_branch_count": 0.0,
+    "mean_legal_label_count": 0.0,
+    "mean_active_targets": 0.0,
+    "mean_active_positive_targets": 0.0,
+    "off_menu_rule_rows": 0,
+    "best_label_counts": {},
+    "active_best_label_counts": {},
+    "delta_vs_rule_by_label": {},
+    "regret_vs_mean_by_label": {}
+  }
+}

@@ -1005,6 +1005,24 @@ delta and no divergence. In the same deterministic g032x5 run, v064 averaged
 all 32 pairs. This repairs the v063 safety bug, but the CI still crosses zero;
 treat v064 as the current conservative experiment, not a promoted successor.
 
+The next boundary-data pass sampled v064 decisions where the rule action was
+`call`, the neural top label was `raise_half`, confidence was `0.88..0.92`,
+the action was free on the flop, and interaction support was at most `0.65`.
+A narrow `0.88..0.89` pilot against v284 found no rows; the wider five-opponent
+run added 16 rows, including one v288 case where `raise_half` was `-10560`
+raw chips worse than call. Mixing those rows with the original p057 data
+produced `multiaction_value_v064_lowint_boundary_mix_p073...jsonl` with 73
+rows and 166 nonzero clipped targets. CUDA training produced h16/h32/h64 heads.
+The h16 p073 head looked safe in offline gate replay, but
+`versions/v065_v254_lowint_boundary_h16_p073_inter088` reopened the old v284
+idx13 replay (`-4502` raw chips), so v065 is a recorded failed version.
+`versions/v066_v254_lowint_boundary_h64_p073_inter088` uses the more
+conservative h64 p073 head. It blocks both v284 idx13 and idx31 replays. In a
+g016x5 paired smoke against v064, v066 averaged `+81.94` chips per 70 hands
+with CI `[-71.37, +235.26]`, split 4 positive, 73 zero, 3 negative, worst
+sample `-224`, and best sample `+12504`. This is not statistically clear, but
+it is a safer boundary-data successor candidate than v065.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass

@@ -136,6 +136,12 @@ Practical takeaways for this repo:
   `interaction_apply_min_conf`. Threshold calibration must include confidence
   and interaction-gate boundary cases, plus paired divergence replays, before
   any scale-up.
+- Offline gate checks are necessary but not sufficient. The p073 boundary mix
+  added v064-era confidence/interactions rows and a clipped v288 `raise_half`
+  disaster, but the h16 head still reopened the old v284 idx13 paired replay
+  despite passing the local gate replay. Promote boundary heads only after
+  replaying named historical failures and running a paired smoke against the
+  previous safe candidate.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner
