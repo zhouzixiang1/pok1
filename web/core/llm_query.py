@@ -1057,7 +1057,10 @@ def _make_subagent_write_guard(allowed_write_dir):
                                "directory. Do not use /tmp or /var/tmp for probe "
                                "logs; use inline pipes such as `2>&1 | grep ...` "
                                "or a temporary file inside the assigned target "
-                               "that is removed in the same command. Command: "
+                               "that is removed in the same command. If this is "
+                               "cache cleanup, only delete caches inside the assigned "
+                               "target bot directory; leave source, parent, opponent, "
+                               "and other bot caches in place. Command: "
                                + str(cmd)[:100])
             elif tool_name in ("Edit", "Write", "NotebookEdit"):
                 fp = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
@@ -1196,6 +1199,16 @@ def _format_runtime_path_contract(project_root, allowed_write_dir=None):
                 "- This call may write only inside the declared write scope: "
                 + ", ".join(allowed)
                 + "."
+            )
+            lines.append(
+                "- Cleanup is also a write. Only delete files inside the declared write scope; "
+                "do not delete `__pycache__`, `.pytest_cache`, logs, or temporary files in "
+                "source, parent, opponent, or other bot directories."
+            )
+            lines.append(
+                "- If probes or imports create caches outside the declared write scope, leave "
+                "them in place. The harness ignores those caches; their owning checkout/process "
+                "is responsible for cleanup."
             )
     return "\n".join(lines) + "\n\n"
 

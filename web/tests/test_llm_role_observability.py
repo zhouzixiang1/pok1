@@ -846,15 +846,25 @@ def test_runtime_path_contract_warns_against_tmp_probe_logs(tmp_path):
     assert "/tmp" in contract
     assert "/var/tmp" in contract
     assert "2>&1 | grep" in contract
+    assert "Cleanup is also a write" in contract
+    assert "Only delete files inside the declared write scope" in contract
+    assert "`__pycache__`" in contract
+    assert "source, parent, opponent, or other bot directories" in contract
+    assert "leave them in place" in contract
 
 
-def test_worker_and_crossover_prompts_ban_tmp_probe_logs():
+def test_worker_and_crossover_prompts_ban_tmp_probe_logs_and_parent_cache_cleanup():
     prompt_dir = Path(__file__).resolve().parents[1] / "core" / "prompts"
     for name in ("worker_prompt.md", "crossover_prompt.md"):
         text = (prompt_dir / name).read_text(encoding="utf-8")
         assert "`/tmp`" in text
         assert "`/var/tmp`" in text
         assert "2>&1 | grep" in text
+        assert "Cleanup is also mutation" in text
+        assert "You may only delete files under" in text
+        assert "`__pycache__`" in text
+        assert "leave them in place" in text
+        assert "the harness ignores those caches" in text
 
 
 def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, tmp_path):
