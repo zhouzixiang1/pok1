@@ -31,6 +31,9 @@ The native runner in `web/core/national_native.py` now also:
   opponent/candidate on the same deck seed, then sums candidate net chips.
   This is the preferred evidence for strength because it cancels most
   seat/card-order noise.
+- Native reports now include `hand_net_chips`, and
+  `tools/native_tcp_report_diff.py` compares neural/control reports by
+  `(opponent, match_idx)` to expose per-seed and per-hand deltas.
 
 Current native TCP evidence, using paired reports where available:
 
@@ -56,6 +59,14 @@ Current native TCP evidence, using paired reports where available:
   14000 hands. Its control `v081_national_v18_neural_off_control_tcp` is
   `-31795`; v080 is `-29236` versus control, driven by a large regression
   against `national_v17`.
+- The first hand-level trace diff,
+  `native_tcp_diff_trace_v078_minus_v079_paired_h70_m20...json`, compares
+  v078 against the v079 control over 5600 paired hands. It found a noisy
+  `+1232` chip sample overall, but only 5 positive rows versus 9 negative
+  rows and 26 zeros. The useful part is diagnostic: worst seed `2026071104`
+  contains a single-hand `-600` delta, while seed `2026071100` contains a
+  `+1932` hand. Those hands should become the first native TCP
+  counterfactual probes for a new action-value model.
 
 This is not a promotion-grade strength breakthrough. The current evidence says
 the old v254/Botzone-trained action advice does not transfer to native national
