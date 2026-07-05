@@ -380,13 +380,13 @@ class TestBotMainLogic:
     @pytest.mark.requires_graveyard_bot
     def test_graveyard_fallback(self, graveyard_bot_version):
         from tool_helpers import _bot_main
-        path = _bot_main(f"claude_v{graveyard_bot_version}")
+        path = _bot_main(f"national_v{graveyard_bot_version}")
         assert path.exists()
         assert "graveyard" in str(path)
 
     @pytest.mark.requires_active_bot
     def test_valid_version(self, active_bot_version):
         from tool_helpers import _bot_main
-        path = _bot_main(f"claude_v{active_bot_version}")
+        path = _bot_main(f"national_v{active_bot_version}")
         assert path.name == "main.py"
-        assert f"claude_v{active_bot_version}" in str(path)
+        assert f"national_v{active_bot_version}" in str(path)

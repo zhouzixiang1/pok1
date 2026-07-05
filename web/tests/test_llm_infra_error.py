@@ -510,7 +510,7 @@ class TestMatchAnalystSentinel:
         history.parent.mkdir(parents=True, exist_ok=True)
         replay_dir.mkdir(parents=True, exist_ok=True)
         history.write_text(json.dumps({
-            "id": "replay-x", "bot0": "claude_v50", "bot1": "claude_v40",
+            "id": "replay-x", "bot0": "national_v50", "bot1": "national_v40",
             "bot0_wins": 1, "bot1_wins": 5,
         }) + "\n")
         (replay_dir / "replay-x").write_text(json.dumps({"hands": []}))
@@ -530,7 +530,7 @@ class TestMatchAnalystSentinel:
         history = evolution_infra.MATCH_HISTORY_FILE
         history.parent.mkdir(parents=True, exist_ok=True)
         history.write_text(json.dumps({
-            "id": "replay-x", "bot0": "claude_v50", "bot1": "claude_v40",
+            "id": "replay-x", "bot0": "national_v50", "bot1": "national_v40",
             "bot0_wins": 1, "bot1_wins": 5,
         }) + "\n")
 
@@ -709,15 +709,15 @@ class TestAdvisoryAgentInfraMarkers:
         # Bypass the data-sufficiency (<0.8 coverage) early-return by stubbing
         # the coverage helper imported inside _analyze_stagnation.
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
-                            lambda: {"claude_v50": 0.5})
+                            lambda: {"national_v50": 0.5})
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates_with_coverage",
-                            lambda: {"claude_v50": {"opponent_coverage": 1.0,
+                            lambda: {"national_v50": {"opponent_coverage": 1.0,
                                                     "opponents_evaluated": 4,
                                                     "opponents_total": 4,
                                                     "h2h_avg_wr": 0.5}})
 
         result = asyncio.run(stagnation_analyzer._analyze_stagnation(
-            50, ["claude_v40", "claude_v41", "claude_v42", "claude_v43"], {}, _UI()))
+            50, ["national_v40", "national_v41", "national_v42", "national_v43"], {}, _UI()))
         assert result is not None
         assert result["llm_failed"] is True
         assert result["is_stagnant"] is False

@@ -35,8 +35,6 @@ from evolution_core import (
     compute_next_generation_v,
     _analyze_recent_matches,
     _analyze_stagnation,
-    BOT_STATS_FILE, H2H_FILE, MATCH_HISTORY_FILE,
-    RESULTS_DIR,
     locked_file,
 )
 from tool_helpers import load_h2h_avg_winrates, load_strength_scores
@@ -47,6 +45,10 @@ from tool_helpers import (
 )
 from evolution_infra import count_lines, read_locked_json
 
+
+def _infra_path(name: str) -> Path:
+    import evolution_infra
+    return getattr(evolution_infra, name)
 
 
 
@@ -84,7 +86,7 @@ async def get_status(args):
     current_bot_rd = round(cur_p.rd, 1) if cur_p else None
 
     # Load bot stats for current bot
-    bot_stats_data = read_locked_json(BOT_STATS_FILE, default={})
+    bot_stats_data = read_locked_json(_infra_path("BOT_STATS_FILE"), default={})
     cur_bs = bot_stats_data.get(current_bot_name, {})
     games_played = cur_bs.get("games", 0)
     rating_reliable = games_played >= 100
@@ -173,7 +175,7 @@ async def get_match_history(args):
     n = args.get("n", 5)
     bot_name = active_bot_name(v)
 
-    history_file = MATCH_HISTORY_FILE
+    history_file = _infra_path("MATCH_HISTORY_FILE")
     if not history_file.exists():
         return _json_tool_result({"matches": []})
 
@@ -257,7 +259,7 @@ async def wait_for_eval(args):
     p = ratings.get(bot_name)
 
     # Load bot stats
-    bot_stats_data = read_locked_json(BOT_STATS_FILE, default={})
+    bot_stats_data = read_locked_json(_infra_path("BOT_STATS_FILE"), default={})
     bs = bot_stats_data.get(bot_name, {})
 
     result = {
@@ -320,7 +322,7 @@ async def get_h2h(args):
     bot_name = args["bot_name"]
     opponent = args.get("opponent")
 
-    h2h_file = H2H_FILE
+    h2h_file = _infra_path("H2H_FILE")
     if not h2h_file.exists():
         return _json_tool_result({"error": "No H2H data yet", "bot_name": bot_name})
 
@@ -363,7 +365,7 @@ class GetBotStatsInput(TypedDict):
 async def get_bot_stats(args):
     bot_name = args["bot_name"]
 
-    bot_stats_file = BOT_STATS_FILE
+    bot_stats_file = _infra_path("BOT_STATS_FILE")
     if not bot_stats_file.exists():
         return _json_tool_result({"error": "No bot stats yet", "bot_name": bot_name})
 

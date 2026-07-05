@@ -82,24 +82,24 @@ class TestP1TimeBasedRefresh:
         # Create a fake bot dir with .completed
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "claude_v99"
+        bot_dir = bots_dir / "national_v99"
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
 
         result = get_active_bots()
-        assert "claude_v99" in result
+        assert "national_v99" in result
 
     def test_get_active_bots_skips_untagged_completed(self, tmp_path, monkeypatch):
-        """get_active_bots does NOT trust .completed without a bot-vN tag."""
+        """get_active_bots does NOT trust .completed without a national-bot-vN tag."""
         from elo_daemon import get_active_bots
         import evolution_infra
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "claude_v99"
+        bot_dir = bots_dir / "national_v99"
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
 
@@ -107,7 +107,7 @@ class TestP1TimeBasedRefresh:
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "")
 
         result = get_active_bots()
-        assert "claude_v99" not in result
+        assert "national_v99" not in result
 
     def test_get_active_bots_restores_missing_completed_for_tagged_bot(self, tmp_path, monkeypatch):
         """A tagged bot dir missing gitignored .completed is restored and treated active."""
@@ -116,14 +116,14 @@ class TestP1TimeBasedRefresh:
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "claude_v99"
+        bot_dir = bots_dir / "national_v99"
         bot_dir.mkdir()
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
 
         result = get_active_bots()
-        assert result == ["claude_v99"]
+        assert result == ["national_v99"]
         assert (bot_dir / ".completed").exists()
 
     def test_get_active_bots_does_not_restore_reaped_tagged_bot(self, tmp_path, monkeypatch):
@@ -133,19 +133,19 @@ class TestP1TimeBasedRefresh:
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "claude_v99"
+        bot_dir = bots_dir / "national_v99"
         bot_dir.mkdir()
         results_dir = tmp_path / "results"
         results_dir.mkdir()
         (results_dir / "reaped_bots.jsonl").write_text(
-            '{"bot":"claude_v99","version":99,"reason":"test"}\n',
+            '{"bot":"national_v99","version":99,"reason":"test"}\n',
             encoding="utf-8",
         )
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(evolution_infra, "REAPED_BOTS_FILE", results_dir / "reaped_bots.jsonl")
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
 
         result = get_active_bots()
         assert result == []
@@ -164,19 +164,19 @@ class TestP1TimeBasedRefresh:
         replay_dir.mkdir()
         (bots_dir / "graveyard").mkdir(parents=True)
         for version in (1, 2):
-            bot_dir = bots_dir / f"claude_v{version}"
+            bot_dir = bots_dir / f"national_v{version}"
             bot_dir.mkdir()
             (bot_dir / "main.py").write_text("print('bot')\n", encoding="utf-8")
             (bot_dir / ".completed").touch()
         (results_dir / "bot_stats.json").write_text(
-            '{"claude_v1":{"games":1000},"claude_v2":{"games":1000}}\n',
+            '{"national_v1":{"games":1000},"national_v2":{"games":1000}}\n',
             encoding="utf-8",
         )
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(evolution_infra, "REAPED_BOTS_FILE", results_dir / "reaped_bots.jsonl")
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "bot-v1\nbot-v2\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v1\nnational-bot-v2\n")
         monkeypatch.setattr(tbm, "PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(tbm, "REPLAY_DIR", replay_dir)
@@ -185,22 +185,22 @@ class TestP1TimeBasedRefresh:
             tbm,
             "load_ratings",
             lambda: {
-                "claude_v1": tbm.Glicko2Player(r=1200, rd=50),
-                "claude_v2": tbm.Glicko2Player(r=1600, rd=50),
+                "national_v1": tbm.Glicko2Player(r=1200, rd=50),
+                "national_v2": tbm.Glicko2Player(r=1600, rd=50),
             },
         )
-        monkeypatch.setattr(tbm, "load_h2h_avg_winrates", lambda: {"claude_v1": 0.4})
-        monkeypatch.setattr(tbm, "load_strength_scores", lambda: {"claude_v1": 0.4})
+        monkeypatch.setattr(tbm, "load_h2h_avg_winrates", lambda: {"national_v1": 0.4})
+        monkeypatch.setattr(tbm, "load_strength_scores", lambda: {"national_v1": 0.4})
 
         result = await tbm._do_reap_weakest(quiet=True)
 
         assert result["reaped"] is True
-        assert result["culled"] == "claude_v1"
+        assert result["culled"] == "national_v1"
         assert result["reap_mode"] == "deactivate_completed_sentinel"
-        assert (bots_dir / "claude_v1" / "main.py").exists()
-        assert not (bots_dir / "claude_v1" / ".completed").exists()
-        assert not (bots_dir / "graveyard" / "claude_v1").exists()
-        assert evolution_infra.get_active_bots() == ["claude_v2"]
+        assert (bots_dir / "national_v1" / "main.py").exists()
+        assert not (bots_dir / "national_v1" / ".completed").exists()
+        assert not (bots_dir / "graveyard" / "national_v1").exists()
+        assert evolution_infra.get_active_bots() == ["national_v2"]
 
     def test_refresh_timer_variable_exists(self):
         """Daemon source contains the last_bot_refresh_time variable."""

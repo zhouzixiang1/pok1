@@ -11,7 +11,7 @@ def test_run_claude_query_uses_project_root_for_claude_md_autoload():
     source = (PROJECT_ROOT / "web" / "core" / "llm_query.py").read_text()
 
     assert "cwd=str(PROJECT_ROOT)" in source
-    assert "workers use relative paths like bots/claude_vN" in source
+    assert "workers use relative paths like bots/national_vN" in source
     assert "mcp_servers={}" in source
     assert "strict_mcp_config=True" in source
 
@@ -43,8 +43,8 @@ def test_directory_claude_md_supplements_match_root_boundaries():
     web_text = (PROJECT_ROOT / "web" / "CLAUDE.md").read_text()
     sever_text = (PROJECT_ROOT / "sever" / "CLAUDE.md").read_text()
 
-    assert "evolution target remains Botzone/local JSON bots" in web_text
-    assert "national TCP deployment goes through `sever/bot_adapter.py`" in web_text
+    assert "New evolution output targets national-native bots with a direct TCP entrypoint" in web_text
+    assert "`sever/bot_adapter.py` remain legacy regression paths" in web_text
     assert "do not mix local JSON battle and TCP protocols" not in web_text.lower()
 
     sever_required = [

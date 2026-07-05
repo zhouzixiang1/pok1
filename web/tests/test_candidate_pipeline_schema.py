@@ -39,7 +39,7 @@ def test_candidate_store_appends_locked_jsonl(tmp_path, monkeypatch):
         metrics={"all_passed": True},
     )
 
-    assert entry["candidate_id"] == "claude_v245_from_v244"
+    assert entry["candidate_id"] == "national_v245_from_national_v244"
     rows = read_candidate_events(path=ledger)
     assert len(rows) == 1
     assert rows[0]["event_type"] == "quality_finished"
@@ -48,7 +48,7 @@ def test_candidate_store_appends_locked_jsonl(tmp_path, monkeypatch):
 
     entities = read_candidate_entities(path=ledger, event_source=None)
     assert len(entities) == 1
-    assert entities[0]["candidate_id"] == "claude_v245_from_v244"
+    assert entities[0]["candidate_id"] == "national_v245_from_national_v244"
     assert entities[0]["latest_event_type"] == "quality_finished"
     assert entities[0]["latest_metrics"]["all_passed"] is True
 
@@ -63,18 +63,18 @@ def test_candidate_store_records_artifacts_and_children(tmp_path, monkeypatch):
         "quality_finished",
         version=250,
         source_v=249,
-        parent_ids=["claude_v249"],
+        parent_ids=["national_v249"],
         skill_layers=["spr"],
         changed_files=["postflop.py"],
         artifact_refs=[ArtifactRef(kind="report", path="reports/v250.json", label="quality")],
     )
 
-    summary = get_candidate_summary("claude_v250_from_v249", path=ledger)
+    summary = get_candidate_summary("national_v250_from_national_v249", path=ledger)
     assert summary is not None
     assert summary["skill_layers"] == ["spr"]
     assert summary["changed_files"] == ["postflop.py"]
-    assert count_candidate_children("claude_v249", path=ledger) == 1
-    artifacts = read_candidate_artifacts("claude_v250_from_v249", path=ledger)
+    assert count_candidate_children("national_v249", path=ledger) == 1
+    artifacts = read_candidate_artifacts("national_v250_from_national_v249", path=ledger)
     assert artifacts[0]["kind"] == "report"
 
 
@@ -115,7 +115,7 @@ def test_candidate_entities_are_isolated_by_event_source(tmp_path, monkeypatch):
     assert test_rows[0]["latest_status"] == "failed"
     assert len(all_rows) == 2
 
-    summary = get_candidate_summary("claude_v252_from_v251", path=ledger)
+    summary = get_candidate_summary("national_v252_from_national_v251", path=ledger)
     assert summary["event_source"] == "runtime"
     assert summary["latest_status"] == "passed"
 
@@ -159,7 +159,7 @@ def test_candidate_store_migrates_v1_candidate_primary_key(tmp_path):
         )
         conn.execute(
             "INSERT INTO candidates(candidate_id, version, source_v, event_source, created_at, updated_at) "
-            "VALUES ('claude_v253_from_v252', 253, 252, 'runtime', 1.0, 1.0)"
+            "VALUES ('national_v253_from_national_v252', 253, 252, 'runtime', 1.0, 1.0)"
         )
         conn.commit()
 
@@ -171,7 +171,7 @@ def test_candidate_store_migrates_v1_candidate_primary_key(tmp_path):
         path=ledger,
     )
 
-    rows = read_candidate_entities(candidate_id="claude_v253_from_v252", event_source=None, path=ledger)
+    rows = read_candidate_entities(candidate_id="national_v253_from_national_v252", event_source=None, path=ledger)
     assert {row["event_source"] for row in rows} == {"runtime", "test"}
 
 
@@ -194,11 +194,11 @@ def test_candidate_store_follows_dynamic_results_dir(tmp_path, monkeypatch):
     assert ledger.exists()
     assert (results_dir / "candidates.sqlite3").exists()
     rows = read_candidate_events(path=ledger)
-    assert rows[0]["candidate_id"] == "claude_v251_from_v250"
+    assert rows[0]["candidate_id"] == "national_v251_from_national_v250"
 
 
 def test_stage_contract_order_and_stage_record():
     assert stage_order()[0] == "prepare"
     assert next_stage_name("quality") == "review"
-    record = StageRunRecord(candidate_id="claude_v250_from_v249", stage="quality", status="passed")
-    assert record.candidate_id == "claude_v250_from_v249"
+    record = StageRunRecord(candidate_id="national_v250_from_national_v249", stage="quality", status="passed")
+    assert record.candidate_id == "national_v250_from_national_v249"

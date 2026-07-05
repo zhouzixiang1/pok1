@@ -103,11 +103,11 @@ class TestReconcileFillsDeltaWhenConverged:
 
         # Simulate converged ratings
         ratings = {
-            "claude_v100": Glicko2Player(r=1580.0, rd=45.0),
-            "claude_v99": Glicko2Player(r=1520.0, rd=50.0),
+            "national_v100": Glicko2Player(r=1580.0, rd=45.0),
+            "national_v99": Glicko2Player(r=1520.0, rd=50.0),
         }
         bot_stats = {
-            "claude_v100": {"games": 150, "wins": 80, "losses": 70},
+            "national_v100": {"games": 150, "wins": 80, "losses": 70},
         }
 
         reconcile_critic_calibration(ratings, bot_stats)
@@ -134,11 +134,11 @@ class TestReconcileFillsDeltaWhenConverged:
 
         # Bot with high RD (not converged)
         ratings = {
-            "claude_v100": Glicko2Player(r=1580.0, rd=200.0),
-            "claude_v99": Glicko2Player(r=1520.0, rd=50.0),
+            "national_v100": Glicko2Player(r=1580.0, rd=200.0),
+            "national_v99": Glicko2Player(r=1520.0, rd=50.0),
         }
         bot_stats = {
-            "claude_v100": {"games": 200, "wins": 100, "losses": 100},
+            "national_v100": {"games": 200, "wins": 100, "losses": 100},
         }
 
         reconcile_critic_calibration(ratings, bot_stats)
@@ -163,11 +163,11 @@ class TestReconcileFillsDeltaWhenConverged:
 
         # Low RD but insufficient games
         ratings = {
-            "claude_v100": Glicko2Player(r=1580.0, rd=40.0),
-            "claude_v99": Glicko2Player(r=1520.0, rd=50.0),
+            "national_v100": Glicko2Player(r=1580.0, rd=40.0),
+            "national_v99": Glicko2Player(r=1520.0, rd=50.0),
         }
         bot_stats = {
-            "claude_v100": {"games": 50, "wins": 30, "losses": 20},
+            "national_v100": {"games": 50, "wins": 30, "losses": 20},
         }
 
         reconcile_critic_calibration(ratings, bot_stats)
@@ -193,10 +193,10 @@ class TestReconcileFillsDeltaWhenConverged:
 
         # Source bot (v99) has been reaped — not in ratings
         ratings = {
-            "claude_v100": Glicko2Player(r=1580.0, rd=45.0),
+            "national_v100": Glicko2Player(r=1580.0, rd=45.0),
         }
         bot_stats = {
-            "claude_v100": {"games": 150, "wins": 80, "losses": 70},
+            "national_v100": {"games": 150, "wins": 80, "losses": 70},
         }
 
         reconcile_critic_calibration(ratings, bot_stats)
@@ -321,11 +321,11 @@ class TestReconcileIdempotent:
         }])
 
         ratings = {
-            "claude_v100": Glicko2Player(r=1580.0, rd=45.0),
-            "claude_v99": Glicko2Player(r=1520.0, rd=50.0),
+            "national_v100": Glicko2Player(r=1580.0, rd=45.0),
+            "national_v99": Glicko2Player(r=1520.0, rd=50.0),
         }
         bot_stats = {
-            "claude_v100": {"games": 150},
+            "national_v100": {"games": 150},
         }
 
         # First reconcile
@@ -335,8 +335,8 @@ class TestReconcileIdempotent:
         assert rows1[0]["reconciled"] is True
 
         # Change ratings drastically (simulating further play)
-        ratings["claude_v100"] = Glicko2Player(r=1700.0, rd=30.0)
-        ratings["claude_v99"] = Glicko2Player(r=1400.0, rd=40.0)
+        ratings["national_v100"] = Glicko2Player(r=1700.0, rd=30.0)
+        ratings["national_v99"] = Glicko2Player(r=1400.0, rd=40.0)
 
         # Second reconcile — delta should NOT change
         reconcile_critic_calibration(ratings, bot_stats)
@@ -365,13 +365,13 @@ class TestReconcileIdempotent:
         _write_calibration_lines(cal_file, rows)
 
         ratings = {
-            "claude_v98": Glicko2Player(r=1500.0, rd=40.0),
-            "claude_v99": Glicko2Player(r=1530.0, rd=45.0),
-            "claude_v100": Glicko2Player(r=1580.0, rd=50.0),
+            "national_v98": Glicko2Player(r=1500.0, rd=40.0),
+            "national_v99": Glicko2Player(r=1530.0, rd=45.0),
+            "national_v100": Glicko2Player(r=1580.0, rd=50.0),
         }
         bot_stats = {
-            "claude_v99": {"games": 120},
-            "claude_v100": {"games": 200},
+            "national_v99": {"games": 120},
+            "national_v100": {"games": 200},
         }
 
         reconcile_critic_calibration(ratings, bot_stats)
@@ -428,10 +428,10 @@ class TestReconcileIdempotent:
 
         # rd=100 is above default threshold 60, but we use custom 150
         ratings = {
-            "claude_v100": Glicko2Player(r=1580.0, rd=100.0),
-            "claude_v99": Glicko2Player(r=1520.0, rd=50.0),
+            "national_v100": Glicko2Player(r=1580.0, rd=100.0),
+            "national_v99": Glicko2Player(r=1520.0, rd=50.0),
         }
-        bot_stats = {"claude_v100": {"games": 50}}
+        bot_stats = {"national_v100": {"games": 50}}
 
         # With custom thresholds: rd_threshold=150, min_games=30
         reconcile_critic_calibration(ratings, bot_stats,

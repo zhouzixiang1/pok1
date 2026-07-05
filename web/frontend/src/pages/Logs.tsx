@@ -149,7 +149,7 @@ function ConvPartView({ part }: { part: ConvPart }) {
 
   if (part.kind === "cycle_end") {
     return (
-      <div className="my-2 px-3 py-1.5 rounded bg-gray-800 text-xs text-gray-400 font-mono flex items-center gap-1">
+            <div className="my-2 px-3 py-1.5 rounded bg-gray-800 text-xs text-gray-400 font-mono flex items-center gap-1 break-words">
         <FlagIcon /> {part.cost}
       </div>
     );
@@ -166,7 +166,7 @@ function ConvPartView({ part }: { part: ConvPart }) {
           <span>[提示词 — 点击展开]</span>
         </button>
         {expanded && (
-          <pre className="mt-1 ml-4 text-[10px] text-gray-500 whitespace-pre-wrap font-mono max-h-64 overflow-y-auto">
+            <pre className="mt-1 ml-4 text-[10px] text-gray-500 whitespace-pre-wrap break-words font-mono max-h-64 overflow-y-auto">
             {part.text}
           </pre>
         )}
@@ -186,7 +186,7 @@ function ConvPartView({ part }: { part: ConvPart }) {
           <span className="text-[10px]">{expanded ? "▲" : "▼"}</span>
         </button>
         {expanded && (
-          <div className="mt-1 ml-4 text-[10px] text-yellow-300/50 italic font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">
+          <div className="mt-1 ml-4 text-[10px] text-yellow-300/50 italic font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
             {part.text}
           </div>
         )}
@@ -206,7 +206,7 @@ function ConvPartView({ part }: { part: ConvPart }) {
         </button>
         {expanded && part.output && (
           <div className="border-t border-blue-900/30 px-3 py-2">
-            <pre className="text-[10px] font-mono text-gray-400 whitespace-pre-wrap max-h-64 overflow-y-auto">
+            <pre className="text-[10px] font-mono text-gray-400 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
               {part.output}
             </pre>
           </div>
@@ -353,8 +353,8 @@ export default function Logs() {
           {generations.length === 0 ? (
             <div className="p-6"><Skeleton.Card count={2} /></div>
           ) : (
-            <div className="flex">
-              <div className="w-48 border-r border-gray-100 dark:border-border-subtle overflow-y-auto max-h-[600px]">
+            <div className="flex flex-col md:flex-row">
+              <div className="w-full md:w-48 shrink-0 border-b border-gray-100 dark:border-border-subtle md:border-b-0 md:border-r overflow-y-auto max-h-64 md:max-h-[600px]">
                 {generations.map((gen) => (
                   <button
                     key={gen.version}
@@ -370,7 +370,7 @@ export default function Logs() {
                   </button>
                 ))}
               </div>
-              <div className="flex-1">
+              <div className="min-w-0 flex-1">
                 {currentGen && (
                   <div className="border-b border-gray-100 dark:border-border-subtle flex gap-1 px-3 py-2 overflow-x-auto">
                     {currentGen.files.map((file) => (
@@ -388,8 +388,8 @@ export default function Logs() {
                     ))}
                   </div>
                 )}
-                <div className="p-4">
-                  <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[500px] whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 dark:bg-surface-0 rounded-lg p-4">
+                <div className="min-w-0 p-4">
+                  <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[500px] whitespace-pre-wrap break-words font-mono leading-relaxed bg-gray-50 dark:bg-surface-0 rounded-lg p-4">
                     {logContent || "选择一个文件以查看"}
                   </pre>
                 </div>
@@ -402,23 +402,23 @@ export default function Logs() {
       {/* Orchestrator Logs */}
       {tab === "orchestrator" && (
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-white/[0.03]">
-          <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle flex items-center justify-between">
+          <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white">编排器日志</h3>
             <select
               value={selectedOrch}
               onChange={(e) => setSelectedOrch(e.target.value)}
-              className="text-sm border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1"
+              className="w-full min-w-0 max-w-full text-sm border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1 sm:w-auto"
             >
               {orchFiles.map((f) => (
                 <option key={f.filename} value={f.filename}>{f.filename} ({formatSize(f.size_bytes)}, {formatFileTime(f.mtime)})</option>
               ))}
             </select>
           </div>
-          <div className="p-4">
+          <div className="min-w-0 p-4">
             {orchLoading ? (
               <div className="space-y-2"><Skeleton.Line /><Skeleton.Line className="w-2/3" /><Skeleton.Line className="w-1/2" /></div>
             ) : (
-              <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[600px] whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 dark:bg-surface-0 rounded-lg p-4">
+              <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[600px] whitespace-pre-wrap break-words font-mono leading-relaxed bg-gray-50 dark:bg-surface-0 rounded-lg p-4">
                 {orchContent || "无日志内容"}
               </pre>
             )}
@@ -429,19 +429,19 @@ export default function Logs() {
       {/* LLM Conversations */}
       {tab === "conversation" && (
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-white/[0.03] overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle flex items-center justify-between">
+          <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white">LLM 对话</h3>
             <select
               value={convFile}
               onChange={(e) => setConvFile(e.target.value)}
-              className="text-sm border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1"
+              className="w-full min-w-0 max-w-full text-sm border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1 sm:w-auto"
             >
               {orchFiles.map((f) => (
                 <option key={f.filename} value={f.filename}>{f.filename} ({formatSize(f.size_bytes)}, {formatFileTime(f.mtime)})</option>
               ))}
             </select>
           </div>
-          <div className="p-4 bg-gray-950 overflow-y-auto max-h-[600px]">
+          <div className="min-w-0 p-4 bg-gray-950 overflow-y-auto max-h-[600px]">
             {convLoading ? (
               <div className="text-gray-400 text-sm">解析对话中...</div>
             ) : convParts.length === 0 ? (

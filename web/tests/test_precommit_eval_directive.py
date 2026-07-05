@@ -78,7 +78,7 @@ def fake_bots(tmp_path, monkeypatch):
     """Create fake bot directories and patch _bot_main to return them."""
     bots_dir = tmp_path / "bots"
     bots_dir.mkdir()
-    for name in ("claude_v99", "claude_v98", "claude_v50"):
+    for name in ("national_v99", "national_v98", "national_v50"):
         d = bots_dir / name
         d.mkdir()
         (d / "main.py").write_text("# fake bot")
@@ -87,7 +87,7 @@ def fake_bots(tmp_path, monkeypatch):
         return bots_dir / name / "main.py"
 
     monkeypatch.setattr("tool_eval._bot_main", _fake_bot_main)
-    monkeypatch.setattr("tool_eval.get_bot_dir", lambda v: bots_dir / f"claude_v{v}")
+    monkeypatch.setattr("tool_eval.get_bot_dir", lambda v: bots_dir / f"national_v{v}")
     return bots_dir
 
 
@@ -95,8 +95,8 @@ def fake_bots(tmp_path, monkeypatch):
 def fake_opponents(monkeypatch):
     """Deterministic opponent list including the parent."""
     ops = [
-        {"name": "claude_v98", "reason": "parent"},
-        {"name": "claude_v50", "reason": "top_opponent"},
+        {"name": "national_v98", "reason": "parent"},
+        {"name": "national_v50", "reason": "top_opponent"},
     ]
     monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: ops)
     return ops
@@ -120,7 +120,7 @@ def _seed_passing_checkpoint():
 def _patch_losing_mirror(monkeypatch):
     """Patch mirror_battle so the parent matchup loses 2-6 (triggers lost_to_parent)."""
     def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
-        if "claude_v98" in b:
+        if "national_v98" in b:
             return ([2, 6], 0, n_games, None)  # parent: clear loss
         return ([3, 3], 0, n_games, None)
 
@@ -173,7 +173,7 @@ class TestPrecommitFailedDirective:
         # Below the hard limit, so NO "HARD LIMIT" wording.
         assert "HARD LIMIT" not in data["directive"]
         # The directive must name the worst opponent and its W-L.
-        assert "claude_v98" in data["directive"]
+        assert "national_v98" in data["directive"]
         assert "2W-6L" in data["directive"]
         ckpt = tool_eval._matching_checkpoint(99, 98)
         assert ckpt["stage"] == "precommit_failed"
@@ -266,7 +266,7 @@ class TestPrecommitAttemptNotIncrementedOnIdempotent:
         # Seed a checkpoint that already passed precommit (stage=verified, gate
         # passed). precommit_attempt starts at 1 (the real eval that passed).
         from tool_gates import _bot_code_fingerprint
-        code_fingerprint = _bot_code_fingerprint(fake_bots / "claude_v99")
+        code_fingerprint = _bot_code_fingerprint(fake_bots / "national_v99")
         tool_eval.write_pipeline_checkpoint(
             99,
             98,
