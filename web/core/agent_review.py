@@ -512,6 +512,14 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
             ui.log_history(f"Crossover LLM error: {e}", "warn")
             continue
 
+        # The crossover agent may rebuild the target by copying a parent after
+        # the pre-LLM baseline was fixed. Re-apply mandatory fixes before any
+        # downstream gate sees the candidate.
+        from fix_injection import apply_known_fixes, log_fix_application
+        post_applied, post_skipped = apply_known_fixes(target_dir)
+        if post_applied:
+            log_fix_application(post_applied, post_skipped, target_dir, parent_a_v)
+
         try:
             from candidate_hygiene import sanitize_candidate_dir
             from workflow_profiles import get_workflow_profile
