@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import copy
 import json
 import random
@@ -350,7 +350,10 @@ def main() -> None:
         for idx in pending_indices:
             _consume_row(_play_pair(idx, paths, opponent, args))
     else:
-        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+        # judge_func and the local battle stack are not thread-safe: concurrent
+        # calls can cross-contaminate seeded games. Process workers keep the
+        # judge state isolated while preserving multi-core throughput.
+        with ProcessPoolExecutor(max_workers=max(1, args.workers)) as executor:
             futures = {
                 executor.submit(_play_pair, idx, paths, opponent, args): idx
                 for idx in pending_indices

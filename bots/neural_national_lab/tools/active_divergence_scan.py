@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import copy
 import json
 from pathlib import Path
@@ -426,7 +426,10 @@ def main() -> None:
             payload["tasks_submitted"] = submitted
             _consume(_scan_pair(*task, baseline=baseline, candidate=candidate, args=args))
     else:
-        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+        # Keep judge_func isolated per worker process. Threaded evaluation is
+        # observably non-deterministic for seeded games because judge state is
+        # shared inside the parent Python process.
+        with ProcessPoolExecutor(max_workers=max(1, args.workers)) as executor:
             remaining = list(tasks)
             futures = {}
 

@@ -1,0 +1,28 @@
+{
+  "samples": 130,
+  "input_dim": 103,
+  "hidden_dim": 16,
+  "labels": [
+    "fold",
+    "call",
+    "raise_half",
+    "raise_pot",
+    "raise_2pot",
+    "allin"
+  ],
+  "target": "multi_action_tanh_value",
+  "target_scale": 1000.0,
+  "train_mae": 0.13148731409117234,
+  "val_mae": 0.2525325101964614,
+  "val_rmse": 0.3238815367221832,
+  "train_best_label_acc": 0.7403846383094788,
+  "val_best_label_acc": 0.7307692766189575,
+  "avg_pred": -0.002632119692862034,
+  "target_mask_density": 0.285897433757782,
+  "legal_mask_density": 0.5410256385803223,
+  "best_label_metric_mask": "target_mask",
+  "device": "cuda",
+  "batch_size": 104,
+  "seed": 911,
+  "contract": "blueprint_policy_v1"
+}

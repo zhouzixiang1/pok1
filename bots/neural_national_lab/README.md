@@ -1112,7 +1112,20 @@ aggregate `+93.48` chips per 70 hands versus v064, CI `[-9.84, +196.79]`,
 split 11 positive, 147 zero, and 2 negative samples. v071 is therefore a
 successful context/plumbing artifact, not a significant strength improvement.
 
-This v066-v071 sequence is a local-tuning plateau. The best artifacts reduce
+The v072-v074 follow-up exposed an evaluation safety bug before it produced a
+usable bot. `versions/v072_v254_context_support_p130_h64_min025` retrained the
+context support head on a p130 mix, while v073/v074 lowered the same support
+threshold to `0.20` and `0.15`. Initial workers>1 scans appeared to show new
+large positive windows, but single-worker replay contradicted them. Root cause:
+`paired_evaluate.py` and `active_divergence_scan.py` used thread workers around
+the local `judge_func`, whose state is not thread-safe. Both tools now use
+process workers for `--workers > 1`, keeping multi-core speed while isolating
+judge state. The repaired `_proc_` v074 g032x5 scan over v279/v283/v284/v285/v288
+found 160 zero-delta samples and zero divergence pairs. Treat all pre-fix
+workers>1 neural-lab paired/divergence files as exploratory only unless rerun
+with the process-worker tools or `--workers 1`.
+
+This v066-v074 sequence is a local-tuning plateau. The best artifacts reduce
 known bad windows and preserve some large positive outliers, but none clear the
 paired promotion bar and the aggregate mean is dominated by rare v285/v288
 samples. Do not keep spending cycles on scalar threshold sweeps in this family.

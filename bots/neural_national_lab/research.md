@@ -266,10 +266,12 @@ Recommended next architecture:
   too slow, nondeterministic, and weakly grounded in the national 60-second TCP
   protocol to be a decision engine.
 - The next meaningful implementation is a global evaluation/data-generation
-  scheduler, not another single-bot threshold sweep. The v071 g032x5 run
-  exposed that launching five independent paired evaluators with four workers
-  each can be slower than a controlled global worker pool because every worker
-  owns multiple persistent bot subprocesses.
+  scheduler, not another single-bot threshold sweep. The v072-v074 audit found
+  a stricter prerequisite: threaded workers around the local `judge_func` are
+  not deterministic under seeded replay, so workers>1 paired/divergence results
+  produced before the process-worker fix are exploratory only. Use process
+  workers or `--workers 1` before trusting any action-value label or promotion
+  result.
 
 ## Advisor-Line Findings
 
