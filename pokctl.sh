@@ -157,6 +157,13 @@ frontend_static_ready() {
     [ -f "web/server/static/index.html" ] && [ -d "web/server/static/assets" ]
 }
 
+configure_evolution_publish_env() {
+    : "${POK_EVOLUTION_RUNTIME:=1}"
+    : "${POK_REQUIRE_EVOLUTION_PUSH:=$POK_EVOLUTION_RUNTIME}"
+    : "${EVOLUTION_GIT_PUSH:=$POK_REQUIRE_EVOLUTION_PUSH}"
+    export POK_EVOLUTION_RUNTIME POK_REQUIRE_EVOLUTION_PUSH EVOLUTION_GIT_PUSH
+}
+
 kill_orphan() {
     local pid
     pid="$(read_pid)"
@@ -220,6 +227,7 @@ cmd_start() {
 
     # 确保日志目录存在
     mkdir -p "$LOG_DIR"
+    configure_evolution_publish_env
 
     echo "正在启动服务 (端口: $port)..."
     nohup setsid "$PYTHON" "$MAIN_PY" "$@" >> "$STDOUT_LOG" 2>&1 &

@@ -1690,6 +1690,71 @@ def test_write_pipeline_checkpoint_refreshes_baseline_after_precommit_gate(tmp_p
     assert state["precommit_attempt"] == 2
 
 
+def test_publish_ready_blocks_required_push_disabled(monkeypatch):
+    import evolution_infra
+
+    monkeypatch.setenv("POK_REQUIRE_EVOLUTION_PUSH", "1")
+    monkeypatch.delenv("EVOLUTION_GIT_PUSH", raising=False)
+    monkeypatch.setattr(evolution_infra, "git_publish_status", lambda: {
+        "ok": True,
+        "branch": "main",
+        "head": "abc123",
+        "upstream": "origin/main",
+        "upstream_head": "abc123",
+        "ahead": 0,
+        "behind": 0,
+    })
+
+    ok, payload = evolution_infra.ensure_publish_ready_for_new_generation()
+
+    assert ok is False
+    assert payload["reason"] == "evolution_git_push_disabled"
+
+
+def test_publish_ready_blocks_unpublished_local_commits(monkeypatch):
+    import evolution_infra
+
+    monkeypatch.setenv("POK_REQUIRE_EVOLUTION_PUSH", "1")
+    monkeypatch.setenv("EVOLUTION_GIT_PUSH", "1")
+    monkeypatch.setattr(evolution_infra, "git_publish_status", lambda: {
+        "ok": True,
+        "branch": "main",
+        "head": "def456",
+        "upstream": "origin/main",
+        "upstream_head": "abc123",
+        "ahead": 2,
+        "behind": 0,
+    })
+
+    ok, payload = evolution_infra.ensure_publish_ready_for_new_generation()
+
+    assert ok is False
+    assert payload["reason"] == "unpublished_local_commits"
+
+
+def test_publish_ready_allows_synchronized_runtime(monkeypatch):
+    import evolution_infra
+
+    monkeypatch.setenv("POK_EVOLUTION_RUNTIME", "1")
+    monkeypatch.setenv("EVOLUTION_GIT_PUSH", "1")
+    monkeypatch.delenv("POK_REQUIRE_EVOLUTION_PUSH", raising=False)
+    monkeypatch.setattr(evolution_infra, "git_publish_status", lambda: {
+        "ok": True,
+        "branch": "main",
+        "head": "abc123",
+        "upstream": "origin/main",
+        "upstream_head": "abc123",
+        "ahead": 0,
+        "behind": 0,
+    })
+
+    ok, payload = evolution_infra.ensure_publish_ready_for_new_generation()
+
+    assert ok is True
+    assert payload["push_required"] is True
+    assert payload["push_enabled"] is True
+
+
 def test_checkpoint_recovery_diagnostics_allows_workers_done_head_mismatch(tmp_path):
     import pipeline_recovery
 

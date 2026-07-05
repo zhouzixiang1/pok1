@@ -62,6 +62,11 @@ done
 case "$CLEAR_SESSION" in stale|always|never) ;; *) echo "bad --clear-session" >&2; exit 2 ;; esac
 case "$CLEAR_CHECKPOINT" in never|backup-and-clear) ;; *) echo "bad --clear-checkpoint" >&2; exit 2 ;; esac
 
+: "${POK_EVOLUTION_RUNTIME:=1}"
+: "${POK_REQUIRE_EVOLUTION_PUSH:=$POK_EVOLUTION_RUNTIME}"
+: "${EVOLUTION_GIT_PUSH:=$POK_REQUIRE_EVOLUTION_PUSH}"
+export POK_EVOLUTION_RUNTIME POK_REQUIRE_EVOLUTION_PUSH EVOLUTION_GIT_PUSH
+
 LOG_DIR="web/logs"
 RESULTS_DIR="web/core/results"
 mkdir -p "$LOG_DIR" "$RESULTS_DIR"

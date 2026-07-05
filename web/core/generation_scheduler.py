@@ -116,7 +116,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         MAX_ACTIVE_BOTS, find_current_v, find_latest_active_v, get_active_bots, load_ratings,
         find_max_committed_v, git_dir_is_committed, git_has_tag,
         find_abandoned_version_floor, compute_next_generation_v,
-        wait_for_daemon_eval,
+        wait_for_daemon_eval, ensure_publish_ready_for_new_generation,
     )
 
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
@@ -140,6 +140,32 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             return None
     except Exception as exc:
         log.warning("Runtime git guard failed during prepare; continuing cautiously: %s", exc)
+
+    try:
+        publish_ok, publish_payload = ensure_publish_ready_for_new_generation()
+        if not publish_ok:
+            log_system_event(
+                "pipeline.prepare_blocked_publish_sync",
+                "error",
+                "Prepare generation blocked by unpublished or stale git state",
+                publish_payload,
+            )
+            if ui:
+                ui.log_history(
+                    f"Prepare blocked by publish sync guard: {publish_payload.get('reason')}",
+                    "error",
+                )
+            return None
+    except Exception as exc:
+        log_system_event(
+            "pipeline.prepare_publish_sync_check_failed",
+            "error",
+            "Prepare generation could not verify publish synchronization",
+            {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+        )
+        if ui:
+            ui.log_history(f"Prepare publish sync check failed: {exc}", "error")
+        return None
 
     current_v = find_current_v()       # 版本编号（含 graveyard），用于 next_v
     # 裸 commit 对账（v117 反复重生循环根因修复, 2026-06-18）：find_max_committed_v()
@@ -1406,6 +1432,7 @@ def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[
         PROJECT_ROOT,
         _git,
         _git_ensure_main_branch,
+        evolution_git_push_enabled,
         git_push_refs,
         publish_runtime_expected_head,
     )
@@ -1468,15 +1495,16 @@ def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[
     commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
     publish_runtime_expected_head("post_cleanup_experience_commit", version=version)
     push_ok = False
-    if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
+    push_enabled = evolution_git_push_enabled()
+    if push_enabled:
         push_ok = git_push_refs("main")
         publish_runtime_expected_head("post_cleanup_experience_push", version=version)
     log_system_event(
         "pipeline.post_cleanup_experience_commit_done",
-        "success" if push_ok or os.environ.get("EVOLUTION_GIT_PUSH") != "1" else "warn",
+        "success" if push_ok or not push_enabled else "warn",
         (
             f"v{version}: committed post-cleanup experience consolidation {commit_hash}"
-            if os.environ.get("EVOLUTION_GIT_PUSH") != "1" or push_ok
+            if not push_enabled or push_ok
             else f"v{version}: committed post-cleanup experience consolidation {commit_hash}, push failed"
         ),
         {"version": version, "commit": commit_hash, "path": rel, "push_ok": push_ok},

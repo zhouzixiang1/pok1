@@ -1,7 +1,6 @@
 """Pipeline tools: commit, archivist, and crossover."""
 
 import json
-import os
 import time
 from typing import Annotated, TypedDict
 
@@ -30,7 +29,13 @@ from evolution_core import (
     archive_rotate_files,
     archive_old_logs,
 )
-from evolution_infra import _git, _git_ensure_main_branch, git_push_refs, publish_runtime_expected_head
+from evolution_infra import (
+    _git,
+    _git_ensure_main_branch,
+    evolution_git_push_enabled,
+    git_push_refs,
+    publish_runtime_expected_head,
+)
 from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _resolve_version_args,
@@ -648,7 +653,7 @@ def _archive_housekeeping_commit(version: int, reap_result: dict | None,
     commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
     publish_runtime_expected_head("archivist_housekeeping_commit", version=version)
     push_ok = False
-    if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
+    if evolution_git_push_enabled():
         push_ok = git_push_refs("main")
         publish_runtime_expected_head("archivist_housekeeping_push", version=version)
     log_system_event(

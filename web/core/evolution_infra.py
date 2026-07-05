@@ -1201,6 +1201,127 @@ def _git(*args, check=True):
     return result.stdout.strip()
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def evolution_git_push_enabled() -> bool:
+    """Return whether evolution-owned commits should be pushed immediately."""
+    return _env_flag("EVOLUTION_GIT_PUSH", False)
+
+
+def evolution_git_push_required() -> bool:
+    """Return whether a new generation requires a synchronized remote baseline."""
+    return _env_flag("POK_REQUIRE_EVOLUTION_PUSH", _env_flag("POK_EVOLUTION_RUNTIME", False))
+
+
+def git_publish_status() -> dict:
+    """Return branch publication state relative to the configured upstream."""
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+    head = _git("rev-parse", "--short=12", "HEAD", check=False).strip()
+    upstream = _git(
+        "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False
+    ).strip() or "origin/main"
+    upstream_head = _git("rev-parse", "--short=12", upstream, check=False).strip()
+    if not upstream_head:
+        return {
+            "ok": False,
+            "reason": "upstream_missing",
+            "branch": branch,
+            "head": head,
+            "upstream": upstream,
+            "upstream_head": "",
+            "ahead": None,
+            "behind": None,
+        }
+    raw_counts = _git("rev-list", "--left-right", "--count", f"HEAD...{upstream}", check=False)
+    parts = (raw_counts or "").split()
+    if len(parts) != 2:
+        return {
+            "ok": False,
+            "reason": "ahead_behind_unavailable",
+            "branch": branch,
+            "head": head,
+            "upstream": upstream,
+            "upstream_head": upstream_head,
+            "ahead": None,
+            "behind": None,
+            "raw_counts": raw_counts,
+        }
+    try:
+        ahead, behind = int(parts[0]), int(parts[1])
+    except ValueError:
+        return {
+            "ok": False,
+            "reason": "ahead_behind_parse_failed",
+            "branch": branch,
+            "head": head,
+            "upstream": upstream,
+            "upstream_head": upstream_head,
+            "ahead": None,
+            "behind": None,
+            "raw_counts": raw_counts,
+        }
+    return {
+        "ok": True,
+        "branch": branch,
+        "head": head,
+        "upstream": upstream,
+        "upstream_head": upstream_head,
+        "ahead": ahead,
+        "behind": behind,
+    }
+
+
+def ensure_publish_ready_for_new_generation() -> tuple[bool, dict]:
+    """Block new generations when required evolution commits are not published."""
+    push_enabled = evolution_git_push_enabled()
+    push_required = evolution_git_push_required()
+    status = git_publish_status()
+    payload = {
+        "push_enabled": push_enabled,
+        "push_required": push_required,
+        **status,
+    }
+    if not push_required:
+        return True, payload
+    if not push_enabled:
+        payload.update({
+            "blocked": True,
+            "reason": "evolution_git_push_disabled",
+            "directive": (
+                "Long-running evolution requires EVOLUTION_GIT_PUSH=1 so bot "
+                "commits, tags, and experience updates publish through origin/main."
+            ),
+        })
+        return False, payload
+    if not status.get("ok"):
+        payload.update({
+            "blocked": True,
+            "reason": status.get("reason") or "publish_status_unavailable",
+            "directive": "Cannot verify origin/main synchronization before starting a new generation.",
+        })
+        return False, payload
+    if int(status.get("ahead") or 0) > 0:
+        payload.update({
+            "blocked": True,
+            "reason": "unpublished_local_commits",
+            "directive": "Push local evolution commits/tags before starting the next generation.",
+        })
+        return False, payload
+    if int(status.get("behind") or 0) > 0:
+        payload.update({
+            "blocked": True,
+            "reason": "remote_main_ahead",
+            "directive": "Fetch and fast-forward or reconcile origin/main before starting the next generation.",
+        })
+        return False, payload
+    return True, payload
+
+
 def git_push_refs(*refs: str) -> bool:
     """Push refs to origin and return the real aggregate result.
 
@@ -1539,7 +1660,7 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         pass
 
     push_ok = False
-    if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
+    if evolution_git_push_enabled():
         push_ok = git_push_refs("main", tag)
         publish_runtime_expected_head("bot_commit_push", version=version)
     return push_ok
