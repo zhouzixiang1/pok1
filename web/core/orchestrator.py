@@ -1644,7 +1644,7 @@ async def _runtime_branch_guard_coroutine(
     """
     allowed_aliases: set[tuple[str, str]] = set()
     allowed_unrelated_heads: set[tuple[str, str, str]] = set()
-    runtime_expected_head = (expected_head or "").strip()
+    runtime_expected_head = _set_runtime_expected_head(expected_head)
     while True:
         if shutdown_mgr and shutdown_mgr.is_shutting_down:
             return
@@ -1656,6 +1656,34 @@ async def _runtime_branch_guard_coroutine(
             current_branch = current.get("branch") or ""
             current_head = current.get("head") or ""
             reason = ""
+            published_expected_head = os.environ.get("POK_RUNTIME_EXPECTED_HEAD", "").strip()
+            if (
+                published_expected_head
+                and published_expected_head != runtime_expected_head
+                and current_head == published_expected_head
+            ):
+                previous_expected_head = runtime_expected_head
+                runtime_expected_head = published_expected_head
+                log_system_event(
+                    "repo.runtime_expected_head_adopted",
+                    "info",
+                    (
+                        "Runtime branch guard adopted published expected HEAD: "
+                        f"{previous_expected_head or '<none>'} -> {runtime_expected_head}"
+                    ),
+                    {
+                        "expected_branch": expected_branch,
+                        "current_branch": current_branch,
+                        "previous_expected_head": previous_expected_head,
+                        "expected_head": runtime_expected_head,
+                        "current_head": current_head,
+                        "branch_status": current.get("branch_status", ""),
+                        "directive": (
+                            "Continuing because a pipeline-owned operation "
+                            "published the current HEAD as the validated runtime baseline."
+                        ),
+                    },
+                )
             same_expected_head = bool(
                 runtime_expected_head
                 and current_head

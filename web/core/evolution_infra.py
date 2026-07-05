@@ -1328,6 +1328,37 @@ def compute_next_generation_v(current_v=None, max_committed_v=None, abandoned_fl
     return max(int(current_v), int(max_committed_v), int(abandoned_floor)) + 1
 
 
+def publish_runtime_expected_head(reason: str = "", version=None) -> str:
+    """Publish the current HEAD as the validated runtime baseline.
+
+    The background runtime guard owns the final stop/continue decision, but
+    pipeline-owned commits must be able to tell it that the new HEAD is expected
+    instead of being an external drift.
+    """
+    head = _git("rev-parse", "--short=12", "HEAD", check=False).strip()
+    if not head:
+        return ""
+    previous = os.environ.get("POK_RUNTIME_EXPECTED_HEAD", "").strip()
+    os.environ["POK_RUNTIME_EXPECTED_HEAD"] = head
+    if previous != head:
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "repo.runtime_expected_head_published",
+                "info",
+                f"Published runtime expected HEAD {previous or '<none>'} -> {head}",
+                {
+                    "previous_expected_head": previous,
+                    "expected_head": head,
+                    "reason": reason,
+                    "version": version,
+                },
+            )
+        except Exception:
+            pass
+    return head
+
+
 def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=None):
     """Commit a completed bot generation.
 
@@ -1438,6 +1469,7 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         pass
     _git("commit", "-m", msg, "--", *allowed_paths)
     _commit_hash = _git("rev-parse", "HEAD", check=False).strip()[:12]
+    publish_runtime_expected_head("bot_commit", version=version)
     tag = f"bot-v{version}"
     _git("tag", "-d", tag, check=False)
     _git("tag", tag, "-m", f"Bot v{version}: {strategy_tag}")
@@ -1454,6 +1486,7 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     push_ok = False
     if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
         push_ok = git_push_refs("main", tag)
+        publish_runtime_expected_head("bot_commit_push", version=version)
     return push_ok
 
 

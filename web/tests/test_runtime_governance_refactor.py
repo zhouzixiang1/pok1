@@ -1949,6 +1949,76 @@ def test_runtime_branch_guard_advances_baseline_for_repeated_unrelated_head_drif
     assert os.environ["POK_RUNTIME_EXPECTED_HEAD"] == "ghi789"
 
 
+def test_runtime_branch_guard_adopts_pipeline_published_expected_head(monkeypatch):
+    import asyncio
+    import orchestrator
+
+    monkeypatch.setenv("POK_FORCE_RUNTIME_BRANCH_GUARD", "1")
+    monkeypatch.delenv("POK_RUNTIME_EXPECTED_HEAD", raising=False)
+
+    snapshots = iter([
+        {"branch": "main", "head": "def456", "branch_status": "main"},
+    ])
+    events = []
+    cleared = []
+
+    def _identity_after_pipeline_publish():
+        monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "def456")
+        return next(snapshots)
+
+    monkeypatch.setattr(orchestrator, "_runtime_git_identity", _identity_after_pipeline_publish)
+
+    def _unexpected_drift_check(*_args):
+        raise AssertionError("published current HEAD should be adopted before drift checks")
+
+    monkeypatch.setattr(orchestrator, "_runtime_head_drift_unrelated_allowed", _unexpected_drift_check)
+    monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", lambda **kwargs: cleared.append(kwargs))
+
+    class DummyShutdown:
+        def __init__(self):
+            self.is_shutting_down = False
+            self.requested = False
+
+        def request_shutdown(self):
+            self.requested = True
+            self.is_shutting_down = True
+
+    shutdown = DummyShutdown()
+
+    def _fake_log(*args):
+        events.append(args)
+        shutdown.is_shutting_down = True
+
+    monkeypatch.setattr(orchestrator, "log_system_event", _fake_log)
+
+    asyncio.run(orchestrator._runtime_branch_guard_coroutine(
+        None,
+        shutdown,
+        expected_branch="main",
+        expected_head="abc123",
+        check_interval=0.001,
+    ))
+
+    assert shutdown.requested is False
+    assert cleared == []
+    assert events[0][0] == "repo.runtime_expected_head_adopted"
+    assert events[0][3]["previous_expected_head"] == "abc123"
+    assert events[0][3]["expected_head"] == "def456"
+    assert os.environ["POK_RUNTIME_EXPECTED_HEAD"] == "def456"
+
+
+def test_publish_runtime_expected_head_updates_tool_guard_baseline(monkeypatch):
+    import evolution_infra
+
+    monkeypatch.delenv("POK_RUNTIME_EXPECTED_HEAD", raising=False)
+    monkeypatch.setattr(evolution_infra, "_git", lambda *args, **_kwargs: "abc123def456\n")
+
+    head = evolution_infra.publish_runtime_expected_head("test_publish", version=289)
+
+    assert head == "abc123def456"
+    assert os.environ["POK_RUNTIME_EXPECTED_HEAD"] == "abc123def456"
+
+
 def test_runtime_branch_guard_requests_shutdown_on_head_drift(monkeypatch):
     import asyncio
     import orchestrator
