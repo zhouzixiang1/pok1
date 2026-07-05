@@ -176,6 +176,22 @@ def _probe_cmd(args: argparse.Namespace, shard_idx: int, shard_output: Path) -> 
     bot_seed_base = _shard_bot_seed_base(args, shard_idx)
     if bot_seed_base is not None:
         cmd.extend(["--bot-seed-base", str(bot_seed_base), "--bot-seed-stride", str(args.bot_seed_stride)])
+    for label in args.prefilter_rule_label:
+        cmd.extend(["--prefilter-rule-label", label])
+    for label in args.prefilter_top_label:
+        cmd.extend(["--prefilter-top-label", label])
+    if args.prefilter_min_top_conf:
+        cmd.extend(["--prefilter-min-top-conf", str(args.prefilter_min_top_conf)])
+    if args.prefilter_max_top_conf is not None:
+        cmd.extend(["--prefilter-max-top-conf", str(args.prefilter_max_top_conf)])
+    if args.prefilter_free_action:
+        cmd.append("--prefilter-free-action")
+    if args.prefilter_max_to_call is not None:
+        cmd.extend(["--prefilter-max-to-call", str(args.prefilter_max_to_call)])
+    if args.prefilter_min_interaction_score is not None:
+        cmd.extend(["--prefilter-min-interaction-score", str(args.prefilter_min_interaction_score)])
+    if args.prefilter_max_interaction_score is not None:
+        cmd.extend(["--prefilter-max-interaction-score", str(args.prefilter_max_interaction_score)])
     if args.active_min_targets:
         cmd.extend(["--active-min-targets", str(args.active_min_targets)])
     if args.active_min_positive_targets:
@@ -275,6 +291,14 @@ def main() -> None:
     parser.add_argument("--branch-scope", choices=["hand", "match"], default="hand")
     parser.add_argument("--max-branch-steps", type=int, default=5000)
     parser.add_argument("--min-unique-actions", type=int, default=2)
+    parser.add_argument("--prefilter-rule-label", action="append", choices=LABELS, default=[])
+    parser.add_argument("--prefilter-top-label", action="append", choices=LABELS, default=[])
+    parser.add_argument("--prefilter-min-top-conf", type=float, default=0.0)
+    parser.add_argument("--prefilter-max-top-conf", type=float)
+    parser.add_argument("--prefilter-free-action", action="store_true")
+    parser.add_argument("--prefilter-max-to-call", type=float)
+    parser.add_argument("--prefilter-min-interaction-score", type=float)
+    parser.add_argument("--prefilter-max-interaction-score", type=float)
     parser.add_argument("--active-target", choices=TARGET_FIELDS, default="delta_vs_rule")
     parser.add_argument("--active-drop-label", action="append", choices=LABELS, default=[])
     parser.add_argument("--active-min-targets", type=int, default=0)
@@ -317,6 +341,14 @@ def main() -> None:
             "stage": args.stage,
             "branch_scope": args.branch_scope,
             "min_unique_actions": args.min_unique_actions,
+            "prefilter_rule_label": list(args.prefilter_rule_label),
+            "prefilter_top_label": list(args.prefilter_top_label),
+            "prefilter_min_top_conf": args.prefilter_min_top_conf,
+            "prefilter_max_top_conf": args.prefilter_max_top_conf,
+            "prefilter_free_action": args.prefilter_free_action,
+            "prefilter_max_to_call": args.prefilter_max_to_call,
+            "prefilter_min_interaction_score": args.prefilter_min_interaction_score,
+            "prefilter_max_interaction_score": args.prefilter_max_interaction_score,
             "active_target": args.active_target,
             "active_drop_label": list(args.active_drop_label),
             "active_min_targets": args.active_min_targets,

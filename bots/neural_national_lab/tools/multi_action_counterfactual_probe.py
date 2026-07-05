@@ -97,6 +97,83 @@ def _signal(neural_mod: Any, req: dict[str, Any], state: dict[str, Any]) -> dict
         }
 
 
+def _label_ids(raw_labels: list[str]) -> set[int]:
+    ids: set[int] = set()
+    for label in raw_labels:
+        ids.add(LABELS.index(label))
+    return ids
+
+
+def _optional_interaction_score(
+    neural_mod: Any,
+    req: dict[str, Any],
+    state: dict[str, Any],
+    rule_action: int,
+    signal: dict[str, Any],
+) -> float | None:
+    if neural_mod is None or signal.get("top_label") is None or signal.get("raw_probs") is None:
+        return None
+    try:
+        load_model = getattr(neural_mod, "_interaction_model", None)
+        build_features = getattr(neural_mod, "_interaction_features", None)
+        predict = getattr(neural_mod, "_predict_advantage", None)
+        if load_model is None or build_features is None or predict is None:
+            return None
+        model = load_model()
+        if model is None:
+            return None
+        features = build_features(
+            req,
+            state,
+            int(rule_action),
+            int(signal["top_label"]),
+            float(signal.get("top_conf") or 0.0),
+            list(signal.get("raw_probs") or []),
+        )
+        if len(features) != int(model.get("input_dim", 0)):
+            return None
+        return float(predict(model, features))
+    except Exception:
+        return None
+
+
+def _prefilter_decision(
+    req: dict[str, Any],
+    state: dict[str, Any],
+    rule_label_id: int,
+    signal: dict[str, Any],
+    interaction_score: float | None,
+    args: argparse.Namespace,
+) -> tuple[bool, str | None]:
+    rule_ids = _label_ids(getattr(args, "prefilter_rule_label", []) or [])
+    if rule_ids and rule_label_id not in rule_ids:
+        return False, "rule_label"
+    top_ids = _label_ids(getattr(args, "prefilter_top_label", []) or [])
+    top_label = signal.get("top_label")
+    if top_ids and top_label not in top_ids:
+        return False, "top_label"
+    top_conf = float(signal.get("top_conf") or 0.0)
+    if top_conf < float(getattr(args, "prefilter_min_top_conf", 0.0) or 0.0):
+        return False, "min_top_conf"
+    max_top_conf = getattr(args, "prefilter_max_top_conf", None)
+    if max_top_conf is not None and top_conf > float(max_top_conf):
+        return False, "max_top_conf"
+    if getattr(args, "prefilter_free_action", False) and float(state.get("to_call", 0.0) or 0.0) > 0.0:
+        return False, "free_action"
+    max_to_call = getattr(args, "prefilter_max_to_call", None)
+    if max_to_call is not None and float(state.get("to_call", 0.0) or 0.0) > float(max_to_call):
+        return False, "max_to_call"
+    min_interaction = getattr(args, "prefilter_min_interaction_score", None)
+    if min_interaction is not None:
+        if interaction_score is None or interaction_score < float(min_interaction):
+            return False, "min_interaction_score"
+    max_interaction = getattr(args, "prefilter_max_interaction_score", None)
+    if max_interaction is not None:
+        if interaction_score is None or interaction_score > float(max_interaction):
+            return False, "max_interaction_score"
+    return True, None
+
+
 def _legal_mask(neural_mod: Any, req: dict[str, Any], state: dict[str, Any]) -> list[int]:
     try:
         mask = neural_mod._legal_mask(req, state) if neural_mod is not None else None
@@ -461,6 +538,8 @@ def _scan_side(
     decisions = 0
     rejected_active = 0
     active_reject_reasons: dict[str, int] = {}
+    rejected_prefilter = 0
+    prefilter_reject_reasons: dict[str, int] = {}
     persistent = None
     if scan_bot_seeds is not None:
         persistent = [
@@ -496,6 +575,34 @@ def _scan_side(
                         rule_action = int(strategy_mod.get_action(req, list(analysis_requests)))
                         rule_final = _sanitize(main_mod, rule_action, req, state)
                     signal = _signal(neural_mod, req, state)
+                    rule_label_id = label_action(rule_final, _feature_request(req, state), None)
+                    interaction_score = _optional_interaction_score(neural_mod, req, state, rule_action, signal)
+                    prefilter_ok, prefilter_reason = _prefilter_decision(
+                        req,
+                        state,
+                        rule_label_id,
+                        signal,
+                        interaction_score,
+                        args,
+                    )
+                    if not prefilter_ok:
+                        rejected_prefilter += 1
+                        reason = str(prefilter_reason or "prefilter")
+                        prefilter_reject_reasons[reason] = prefilter_reject_reasons.get(reason, 0) + 1
+                        response, verdict, _ = _call_bot(
+                            bot_paths,
+                            player_id,
+                            request_data,
+                            bot_requests,
+                            bot_responses,
+                            bot_data=bot_data,
+                            persistent_procs=persistent,
+                        )
+                        log.append({str(player_id): {"response": str(response), "verdict": verdict}, "output": None})
+                        result = json.loads(judge_func(json.dumps({"log": log, "initdata": game_initdata})))
+                        log.append({"output": result})
+                        decisions += 1
+                        continue
                     menu = _action_menu(main_mod, neural_mod, req, state)
                     unique_legal = {int(item["final_action"]) for item in menu if item["legal"]}
                     if len(unique_legal) >= int(args.min_unique_actions):
@@ -517,7 +624,6 @@ def _scan_side(
                         targets = _complete_targets(evaluated, rule_final, _by_action)
                         status = "ok" if targets["rule_value"] is not None else "missing_rule_branch"
                         unique_actions, final_action_counts, final_action_labels = _final_action_breakdown(evaluated)
-                        rule_label_id = label_action(rule_final, _feature_request(req, state), None)
                         advantage_features = _advantage_features(
                             req,
                             state,
@@ -545,6 +651,7 @@ def _scan_side(
                             "neural_top_label_id": signal.get("top_label"),
                             "neural_top_label": signal.get("top_name"),
                             "neural_top_conf": signal.get("top_conf"),
+                            "interaction_score": interaction_score,
                             "neural_raw_probs": signal.get("raw_probs"),
                             "neural_masked_probs": signal.get("masked_probs"),
                             "state_features": _request_features(req, state),
@@ -602,6 +709,8 @@ def _scan_side(
         "bot_seeds": list(scan_bot_seeds) if scan_bot_seeds is not None else None,
         "rejected_active_rows": rejected_active,
         "active_reject_reasons": dict(sorted(active_reject_reasons.items())),
+        "rejected_prefilter_rows": rejected_prefilter,
+        "prefilter_reject_reasons": dict(sorted(prefilter_reject_reasons.items())),
     }
 
 
@@ -616,6 +725,14 @@ def main() -> None:
     parser.add_argument("--branch-scope", choices=["hand", "match"], default="hand")
     parser.add_argument("--max-branch-steps", type=int, default=5000)
     parser.add_argument("--min-unique-actions", type=int, default=2)
+    parser.add_argument("--prefilter-rule-label", action="append", choices=LABELS, default=[])
+    parser.add_argument("--prefilter-top-label", action="append", choices=LABELS, default=[])
+    parser.add_argument("--prefilter-min-top-conf", type=float, default=0.0)
+    parser.add_argument("--prefilter-max-top-conf", type=float)
+    parser.add_argument("--prefilter-free-action", action="store_true")
+    parser.add_argument("--prefilter-max-to-call", type=float)
+    parser.add_argument("--prefilter-min-interaction-score", type=float)
+    parser.add_argument("--prefilter-max-interaction-score", type=float)
     parser.add_argument("--active-target", choices=TARGET_FIELDS, default="delta_vs_rule")
     parser.add_argument("--active-drop-label", action="append", choices=LABELS, default=[])
     parser.add_argument("--active-min-targets", type=int, default=0)
@@ -665,6 +782,14 @@ def main() -> None:
         "filters": {
             "stage": args.stage,
             "min_unique_actions": args.min_unique_actions,
+            "prefilter_rule_label": list(args.prefilter_rule_label),
+            "prefilter_top_label": list(args.prefilter_top_label),
+            "prefilter_min_top_conf": args.prefilter_min_top_conf,
+            "prefilter_max_top_conf": args.prefilter_max_top_conf,
+            "prefilter_free_action": args.prefilter_free_action,
+            "prefilter_max_to_call": args.prefilter_max_to_call,
+            "prefilter_min_interaction_score": args.prefilter_min_interaction_score,
+            "prefilter_max_interaction_score": args.prefilter_max_interaction_score,
             "active_target": args.active_target,
             "active_drop_label": list(args.active_drop_label),
             "active_min_targets": args.active_min_targets,
