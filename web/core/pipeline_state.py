@@ -220,7 +220,7 @@ def _active_workflow_profile_info() -> tuple[str, str]:
         return "", "adapter"
 
 
-def _gate_matches_active_workflow(gate: dict | None) -> bool:
+def _gate_matches_active_workflow(gate: dict | None, *, require_native_contract: bool = False) -> bool:
     active_profile_id, active_execution_mode = _active_workflow_profile_info()
     if not active_profile_id:
         return True
@@ -236,7 +236,11 @@ def _gate_matches_active_workflow(gate: dict | None) -> bool:
         return False
     if gate_execution_mode != active_execution_mode:
         return False
-    if active_execution_mode == "native_tcp" and gate.get("national_native_contract_ok") is not True:
+    if (
+        require_native_contract
+        and active_execution_mode == "native_tcp"
+        and gate.get("national_native_contract_ok") is not True
+    ):
         return False
     return True
 
@@ -246,7 +250,7 @@ def _quality_gate_matches_active_workflow(gate_results: dict) -> bool:
     return (
         quality.get("all_passed") is True
         and quality.get("critical_scenarios_passed") is True
-        and _gate_matches_active_workflow(quality)
+        and _gate_matches_active_workflow(quality, require_native_contract=True)
     )
 
 
