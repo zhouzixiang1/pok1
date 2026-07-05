@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Start the full stack (FastAPI backend + frontend + orchestrator + daemon)
+# Long-running evolution on this machine should run from:
+#   /home/zzx/project/pok/.evolution_pok
 python web/main.py                           # Orchestrator mode on port 8000
 python web/main.py --no-daemon               # No background evaluation
 python web/main.py --dev                     # Enable uvicorn auto-reload
@@ -31,6 +33,11 @@ cd web && python -m pytest tests/test_logic_*.py   # Pure logic tests
 cd web && python -m pytest tests/test_mcp_*.py     # MCP tool tests
 python -m pytest sever/tests -q                   # National TCP adapter/protocol gate
 ```
+
+For active production-like evolution monitoring or restarts, first `cd
+/home/zzx/project/pok/.evolution_pok`. The outer `/home/zzx/project/pok`
+checkout is for human/operator infrastructure edits and should not run the
+autonomous loop while `.evolution_pok` is the active evolution checkout.
 
 ## Architecture — Two Patterns of LLM Usage
 
@@ -126,7 +133,7 @@ React frontend:
 ## Key Conventions
 
 - All shared files use `fcntl` file locking for concurrent access between daemon subprocess, orchestrator, and API server
-- The evolution target remains Botzone/local JSON bots; national TCP deployment goes through `sever/bot_adapter.py`, and quality gates run `sever/tests/test_national_alignment.py` to prevent adapter/platform drift.
+- New evolution output targets national-native bots with a direct TCP entrypoint. Botzone/local JSON support and `sever/bot_adapter.py` remain legacy regression paths, not the formal submission shape for new evolved bots. Quality gates must keep the native TCP path and national protocol tests aligned.
 - Worker role boundaries enforced by prompts and reviewer: Logic Architects cannot tune constants, Hyperparameter Tuners cannot add functions
 - Max 2000 lines for core strategy files (strategy.py, postflop.py), 1500 lines for other `.py` files — adaptive from source bot size + 15% growth budget, hard cap 2500. Reviewer rejects oversized files.
 - Decision test pass rate ≥70% (prevents catastrophic regressions like folding AA preflop)

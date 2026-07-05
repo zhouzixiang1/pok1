@@ -13,12 +13,33 @@ A Texas Hold'em poker AI bot framework that started as a Botzone evolution proje
 
 There are two protocol families:
 
-- Botzone/local protocol: bots are Python subprocesses that read JSON from stdin and write JSON to stdout. This is implemented by `engine/` and used by most `bots/claude_v*/` code and the evolution system.
-- National competition protocol: AI engines connect to a TCP server and exchange line-delimited strings such as `preflop|SMALLBLIND|<0,3><1,3>`, `raise 200`, `call`, `check`, `fold`, `allin`. This is implemented by `sever/`.
+- Botzone/local protocol: bots are Python subprocesses that read JSON from stdin and write JSON to stdout. This is implemented by `engine/` and remains useful for legacy regression and old bots.
+- National competition protocol: AI engines connect to a TCP server and exchange line-delimited strings such as `preflop|SMALLBLIND|<0,3><1,3>`, `raise 200`, `call`, `check`, `fold`, `allin`. This is implemented by `sever/`. New evolved bots are expected to be national-native and expose a direct TCP entrypoint; `sever/bot_adapter.py` is a legacy bridge/regression path, not the formal shape for new submissions.
 
 The evolution pipeline lives under `web/core/`. It uses LLM agents, Glicko-2 ratings, mirror battles, quality gates, precommit regression evaluation, and accumulated strategy lessons to generate new bot versions.
 
 The old `web/tui.py` Textual TUI no longer exists. Treat `web/main.py` as a web app launcher, not a TUI or mode-switching CLI.
+
+## Active Evolution Runtime
+
+The actual long-running autonomous evolution service for this machine runs from
+`/home/zzx/project/pok/.evolution_pok`, not from the outer operator checkout.
+Use that directory when checking health, logs, active candidates, or restarting
+the evolution loop:
+
+```bash
+cd /home/zzx/project/pok/.evolution_pok
+./pokctl.sh status
+./scripts/pok_restart_observe.sh --no-build --daemon-workers 12 --daemon-pairs 5 --observe-generations 10
+```
+
+Use `/home/zzx/project/pok` for normal infrastructure, prompt, test, and
+documentation edits. Before editing here, pull remote state with
+`git pull --ff-only --tags` on a clean tracked branch. If unfinished bot
+directories appear in the outer checkout without `.completed`, a committed bot
+directory, and the matching `bot-v{N}` tag, treat them as stale abandoned
+candidates: inspect logs/checkpoints, remove the untracked candidate, and clear
+any stale active checkpoint instead of resuming it from the operator checkout.
 
 Additional modules:
 - `rl/` — Reinforcement learning training framework (DanLM-inspired DMC self-play). Wraps `engine/judge.py` as a Gymnasium environment, supports MLP and Transformer Q-networks.
