@@ -240,6 +240,37 @@ Recommended next architecture:
   LLM play is too slow, hard to make deterministic, and poorly aligned with the
   national 60-second TCP protocol.
 
+## Status Refresh 2026-07-05
+
+- The current neural-national line is bottlenecked, but not by GPU training.
+  CUDA training of 103-dimensional p125 h16/h32/h64 heads completes quickly on
+  the local RTX 4060 Laptop GPU, and runtime JSON export remains portable. The
+  bottleneck is sparse, noisy action-value supervision: the v071 context pass
+  found only 13 new full-request training rows from the known v070 target
+  windows.
+- `v071_v254_opponent_context_support_p125_h64` proves the protocol/data path:
+  full Botzone `requests` can be recorded, converted into opponent-model
+  features, trained offline, and consumed by a native runtime support gate
+  without touching national protocol action sanitation. It does not prove a new
+  edge: g032x5 remained `+93.48` chips per 70 hands versus v064 with CI
+  `[-9.84, +196.79]`, the same sparse pattern as v070.
+- The literature/open-source direction remains consistent: Deep CFR, Single
+  Deep CFR, OpenSpiel's Deep CFR implementation, and PokerRL all spend most of
+  their engineering budget on actor traversal, legal-action masks, replay
+  buffers, and evaluation. The local project should copy that separation:
+  many CPU actors generate legal action-value/regret vectors; CUDA trains
+  larger value heads offline; runtime distills to compact JSON and lets the
+  sanitizer own raise-to-total conversion.
+- Direct large-language-model play should stay outside runtime. LLMs are useful
+  for research triage, code generation, and postmortem analysis, but they are
+  too slow, nondeterministic, and weakly grounded in the national 60-second TCP
+  protocol to be a decision engine.
+- The next meaningful implementation is a global evaluation/data-generation
+  scheduler, not another single-bot threshold sweep. The v071 g032x5 run
+  exposed that launching five independent paired evaluators with four workers
+  each can be slower than a controlled global worker pool because every worker
+  owns multiple persistent bot subprocesses.
+
 ## Advisor-Line Findings
 
 - `trace_advice_outcomes.py` is now the preferred advisor diagnostic. It

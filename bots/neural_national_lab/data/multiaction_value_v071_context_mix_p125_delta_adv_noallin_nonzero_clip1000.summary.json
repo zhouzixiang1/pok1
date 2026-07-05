@@ -1,0 +1,31 @@
+{
+  "mode": "context_mix_v1",
+  "inputs": [
+    "bots/neural_national_lab/data/multiaction_value_v068_alldiv_p112_context_neutral.jsonl",
+    "bots/neural_national_lab/data/multiaction_value_v070_context_target_p000_delta_adv_noallin_nonzero_clip1000.jsonl"
+  ],
+  "rows": 125,
+  "input_dim": 103,
+  "feature_set": "advantage+opponent_context_v1",
+  "label": "raise_half",
+  "target_samples": 92,
+  "positive": 58,
+  "negative": 34,
+  "zero": 0,
+  "mean_target": 103.43478260869566,
+  "median_target": 100.0,
+  "min_target": -1000.0,
+  "max_target": 1000.0,
+  "source_counts": {
+    "bots/neural_national_lab/data/multiaction_value_v068_alldiv_p112_context_neutral.jsonl": 112,
+    "bots/neural_national_lab/data/multiaction_value_v070_context_target_p000_delta_adv_noallin_nonzero_clip1000.jsonl": 13
+  },
+  "opponent_counts": {
+    "None": 73,
+    "claude_v279": 30,
+    "claude_v283": 7,
+    "claude_v284": 4,
+    "claude_v285": 4,
+    "claude_v288": 7
+  }
+}

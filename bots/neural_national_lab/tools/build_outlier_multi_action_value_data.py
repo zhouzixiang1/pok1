@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import importlib
 import json
 from pathlib import Path
 import statistics
@@ -19,6 +20,59 @@ for path in (ROOT, TOOL_DIR):
 from analyze_advice import _load_bot, _neural_probs  # noqa: E402
 from counterfactual_rollout_probe import _advantage_features  # noqa: E402
 from feature_spec import LABELS  # noqa: E402
+
+
+CONTEXT_FEATURE_SET = "opponent_context_v1"
+OPPONENT_CONTEXT_DEFAULTS = {
+    "confidence": 0.0,
+    "vpip": 0.58,
+    "pfr": 0.28,
+    "allin_rate": 0.05,
+    "postflop_aggr": 0.36,
+    "postflop_check_rate": 0.42,
+    "fold_to_raise": 0.44,
+    "fold_to_open_preflop": 0.42,
+    "threebet_vs_open": 0.16,
+    "aggression": 0.30,
+    "avg_raise_bb": 2.60,
+    "flop_aggr": 0.36,
+    "turn_aggr": 0.32,
+    "river_aggr": 0.28,
+    "barrel_freq": 0.45,
+    "turn_to_river_barrel": 0.35,
+    "barrel_abandon_turn": 0.55,
+    "barrel_abandon_river": 0.65,
+    "sizing_aggr": 0.35,
+    "fold_to_bet_flop": 0.44,
+    "fold_to_bet_turn": 0.44,
+    "fold_to_bet_river": 0.44,
+    "call_down_flop_turn": 0.35,
+    "call_down_turn_river": 0.35,
+    "passivity_score": 0.50,
+    "value_maximizer_index": 0.40,
+    "river_call_size_ratio": 0.50,
+    "turn_call_size_ratio": 0.50,
+    "flop_call_size_ratio": 0.50,
+    "large_bet_ratio": 0.32,
+    "per_street_mean_bet_ratio.1": 0.50,
+    "per_street_mean_bet_ratio.2": 0.50,
+    "per_street_mean_bet_ratio.3": 0.50,
+}
+
+
+def _load_opponent_module(version_dir: Path):
+    if "opponent" in sys.modules:
+        return sys.modules["opponent"]
+    sys.path.insert(0, str(version_dir))
+    try:
+        return importlib.import_module("opponent")
+    except Exception:
+        return None
+    finally:
+        try:
+            sys.path.remove(str(version_dir))
+        except ValueError:
+            pass
 
 
 def _resolve(path: Path | str) -> Path:
@@ -57,6 +111,61 @@ def _clipped(value: float, limit: float | None) -> float:
     return max(-bound, min(bound, float(value)))
 
 
+def _clip01(value: Any, default: float) -> float:
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        x = float(default)
+    if x != x:
+        x = float(default)
+    return max(0.0, min(1.0, x))
+
+
+def _opponent_value(model: dict[str, Any], key: str, default: float) -> Any:
+    if "." not in key:
+        return model.get(key, default)
+    root, subkey = key.split(".", 1)
+    nested = model.get(root)
+    if isinstance(nested, dict):
+        return nested.get(subkey, nested.get(int(subkey), default))
+    return default
+
+
+def _full_requests(divergence: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = divergence.get("candidate_full_requests") or divergence.get("baseline_full_requests") or []
+    return [dict(item) for item in raw if isinstance(item, dict)]
+
+
+def _opponent_context_features(
+    opponent_mod,
+    divergence: dict[str, Any],
+    req: dict[str, Any],
+) -> list[float]:
+    requests = _full_requests(divergence)
+    model: dict[str, Any] = dict(OPPONENT_CONTEXT_DEFAULTS)
+    builder = getattr(opponent_mod, "build_opponent_model", None) if opponent_mod is not None else None
+    if builder is not None and requests:
+        try:
+            my_id = int(req.get("my_id", requests[-1].get("my_id", 0)) or 0)
+            built = builder(requests, my_id)
+            if isinstance(built, dict):
+                model.update(built)
+        except Exception:
+            pass
+    features: list[float] = []
+    for key, default in OPPONENT_CONTEXT_DEFAULTS.items():
+        raw = _opponent_value(model, key, default)
+        if key == "avg_raise_bb":
+            try:
+                avg_raise_bb = float(raw)
+            except (TypeError, ValueError):
+                avg_raise_bb = float(default)
+            features.append(_clip01(avg_raise_bb / 10.0, float(default) / 10.0))
+        else:
+            features.append(_clip01(raw, float(default)))
+    return features
+
+
 def _raise_delta_target(pair_delta: float, baseline_action: int, candidate_action: int) -> float | None:
     if baseline_action == 0 and candidate_action > 0:
         return float(pair_delta)
@@ -84,6 +193,8 @@ def _rows_from_payload(
     max_candidate: int,
     require_stage: str | None,
     min_abs_target: float,
+    opponent_mod,
+    opponent_context_features: bool,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     label_name = LABELS[label_id]
@@ -125,6 +236,10 @@ def _rows_from_payload(
                 features = _advantage_features(req, state, rule_action, label_id, label_conf, probs)
                 if features is None:
                     continue
+                feature_set = "advantage"
+                if opponent_context_features:
+                    features = features + _opponent_context_features(opponent_mod, divergence, req)
+                    feature_set = f"advantage+{CONTEXT_FEATURE_SET}"
                 clipped = _clipped(target, clip_target)
                 if abs(clipped) < float(min_abs_target):
                     continue
@@ -142,7 +257,8 @@ def _rows_from_payload(
                     "legal_mask": legal_mask,
                     "weight": max(0.05, min(5.0, abs(clipped) / 1000.0)),
                     "source": source,
-                    "feature_set": "advantage",
+                    "feature_set": feature_set,
+                    "opponent_context_features": bool(opponent_context_features),
                     "target": "outlier_delta_vs_rule",
                     "labels": list(LABELS),
                     "row_index": len(rows),
@@ -179,6 +295,7 @@ def _summary(rows: list[dict[str, Any]], inputs: list[str], version: str, label_
         "version": version,
         "rows": len(rows),
         "input_dim": len(rows[0]["features"]) if rows else 0,
+        "feature_set": rows[0].get("feature_set") if rows else None,
         "label": LABELS[label_id],
         "positive": sum(1 for value in values if value > 0),
         "zero": sum(1 for value in values if value == 0),
@@ -214,6 +331,7 @@ def main() -> None:
     parser.add_argument("--max-candidate", type=int, default=125)
     parser.add_argument("--stage", default="flop")
     parser.add_argument("--min-abs-target", type=float, default=1.0)
+    parser.add_argument("--opponent-context-features", action="store_true")
     args = parser.parse_args()
 
     version_path = _resolve(args.version)
@@ -221,6 +339,7 @@ def main() -> None:
     _, state_mod, _, neural_mod, _ = _load_bot(version_dir)
     if neural_mod is None:
         raise SystemExit(f"version has no neural_policy: {version_dir}")
+    opponent_mod = _load_opponent_module(version_dir) if args.opponent_context_features else None
     label_id = int(LABELS.index(args.label))
 
     rows: list[dict[str, Any]] = []
@@ -242,6 +361,8 @@ def main() -> None:
                 args.max_candidate,
                 args.stage if args.stage else None,
                 args.min_abs_target,
+                opponent_mod,
+                bool(args.opponent_context_features),
             )
         )
     if rows:

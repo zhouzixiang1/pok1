@@ -78,6 +78,7 @@ def _play_match_record(
     bot1: Path,
     initdata: dict[str, Any],
     bot_seeds: tuple[int, int] | None,
+    include_full_requests: bool,
 ) -> dict[str, Any]:
     bot_paths = [str(bot0.resolve()), str(bot1.resolve())]
     if bot_seeds is None:
@@ -112,12 +113,15 @@ def _play_match_record(
                 persistent_procs=persistent,
             )
             if player_id == 0:
-                decisions.append({
+                row = {
                     "decision_index": len(decisions),
                     "action": int(response),
                     "verdict": verdict,
                     "request": _request_summary(request_data),
-                })
+                }
+                if include_full_requests:
+                    row["full_requests"] = copy.deepcopy(bot_requests[player_id])
+                decisions.append(row)
             log.append({str(player_id): {"response": str(response), "verdict": verdict}, "output": None})
             result = json.loads(judge_func(json.dumps({"log": log, "initdata": game_initdata})))
             log.append({"output": result})
@@ -144,6 +148,7 @@ def _compare_decisions(
     baseline: list[dict[str, Any]],
     candidate: list[dict[str, Any]],
     max_divergences: int,
+    include_full_requests: bool,
 ) -> dict[str, Any]:
     divergences: list[dict[str, Any]] = []
     comparable = min(len(baseline), len(candidate))
@@ -152,14 +157,18 @@ def _compare_decisions(
         c = candidate[pos]
         if int(b["action"]) == int(c["action"]):
             continue
-        divergences.append({
+        row = {
             "decision_index": pos,
             "baseline_action": int(b["action"]),
             "candidate_action": int(c["action"]),
             "same_request": b.get("request") == c.get("request"),
             "baseline_request": b.get("request"),
             "candidate_request": c.get("request"),
-        })
+        }
+        if include_full_requests:
+            row["baseline_full_requests"] = copy.deepcopy(b.get("full_requests") or [])
+            row["candidate_full_requests"] = copy.deepcopy(c.get("full_requests") or [])
+        divergences.append(row)
         if len(divergences) >= max_divergences:
             break
     length_mismatch = len(baseline) != len(candidate)
@@ -182,10 +191,11 @@ def _scan_side(
     initdata: dict[str, Any],
     bot_seeds: tuple[int, int] | None,
     max_divergences: int,
+    include_full_requests: bool,
 ) -> dict[str, Any]:
-    base = _play_match_record(baseline, opponent, initdata, bot_seeds)
-    cand = _play_match_record(candidate, opponent, initdata, bot_seeds)
-    compare = _compare_decisions(base["decisions"], cand["decisions"], max_divergences)
+    base = _play_match_record(baseline, opponent, initdata, bot_seeds, include_full_requests)
+    cand = _play_match_record(candidate, opponent, initdata, bot_seeds, include_full_requests)
+    compare = _compare_decisions(base["decisions"], cand["decisions"], max_divergences, include_full_requests)
     return {
         "baseline": {key: base[key] for key in ("winner", "bot0_chips", "bot1_chips")},
         "candidate": {key: cand[key] for key in ("winner", "bot0_chips", "bot1_chips")},
@@ -208,8 +218,24 @@ def _scan_pair(
     bot_seed_base = _opponent_seed_base(args, opponent_index)
     normal_bot_seeds = match_bot_seeds(bot_seed_base, args.bot_seed_stride, idx, "normal")
     mirror_bot_seeds = match_bot_seeds(bot_seed_base, args.bot_seed_stride, idx, "mirror")
-    normal = _scan_side(baseline, candidate, opponent, initdata, normal_bot_seeds, args.max_divergences_per_side)
-    mirror_side = _scan_side(baseline, candidate, opponent, mirror, mirror_bot_seeds, args.max_divergences_per_side)
+    normal = _scan_side(
+        baseline,
+        candidate,
+        opponent,
+        initdata,
+        normal_bot_seeds,
+        args.max_divergences_per_side,
+        bool(args.include_full_requests),
+    )
+    mirror_side = _scan_side(
+        baseline,
+        candidate,
+        opponent,
+        mirror,
+        mirror_bot_seeds,
+        args.max_divergences_per_side,
+        bool(args.include_full_requests),
+    )
     baseline_net = float(normal["baseline"]["bot0_chips"]) + float(mirror_side["baseline"]["bot0_chips"])
     candidate_net = float(normal["candidate"]["bot0_chips"]) + float(mirror_side["candidate"]["bot0_chips"])
     return {
@@ -326,6 +352,7 @@ def main() -> None:
     parser.add_argument("--opponent-bot-seed-stride", type=int, default=10000000)
     parser.add_argument("--max-hands", type=int, default=70)
     parser.add_argument("--max-divergences-per-side", type=int, default=3)
+    parser.add_argument("--include-full-requests", action="store_true")
     parser.add_argument("--stop-after-divergence-pairs", type=int, default=0)
     parser.add_argument("--no-parallel-early-stop", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -352,6 +379,7 @@ def main() -> None:
         "opponent_bot_seed_stride": args.opponent_bot_seed_stride,
         "max_hands": args.max_hands,
         "max_divergences_per_side": args.max_divergences_per_side,
+        "include_full_requests": bool(args.include_full_requests),
         "stop_after_divergence_pairs": args.stop_after_divergence_pairs,
         "parallel_early_stop": not args.no_parallel_early_stop,
         "tasks_total": 0,
