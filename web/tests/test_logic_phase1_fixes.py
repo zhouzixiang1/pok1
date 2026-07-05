@@ -245,6 +245,24 @@ class TestClearPipelineCheckpoint:
                 fake_path.unlink()
 
 
+class TestLockedFile:
+    """Verify locked_file is usable from a fresh checkout."""
+
+    def test_append_creates_missing_parent_directory(self, tmp_path):
+        core_dir = Path(__file__).resolve().parent.parent / "core"
+        sys.path.insert(0, str(core_dir))
+        try:
+            from evolution_infra import locked_file
+        finally:
+            sys.path.remove(str(core_dir))
+
+        target = tmp_path / "missing" / "worker_failures.jsonl"
+        with locked_file(target, "a", encoding="utf-8") as f:
+            f.write("ok\n")
+
+        assert target.read_text() == "ok\n"
+
+
 # ═══════════════════════════════════════════════════════════════
 # Decision Test: CRITICAL count is 9
 # ═══════════════════════════════════════════════════════════════

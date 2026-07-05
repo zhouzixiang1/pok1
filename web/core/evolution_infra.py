@@ -206,6 +206,8 @@ def locked_file(path, mode='r', lock_type=None, encoding=None):
     open_kwargs = {}
     if encoding is not None:
         open_kwargs["encoding"] = encoding
+    if any(flag in mode for flag in ("w", "a", "x", "+")):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
     actual_mode = mode
     truncate_after_lock = False
     if mode == 'w':
@@ -370,6 +372,22 @@ _REPO_BASELINE_VALIDATION_GATES = {
 }
 
 
+def _prune_gate_results_for_stage(stage, gate_results):
+    """Drop gate results that no longer validate the current stage/code.
+
+    Gate payloads are evidence for a specific code snapshot. When the pipeline
+    regresses to a code-mutating stage and later returns to workers_done, old
+    review/critic/precommit evidence must not survive and steer recovery for the
+    new code.
+    """
+    if not isinstance(gate_results, dict):
+        return {}
+    allowed = STAGE_GATE_ALLOWLIST.get(stage)
+    if allowed is None:
+        return dict(gate_results)
+    return {name: value for name, value in gate_results.items() if name in allowed}
+
+
 def _stage_refreshes_repo_baseline(old_stage, new_stage, gate_results=None) -> bool:
     """Return True when a checkpoint stage proves the candidate on this HEAD.
 
@@ -503,6 +521,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
 
         if gate_results:
             existing_gate_results.update(gate_results)
+        existing_gate_results = _prune_gate_results_for_stage(stage, existing_gate_results)
         if worker_failure_count is not None:
             existing_failure_count = worker_failure_count
         elif worker_invocation_count is not None:

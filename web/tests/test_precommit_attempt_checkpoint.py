@@ -24,12 +24,23 @@ from evolution_infra import (
     read_pipeline_checkpoint,
     MAX_PRECOMMIT_RETRIES,
 )
+from pipeline_state import route_policy
 
 
 def _write_basic(stage="prepared", **kwargs):
     """Helper: write a minimal checkpoint and return the persisted dict."""
     write_pipeline_checkpoint(next_v=100, source_v=99, stage=stage, **kwargs)
     return read_pipeline_checkpoint()
+
+
+def _passing_quality_gate():
+    return {
+        "all_passed": True,
+        "critical_scenarios_passed": True,
+        "workflow_profile_id": "national_native",
+        "national_execution_mode": "native_tcp",
+        "national_native_contract_ok": True,
+    }
 
 
 def test_fresh_checkpoint_defaults_precommit_attempt_to_zero():
@@ -100,6 +111,97 @@ def test_stage_regression_auto_resets_precommit_attempt():
     state = read_pipeline_checkpoint()
     assert state.get("stage") == "workers_done"
     assert state.get("precommit_attempt") == 0
+
+
+def test_rework_to_workers_done_invalidates_stale_downstream_gates():
+    """Worker rework creates new code, so old gates cannot survive the reset."""
+    _write_basic(
+        stage="precommit_failed",
+        precommit_attempt=1,
+        gate_results={
+            "quality": _passing_quality_gate(),
+            "review": {"approved": True},
+            "critic": {"approved": True},
+            "precommit_eval": {
+                "passed": False,
+                "blockers": [{"reason": "aggregate_precommit_regression"}],
+            },
+        },
+        reviewer_feedback="Precommit FAILED vs parent",
+    )
+    assert "precommit_eval" in read_pipeline_checkpoint()["gate_results"]
+
+    write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="rework_running",
+        reviewer_feedback="Precommit FAILED vs parent",
+    )
+    assert "precommit_eval" in read_pipeline_checkpoint()["gate_results"]
+
+    write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="workers_done",
+        reviewer_feedback="Precommit FAILED vs parent",
+    )
+    state = read_pipeline_checkpoint()
+    assert state.get("stage") == "workers_done"
+    assert state.get("precommit_attempt") == 0
+    assert state.get("gate_results") == {}
+
+
+def test_post_rework_gates_route_to_fresh_precommit_eval():
+    """Regression for v27 loop: stale failed precommit must not route to workers."""
+    _write_basic(
+        stage="precommit_failed",
+        precommit_attempt=1,
+        gate_results={
+            "quality": _passing_quality_gate(),
+            "review": {"approved": True},
+            "critic": {"approved": True},
+            "precommit_eval": {
+                "passed": False,
+                "blockers": [{"reason": "semantic_regression"}],
+            },
+        },
+        reviewer_feedback="Precommit FAILED vs parent",
+    )
+
+    write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="rework_running",
+        reviewer_feedback="Precommit FAILED vs parent",
+    )
+    write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="workers_done",
+        reviewer_feedback="Precommit FAILED vs parent",
+    )
+    write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="quality_passed",
+        gate_results={"quality": _passing_quality_gate()},
+    )
+    write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="reviewed",
+        gate_results={"review": {"approved": True}},
+    )
+    write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="critic_checked",
+        gate_results={"critic": {"approved": True}},
+    )
+
+    state = read_pipeline_checkpoint()
+    assert set(state.get("gate_results")) == {"quality", "review", "critic"}
+    assert route_policy(state)["next_tool"] == "run_precommit_eval"
 
 
 def test_critic_checked_to_master_planned_resets_precommit_attempt():
