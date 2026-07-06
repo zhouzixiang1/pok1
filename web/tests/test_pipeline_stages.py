@@ -2439,6 +2439,67 @@ class TestWorkerFailureCircuitBreaker:
         assert (next_dir / "strategy_helpers.py").read_text() == fixed
         assert any("CoT check was inconsistent" in msg for _level, msg in ui.messages)
 
+    def test_cot_runtime_side_effect_resets_feature_worker(self, tmp_path, monkeypatch):
+        """Undisclosed runtime telemetry is a hard failure even for feature work."""
+        import asyncio
+        import agent_workers
+
+        next_dir = tmp_path / "claude_v11"
+        source_dir = tmp_path / "claude_v10"
+        next_dir.mkdir()
+        source_dir.mkdir()
+        baseline = "def decide():\n    return 0\n"
+        changed = "def decide():\n    import sys as _sys\n    _sys.stderr.write('debug\\n')\n    return 0\n"
+        (next_dir / "strategy.py").write_text(baseline)
+        (source_dir / "strategy.py").write_text(baseline)
+
+        class UI:
+            costs = {}
+
+            def log_history(self, *_args, **_kwargs):
+                pass
+
+        async def fake_worker(*_args, **_kwargs):
+            (next_dir / "strategy.py").write_text(changed)
+            return True
+
+        task = {
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy.py"],
+            "worker_prompt": "Change the decision heuristic.",
+            "task_kind": "feature_work",
+        }
+        monkeypatch.setattr(agent_workers, "_run_single_worker", fake_worker)
+        monkeypatch.setattr(agent_workers, "get_bot_dir", lambda _v: source_dir)
+
+        async def _run():
+            with patch("audit_agents._run_worker_cot_check", new_callable=AsyncMock) as cot:
+                cot.return_value = {
+                    "cot_consistent": False,
+                    "discrepancies": [
+                        "Worker added _sys.stderr.write telemetry but did not disclose "
+                        "the runtime side-effect."
+                    ],
+                    "focus_areas": ["remove hidden stderr telemetry"],
+                }
+                return await agent_workers._execute_workers(
+                    [task],
+                    "{worker_prompt}",
+                    next_dir,
+                    11,
+                    [],
+                    UI(),
+                    reviewer_feedback="",
+                    source_v=10,
+                )
+
+        success, snapshots, focus = asyncio.run(_run())
+        assert success is False
+        assert snapshots == {(0, "strategy.py"): baseline}
+        assert focus == ["remove hidden stderr telemetry"]
+        assert (next_dir / "strategy.py").read_text() == baseline
+
     def test_repair_planned_quality_rework_passes_skipper_to_workers(self, tmp_path, monkeypatch):
         """A resumed quality repair at repair_planned should skip already-cleared blockers."""
         import asyncio

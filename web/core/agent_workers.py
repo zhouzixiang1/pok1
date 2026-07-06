@@ -467,13 +467,40 @@ def _target_change_failures_for_worker(task, task_idx, next_dir, next_v,
     return invalid_targets, unchanged
 
 
-def _cot_inconsistency_blocks_task(task):
-    """Only hard-block CoT inconsistencies for repair tasks.
+_COT_RUNTIME_SIDE_EFFECT_RE = re.compile(
+    r"(stderr|stdout|sys\.stderr|_sys\.stderr|telemetry|debug|logging|"
+    r"print\(|runtime\s+side[- ]effect|side[- ]effect|unconditional\s+log)",
+    re.IGNORECASE,
+)
+
+
+def _cot_inconsistency_has_runtime_side_effect(cot):
+    """Return True when CoT found an undisclosed runtime/logging side effect."""
+    if not isinstance(cot, dict):
+        return False
+    parts = []
+    for key in ("discrepancies", "focus_areas"):
+        value = cot.get(key)
+        if isinstance(value, (list, tuple)):
+            parts.extend(str(item) for item in value)
+        elif value:
+            parts.append(str(value))
+    text = "\n".join(parts)
+    return bool(text and _COT_RUNTIME_SIDE_EFFECT_RE.search(text))
+
+
+def _cot_inconsistency_blocks_task(task, cot=None):
+    """Hard-block repair mismatches and undisclosed runtime side effects.
 
     Normal innovation workers can surface reviewer focus areas without forcing an
     immediate retry. Gate/precommit repairs are different: their whole purpose is
     to resolve exact blockers, so a claim-vs-diff mismatch is actionable failure.
+    Runtime side effects are also different: hidden stderr/stdout/debug/telemetry
+    changes can pollute match logs or affect timing, so they must be disclosed in
+    the worker output or reverted regardless of task kind.
     """
+    if _cot_inconsistency_has_runtime_side_effect(cot):
+        return True
     text = " ".join([
         str(task.get("task_kind", "")),
         str(task.get("worker_id", "")),
@@ -1029,7 +1056,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     tasks[0], 0, next_v, source_v, next_dir, worker_snapshots, ui
                 )
                 if not cot.get("cot_consistent", True):
-                    if _cot_inconsistency_blocks_task(tasks[0]):
+                    if _cot_inconsistency_blocks_task(tasks[0], cot):
                         override = _cot_inconsistency_override_reason(
                             tasks[0], task_skipper, tasks[0].get("worker_id", 1),
                             next_v, source_v, ui,
@@ -1141,7 +1168,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     task, i, next_v, source_v, next_dir, worker_snapshots, ui
                 )
                 if not cot.get("cot_consistent", True):
-                    if _cot_inconsistency_blocks_task(task):
+                    if _cot_inconsistency_blocks_task(task, cot):
                         override = _cot_inconsistency_override_reason(
                             task, task_skipper, task.get("worker_id", i + 1),
                             next_v, source_v, ui,
@@ -1215,7 +1242,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 task, i, next_v, source_v, next_dir, worker_snapshots, ui
             )
             if not cot.get("cot_consistent", True):
-                if _cot_inconsistency_blocks_task(task):
+                if _cot_inconsistency_blocks_task(task, cot):
                     override = _cot_inconsistency_override_reason(
                         task, task_skipper, task.get("worker_id", i + 1),
                         next_v, source_v, ui,
