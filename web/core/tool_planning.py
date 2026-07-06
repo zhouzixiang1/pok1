@@ -2453,6 +2453,8 @@ def _plan_repeats_exhausted_direction(plan: dict, exhausted_directions: list[str
 # LLM auditor fails to flag repetition.
 
 CROSS_GEN_MARKER = "# CROSS-GEN LOCAL-OPTIMA CONSTRAINT"
+H6_CROSS_GEN_THRESHOLD = 2
+H6_RECENT_GENERATION_WINDOW = 10
 
 
 def _load_recent_critic_local_optima(next_v, max_entries=3):
@@ -2501,6 +2503,46 @@ def _load_recent_critic_local_optima(next_v, max_entries=3):
     except Exception:
         return []
     return [t[:3] for t in sorted(by_gen.values(), key=lambda x: -x[0])][:max_entries]
+
+
+def _recent_prior_worker_failure_gens(
+    records,
+    *,
+    next_v,
+    generation_window=H6_RECENT_GENERATION_WINDOW,
+):
+    """Return prior worker-failure gens close enough to affect ``next_v``.
+
+    ``worker_failures.jsonl`` is append-only across the whole epoch, so tailing a
+    few rows is not a reliable definition of recent. A failure is recent for H6
+    only if it belongs to a prior generation within a small generation-distance
+    window from the generation that is about to run.
+    """
+    try:
+        current = int(next_v)
+        window = int(generation_window)
+    except (TypeError, ValueError):
+        return []
+    if window <= 0:
+        return []
+
+    failed_gens: set[int] = set()
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        if record.get("category", "worker") != "worker":
+            continue
+        gen = record.get("gen")
+        if isinstance(gen, bool):
+            continue
+        try:
+            gen_int = int(gen)
+        except (TypeError, ValueError):
+            continue
+        distance = current - gen_int
+        if 0 < distance <= window:
+            failed_gens.add(gen_int)
+    return sorted(failed_gens, reverse=True)
 
 
 def _build_cross_gen_constraint_block(next_v):
@@ -4696,7 +4738,7 @@ async def execute_workers(args):
 
     # H6 (2026-06-29): CROSS-GENERATION circuit breaker. The single-gen breaker
     # above limits failures within one generation; this one catches a different
-    # failure mode — workers failing across >= N DISTINCT recent generations
+    # failure mode — workers failing across >= N DISTINCT nearby generations
     # (v214-from-v212 retried workers on the exhausted commitment/defense/gate
     # axis across gens 213/214 without converging). When this trips, direct
     # master to pivot axis/parent rather than spawning more identical workers.
@@ -4714,7 +4756,6 @@ async def execute_workers(args):
     # sufficient. The real fix is a PreToolUse hook that blocks the orchestrator's
     # Bash/Edit/Write from touching active bot dirs — see _make_bot_dir_guard_hook
     # in orchestrator_context.py. The breaker here stays as defense-in-depth.
-    _H6_CROSS_GEN_THRESHOLD = 2
     try:
         from evolution_infra import RESULTS_DIR as _h6_results
         _h6_wf_file = _h6_results / "worker_failures.jsonl"
@@ -4732,27 +4773,30 @@ async def execute_workers(args):
                                 pass
             except Exception:
                 pass
-        _recent = _recent[-(_H6_CROSS_GEN_THRESHOLD * 4):]
-        _worker_fails = [r for r in _recent if r.get("category", "worker") == "worker"]
-        _distinct_gens_failed = sorted({r.get("gen") for r in _worker_fails
-                                        if isinstance(r.get("gen"), int)}, reverse=True)
-        if len(_distinct_gens_failed) >= _H6_CROSS_GEN_THRESHOLD:
+        _distinct_gens_failed = _recent_prior_worker_failure_gens(
+            _recent,
+            next_v=next_v,
+            generation_window=H6_RECENT_GENERATION_WINDOW,
+        )
+        if len(_distinct_gens_failed) >= H6_CROSS_GEN_THRESHOLD:
             try:
                 log_system_event(
                     "pipeline.worker_circuit_breaker_cross_gen", "error",
                     f"Cross-gen worker circuit breaker tripped for v{next_v}: workers "
-                    f"failed across {len(_distinct_gens_failed)} distinct gens "
+                    f"failed across {len(_distinct_gens_failed)} distinct nearby gens "
                     f"{_distinct_gens_failed[:3]}. Directing master to pivot axis/parent.",
                     {"next_v": next_v, "source_v": source_v,
-                     "failed_gens": _distinct_gens_failed[:5]},
+                     "failed_gens": _distinct_gens_failed[:5],
+                     "generation_window": H6_RECENT_GENERATION_WINDOW},
                 )
             except Exception:
                 pass
             return {"content": [{"type": "text", "text": json.dumps({
                 "error": "WORKER_CIRCUIT_BREAKER_CROSS_GEN",
                 "failed_gens": _distinct_gens_failed[:5],
+                "generation_window": H6_RECENT_GENERATION_WINDOW,
                 "directive": (
-                    f"Workers failed across {len(_distinct_gens_failed)} distinct recent "
+                    f"Workers failed across {len(_distinct_gens_failed)} distinct nearby "
                     f"generations ({_distinct_gens_failed[:3]}). The current strategic "
                     f"axis (source v{source_v}) is unlikely to converge via more worker "
                     f"retries. Produce a FUNDAMENTALLY different plan: new structural "
