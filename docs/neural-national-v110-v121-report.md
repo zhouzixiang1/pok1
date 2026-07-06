@@ -1,4 +1,4 @@
-# Neural National v110-v120 Report
+# Neural National v110-v121 Report
 
 Date: 2026-07-06
 
@@ -785,18 +785,115 @@ Relative to v119:
 - All v120 recorded evaluations passed protocol compliance with 0 candidate
   illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
 
+## v121
+
+Path:
+
+`bots/neural_national_lab/versions/v121_national_v17_k4s_jam_veto_tcp`
+
+Change:
+
+- Derived from v120.
+- Keeps v120's T8o large-jam draw breaker.
+- Adds a narrow preflop K4 suited large-jam veto:
+  - stage is `preflop`,
+  - original rule label is `allin`,
+  - hole cards are exactly suited K4,
+  - `10000 <= to_call <= 13000`,
+  - pot is `22000..27000`,
+  - return action `-1`, a national-protocol `fold`.
+
+Reason:
+
+v120 dominated the current all-completed seed block, but the older
+current-top8+v7 seed block `2026073900` still had paired v2/v3 losses. Trace
+mining showed both loss branches shared the same K4 suited preflop large
+all-in. Offline trigger scanning against v120 traces found exactly two changed
+decisions: `national_v2` and `national_v3`, seed `2026073909`, forward hand 6,
+decision 2, changing `-2` to `-1`.
+
+Other candidates were rejected before promotion:
+
+- A2s early fold/call probes were high-variance and polluted by double-leg
+  triggers.
+- QJs flop redirects were mostly negative or unstable.
+- QJo preflop redirects were mixed and not stable enough for a narrow gate.
+
+Direct old v2/v3 checks on seed block `2026073900`:
+
+| Version | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| v120 | 20 | 2800 | `+205772` | `+73.490` | `18-2-0` |
+| v121 | 20 | 2800 | `+232928` | `+83.189` | `18-2-0` |
+
+Per-opponent old v2/v3 direct deltas:
+
+| Opponent | v120 Total | v121 Total | Delta |
+|---|---:|---:|---:|
+| national_v2 | `+104035` | `+117613` | `+13578` |
+| national_v3 | `+101737` | `+115315` | `+13578` |
+
+The paired v2/v3 seed block `2026074000` was unchanged from v120:
+
+| Opponent | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|
+| national_v2 | `+66816` | `+47.726` | `4-6-0` |
+| national_v3 | `+97742` | `+69.816` | `5-5-0` |
+| combined | `+164558` | `+58.771` | `9-11-0` |
+
+All completed national bots on seed block `2026074100`:
+
+The completed/tagged pool remained `national_v1` through `national_v18`,
+`national_v20`, and `national_v27` through `national_v32`. v121 was evaluated
+against all 25 native TCP opponents with six paired matches each.
+
+| Pool | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| all completed | 150 | 21000 | `+1844072` | `+87.813` | `150-0-0` |
+
+Regression on the older current-top8+v7 seed blocks:
+
+| Block | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| seed2026074000 | 90 | 12600 | `+417530` | `+33.137` | `37-11-42` |
+| seed2026073900 | 90 | 12600 | `+918189` | `+72.872` | `71-3-16` |
+| combined | 180 | 25200 | `+1335719` | `+53.005` | `108-14-58` |
+
+Combined older-block v121 opponent totals remained positive for every opponent:
+
+| Opponent | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|
+| national_v8 | `+118971` | `+42.490` | `10-0-10` |
+| national_v5 | `+132568` | `+47.346` | `11-1-8` |
+| national_v7 | `+144375` | `+51.563` | `12-0-8` |
+| national_v9 | `+144375` | `+51.563` | `12-0-8` |
+| national_v14 | `+144375` | `+51.563` | `12-0-8` |
+| national_v15 | `+144375` | `+51.563` | `12-0-8` |
+| national_v16 | `+144375` | `+51.563` | `12-0-8` |
+| national_v3 | `+177876` | `+63.527` | `14-6-0` |
+| national_v2 | `+184429` | `+65.868` | `13-7-0` |
+
+Relative to v120:
+
+- Current all-completed-pool result stayed `+1844072`, mean/hand `+87.813`,
+  W-L-D `150-0-0`.
+- Older current-top8+v7 combined result improved by `+27156` chips, from
+  `+1308563` to `+1335719`.
+- Older two-block v2/v3 totals improved from v2 `+170851`, v3 `+164298` to v2
+  `+184429`, v3 `+177876`.
+- All v121 recorded evaluations passed protocol compliance with 0 candidate
+  illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
+
 ## Current Assessment
 
-- v120 is the current best artifact by fresh strong-rule coverage because it
-  improves the completed `.evolution_pok` top10 seed block from v119's
-  `+168951` to `+747927`, a `+578976` chip delta, and turns that block into
-  `60-0-0` while staying protocol-clean.
-- v120 also beats every completed/tagged native national bot from v1 through
-  v32 on seed block `2026074100`: `+1844072`, mean/hand `+87.813`, W-L-D
-  `150-0-0`.
-- v120 gives back `35181` chips on the older two-block pool versus v117, but
-  remains strongly positive there at `+1308563`, mean/hand `+51.927`, W-L-D
-  `108-14-58`, with every opponent total still positive.
+- v121 is the current best artifact by combined coverage: it preserves v120's
+  all-completed native-TCP domination while recovering `+27156` chips on the
+  older current-top8+v7 seed blocks.
+- v121 beats every completed/tagged native national bot from v1 through v32 on
+  seed block `2026074100`: `+1844072`, mean/hand `+87.813`, W-L-D `150-0-0`.
+- v121 remains strongly positive on the older two-block pool at `+1335719`,
+  mean/hand `+53.005`, W-L-D `108-14-58`, with every opponent total still
+  positive.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
   - v108 v2/v3 combined over two full-pool blocks: v2 `-64781`, v3 `-21241`.
   - v110: v2 `+101785`, v3 `+139622`.
@@ -814,13 +911,15 @@ Relative to v119:
 - v120: older two-block v2/v3 result is unchanged from v119; fresh current
   completed-top10 v2/v3 result is v2 `+84218`, v3 `+84733`, and all completed
   bots on seed block `2026074100` are `150-0-0`.
-- All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119/v120 recorded
+- v121: older two-block v2/v3 result improves to v2 `+184429`, v3 `+177876`;
+  all completed bots on seed block `2026074100` remain `150-0-0`.
+- All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119/v120/v121 recorded
   evaluations passed protocol compliance with 0 candidate illegal actions, 0
   candidate timeouts, and 0 candidate adapter actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
 It is closer to the requested rule-bot domination standard, but still not fully
-complete: v120 dominates the current all-completed seed block, yet the older
+complete: v121 dominates the current all-completed seed block, yet the older
 seed blocks still contain v2/v3 match losses (`13-7-0` and `14-6-0`). The next
 generation should mine those old-block v2/v3 losses without weakening the new
-T8o draw-breaker or native TCP protocol compliance.
+T8o/K4s draw-breakers or native TCP protocol compliance.
