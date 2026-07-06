@@ -9,7 +9,7 @@ from typing import Any
 
 from bot_namespace import bot_relpath
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT
-from evaluation_contract import evaluate_head_drift
+from evaluation_contract import contract_bot_versions, evaluate_head_drift
 from evolution_scope import classify_status_entries
 from pipeline_state import head_drift_resume_policy, head_drift_resume_stages
 from repo_state import git_worktree_snapshot
@@ -284,7 +284,14 @@ def checkpoint_recovery_diagnostics(
         "snapshot_error": snapshot.get("error"),
     }
     diag["repo"] = repo_diag
-    worktree_scope = classify_status_entries(snapshot.get("entries") or [], next_v)
+    worktree_scope = classify_status_entries(
+        snapshot.get("entries") or [],
+        next_v,
+        contract_bot_versions=contract_bot_versions(
+            candidate_v=next_v,
+            checkpoint=checkpoint,
+        ),
+    )
     diag["worktree_scope"] = {
         "blocking_entries": (worktree_scope.get("blocking_entries") or [])[:40],
         "ignored_entries": (worktree_scope.get("ignored_entries") or [])[:40],

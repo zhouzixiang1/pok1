@@ -708,7 +708,7 @@ Synchronize both checkouts only through `origin/main`; do not copy files between
 
 Before starting work, update remote state. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`; if the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/main` instead of working from a stale local HEAD.
 
-Do not switch branches, reset, or do normal infrastructure development inside `.evolution_pok` while a generation is running. Contract-neutral changes may be tolerated by `web/core/evaluation_contract.py` and `web/core/publish_reconcile.py`; do not treat whole directories such as `engine/`, `sever/`, `web/core/`, or `web/tests/` as stop conditions. The active exact-file contract in `web/core/evaluation_contract.py`, plus active candidate/source/parent/opponent bot versions, determines whether an incoming change requires an explicit evolution restart/resume decision.
+Do not switch branches, reset, or do normal infrastructure development inside `.evolution_pok` while a generation is running. Contract-neutral changes may be tolerated by `web/core/evaluation_contract.py` and `web/core/publish_reconcile.py`; do not treat whole directories such as `engine/`, `sever/`, `web/core/`, `web/tests/`, or every `bots/national_v*/` directory as stop conditions. The active exact-file contract in `web/core/evaluation_contract.py`, plus the current candidate/source/parent/opponent bot versions recorded in the checkpoint, determines whether an incoming change requires an explicit evolution restart/resume decision.
 
 Important generated or runtime locations:
 
