@@ -344,7 +344,7 @@ class TestRunMasterIdempotent:
             "source_v": 245,
             "stage": "direction_audited",
             "master_plan": None,
-            "audit_attempt": 1,
+            "audit_attempt": 0,
             "direction_audit": {"repetition_detected": False, "llm_failed": False},
         }
         plan = {
@@ -422,10 +422,186 @@ class TestRunMasterIdempotent:
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert result["error"] == "MASTER_VALIDATION_FAILED"
-        assert result["fail_count"] == 2
+        assert result["fail_count"] == 1
         assert "validation_errors" in result
         assert "plan" not in result
         assert "invalid_plan_preview" in result
         assert any(e[0] == "pipeline.master_validation_failed" for e in events)
-        assert writes[-1][3]["audit_attempt"] == 2
+        assert writes[-1][3]["audit_attempt"] == 1
         assert writes[-1][3]["audit_context"]["master_validation"]["errors"] == result["validation_errors"]
+
+    def test_run_master_validation_failure_exhausts_budget_and_abandons(self, client, monkeypatch):
+        import audit_agents
+        import evolution_infra
+        import orchestrator_session
+        import tool_bot_management
+        import tool_planning
+
+        checkpoint = {
+            "next_v": 248,
+            "source_v": 247,
+            "stage": "direction_audited",
+            "master_plan": None,
+            "audit_attempt": 1,
+            "direction_audit": {"repetition_detected": False, "llm_failed": False},
+        }
+        plan = {
+            "analysis": "plan analysis",
+            "targeted_failure": "bad citation",
+            "expected_behavior_change": "fold bad spots",
+            "do_not_touch": [],
+            "measurement_plan": "run gates",
+            "tasks": [{"worker_id": 1, "role": "Algorithmic Logic Architect",
+                       "target_files": ["strategy.py"], "worker_prompt": "Fix G6H28."}],
+        }
+        abandon_reasons = []
+        cleared = []
+
+        class _UI:
+            def clear_io(self):
+                pass
+
+            def log_history(self, *_args, **_kwargs):
+                pass
+
+            def get_output(self):
+                return ""
+
+        async def _fake_master(*_args, **_kwargs):
+            return dict(plan)
+
+        async def _fake_audit(*_args, **_kwargs):
+            return {"overall_pass": True, "feedback": "", "contradictions": []}
+
+        async def _fake_abandon(reason):
+            abandon_reasons.append(reason)
+            return {"abandoned": True, "reason": reason}
+
+        def _fake_write(next_v, source_v, stage, **kwargs):
+            checkpoint["next_v"] = next_v
+            checkpoint["source_v"] = source_v
+            checkpoint["stage"] = stage
+            if "audit_attempt" in kwargs:
+                checkpoint["audit_attempt"] = kwargs["audit_attempt"]
+            if kwargs.get("audit_context"):
+                checkpoint.setdefault("audit_context", {}).update(kwargs["audit_context"])
+            return True
+
+        monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_a, **_k: checkpoint)
+        monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
+        monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", _fake_write)
+        monkeypatch.setattr(tool_planning, "_run_master_analysis", _fake_master)
+        monkeypatch.setattr(audit_agents, "_run_master_plan_audit", _fake_audit)
+        monkeypatch.setattr(tool_planning, "_get_ui", lambda: _UI())
+        monkeypatch.setattr(tool_planning, "_extract_exhausted_keywords", lambda: [])
+        monkeypatch.setattr(tool_planning, "_build_cross_gen_constraint_block", lambda _v: "")
+        monkeypatch.setattr(tool_planning, "_validate_master_plan",
+                            lambda *_a, **_k: (["EXHAUSTED_DIRECTION_REPEATED: stale axis"], []))
+        monkeypatch.setattr(tool_planning, "log_system_event", lambda *a, **k: None)
+        monkeypatch.setattr(orchestrator_session, "_clear_orchestrator_session",
+                            lambda: cleared.append(True))
+        monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", _fake_abandon)
+
+        resp = client.post("/api/control/tool/run_master",
+                           json={"args": {"source_v": 247, "next_v": 248}})
+
+        assert resp.status_code == 200
+        result = json.loads(resp.json()["result"])
+        assert result["error"] == "MASTER_VALIDATION_EXHAUSTED"
+        assert result["fail_count"] == 2
+        assert result["abandoned"] is True
+        assert abandon_reasons
+        assert cleared
+        assert "plan" not in result
+
+    def test_run_master_cross_gen_pivot_exhausts_budget_and_abandons(self, client, monkeypatch):
+        import audit_agents
+        import evolution_infra
+        import orchestrator_session
+        import tool_bot_management
+        import tool_planning
+
+        checkpoint = {
+            "next_v": 250,
+            "source_v": 249,
+            "stage": "direction_audited",
+            "master_plan": None,
+            "audit_attempt": 1,
+            "direction_audit": {
+                "repetition_detected": True,
+                "llm_failed": False,
+                "confidence": "high",
+                "exhausted_directions": ["postflop stack-off threshold tuning"],
+            },
+        }
+        abandon_reasons = []
+        cleared = []
+
+        class _UI:
+            def clear_io(self):
+                pass
+
+            def log_history(self, *_args, **_kwargs):
+                pass
+
+            def get_output(self):
+                return ""
+
+        async def _fake_master(*_args, **_kwargs):
+            return {
+                "analysis": "still tuning the stale axis",
+                "targeted_failure": "stack-off leak",
+                "expected_behavior_change": "tune threshold",
+                "do_not_touch": [],
+                "measurement_plan": "run gates",
+                "tasks": [{"worker_id": 1, "role": "Algorithmic Logic Architect",
+                           "target_files": ["strategy.py"],
+                           "worker_prompt": "Tune postflop stack-off threshold."}],
+            }
+
+        async def _fake_audit(*_args, **_kwargs):
+            return {"overall_pass": True, "feedback": "", "contradictions": []}
+
+        async def _fake_abandon(reason):
+            abandon_reasons.append(reason)
+            return {"abandoned": True, "reason": reason}
+
+        def _fake_write(next_v, source_v, stage, **kwargs):
+            checkpoint["next_v"] = next_v
+            checkpoint["source_v"] = source_v
+            checkpoint["stage"] = stage
+            if "audit_attempt" in kwargs:
+                checkpoint["audit_attempt"] = kwargs["audit_attempt"]
+            return True
+
+        monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_a, **_k: checkpoint)
+        monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
+        monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", _fake_write)
+        monkeypatch.setattr(tool_planning, "_run_master_analysis", _fake_master)
+        monkeypatch.setattr(audit_agents, "_run_master_plan_audit", _fake_audit)
+        monkeypatch.setattr(tool_planning, "_get_ui", lambda: _UI())
+        monkeypatch.setattr(tool_planning, "_build_cross_gen_constraint_block", lambda _v: "")
+        monkeypatch.setattr(tool_planning, "_record_cross_gen_exhausted", lambda *_a, **_k: None)
+        monkeypatch.setattr(tool_planning, "_check_consecutive_exhaustion", lambda *_a, **_k: "stack-off")
+        monkeypatch.setattr(
+            tool_planning,
+            "_plan_repeats_exhausted_direction",
+            lambda *_a, **_k: (True, "postflop stack-off threshold tuning"),
+        )
+        monkeypatch.setattr(tool_planning, "log_system_event", lambda *a, **k: None)
+        monkeypatch.setattr(orchestrator_session, "_clear_orchestrator_session",
+                            lambda: cleared.append(True))
+        monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", _fake_abandon)
+
+        resp = client.post("/api/control/tool/run_master",
+                           json={"args": {"source_v": 249, "next_v": 250}})
+
+        assert resp.status_code == 200
+        result = json.loads(resp.json()["result"])
+        assert result["error"] == "CROSS_GEN_PIVOT_EXHAUSTED"
+        assert result["fail_count"] == 2
+        assert result["abandoned"] is True
+        assert result["matched_direction"] == "postflop stack-off threshold tuning"
+        assert abandon_reasons
+        assert cleared
+        assert "plan" not in result
