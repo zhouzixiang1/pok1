@@ -2190,6 +2190,9 @@ _EXHAUSTED_BLOCKLIST = frozenset({
     "sizing", "threshold", "thresholds", "margin", "margins",
     "equity", "hand", "hands", "street", "streets",
     "flop", "turn", "river", "preflop", "postflop",
+    "strategy", "value", "tier", "probe", "probes", "axis", "opponent",
+    "modeling", "with", "without", "only", "decision", "decisions",
+    "fire", "fires", "rate", "chip", "chips",
 })
 
 
@@ -2201,7 +2204,7 @@ _EXHAUSTED_BLOCKLIST = frozenset({
 # they appear in legitimate opponent-stat / continuous-stat reframes (the very
 # reframe v82's critic asked for).
 _EXHAUSTED_DIRECTION_TOKENS = frozenset({
-    "parameter", "tuning", "commitment",
+    "parameter", "parameters", "tuning", "commitment",
     # NOTE: "mechanism", "canonical", "archetype", "refactor" REMOVED — these
     # are generic structural-improvement verbs that fire on legitimate novel
     # plans (the source of 5+ false-positive blocks observed). Only keep tokens
@@ -2213,6 +2216,15 @@ _EXHAUSTED_DIRECTION_TOKENS = frozenset({
     # Including it would reject legitimate continuous-stat opponent-modeling
     # plans (the exact reframe v82's critic asked for).
 })
+
+
+def _exhausted_match_tokens(text: str) -> set[str]:
+    """Tokenize text for EXHAUSTED-axis matching without substring leakage."""
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", str(text or "").lower())
+        if len(token) > 3
+    }
 
 
 def _fuzzy_match_exhausted(prompt_text: str, keywords: list, require_direction_token: bool = False) -> bool:
@@ -2232,8 +2244,7 @@ def _fuzzy_match_exhausted(prompt_text: str, keywords: list, require_direction_t
     parameter/tuning). The soft warning path (execute_workers) keeps the default
     False to preserve recall — warnings are cheap.
     """
-    import re
-    prompt_clean = re.sub(r'[^a-z0-9\s]', '', prompt_text.lower())
+    prompt_tokens = _exhausted_match_tokens(prompt_text)
 
     for section, phrase in keywords:
         distinctive = set()
@@ -2241,12 +2252,10 @@ def _fuzzy_match_exhausted(prompt_text: str, keywords: list, require_direction_t
             # Split on any non-alphanumeric (spaces, underscores, slashes, dashes)
             # so 'parameter_tuning' and 'constant/margin' tokenize the same way
             # the prompt does ('parameter tuning', 'constant margin').
-            for t in re.split(r'[^a-z0-9]+', src):
-                if len(t) > 3 and t not in _EXHAUSTED_BLOCKLIST:
-                    distinctive.add(t)
+            distinctive.update(_exhausted_match_tokens(src) - _EXHAUSTED_BLOCKLIST)
         if not distinctive:
             continue
-        matches = sum(1 for t in distinctive if t in prompt_clean)
+        matches = len(distinctive & prompt_tokens)
         # Match on >=2 distinctive (non-generic) tokens; for very short keywords
         # (<=2 distinctive, e.g. a bare section name) require all to match.
         if matches < min(2, len(distinctive)):
@@ -2255,7 +2264,7 @@ def _fuzzy_match_exhausted(prompt_text: str, keywords: list, require_direction_t
         # plan that merely shares generic words (value/strategy/strong/tier) is
         # not rejected.
         if require_direction_token:
-            direction_hits = sum(1 for t in _EXHAUSTED_DIRECTION_TOKENS if t in prompt_clean)
+            direction_hits = len(_EXHAUSTED_DIRECTION_TOKENS & prompt_tokens)
             if direction_hits < 1:
                 continue
         return True
@@ -2304,17 +2313,29 @@ def _positive_execution_text_from_task(task: dict) -> str:
     """
     if not isinstance(task, dict):
         return ""
-    positive_fields = (
+    structured_fields = (
         "behavior_hypothesis",
         "expected_diff_shape",
         "targeted_failure",
         "worker_goal",
         "implementation_plan",
         "merge_policy",
+    )
+    prompt_fallback_fields = (
         "worker_prompt",
         "instruction",
     )
-    chunks = [str(task.get(field, "")) for field in positive_fields]
+    chunks = [str(task.get(field, "")) for field in structured_fields if str(task.get(field, "")).strip()]
+    # The full worker_prompt often contains code skeletons, hard constraints, and
+    # negative comparisons to exhausted directions. Those details are useful for
+    # the worker but too noisy for the hard EXHAUSTED-axis gate. Use it only as a
+    # fallback for old/minimal checkpoints that lack structured intent fields.
+    if not chunks:
+        chunks = [
+            str(task.get(field, ""))
+            for field in prompt_fallback_fields
+            if str(task.get(field, "")).strip()
+        ]
     splitter = re.compile(r"[\n;]+|(?<=[A-Za-z0-9_)])\.(?=\s+|$)")
     segments = []
     for chunk in chunks:
