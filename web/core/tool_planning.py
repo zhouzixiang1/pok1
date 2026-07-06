@@ -5150,16 +5150,21 @@ async def execute_workers(args):
                                   audit_context=_audit_ctx,
                                   precommit_rework_count=precommit_rework_count_for_write)
     else:
-        # Increment failure count on worker failure; successful batches do not consume the budget.
-        # Always set stage to 'master_planned' on failure — this clearly indicates
-        # that workers need re-execution, rather than preserving a stale stage
-        # from before the failure (e.g. "reviewed" or "critic_checked").
+        # Increment failure count on worker failure; successful batches do not
+        # consume the budget. Initial Master-plan worker failures must not write
+        # back to master_planned: that makes deterministic recovery replay the
+        # same failed task plan until the coarse circuit breaker trips. Roll back
+        # to direction_audited instead, clear the invalid plan, and force Master
+        # to produce a new execution axis. Gate/precommit repairs keep their
+        # repair_planned route because reviewer_feedback is the contract for the
+        # next repair attempt.
         plan = (
             _checkpoint_plan_with_tasks(
                 ckpt, tasks, replace_existing_tasks=replace_checkpoint_tasks
             )
             if ckpt else {"tasks": tasks}
         )
+        next_failure_count = failure_count + 1
         if reviewer_feedback:
             existing_work = rework_plan_metadata or (
                 (ckpt.get("master_plan") or {}).get("work_item")
@@ -5174,11 +5179,66 @@ async def execute_workers(args):
                 },
             }
             plan = _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v)
+            failure_stage = "repair_planned"
+            failure_plan = plan
+            failure_audit_context = None
+        else:
+            failure_stage = "direction_audited"
+            failure_plan = {}
+            existing_audit = ckpt.get("audit_context", {}) if isinstance(ckpt, dict) else {}
+            failure_audit_context = {
+                **(existing_audit if isinstance(existing_audit, dict) else {}),
+                "worker_execution_failed_replan": {
+                    "source_stage": ckpt.get("stage") if isinstance(ckpt, dict) else None,
+                    "failed_tasks": [
+                        {
+                            "worker_id": task.get("worker_id"),
+                            "role": task.get("role"),
+                            "target_files": task.get("target_files", []),
+                        }
+                        for task in tasks or []
+                        if isinstance(task, dict)
+                    ][:5],
+                    "worker_failure_count": next_failure_count,
+                    "directive": (
+                        "Initial worker execution failed. Do not re-run the "
+                        "same saved worker plan; call run_master to produce a "
+                        "different, narrower, boundary-clean plan."
+                    ),
+                },
+            }
+            log_system_event(
+                "pipeline.worker_failure_replan_required",
+                "warn",
+                (
+                    f"Workers failed for v{next_v}; rolled checkpoint back to "
+                    "direction_audited so Master must re-plan instead of "
+                    "re-running the same tasks"
+                ),
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "worker_failure_count": next_failure_count,
+                    "failed_tasks": [
+                        {
+                            "worker_id": task.get("worker_id"),
+                            "role": task.get("role"),
+                            "target_files": task.get("target_files", []),
+                        }
+                        for task in tasks or []
+                        if isinstance(task, dict)
+                    ][:5],
+                },
+            )
         write_pipeline_checkpoint(next_v, source_v,
-                                  "repair_planned" if reviewer_feedback else "master_planned",
-                                  master_plan=plan, reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=failure_count + 1,
-                                  precommit_rework_count=precommit_rework_count_for_write)
+                                  failure_stage,
+                                  master_plan=failure_plan,
+                                  direction_audit=ckpt.get("direction_audit") if ckpt else None,
+                                  reviewer_feedback=reviewer_feedback,
+                                  worker_failure_count=next_failure_count,
+                                  audit_context=failure_audit_context,
+                                  precommit_rework_count=precommit_rework_count_for_write,
+                                  touch_stage_timestamp=True)
 
     sev = "success" if success else "error"
     log_system_event("pipeline.workers_done", sev,
