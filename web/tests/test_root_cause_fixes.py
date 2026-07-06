@@ -401,11 +401,24 @@ class TestP5bReplayPerHand:
         )
         if not files:
             pytest.skip("no real replay files available")
-        try:
-            with open(files[0]) as f:
-                replay = json.load(f)
-        except json.JSONDecodeError:
-            pytest.skip("replay file mid-write (daemon rotating) — not valid JSON")
+
+        replay = None
+        recent_files = files[:min(20, len(files))]
+        for path in recent_files:
+            try:
+                with open(path) as f:
+                    candidate = json.load(f)
+            except json.JSONDecodeError:
+                continue
+            games = candidate.get("games", [])
+            if not games:
+                continue
+            if any(isinstance(g, dict) and g.get("logs") for g in games):
+                replay = candidate
+                break
+        if replay is None:
+            pytest.skip("no Botzone-style replay files with per-hand logs available")
+
         bot_name = replay.get("bot0") or replay.get("bot1")
         games = replay.get("games", [])
         assert games, "real replay has no games"
