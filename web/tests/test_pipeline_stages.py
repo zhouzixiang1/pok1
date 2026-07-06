@@ -2820,9 +2820,10 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["gate_results"] == {}
 
     def test_failed_workers_increment_count(self, tmp_path, monkeypatch):
-        """Failed worker batches should increase the failure counter by 1 per round."""
+        """Initial worker failure should force Master replan, not replay tasks."""
         import asyncio
         import evolution_infra
+        from pipeline_state import next_tool_for_checkpoint
         import tool_planning
 
         ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=2)
@@ -2841,6 +2842,56 @@ class TestWorkerFailureCircuitBreaker:
         # Verify checkpoint has failure_count=3 (2 previous + 1 per failed round)
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["worker_failure_count"] == 3
+        assert ckpt["stage"] == "direction_audited"
+        assert ckpt["master_plan"] == {}
+        assert next_tool_for_checkpoint(ckpt) == "run_master"
+        assert ckpt["audit_context"]["worker_execution_failed_replan"]["worker_failure_count"] == 3
+
+    def test_failed_repair_workers_keep_repair_route(self, tmp_path, monkeypatch):
+        """Gate/precommit repair failures keep execute_workers route with feedback."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+        from pipeline_state import next_tool_for_checkpoint
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("def act():\n    return 0\n")
+        (next_dir / "strategy.py").write_text("def act():\n    return 1\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=1, stage="quality_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["compile(strategy.py)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec:
+                mock_exec.return_value = (False, {}, [])
+                return await tool_planning.execute_workers.handler({
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+
+        result = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is False
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["worker_failure_count"] == 2
+        assert ckpt["stage"] == "repair_planned"
+        assert next_tool_for_checkpoint(ckpt) == "execute_workers"
+        assert "Quality gates failed" in ckpt["reviewer_feedback"]
 
     def test_reviewer_feedback_retry_from_quality_passed_records_workers_done(self, tmp_path, monkeypatch):
         """Review-reject repairs must reset stage before workers_done is recorded."""
