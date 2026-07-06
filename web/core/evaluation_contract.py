@@ -64,7 +64,7 @@ FULL_PIPELINE_EXACT = frozenset().union(
 )
 
 PREPARE_STAGE_EXACT = frozenset().union(
-    EVALUATION_RUNTIME_EXACT,
+    ALWAYS_CRITICAL_EXACT,
     {
         "web/core/agent_review.py",  # owns crossover implementation helpers
         "web/core/audit_agents.py",
@@ -83,7 +83,7 @@ PREPARE_STAGE_EXACT = frozenset().union(
 )
 
 DIRECTION_STAGE_EXACT = frozenset().union(
-    EVALUATION_RUNTIME_EXACT,
+    ALWAYS_CRITICAL_EXACT,
     {
         "web/core/direction_auditor.py",
         "web/core/llm_failure.py",
@@ -98,7 +98,7 @@ DIRECTION_STAGE_EXACT = frozenset().union(
 )
 
 MASTER_STAGE_EXACT = frozenset().union(
-    EVALUATION_RUNTIME_EXACT,
+    ALWAYS_CRITICAL_EXACT,
     {
         "web/core/agent_master.py",
         "web/core/audit_agents.py",
@@ -139,7 +139,7 @@ MASTER_STAGE_EXACT = frozenset().union(
 )
 
 WORKER_REPAIR_STAGE_EXACT = frozenset().union(
-    EVALUATION_RUNTIME_EXACT,
+    ALWAYS_CRITICAL_EXACT,
     {
         "web/core/agent_workers.py",
         "web/core/failure_classification.py",
@@ -156,6 +156,69 @@ WORKER_REPAIR_STAGE_EXACT = frozenset().union(
     },
 )
 
+QUALITY_STAGE_EXACT = frozenset().union(
+    ALWAYS_CRITICAL_EXACT,
+    CRITICAL_NATIONAL_PLATFORM_EXACT,
+    {
+        "web/core/candidate_hygiene.py",
+        "web/core/code_verification.py",
+        "web/core/decision_tester.py",
+        "web/core/eval_stats.py",
+        "web/core/fix_verification.py",
+        "web/core/national_acceptance.py",
+        "web/core/national_native.py",
+        "web/core/protected_contracts.py",
+        "web/core/smoke_tester.py",
+        "web/core/tool_gates.py",
+        "web/core/worker_boundary.py",
+    },
+)
+
+REVIEW_STAGE_EXACT = frozenset().union(
+    ALWAYS_CRITICAL_EXACT,
+    {
+        "web/core/agent_review.py",
+        "web/core/llm_failure.py",
+        "web/core/llm_query.py",
+        "web/core/output_schema.py",
+        "web/core/prompts/reviewer_prompt.md",
+    },
+)
+
+CRITIC_STAGE_EXACT = frozenset().union(
+    ALWAYS_CRITICAL_EXACT,
+    {
+        "web/core/audit_agents.py",
+        "web/core/llm_failure.py",
+        "web/core/llm_query.py",
+        "web/core/output_schema.py",
+        "web/core/prompts/critic_prompt.md",
+    },
+)
+
+PRECOMMIT_STAGE_EXACT = frozenset().union(
+    ALWAYS_CRITICAL_EXACT,
+    CRITICAL_NATIONAL_PLATFORM_EXACT,
+    {
+        "web/core/battle_scheduler.py",
+        "web/core/elo_daemon.py",
+        "web/core/eval_stats.py",
+        "web/core/national_acceptance.py",
+        "web/core/national_eval.py",
+        "web/core/national_native.py",
+        "web/core/tool_eval.py",
+    },
+)
+
+COMMIT_STAGE_EXACT = frozenset().union(
+    ALWAYS_CRITICAL_EXACT,
+    {
+        "web/core/candidate_hygiene.py",
+        "web/core/protected_contracts.py",
+        "web/core/tool_commit.py",
+    },
+)
+
 _STAGE_EXACT = {
     "selected": PREPARE_STAGE_EXACT,
     "preparing": PREPARE_STAGE_EXACT,
@@ -167,15 +230,12 @@ _STAGE_EXACT = {
     "precommit_failed": WORKER_REPAIR_STAGE_EXACT,
     "repair_planned": WORKER_REPAIR_STAGE_EXACT,
     "rework_running": WORKER_REPAIR_STAGE_EXACT,
+    "workers_done": QUALITY_STAGE_EXACT,
+    "quality_passed": REVIEW_STAGE_EXACT,
+    "reviewed": CRITIC_STAGE_EXACT,
+    "critic_checked": PRECOMMIT_STAGE_EXACT,
+    "verified": COMMIT_STAGE_EXACT,
 }
-
-_EVALUATION_ONLY_STAGES = frozenset({
-    "workers_done",
-    "quality_passed",
-    "reviewed",
-    "critic_checked",
-    "verified",
-})
 
 NATIVE_TCP_EXCLUDED_EXACT = frozenset(CRITICAL_ENGINE_EXACT).union({
     # Used only by the legacy local JSON smoke subprocess. The national_native
@@ -293,13 +353,11 @@ def critical_exact_for_stage(
     """Return exact files that can still affect the current checkpoint.
 
     Without a checkpoint stage we keep the original conservative full-pipeline
-    contract. With a checkpoint stage, only the hard evaluator plus the files
-    needed by the stage's remaining deterministic tool are contract-critical.
+    contract. With a checkpoint stage, only the guard itself and the files
+    needed by the stage's next deterministic/LLM tool are contract-critical.
     """
     stage = str(stage or "")
     execution_mode = _active_national_execution_mode(national_execution_mode)
-    if stage in _EVALUATION_ONLY_STAGES:
-        return _stage_exact_for_mode(EVALUATION_RUNTIME_EXACT, execution_mode)
     if stage in _STAGE_EXACT:
         return _stage_exact_for_mode(_STAGE_EXACT[stage], execution_mode)
     return _stage_exact_for_mode(frozenset(CRITICAL_EXACT), execution_mode)

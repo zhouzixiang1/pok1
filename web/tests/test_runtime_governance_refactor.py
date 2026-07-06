@@ -1153,6 +1153,55 @@ def test_evaluation_contract_uses_stage_scoped_post_worker_contract(monkeypatch)
     ]
 
 
+def test_evaluation_contract_defers_gate_files_until_gate_stage(monkeypatch):
+    import evaluation_contract
+
+    changed_paths = [
+        "sever/server/tcp_server.py",
+        "web/core/prompts/master_prompt.md",
+        "web/core/tool_gates.py",
+    ]
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: list(changed_paths),
+    )
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+        checkpoint={"stage": "direction_audited", "next_v": 300, "source_v": 299},
+    )
+
+    assert allowed is False
+    assert payload["evaluation_contract"]["stage"] == "direction_audited"
+    assert payload["head_contract_paths"] == ["web/core/prompts/master_prompt.md"]
+    assert payload["head_external_paths"] == [
+        "sever/server/tcp_server.py",
+        "web/core/tool_gates.py",
+    ]
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+        checkpoint={"stage": "workers_done", "next_v": 300, "source_v": 299},
+    )
+
+    assert allowed is False
+    assert payload["evaluation_contract"]["stage"] == "workers_done"
+    assert payload["head_contract_paths"] == [
+        "sever/server/tcp_server.py",
+        "web/core/tool_gates.py",
+    ]
+    assert payload["head_external_paths"] == ["web/core/prompts/master_prompt.md"]
+
+
 def test_evaluation_contract_tracks_worker_files_for_repair_stage(monkeypatch):
     import evaluation_contract
 
@@ -1210,11 +1259,11 @@ def test_evaluation_contract_uses_stage_specific_worker_contract(monkeypatch):
     assert payload["evaluation_contract"]["stage"] == "master_planned"
     assert payload["head_contract_paths"] == [
         "web/core/agent_workers.py",
-        "web/core/eval_stats.py",
         "web/core/prompts/worker_prompt.md",
     ]
     assert payload["head_external_paths"] == [
         "web/core/agent_master.py",
+        "web/core/eval_stats.py",
         "web/core/prompts/master_prompt.md",
     ]
 
