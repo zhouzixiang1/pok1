@@ -862,14 +862,14 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     ckpt = read_pipeline_checkpoint()
                     if ckpt and ckpt.get("stage") not in ("timed_out", "archived"):
                         # B3 (v125 retry-storm fix): if Master repeatedly failed this
-                        # cycle (audit_attempt >= MAX_MASTER_TOTAL_FAILURES=4), the
+                        # cycle (audit_attempt >= MAX_MASTER_TOTAL_FAILURES=2), the
                         # timeout was caused by the Master retry-storm itself — abandon
                         # now instead of marking timed_out + resuming into the same
                         # stuck Master loop. "verified" is excluded (it has its own
                         # extension path above; commit is the imminent idempotent step).
                         _b3_audit = int(ckpt.get("audit_attempt") or 0)
                         _b3_stage = ckpt.get("stage")
-                        _B3_MASTER_FAIL_THRESHOLD = 4  # mirrors MAX_MASTER_TOTAL_FAILURES (tool_planning.py)
+                        _B3_MASTER_FAIL_THRESHOLD = 2  # mirrors MAX_MASTER_TOTAL_FAILURES (tool_planning.py)
                         if (_b3_audit >= _B3_MASTER_FAIL_THRESHOLD
                                 and _b3_stage not in ("verified", "archived")):
                             log.warning(

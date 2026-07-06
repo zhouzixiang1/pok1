@@ -380,16 +380,13 @@ async def run_direction_audit(args):
 # Master Stage
 # ──────────────────────────────────────────────
 
-# Hard cap on total Master-stage failures (plan-JSON-collapse + audit-rejection)
-# per generation. Beyond this, run_master refuses to burn more LLM budget and
-# directs the orchestrator to abandon. Root-cause-audit 2026-06-17: a single
-# cycle hit 6x run_master (≈$8 wasted) because Master JSON systematically
-# collapses under a tight direction-audit (malformed-JSON observed 221× vs
-# signature 50×). The orchestrator prompt's soft "at most 2 times" rule was
-# ignored; this is the mechanical backstop. audit_attempt in the checkpoint
-# doubles as the counter (reset to 0 on successful master_planned write via
-# reset_audit_attempt=True at line ~657).
-MAX_MASTER_TOTAL_FAILURES = 4
+# Hard cap on total Master-stage failures per generation. A generation gets the
+# initial Master plan and one corrective re-plan. After that, the tool abandons
+# the generation itself instead of returning a directive that the orchestrator
+# might ignore and re-call. audit_attempt in the checkpoint doubles as the
+# counter (reset to 0 on successful master_planned write).
+MAX_MASTER_TOTAL_FAILURES = 2
+MAX_MASTER_AUDIT_RETRIES = max(0, MAX_MASTER_TOTAL_FAILURES - 1)
 LITERATURE_PROBE_TIMEOUT = int(os.environ.get("POK_LITERATURE_PROBE_TIMEOUT", "600"))
 
 
@@ -463,6 +460,52 @@ def _touch_master_checkpoint(next_v, source_v, *, phase, audit_attempt=None, aud
     except Exception as exc:
         _log.debug("Master checkpoint heartbeat failed (%s): %s", phase, exc)
         return False
+
+
+async def _abandon_master_generation(next_v, source_v, *, error, fail_count, reason,
+                                     event_type, event_message, ui=None,
+                                     payload=None, directive=None):
+    """Clear a Master-stuck generation from the tool layer itself.
+
+    The orchestrator is intentionally LLM-driven, so returning a plain text
+    "please abandon" directive is not a reliable control plane. All Master
+    retry-budget exhaustion paths route here and perform the cleanup directly.
+    """
+    payload = dict(payload or {})
+    event_data = {"next_v": next_v, "source_v": source_v, "fail_count": fail_count}
+    event_data.update(payload)
+    try:
+        log_system_event(event_type, "error", event_message, event_data)
+    except Exception:
+        pass
+    if ui:
+        try:
+            ui.log_history(event_message, "error")
+        except Exception:
+            pass
+    try:
+        from orchestrator_session import _clear_orchestrator_session
+        _clear_orchestrator_session()
+    except Exception:
+        pass
+    try:
+        from tool_bot_management import _do_abandon_generation
+        abandon_result = await _do_abandon_generation(reason=reason)
+    except Exception as exc:
+        abandon_result = {"abandoned": False, "error": str(exc)}
+    result = {
+        "error": error,
+        "fail_count": fail_count,
+        **payload,
+        **abandon_result,
+        "directive": directive or (
+            "Master planning exhausted its retry budget and this generation "
+            "was abandoned by the tool layer. Start a fresh generation; do not "
+            "call run_master again for the abandoned candidate."
+        ),
+        "logs": ui.get_output() if ui else "",
+    }
+    return _json_tool_result(result)
 
 
 def _normalize_master_plan_paths(plan, source_v, next_v):
@@ -1038,47 +1081,24 @@ async def run_master(args):
         _master_fails = 0
     if _master_fails >= MAX_MASTER_TOTAL_FAILURES:
         _ui = _get_ui()
-        try:
-            log_system_event("pipeline.master_exhausted", "error",
-                             f"Master exhausted {_master_fails} attempts for v{next_v} — refusing retry, FORCING abandon",
-                             {"next_v": next_v, "source_v": source_v, "fail_count": _master_fails})
-        except Exception:
-            pass
-        if _ui:
-            _ui.log_history(
-                f"Master exhausted {_master_fails} attempts for v{next_v} — FORCING abandon "
-                f"(no longer relying on a plain-text directive).",
-                "error",
-            )
-        # B2 (v125 retry-storm fix): force-abandon instead of returning a plain-text
-        # directive. The old directive relied on the orchestrator LLM voluntarily
-        # calling abandon_generation, which it often ignored — so the stuck
-        # generation kept burning orchestrator turns until CYCLE_TIMEOUT (v125).
-        # Clear the session FIRST (so the next cycle does not resume the stuck
-        # session), then abandon (clears checkpoint + removes the incomplete dir).
-        try:
-            from orchestrator_session import _clear_orchestrator_session
-            _clear_orchestrator_session()
-        except Exception:
-            pass
-        try:
-            from tool_bot_management import _do_abandon_generation
-            _abandon_result = await _do_abandon_generation(
-                reason=f"master_exhausted ({_master_fails} fails)"
-            )
-        except Exception as _ae:
-            _abandon_result = {"abandoned": False, "error": str(_ae)}
-        return {"content": [{"type": "text", "text": json.dumps({
-            "error": "MASTER_EXHAUSTED",
-            "fail_count": _master_fails,
-            **_abandon_result,
-            "directive": (f"Master planning failed {_master_fails} times for v{next_v}. "
-                          "This generation has been ABANDONED (checkpoint cleared, incomplete "
-                          "dir removed, session cleared). The next cycle will start FRESH (it "
-                          "may pick crossover or a different source ancestor). Do NOT call "
-                          "run_master again — call prepare_next_gen to begin a new generation."),
-            "logs": _ui.get_output() if _ui else "",
-        })}]}
+        return await _abandon_master_generation(
+            next_v,
+            source_v,
+            error="MASTER_EXHAUSTED",
+            fail_count=_master_fails,
+            reason=f"master_exhausted ({_master_fails} fails)",
+            event_type="pipeline.master_exhausted",
+            event_message=(
+                f"Master exhausted {_master_fails} attempts for v{next_v} — "
+                "refusing retry and abandoning"
+            ),
+            ui=_ui,
+            directive=(
+                f"Master planning failed {_master_fails} times for v{next_v}. "
+                "This generation has been abandoned (checkpoint cleared, incomplete "
+                "dir removed, session cleared). The next cycle must start fresh."
+            ),
+        )
 
     # Parse direction audit from arg or checkpoint
     direction_audit = None
@@ -1409,14 +1429,10 @@ async def run_master(args):
     _touch_master_checkpoint(next_v, source_v, phase="master_plan_ready")
 
     # --- P0-1: Post-Master Plan Verification Audit ---
-    # Capped retry loop: on audit rejection with retry_recommended, re-plan AND
-    # re-audit the new plan, up to MAX_MASTER_AUDIT_RETRIES. The audit_attempt
-    # counter is persisted in the checkpoint so a crash-resume does not re-burn
-    # the master LLM budget (bug #6b). Without this cap, a persistently-rejecting
-    # auditor + an orchestrator that re-calls run_master forms a token-burning
-    # loop that consumes the whole CYCLE_TIMEOUT (observed: v81 stuck 3x run_master).
+    # Capped retry loop: on audit rejection, re-plan AND re-audit only while the
+    # unified Master budget still allows it. The audit_attempt counter is
+    # persisted in the checkpoint so a crash-resume does not re-burn the budget.
     master_audit_ctx = None
-    MAX_MASTER_AUDIT_RETRIES = 2
     try:
         from audit_agents import _run_master_plan_audit
         from evolution_infra import read_pipeline_checkpoint
@@ -1474,34 +1490,25 @@ async def run_master(args):
                              {"next_v": next_v, "audit": audit_result, "audit_attempt": _audit_attempt + 1})
             if _audit_attempt + 1 > MAX_MASTER_AUDIT_RETRIES:
                 _nf = _bump_master_fail_count(next_v, source_v, value=_audit_attempt + 1)
-                log_system_event("pipeline.master_audit_exhausted_abandon", "error",
-                                 f"Master audit exhausted {MAX_MASTER_AUDIT_RETRIES} retries for v{next_v} — blocking plan",
-                                 {"next_v": next_v, "source_v": source_v,
-                                  "fail_count": _nf, "audit": audit_result})
-                try:
-                    from orchestrator_session import _clear_orchestrator_session
-                    _clear_orchestrator_session()
-                except Exception:
-                    pass
-                try:
-                    from tool_bot_management import _do_abandon_generation
-                    _abandon_result = await _do_abandon_generation(
-                        reason=f"master_audit_rejected v{next_v}: {audit_result.get('feedback', '')[:300]}"
-                    )
-                except Exception as _ae:
-                    _abandon_result = {"abandoned": False, "error": str(_ae)}
-                return _json_tool_result({
-                    "error": "MASTER_AUDIT_REJECTED",
-                    "fail_count": _nf,
-                    "audit": audit_result,
-                    **_abandon_result,
-                    "directive": (
-                        "Master plan audit is blocking. This generation was abandoned "
-                        "after audit retries were exhausted. Start a fresh generation; "
-                        "do not execute workers from the rejected plan."
+                return await _abandon_master_generation(
+                    next_v,
+                    source_v,
+                    error="MASTER_AUDIT_REJECTED",
+                    fail_count=_nf,
+                    reason=f"master_audit_rejected v{next_v}: {audit_result.get('feedback', '')[:300]}",
+                    event_type="pipeline.master_audit_exhausted_abandon",
+                    event_message=(
+                        f"Master audit exhausted {MAX_MASTER_AUDIT_RETRIES} retries "
+                        f"for v{next_v} — blocking plan and abandoning"
                     ),
-                    "logs": ui.get_output(),
-                })
+                    ui=ui,
+                    payload={"audit": audit_result},
+                    directive=(
+                        "Master plan audit is blocking. This generation was abandoned "
+                        "after the corrective re-plan budget was exhausted. Start a "
+                        "fresh generation; do not execute workers from the rejected plan."
+                    ),
+                )
             # Re-plan with rejection feedback, then re-audit the new plan
             _audit_attempt += 1
             _touch_master_checkpoint(
@@ -1616,7 +1623,7 @@ async def run_master(args):
                          "plan_repeats_exhausted": False},
                     )
                 else:
-                    _bump_master_fail_count(next_v, source_v)
+                    _nf = _bump_master_fail_count(next_v, source_v)
                     try:
                         log_system_event("pipeline.cross_gen_pivot_runtime_only", "warn",
                                          f"Cross-gen direction pivot triggered for v{next_v}: "
@@ -1627,11 +1634,43 @@ async def run_master(args):
                                           "pivot_axis": _pivot_axis,
                                           "matched_direction": _matched_direction,
                                           "exhausted_directions": _exhausted_dirs,
-                                          "experience_pool_marked": False})
+                                          "experience_pool_marked": False,
+                                          "fail_count": _nf})
                     except Exception:
                         pass
+                    _pivot_payload = {
+                        "pivot_axis": _pivot_axis,
+                        "matched_direction": _matched_direction,
+                        "exhausted_directions": _exhausted_dirs,
+                        "confidence": _confidence,
+                    }
+                    if _nf >= MAX_MASTER_TOTAL_FAILURES:
+                        return await _abandon_master_generation(
+                            next_v,
+                            source_v,
+                            error="CROSS_GEN_PIVOT_EXHAUSTED",
+                            fail_count=_nf,
+                            reason=(
+                                f"cross_gen_pivot_repeated v{next_v}: "
+                                f"{_matched_direction[:300]}"
+                            ),
+                            event_type="pipeline.cross_gen_pivot_exhausted_abandon",
+                            event_message=(
+                                f"Cross-gen pivot repeated for v{next_v} after {_nf} "
+                                "Master failures — abandoning instead of re-calling Master"
+                            ),
+                            ui=ui,
+                            payload=_pivot_payload,
+                            directive=(
+                                "The accepted Master plan still matches an exhausted "
+                                "cross-generation direction after the corrective re-plan "
+                                "budget was used. This generation was abandoned; start a "
+                                "fresh generation on a different strategic axis."
+                            ),
+                        )
                     return {"content": [{"type": "text", "text": json.dumps({
                         "error": "CROSS_GEN_PIVOT",
+                        "fail_count": _nf,
                         "pivot_axis": _pivot_axis,
                         "matched_direction": _matched_direction,
                         "exhausted_directions": _exhausted_dirs,
@@ -1720,34 +1759,31 @@ async def run_master(args):
             pass
 
         if _nf >= MAX_MASTER_TOTAL_FAILURES:
-            try:
-                from orchestrator_session import _clear_orchestrator_session
-                _clear_orchestrator_session()
-            except Exception:
-                pass
-            try:
-                from tool_bot_management import _do_abandon_generation
-                _abandon_result = await _do_abandon_generation(
-                    reason=(
-                        f"master_validation_failed v{next_v}: "
-                        f"{'; '.join(plan_errors[:3])[:300]}"
-                    )
-                )
-            except Exception as _ae:
-                _abandon_result = {"abandoned": False, "error": str(_ae)}
-            return _json_tool_result({
-                "error": "MASTER_VALIDATION_EXHAUSTED",
-                "fail_count": _nf,
-                "validation_errors": plan_errors,
-                "validation_warnings": plan_warnings,
-                **_abandon_result,
-                "directive": (
+            return await _abandon_master_generation(
+                next_v,
+                source_v,
+                error="MASTER_VALIDATION_EXHAUSTED",
+                fail_count=_nf,
+                reason=(
+                    f"master_validation_failed v{next_v}: "
+                    f"{'; '.join(plan_errors[:3])[:300]}"
+                ),
+                event_type="pipeline.master_validation_exhausted_abandon",
+                event_message=(
+                    f"Master plan validation failed {_nf} times for v{next_v} — "
+                    "abandoning invalid generation"
+                ),
+                ui=ui,
+                payload={
+                    "validation_errors": plan_errors,
+                    "validation_warnings": plan_warnings,
+                },
+                directive=(
                     "Master plan validation failed too many times and this "
                     "generation was abandoned. Start a fresh generation; do "
                     "not execute workers from the invalid plan."
                 ),
-                "logs": ui.get_output(),
-            })
+            )
 
         return _json_tool_result({
             "error": "MASTER_VALIDATION_FAILED",
