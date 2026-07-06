@@ -77,6 +77,22 @@ def test_cot_inconsistency_blocks_repair_tasks_only():
     assert not _cot_inconsistency_blocks_task({"task_kind": "feature_work", "worker_prompt": "add a new idea"})
 
 
+def test_cot_inconsistency_blocks_undisclosed_runtime_side_effects_for_any_task():
+    feature_task = {"task_kind": "feature_work", "worker_prompt": "add a new idea"}
+    assert _cot_inconsistency_blocks_task(feature_task, {
+        "discrepancies": [
+            "Worker added _sys.stderr.write telemetry inside estimate_preflop_strength "
+            "but did not disclose this runtime side-effect."
+        ],
+    })
+    assert _cot_inconsistency_blocks_task(feature_task, {
+        "focus_areas": ["Undisclosed debug logging path added to hot decision code."],
+    })
+    assert not _cot_inconsistency_blocks_task(feature_task, {
+        "discrepancies": ["Summary omitted one low-level arithmetic rationale."],
+    })
+
+
 def test_file_scoped_quality_repair_omits_global_feedback():
     task = {
         "task_kind": "quality_repair",
