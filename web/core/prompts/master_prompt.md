@@ -183,13 +183,14 @@ When ALL H2H matchups are within 45-55% win rate (no exploitable weakness visibl
 
 **DISCOURAGED at plateaus** (Critic will flag but precommit battle is the final judge):
 - Pure small constant adjustments without a structural companion mechanism.
-  You MAY revisit an EXHAUSTED direction IF combined with a NEW independent second
-  mechanism. EXHAUSTED entries are ADVISORY — they indicate underperformance,
-  not permanent ban. Judge mechanistic merit, not keyword overlap with past attempts.
+  Do not revisit an EXHAUSTED direction in an initial generation plan. Master
+  validation will reject positive worker intent that repeats an exhausted axis.
+  Escape by choosing a genuinely different structural mechanism, opponent signal,
+  or strategic axis rather than re-tuning the known stale pattern.
 - Tweaking fold/call margins without structural backing
 - Renaming or reorganizing existing code without behavioral change
 
-Read the experience pool for EXHAUSTED entries — these directions have underperformed in prior attempts. Treat them as advisory risk signals, not permanent bans.
+Read the experience pool for EXHAUSTED entries — these directions have underperformed in prior attempts. Treat them as blocked axes for initial generation work, and plan a different mechanism before assigning workers.
 </plateau_protocol>
 
 <measurement_plan>

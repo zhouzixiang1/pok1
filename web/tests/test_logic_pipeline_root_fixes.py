@@ -739,6 +739,28 @@ def test_illegal_stage_regression_is_not_written():
     assert evolution_infra.read_pipeline_checkpoint()["stage"] == "workers_done"
 
 
+def test_master_planned_can_replan_to_direction_audited():
+    import evolution_infra
+
+    assert evolution_infra.write_pipeline_checkpoint(
+        10,
+        9,
+        "master_planned",
+        master_plan={"tasks": [{"worker_prompt": "stale"}]},
+    ) is True
+    assert evolution_infra.write_pipeline_checkpoint(
+        10,
+        9,
+        "direction_audited",
+        master_plan={},
+        audit_attempt=1,
+    ) is True
+    ckpt = evolution_infra.read_pipeline_checkpoint()
+    assert ckpt["stage"] == "direction_audited"
+    assert ckpt["master_plan"] == {}
+    assert ckpt["audit_attempt"] == 1
+
+
 def test_fix_application_event_includes_target_version(monkeypatch):
     import fix_injection
     import system_log

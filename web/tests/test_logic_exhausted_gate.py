@@ -172,6 +172,56 @@ class TestHardGateDirectionToken:
         # HARD gate (_validate_master_plan) does NOT — direction token absent
         assert tp._fuzzy_match_exhausted(prompt.lower(), kws, require_direction_token=True) is False
 
+    def test_validate_master_plan_blocks_positive_exhausted_intent(self, param_pool, monkeypatch):
+        import core.tool_planning as tp
+
+        monkeypatch.setattr(tp, "EXPERIENCE_FILE", param_pool)
+        plan = {
+            "analysis": "try the stale axis",
+            "targeted_failure": "plateau",
+            "expected_behavior_change": "small fold improvement",
+            "do_not_touch": [],
+            "measurement_plan": "quality gates",
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "worker_prompt": "Parameter tuning: adjust fold margin clamp and sizing_aggr constants.",
+            }],
+        }
+
+        errors, warnings = tp._validate_master_plan(plan, next_v=120)
+
+        assert warnings == []
+        assert any("EXHAUSTED_DIRECTION_REPEATED" in error for error in errors)
+
+    def test_validate_master_plan_can_warn_for_repair_mode(self, param_pool, monkeypatch):
+        import core.tool_planning as tp
+
+        monkeypatch.setattr(tp, "EXPERIENCE_FILE", param_pool)
+        plan = {
+            "analysis": "repair context",
+            "targeted_failure": "quality blocker",
+            "expected_behavior_change": "compile fix",
+            "do_not_touch": [],
+            "measurement_plan": "quality gates",
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "worker_prompt": "Parameter tuning: adjust fold margin clamp and sizing_aggr constants.",
+            }],
+        }
+
+        errors, warnings = tp._validate_master_plan(
+            plan,
+            next_v=120,
+            exhausted_policy="warn",
+        )
+
+        assert errors == []
+        assert any("EXHAUSTED direction" in warning for warning in warnings)
+
 
 class TestExtractExhaustedBlock:
     """agent_workers._extract_exhausted_block feeds the worker-prompt constraint.
