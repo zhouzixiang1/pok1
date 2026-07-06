@@ -158,6 +158,124 @@ from evolution_infra import find_current_v  # noqa: E402
 from llm_query import extract_result_error  # noqa: E402
 
 
+_CORRECTIVE_RETRY_STAGES_BY_TOOL = {
+    "execute_workers": {"quality_failed", "precommit_failed", "repair_planned", "rework_running"},
+    "run_quality_gates": {"workers_done"},
+    "run_review": {"quality_passed"},
+    "run_critic": {"reviewed"},
+    "run_precommit_eval": {"critic_checked"},
+}
+
+
+def _as_positive_int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except Exception:
+        return 0
+
+
+def _has_recorded_gate_failure(checkpoint) -> bool:
+    gate_results = checkpoint.get("gate_results") if isinstance(checkpoint, dict) else None
+    if not isinstance(gate_results, dict):
+        return False
+    for gate in gate_results.values():
+        if not isinstance(gate, dict):
+            continue
+        if gate.get("passed") is False or gate.get("ok") is False or gate.get("success") is False:
+            return True
+    return False
+
+
+def _has_corrective_retry_history(checkpoint) -> bool:
+    if not isinstance(checkpoint, dict):
+        return False
+    return bool(
+        _as_positive_int(checkpoint.get("audit_attempt")) > 0
+        or _as_positive_int(checkpoint.get("generation_attempt")) > 0
+        or _as_positive_int(checkpoint.get("precommit_attempt")) > 0
+        or _as_positive_int(checkpoint.get("worker_failure_count")) > 0
+        or checkpoint.get("reviewer_feedback")
+        or checkpoint.get("audit_context")
+        or _has_recorded_gate_failure(checkpoint)
+    )
+
+
+def _read_checkpoint_for_repeated_tool_guard():
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+        return read_pipeline_checkpoint() or {}
+    except Exception:
+        return {}
+
+
+def _route_allows_tool(checkpoint, tool_name: str) -> bool:
+    try:
+        from pipeline_state import route_policy
+        route = route_policy(checkpoint)
+    except Exception:
+        return True
+    return route.get("next_tool") == tool_name
+
+
+def _classify_allowed_repeated_pipeline_tool(tool_name: str, tool_input=None):
+    """Return an info payload when a repeated MCP tool call is valid state flow.
+
+    The outer Orchestrator stream sees only "this is the 2nd run_master call".
+    Whether that is wasteful or correct depends on the persisted checkpoint:
+    Master validation/audit rejection, quality repair, review repair, and
+    precommit repair all intentionally re-enter a previously used pipeline tool
+    in the same cycle. Keep redundant-call warnings for repeats that are not on
+    one of those explicit state-machine routes.
+    """
+    if tool_name in _NOISY_TOOLS:
+        return None
+
+    checkpoint = _read_checkpoint_for_repeated_tool_guard()
+    if not checkpoint:
+        return None
+    stage = checkpoint.get("stage")
+
+    if tool_name == "run_master":
+        master_plan = checkpoint.get("master_plan")
+        has_plan = bool(master_plan) if not isinstance(master_plan, list) else bool(master_plan)
+        audit_context = checkpoint.get("audit_context")
+        if (
+            stage == "direction_audited"
+            and not has_plan
+            and _route_allows_tool(checkpoint, "run_master")
+            and (
+                _as_positive_int(checkpoint.get("audit_attempt")) > 0
+                or bool(audit_context)
+            )
+        ):
+            return {
+                "reason": "corrective_master_replan",
+                "stage": stage,
+                "audit_attempt": _as_positive_int(checkpoint.get("audit_attempt")),
+                "next_v": checkpoint.get("next_v"),
+                "source_v": checkpoint.get("source_v"),
+            }
+        return None
+
+    allowed_stages = _CORRECTIVE_RETRY_STAGES_BY_TOOL.get(tool_name)
+    if not allowed_stages or stage not in allowed_stages:
+        return None
+    if not _route_allows_tool(checkpoint, tool_name):
+        return None
+    if not _has_corrective_retry_history(checkpoint):
+        return None
+
+    return {
+        "reason": "corrective_gate_reentry",
+        "stage": stage,
+        "next_v": checkpoint.get("next_v"),
+        "source_v": checkpoint.get("source_v"),
+        "generation_attempt": _as_positive_int(checkpoint.get("generation_attempt")),
+        "precommit_attempt": _as_positive_int(checkpoint.get("precommit_attempt")),
+        "worker_failure_count": _as_positive_int(checkpoint.get("worker_failure_count")),
+    }
+
+
 _DETERMINISTIC_RECOVERY_TOOLS = frozenset({
     "execute_workers",
     "prepare_next_gen",
@@ -559,6 +677,20 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 _tool_call_counts[tool_name] = _tool_call_counts.get(tool_name, 0) + 1
                                 _thresh = _REDUNDANT_NOISY_THRESHOLD if tool_name in _NOISY_TOOLS else _REDUNDANT_STRICT_THRESHOLD
                                 if _tool_call_counts[tool_name] == _thresh:
+                                    _allowed_repeat = _classify_allowed_repeated_pipeline_tool(tool_name, block.input)
+                                    if _allowed_repeat:
+                                        log.info("Tool '%s' called %d times on a corrective route: %s",
+                                                 tool_name, _tool_call_counts[tool_name],
+                                                 _allowed_repeat.get("reason"))
+                                        try:
+                                            log_system_event("pipeline.repeated_tool_call_allowed", "info",
+                                                f"Orchestrator called {tool_name} {_tool_call_counts[tool_name]}x "
+                                                f"on corrective route {_allowed_repeat.get('reason')}",
+                                                {"tool": tool_name, "count": _tool_call_counts[tool_name],
+                                                 "threshold": _thresh, **_allowed_repeat})
+                                        except Exception:
+                                            pass
+                                        continue
                                     # Warn exactly once when the threshold is first hit (not on every
                                     # subsequent call). Noisy tools get a high threshold; pipeline
                                     # tools stay strict. See _NOISY_TOOLS docstring.
