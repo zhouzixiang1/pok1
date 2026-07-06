@@ -5,6 +5,7 @@ from candidate_hygiene import sanitize_candidate_dir
 from national_native import (
     check_native_contract,
     ensure_native_entry,
+    run_native_tcp_smoke,
     run_native_tcp_pair,
 )
 from pipeline_state import route_policy
@@ -197,6 +198,74 @@ def test_native_tcp_pair_runs_without_adapter(tmp_path):
         row["adapter"]["actions_sent"] == 0
         for row in result["per_player"].values()
     )
+
+
+def test_native_tcp_smoke_runs_without_adapter(tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_minimal_strategy_bot(bot_a)
+    _write_minimal_strategy_bot(bot_b)
+    ensure_native_entry(bot_a)
+    ensure_native_entry(bot_b)
+
+    report = asyncio.run(run_native_tcp_smoke(
+        bot_a,
+        opponent_token=bot_b,
+        hands=1,
+        timeout_sec=30,
+    ))
+
+    assert report["execution_mode"] == "native_tcp"
+    assert report["passed"] is True
+    assert report["issues"] == []
+    assert report["result"]["hands_played"] == 1
+    assert all(
+        row["adapter"]["actions_sent"] == 0
+        for row in report["result"]["per_player"].values()
+    )
+
+
+def test_quality_smoke_gate_uses_native_tcp_backend(monkeypatch, tmp_path):
+    import national_native
+    import tool_gates
+
+    bot_dir = tmp_path / "BotA"
+    bot_dir.mkdir()
+    called = {}
+
+    def _legacy_smoke_should_not_run(_bot_dir):
+        raise AssertionError("legacy JSON smoke should not run for national_native")
+
+    async def _fake_native_smoke(candidate, *, source_v=None, hands=1, timeout_sec=90):
+        called["candidate"] = Path(candidate)
+        called["source_v"] = source_v
+        called["hands"] = hands
+        called["timeout_sec"] = timeout_sec
+        return {
+            "passed": True,
+            "execution_mode": "native_tcp",
+            "hands": hands,
+            "issues": [],
+        }
+
+    monkeypatch.setattr(tool_gates, "run_smoke_test", _legacy_smoke_should_not_run)
+    monkeypatch.setattr(national_native, "run_native_tcp_smoke", _fake_native_smoke)
+
+    errors, payload = asyncio.run(tool_gates._run_workflow_smoke_gate(
+        bot_dir=bot_dir,
+        source_v=12,
+        native_tcp_mode=True,
+        compile_errors=[],
+        import_errors=[],
+        protected_contract_errors=[],
+        native_contract_errors=[],
+        embedded_selftest_errors=[],
+    ))
+
+    assert errors == []
+    assert payload["execution_mode"] == "native_tcp"
+    assert called["candidate"] == bot_dir
+    assert called["source_v"] == 12
 
 
 def _write_random_probe_native_bot(bot_dir: Path) -> None:

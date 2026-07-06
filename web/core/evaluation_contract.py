@@ -177,6 +177,28 @@ _EVALUATION_ONLY_STAGES = frozenset({
     "verified",
 })
 
+NATIVE_TCP_EXCLUDED_EXACT = frozenset(CRITICAL_ENGINE_EXACT).union({
+    # Used only by the legacy local JSON smoke subprocess. The national_native
+    # quality gate runs a direct TCP smoke through national_native.py instead.
+    "web/core/smoke_tester.py",
+})
+
+
+def _active_national_execution_mode(explicit: str | None = None) -> str:
+    if explicit:
+        return str(explicit)
+    try:
+        from workflow_profiles import get_workflow_profile
+        return str(getattr(get_workflow_profile(), "national_execution_mode", "adapter") or "adapter")
+    except Exception:
+        return "adapter"
+
+
+def _stage_exact_for_mode(stage_exact: frozenset[str], national_execution_mode: str) -> frozenset[str]:
+    if national_execution_mode == "native_tcp":
+        return frozenset(path for path in stage_exact if path not in NATIVE_TCP_EXCLUDED_EXACT)
+    return stage_exact
+
 
 def _as_int(value: Any) -> int | None:
     if isinstance(value, bool):
@@ -263,7 +285,11 @@ def _contract_stage(checkpoint: dict[str, Any] | None, stage: str | None = None)
     return ""
 
 
-def critical_exact_for_stage(stage: str | None = None) -> frozenset[str]:
+def critical_exact_for_stage(
+    stage: str | None = None,
+    *,
+    national_execution_mode: str | None = None,
+) -> frozenset[str]:
     """Return exact files that can still affect the current checkpoint.
 
     Without a checkpoint stage we keep the original conservative full-pipeline
@@ -271,11 +297,12 @@ def critical_exact_for_stage(stage: str | None = None) -> frozenset[str]:
     needed by the stage's remaining deterministic tool are contract-critical.
     """
     stage = str(stage or "")
+    execution_mode = _active_national_execution_mode(national_execution_mode)
     if stage in _EVALUATION_ONLY_STAGES:
-        return EVALUATION_RUNTIME_EXACT
+        return _stage_exact_for_mode(EVALUATION_RUNTIME_EXACT, execution_mode)
     if stage in _STAGE_EXACT:
-        return _STAGE_EXACT[stage]
-    return frozenset(CRITICAL_EXACT)
+        return _stage_exact_for_mode(_STAGE_EXACT[stage], execution_mode)
+    return _stage_exact_for_mode(frozenset(CRITICAL_EXACT), execution_mode)
 
 
 def build_evaluation_contract(
@@ -286,10 +313,12 @@ def build_evaluation_contract(
     checkpoint: dict[str, Any] | None = None,
     extra_versions: Iterable[int | str] | None = None,
     stage: str | None = None,
+    national_execution_mode: str | None = None,
     include_hash: bool = False,
 ) -> dict[str, Any]:
     """Build a serializable description of evaluation-sensitive paths."""
     contract_stage = _contract_stage(checkpoint, stage)
+    execution_mode = _active_national_execution_mode(national_execution_mode)
     bot_versions = contract_bot_versions(
         candidate_v=candidate_v,
         source_v=source_v,
@@ -297,10 +326,14 @@ def build_evaluation_contract(
         extra_versions=extra_versions,
     )
     prefixes = list(CRITICAL_PREFIXES) + [bot_relpath(version) + "/" for version in bot_versions]
-    exact = sorted(critical_exact_for_stage(contract_stage))
+    exact = sorted(critical_exact_for_stage(
+        contract_stage,
+        national_execution_mode=execution_mode,
+    ))
     contract = {
         "version": CONTRACT_VERSION,
         "stage": contract_stage,
+        "national_execution_mode": execution_mode,
         "path_prefixes": sorted(set(prefixes)),
         "path_exact": exact,
         "bot_versions": bot_versions,
@@ -427,6 +460,7 @@ def evaluate_head_drift(
     checkpoint: dict[str, Any] | None = None,
     extra_versions: Iterable[int | str] | None = None,
     stage: str | None = None,
+    national_execution_mode: str | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Return whether a HEAD change leaves the evaluation contract untouched."""
     if not baseline_head or not current_head or baseline_head == current_head:
@@ -444,6 +478,7 @@ def evaluate_head_drift(
         checkpoint=checkpoint,
         extra_versions=extra_versions,
         stage=stage,
+        national_execution_mode=national_execution_mode,
         include_hash=False,
     )
     scope = classify_contract_paths(changed_paths, contract)

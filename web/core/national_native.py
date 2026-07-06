@@ -938,6 +938,84 @@ async def run_native_tcp_pair(
         _cleanup_specs(specs)
 
 
+async def run_native_tcp_smoke(
+    candidate_token: str | Path,
+    *,
+    source_v: int | None = None,
+    opponent_token: str | Path | None = None,
+    hands: int = 1,
+    timeout_sec: float | None = 90.0,
+) -> dict[str, Any]:
+    """Run a minimal direct-TCP national smoke match for a candidate bot."""
+    hands = max(1, min(70, int(hands)))
+    try:
+        candidate_label, candidate_dir = resolve_bot(candidate_token)
+    except Exception as exc:
+        return {
+            "passed": False,
+            "execution_mode": "native_tcp",
+            "hands": hands,
+            "issues": [f"native_smoke_candidate_error={type(exc).__name__}: {str(exc)[:300]}"],
+        }
+
+    if opponent_token is not None:
+        try:
+            opponents = [resolve_bot(opponent_token)]
+        except Exception as exc:
+            return {
+                "candidate": candidate_label,
+                "passed": False,
+                "execution_mode": "native_tcp",
+                "hands": hands,
+                "issues": [f"native_smoke_opponent_error={type(exc).__name__}: {str(exc)[:300]}"],
+            }
+    else:
+        opponents = select_acceptance_opponents(candidate_label, source_v, limit=1)
+
+    if not opponents:
+        return {
+            "candidate": candidate_label,
+            "passed": False,
+            "execution_mode": "native_tcp",
+            "hands": hands,
+            "issues": ["native_smoke_no_opponent"],
+        }
+
+    opponent_label, opponent_dir = opponents[0]
+    try:
+        result = await run_native_tcp_pair(
+            candidate_dir,
+            opponent_dir,
+            hands,
+            require_native_a=True,
+            require_native_b=False,
+            timeout_sec=timeout_sec,
+        )
+    except Exception as exc:
+        return {
+            "candidate": candidate_label,
+            "opponent": opponent_label,
+            "passed": False,
+            "execution_mode": "native_tcp",
+            "hands": hands,
+            "issues": [f"native_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
+        }
+
+    issues = list(result.get("issues") or [])
+    if not result.get("passed_compliance") and not issues:
+        issues.append("native_smoke_compliance_failed")
+    passed = bool(result.get("passed_compliance")) and not issues
+    return {
+        "candidate": candidate_label,
+        "opponent": opponent_label,
+        "passed": passed,
+        "execution_mode": "native_tcp",
+        "hands": hands,
+        "issues": issues,
+        "result": result,
+    }
+
+
 def _summary_from_results(bots: list[tuple[str, Path]], results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     summary = {
         label: {

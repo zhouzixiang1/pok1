@@ -14,7 +14,7 @@ from claude_agent_sdk import tool as sdk_tool
 
 from bot_namespace import ACTIVE_BOT_PREFIX, bot_relpath
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT, read_pipeline_checkpoint
-from evaluation_contract import contract_bot_versions, evaluate_head_drift
+from evaluation_contract import build_evaluation_contract, contract_bot_versions, evaluate_head_drift
 from repo_state import get_last_snapshot, git_worktree_snapshot, is_generated_bot_dir_entry
 from evolution_scope import (
     classify_status_entries,
@@ -99,11 +99,34 @@ def _contract_versions_for_candidate(candidate_v: int | None) -> list[int] | Non
     return contract_bot_versions(candidate_v=candidate_v, checkpoint=checkpoint)
 
 
+def _evaluation_contract_for_candidate(candidate_v: int | None) -> dict[str, Any] | None:
+    if candidate_v is None:
+        return None
+    checkpoint = read_pipeline_checkpoint()
+    if not isinstance(checkpoint, dict):
+        return None
+    try:
+        if int(checkpoint.get("next_v") or -1) != int(candidate_v):
+            return None
+    except Exception:
+        return None
+    try:
+        return build_evaluation_contract(
+            PROJECT_ROOT,
+            candidate_v=candidate_v,
+            source_v=checkpoint.get("source_v"),
+            checkpoint=checkpoint,
+        )
+    except Exception:
+        return None
+
+
 def _scope(snapshot: dict[str, Any], candidate_v: int | None) -> dict[str, Any]:
     return classify_status_entries(
         snapshot.get("entries") or [],
         candidate_v,
         contract_bot_versions=_contract_versions_for_candidate(candidate_v),
+        evaluation_contract=_evaluation_contract_for_candidate(candidate_v),
     )
 
 

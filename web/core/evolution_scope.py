@@ -247,10 +247,28 @@ def is_critical_evolution_path(path: str) -> bool:
     return path in CRITICAL_EXACT or any(path.startswith(prefix) for prefix in CRITICAL_PREFIXES)
 
 
+def _is_contract_path(path: str, contract: dict[str, Any] | None) -> bool:
+    if not isinstance(contract, dict):
+        return False
+    path = normalize_repo_path(path)
+    if not path:
+        return False
+    runtime_prefixes = contract.get("runtime_prefixes") or RUNTIME_PREFIXES
+    if any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in runtime_prefixes):
+        return False
+    non_contract_prefixes = contract.get("non_contract_prefixes") or NON_CONTRACT_PREFIXES
+    if any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in non_contract_prefixes):
+        return False
+    if path in set(contract.get("path_exact") or []):
+        return True
+    return any(path.startswith(prefix) for prefix in contract.get("path_prefixes") or [])
+
+
 def classify_path(
     path: str,
     candidate_v: int | None,
     contract_bot_versions: Any = None,
+    evaluation_contract: dict[str, Any] | None = None,
 ) -> str:
     """Classify a repo path for in-place evolution ownership checks."""
     path = normalize_repo_path(path)
@@ -264,6 +282,8 @@ def classify_path(
         return "candidate"
     if is_foreign_active_bot_path(path, candidate_v, contract_bot_versions):
         return "foreign_active_bot"
+    if evaluation_contract is not None:
+        return "critical" if _is_contract_path(path, evaluation_contract) else "external"
     if is_critical_evolution_path(path):
         return "critical"
     return "external"
@@ -273,6 +293,7 @@ def classify_status_entries(
     entries: list[str] | tuple[str, ...] | None,
     candidate_v: int | None,
     contract_bot_versions: Any = None,
+    evaluation_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Classify porcelain status entries into blocking and ignored groups."""
     groups: dict[str, list[str]] = {
@@ -289,7 +310,15 @@ def classify_status_entries(
         if not paths:
             groups["unknown_entries"].append(str(entry))
             continue
-        classes = {classify_path(path, candidate_v, contract_bot_versions) for path in paths}
+        classes = {
+            classify_path(
+                path,
+                candidate_v,
+                contract_bot_versions,
+                evaluation_contract=evaluation_contract,
+            )
+            for path in paths
+        }
         item = {"entry": str(entry), "paths": paths, "classes": sorted(classes)}
         entry_classes.append(item)
         if "critical" in classes:
@@ -321,9 +350,15 @@ def classify_paths(
     paths: list[str] | tuple[str, ...] | set[str],
     candidate_v: int | None,
     contract_bot_versions: Any = None,
+    evaluation_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     entries = [f"?? {normalize_repo_path(path)}" for path in sorted(paths)]
-    return classify_status_entries(entries, candidate_v, contract_bot_versions)
+    return classify_status_entries(
+        entries,
+        candidate_v,
+        contract_bot_versions,
+        evaluation_contract=evaluation_contract,
+    )
 
 
 def changed_paths_between_heads(root: str | Path, old_head: str, new_head: str) -> list[str] | None:

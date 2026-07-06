@@ -66,6 +66,55 @@ DYNAMIC_TEST_LLM_TIMEOUT = int(os.environ.get("POK_DYNAMIC_TEST_LLM_TIMEOUT", "2
 DYNAMIC_TEST_HEURISTIC_SUFFICIENT = int(os.environ.get("POK_DYNAMIC_TEST_HEURISTIC_SUFFICIENT", "4"))
 
 
+async def _run_workflow_smoke_gate(
+    *,
+    bot_dir: Path,
+    source_v: int | None,
+    native_tcp_mode: bool,
+    compile_errors: list,
+    import_errors: list,
+    protected_contract_errors: list,
+    native_contract_errors: list,
+    embedded_selftest_errors: list,
+) -> tuple[list[str], dict]:
+    """Run the smoke gate that matches the active workflow backend."""
+    if not native_tcp_mode:
+        return run_smoke_test(bot_dir), {"execution_mode": "local_json"}
+
+    blocking_prereqs = (
+        list(compile_errors or [])
+        + list(import_errors or [])
+        + list(protected_contract_errors or [])
+        + list(native_contract_errors or [])
+        + list(embedded_selftest_errors or [])
+    )
+    if blocking_prereqs:
+        return [], {
+            "execution_mode": "native_tcp",
+            "skipped": True,
+            "reason": "prerequisite_gate_failed",
+        }
+
+    hands = int(os.environ.get("POK_NATIVE_SMOKE_HANDS", "1"))
+    timeout_sec = float(os.environ.get("POK_NATIVE_SMOKE_TIMEOUT_SEC", "90"))
+    try:
+        from national_native import run_native_tcp_smoke
+        report = await run_native_tcp_smoke(
+            bot_dir,
+            source_v=source_v,
+            hands=hands,
+            timeout_sec=timeout_sec,
+        )
+    except Exception as exc:
+        report = {
+            "passed": False,
+            "execution_mode": "native_tcp",
+            "issues": [f"native_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
+        }
+    errors = list(report.get("issues") or []) if not report.get("passed") else []
+    return errors, report
+
+
 def _declared_scope_tasks_from_plan(master_plan):
     tasks = []
     if isinstance(master_plan, dict):
@@ -626,7 +675,16 @@ async def run_quality_gates(args):
             {"version": v, "errors": position_semantics_errors[:10]},
         )
 
-    smoke_errors = run_smoke_test(bot_dir)
+    smoke_errors, smoke_payload = await _run_workflow_smoke_gate(
+        bot_dir=bot_dir,
+        source_v=source_v,
+        native_tcp_mode=native_tcp_mode,
+        compile_errors=compile_errors,
+        import_errors=import_errors,
+        protected_contract_errors=protected_contract_errors,
+        native_contract_errors=native_contract_errors,
+        embedded_selftest_errors=embedded_selftest_errors,
+    )
     national_protocol_errors = run_national_protocol_tests()
     national_acceptance_ok = True
     national_acceptance_errors = []
@@ -903,6 +961,9 @@ async def run_quality_gates(args):
         "embedded_selftest_errors": embedded_selftest_errors[:5] if embedded_selftest_errors else [],
         "smoke_ok": len(smoke_errors) == 0,
         "smoke_errors": smoke_errors[:3] if smoke_errors else [],
+        "smoke": smoke_payload,
+        "native_tcp_smoke_ok": bool(smoke_payload.get("passed")) if native_tcp_mode and not smoke_payload.get("skipped") else None,
+        "native_tcp_smoke": smoke_payload if native_tcp_mode else {},
         "national_protocol_ok": len(national_protocol_errors) == 0,
         "national_protocol_errors": national_protocol_errors[:3] if national_protocol_errors else [],
         "national_acceptance_ok": national_acceptance_ok,
@@ -1057,6 +1118,9 @@ async def run_quality_gates(args):
         "embedded_selftest_errors": result["embedded_selftest_errors"],
         "smoke_ok": result["smoke_ok"],
         "smoke_errors": result["smoke_errors"],
+        "smoke": smoke_payload,
+        "native_tcp_smoke_ok": result["native_tcp_smoke_ok"],
+        "native_tcp_smoke": result["native_tcp_smoke"],
         "national_protocol_ok": result["national_protocol_ok"],
         "national_protocol_errors": result["national_protocol_errors"],
         "national_acceptance_ok": result["national_acceptance_ok"],
@@ -1108,7 +1172,16 @@ async def run_quality_gates(args):
         len(embedded_selftest_errors) == 0,
         failures=embedded_selftest_errors[:5],
     ))
-    scorecard.add(GateResult.from_bool("smoke", len(smoke_errors) == 0, failures=smoke_errors[:3]))
+    scorecard.add(GateResult.from_bool(
+        "smoke",
+        len(smoke_errors) == 0,
+        failures=smoke_errors[:3],
+        metrics={
+            "execution_mode": smoke_payload.get("execution_mode", "local_json"),
+            "hands": smoke_payload.get("hands"),
+        },
+        artifacts={"report": smoke_payload} if smoke_payload else {},
+    ))
     scorecard.add(GateResult.from_bool(
         "placement_shadow_review",
         not bool([w for w in placement_shadow_warnings if "TRUE SHADOW" not in w]),
