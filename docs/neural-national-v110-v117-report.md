@@ -1,4 +1,4 @@
-# Neural National v110-v116 Report
+# Neural National v110-v117 Report
 
 Date: 2026-07-06
 
@@ -397,15 +397,96 @@ Relative to v115:
 - v2 delta: `+15328`.
 - All other current-top8+v7 opponents were unchanged on the two seed blocks.
 
+## v117
+
+Path:
+
+`bots/neural_national_lab/versions/v117_national_v17_weak_ace_4bet_call_tcp`
+
+Change:
+
+- Derived from v116.
+- Keeps v116's flop free-action value-check and turn free-all-in value-check
+  gates.
+- Adds a narrow preflop downshift:
+  - stage is `preflop`,
+  - original rule label is `raise_pot`,
+  - hole cards are offsuit `A2` through `A5`,
+  - `3000 <= to_call <= 4500`,
+  - `7500 <= pot <= 9500`,
+  - rule action is at least `12000`,
+  - return action `0`, a national-protocol `call`.
+
+Reason:
+
+After `.evolution_pok` advanced to newer national bots, a fresh latest-top10
+rule pool was checked on seed block `2026074100`. v116 collapsed against v1,
+v2, and v3 because of a repeated preflop A3o overcommit: it reraised from
+about `6000` to almost all chips, then called the small all-in remainder and
+lost `-20000` on six consecutive paired seeds.
+
+Force probes changing the large preflop reraise decision to call improved all
+six v2 paired matches:
+
+| Seed | Baseline | Forced Call | Delta |
+|---|---:|---:|---:|
+| 2026074100 | `-20139` | `-6189` | `+13950` |
+| 2026074101 | `-20648` | `-6762` | `+13886` |
+| 2026074102 | `-20035` | `-6085` | `+13950` |
+| 2026074103 | `-19880` | `-6079` | `+13801` |
+| 2026074104 | `-20115` | `-6337` | `+13778` |
+| 2026074105 | `-20337` | `-6387` | `+13950` |
+
+Direct v2 check on the new failure block:
+
+`native_tcp_paired_v117_vs_v2_h70_m6_seed2026074100.json`
+
+- v2 seed block `2026074100`: `-37839`, mean/hand `-45.046`, W-L-D `0-6-0`.
+- Same block v116 baseline: `-121154`, mean/hand `-144.231`, W-L-D `0-6-0`.
+- Delta: `+83315`.
+
+Latest top10 rule pool on seed block `2026074100`:
+
+| Version | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| v116 | 60 | 8400 | `-363365` | `-43.258` | `0-18-42` |
+| v117 | 60 | 8400 | `-112891` | `-13.439` | `0-18-42` |
+
+Per-opponent latest-top10 deltas:
+
+| Opponent | v116 Total | v117 Total | Delta |
+|---|---:|---:|---:|
+| national_v1 | `-121154` | `-37839` | `+83315` |
+| national_v2 | `-121450` | `-37834` | `+83616` |
+| national_v3 | `-120761` | `-37218` | `+83543` |
+| national_v8 | `0` | `0` | `0` |
+| national_v9 | `0` | `0` | `0` |
+| national_v11 | `0` | `0` | `0` |
+| national_v14 | `0` | `0` | `0` |
+| national_v27 | `0` | `0` | `0` |
+| national_v28 | `0` | `0` | `0` |
+| national_v29 | `0` | `0` | `0` |
+
+Regression on the older current-top8+v7 seed blocks:
+
+- seed `2026074000`: unchanged from v116 at `+456290`, mean/hand `+36.213`,
+  W-L-D `37-11-42`.
+- seed `2026073900`: unchanged from v116 at `+887454`, mean/hand `+70.433`,
+  W-L-D `71-3-16`.
+- Combined older-block result remains `+1343744`, mean/hand `+53.323`, W-L-D
+  `108-14-58`.
+
 ## Current Assessment
 
-- v116 is the current best artifact by EV with unchanged full-pool W-L-D:
+- v117 is the current best artifact by tested coverage because it preserves
+  v116 on the older seed blocks while fixing a large newly discovered
+  latest-top10 overcommit leak:
   - `+1343744` over 25200 full-pool hands,
   - mean/hand `+53.323`,
   - W-L-D `108-14-58`,
-  - positive combined result against every opponent.
-- v116 preserves v115's low-loss full-pool profile while improving the hard
-  v2/v3 aggregate.
+  - `+250474` versus v116 on the latest-top10 seed block `2026074100`.
+- v117 preserves v116's low-loss older-block profile while improving fresh
+  v1/v2/v3 coverage.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
   - v108 v2/v3 combined over two full-pool blocks: v2 `-64781`, v3 `-21241`.
   - v110: v2 `+101785`, v3 `+139622`.
@@ -414,11 +495,14 @@ Relative to v115:
 - v114: v2 `+150029`, v3 `+193985`.
 - v115: v2 `+155523`, v3 `+199479`.
 - v116: v2 `+170851`, v3 `+199479`.
-- All v110/v111/v112/v113/v114/v115/v116 recorded evaluations passed protocol
+- v117: older two-block v2/v3 unchanged at v2 `+170851`, v3 `+199479`; fresh
+  latest-top10 block improves v1/v2/v3 by `+250474` total.
+- All v110/v111/v112/v113/v114/v115/v116/v117 recorded evaluations passed protocol
   compliance with 0 candidate illegal actions, 0 candidate timeouts, and 0
   candidate adapter actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
-It is still not complete domination: v116's v2 record remains `13-7-0`, so the
-next generation should keep improving v2 match conversion while preserving
-v116's higher EV and restored low-loss full-pool profile.
+It is still not complete domination: v117 remains negative on the fresh
+latest-top10 v1/v2/v3 block and its older v2 record remains `13-7-0`. The next
+generation should continue mining the latest-top10 seed block while preserving
+v117's older-block EV and protocol compliance.
