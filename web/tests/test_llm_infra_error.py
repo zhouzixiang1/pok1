@@ -242,6 +242,49 @@ class TestRunReviewInfraShortCircuit:
         assert review["approved"] is False
 
 
+class TestRunReviewCodeRejection:
+    def test_valid_rejection_moves_to_repair_planned_not_review_retry(self, monkeypatch):
+        import evolution_infra
+        import tool_gates
+
+        _seed_review_checkpoint(101, 100, stage="quality_passed", generation_attempt=2)
+
+        async def fake_run_claude_query(*_a, **_kw):
+            return (
+                json.dumps({
+                    "approved": False,
+                    "quality_score": 4,
+                    "feedback": "dead helper branch is not wired into production",
+                    "change_summary": "added helper only",
+                    "risk_areas": ["dead code"],
+                }),
+                None,
+                None,
+            )
+
+        monkeypatch.setattr(tool_gates, "run_claude_query", fake_run_claude_query)
+        monkeypatch.setattr(tool_gates, "_idempotency_check", lambda *a, **k: None)
+        quality_failures = []
+        monkeypatch.setattr(
+            tool_gates,
+            "_record_quality_failure",
+            lambda *a, **k: quality_failures.append((a, k)),
+        )
+
+        result = asyncio.run(tool_gates.run_review.handler({"version": 101, "source_v": 100, "plan": []}))
+        data = json.loads(result["content"][0]["text"])
+        ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
+
+        assert data["approved"] is False
+        assert data["checkpoint_recorded"] is True
+        assert ckpt["stage"] == "repair_planned"
+        assert ckpt["generation_attempt"] == 2
+        assert ckpt["reviewer_feedback"] == "dead helper branch is not wired into production"
+        assert ckpt["gate_results"]["review"]["approved"] is False
+        assert ckpt["gate_results"]["review"]["quality_score"] == 4
+        assert quality_failures
+
+
 # ---------------------------------------------------------------------------
 # run_critic infra short-circuit
 # ---------------------------------------------------------------------------

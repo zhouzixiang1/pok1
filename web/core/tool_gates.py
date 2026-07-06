@@ -1548,7 +1548,7 @@ async def run_review(args):
             source_v,
             "review",
             gate,
-            stage="reviewed" if approved else None,
+            stage="reviewed" if approved else "repair_planned",
             master_plan=ckpt.get("master_plan") if ckpt else plan,
             reviewer_feedback=feedback,
         )
