@@ -1,0 +1,2060 @@
+import sys
+from constants import (
+    N_PLAYERS, BIG_BLIND, TOTAL_HANDS, SMALL_BLIND,
+    SIMULATIONS_BY_PUBLIC_COUNT, EXTRA_SIMULATIONS_BY_PUBLIC_COUNT,
+    CRITICAL_SPOT_RATIO, CRITICAL_SPOT_BB_MULT,
+    RAISE_RATIO_PREFLOP_OPEN, RAISE_RATIO_PREFLOP_FACING, RAISE_RATIO_FLOP, RAISE_RATIO_TURN, RAISE_RATIO_RIVER,
+    SB_OPEN_BASE_BB, SB_OPEN_STRENGTH_SCALE, SB_OPEN_STRENGTH_OFFSET,
+    BB_ISO_BASE_BB, BB_ISO_STRENGTH_SCALE, BB_ISO_STRENGTH_OFFSET,
+    RAISE_MAX_RATIO, OVERBET_MAX_RATIO,
+    BLOCKER_BLUFF_CAP_BASE, BLOCKER_BLUFF_WET_SCALE, BLOCKER_BLUFF_STREET_SCALE,
+    PASSIVE_THIN_VALUE_MAX_RATIO,
+    PRIOR_POSTFLOP_AGGR, PRIOR_FOLD_TO_RAISE, PRIOR_VPIP, PRIOR_PFR, PRIOR_ALLIN_RATE,
+    PRIOR_BARREL_FREQ, PRIOR_RIVER_AGGR, PRIOR_FLOP_AGGR,
+    CONFIDENCE_OFFSET, CONFIDENCE_SCALE,
+    PASSIVE_AGGR_MAX, PASSIVE_VPIP_MIN, PASSIVE_BARREL_MAX, PASSIVE_CONFIDENCE_GATE,
+    SB_OPEN_THRESHOLD, SB_OPEN_MATCH_ADJ, SB_LIMP_THRESHOLD,
+    BB_ISO_THRESHOLD, BB_VPIP_FOLD_ADJUST_SCALE, BB_FTR_FOLD_ADJUST_SCALE,
+    BB_VALUE_3BET_THRESHOLD, BB_BLUFF_3BET_LOW, BB_BLUFF_3BET_HIGH, BB_BLUFF_3BET_FREQ,
+    BB_CALL_THRESHOLD,
+    SB_PREMIUM_4BET_THRESHOLD, SB_FACING_ALLIN_CALL, SB_VS_RERAISE_CALL,
+    SB_VS_RERAISE_POT_SLACK,
+    LIGHT_4BET_MIN_CONFIDENCE, LIGHT_4BET_MIN_OPP_PFR, LIGHT_4BET_MAX_OPP_4BET,
+    LIGHT_4BET_STRENGTH_LOW, LIGHT_4BET_STRENGTH_HIGH, LIGHT_4BET_FREQ_ROLL_CAP,
+    LIGHT_4BET_SIZE_MULT, LIGHT_4BET_STACK_CAP, LIGHT_4BET_HALF_STACK_CAP,
+    TRASH_STRENGTH_THRESHOLD,
+    ANTI_LOCK_PREFLOP_OPEN_RATIO, ANTI_LOCK_PREFLOP_FACING_RATIO,
+    ANTI_LOCK_FLOP_RATIO, ANTI_LOCK_TURN_RATIO, ANTI_LOCK_RIVER_RATIO,
+    ANTI_LOCK_DYNAMIC_MULT, ANTI_LOCK_BLOCKER_DRAW_MULT, ANTI_LOCK_WEAK_SHOWDOWN_MULT,
+    ANTI_LOCK_JAM_STACK_RATIO,
+    STRONG_THRESHOLD, MEDIUM_THRESHOLD,
+    THRESHOLD_POS_IP_STRONG, THRESHOLD_POS_IP_MEDIUM,
+    THRESHOLD_POS_OOP_STRONG, THRESHOLD_POS_OOP_MEDIUM,
+    THRESHOLD_PREMIUM_STRONG, THRESHOLD_PREMIUM_MEDIUM, THRESHOLD_PREMIUM_FLOOR,
+    THRESHOLD_WEAK_STRONG, THRESHOLD_WEAK_MEDIUM, THRESHOLD_WEAK_FLOOR,
+    JAM_BASE_BUFFER, JAM_STRONG_SCALE, JAM_STRONG_OFFSET, JAM_THIN_BONUS,
+    JAM_MATCH_PROTECT_SCALE, JAM_BUFFER_CAP, JAM_ANTI_LOCK_PENALTY,
+    SHOVE_BASE_BUFFER, SHOVE_STRONG_OFFSET,
+    PREFLOP_CALL_BASE, PREFLOP_CALL_OOP_BONUS, PREFLOP_CALL_TRASH_BONUS, PREFLOP_TRASH_STRENGTH,
+    RAISE_FOLD_THRESHOLD, BLOCKER_RAISE_THRESHOLD,
+    BLUFF_DELTA_RAISE_SCALE, BLUFF_DELTA_BLOCKER_SCALE,
+    DRAW_EQUITY_SLACK_PREMIUM, DRAW_EQUITY_SLACK_NORMAL,
+    SEMI_BLUFF_MIN_DRAW, SEMI_BLUFF_MIN_CONFIDENCE,
+    NUTTED_RISK_STRONG_MULT, NUTTED_RISK_MEDIUM_MULT, NUTTED_RISK_CALL_MULT,
+    TRAP_MIN_CONFIDENCE, TRAP_MIN_AGGR, TRAP_MAX_WETNESS, TRAP_FREQ_CAP,
+    TRAP_NUT_MAX_POT,
+    BIG_POT_BASE, BIG_POT_PROTECT_SCALE, BIG_POT_CHASE_SCALE, BIG_POT_FLOOR, BIG_POT_CEIL,
+)
+from card_utils import clamp
+from state import (
+    reconstruct_state, get_remaining_hands, estimate_preflop_strength,
+    is_preflop_3bet_candidate, is_preflop_trash_hand,
+    preflop_hand_profile,
+)
+from tournament import (
+    should_lock_win, fold_gives_opponent_lock, match_risk_adjustment,
+    match_pressure_profile, apply_anti_lock_pressure, anti_lock_can_continue,
+    _is_passive_opponent, _is_fourbet_light_candidate, _should_4bet_light,
+    _should_checkraise_trap,
+)
+from opponent import build_opponent_model, analyze_current_spot, classify_opponent_archetype, classify_opp_open_sizing
+from postflop import (
+    made_hand_metric, pair_board_profile, pair_domination_margin,
+    marginal_pair_under_pressure, board_texture_profile,
+    classify_street_texture,
+    paired_board_outcome_profile, bet_size_bucket, value_hand_tier,
+    value_bet_plan, empty_draw_profile, draw_profile, draw_potential,
+    draw_call_margin, made_flush_profile, blocker_bluff_profile,
+    allow_low_frequency_blocker_bluff, nutted_risk_profile,
+    check_probe_resistance_margin, must_continue_vs_raise,
+    polarized_jam_call_gate, spr_commitment_gate,
+    disciplined_opp_river_margin,
+)
+from simulation import (
+    build_opponent_range, estimate_weighted_win_rate,
+)
+from overbet import should_overbet, overbet_sizing
+from donk_probe import should_donk_bet, should_probe_bet, donk_probe_sizing
+
+
+# ── BB Defense-Depth Matrix (keyed to SB opener raise-to-total) ──────────────
+# At constant 200BB stacks, raise SIZE is the only meaningful preflop variable.
+_BB_DEFENSE_SMALL_MAX_BB = 2.5
+_BB_DEFENSE_STANDARD_MAX_BB = 3.5
+_BB_DEFENSE_LARGE_MAX_BB = 5.0
+
+_BB_DEFENSE_DEPTH_MATRIX = {
+    'small':    {'call_delta': -0.03, 'value_3bet_delta': -0.02,
+                 'bluff_low_delta': -0.03, 'bluff_high_delta': +0.03, 'bluff_freq_delta': +0.06},
+    'standard': {'call_delta': 0.0,  'value_3bet_delta': 0.0,
+                 'bluff_low_delta': 0.0,  'bluff_high_delta': 0.0,  'bluff_freq_delta': 0.0},
+    'large':    {'call_delta': +0.03, 'value_3bet_delta': +0.01,
+                 'bluff_low_delta': +0.03, 'bluff_high_delta': -0.03, 'bluff_freq_delta': -0.08},
+    'xl':       {'call_delta': +0.06, 'value_3bet_delta': +0.02,
+                 'bluff_low_delta': +0.05, 'bluff_high_delta': -0.06, 'bluff_freq_delta': -0.20},
+}
+
+
+def _classify_open_raise_size(raise_to_total):
+    """Classify SB open-raise size into defense-depth bucket."""
+    raise_bb = raise_to_total / BIG_BLIND
+    if raise_bb <= _BB_DEFENSE_SMALL_MAX_BB:
+        return 'small'
+    elif raise_bb <= _BB_DEFENSE_STANDARD_MAX_BB:
+        return 'standard'
+    elif raise_bb <= _BB_DEFENSE_LARGE_MAX_BB:
+        return 'large'
+    return 'xl'
+
+
+def _bb_defense_depth_adjustments(raise_to_total):
+    """Return BB defense threshold deltas keyed to SB open-raise size.
+    Emits UNCONDITIONAL stderr telemetry for per-nemesis measurement."""
+    bucket = _classify_open_raise_size(raise_to_total)
+    adj = _BB_DEFENSE_DEPTH_MATRIX[bucket]
+    raise_bb = raise_to_total / BIG_BLIND
+    sys.stderr.write(
+        f"BB_DEFENSE bucket={bucket} raise_bb={raise_bb:.1f} "
+        f"call_d={adj['call_delta']:+.3f} v3b_d={adj['value_3bet_delta']:+.3f} "
+        f"bluff_freq_d={adj['bluff_freq_delta']:+.3f}\n"
+    )
+    return adj
+
+
+def _preflop_jam_call_decision(win_rate, pot_odds, opponent_allin_rate, confidence):
+    """Return 0 (call), -1 (fold), or None (defer to existing strength logic).
+    Caller must verify the spot is a jam (opponent_allin OR raise_to >= 50% eff stack).
+    Routes jam decisions through pot-odds-equity; fixed strength thresholds are too
+    tight vs opponents that jam wide ranges. Wide jammers (high allin_rate, confident
+    read) get a more permissive slack so we call wider vs their trash-heavy range.
+    """
+    if confidence >= 0.15 and opponent_allin_rate >= 0.20:
+        slack = 0.05
+        reason = 'wide_jammer'
+    else:
+        slack = 0.01
+        reason = 'standard_jam'
+    decision = None
+    if win_rate >= pot_odds - slack:
+        decision = 0
+    elif win_rate < pot_odds - slack - 0.05:
+        decision = -1
+    sys.stderr.write(
+        f"PREFLOP_JAM_DEFENSE decision={decision if decision is not None else 'defer'} "
+        f"win_rate={win_rate:.3f} pot_odds={pot_odds:.3f} slack={slack:.2f} "
+        f"allin_rate={opponent_allin_rate:.3f} conf={confidence:.2f} reason={reason}\n"
+    )
+    return decision
+
+
+# ── v18 per-street signal helpers ──────────────────────────────────────────────
+
+def _per_street_diverges(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
+    per_street_val = opponent_model.get(per_street_key, per_street_prior)
+    aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
+    ps_above = per_street_val > per_street_prior
+    ag_above = aggregate_val > aggregate_prior
+    return ps_above != ag_above
+
+
+def _aligned_signal_boost(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
+    per_street_val = opponent_model.get(per_street_key, per_street_prior)
+    aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
+    ps_above = per_street_val > per_street_prior
+    ag_above = aggregate_val > aggregate_prior
+    if ps_above != ag_above:
+        return 0.0
+    ps_dev = abs(per_street_val - per_street_prior) / per_street_prior
+    ag_dev = abs(aggregate_val - aggregate_prior) / aggregate_prior
+    return (ps_dev * ag_dev) ** 0.5
+
+
+# ── v18 per-street adjustments + v13 tighter clamp ────────────────────────────
+
+def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
+    confidence = opponent_model["confidence"]
+    adjustment = 0.0
+
+    if spot_info["facing_raise"] or spot_info["facing_allin"]:
+        adjustment += confidence * max(0.0, PRIOR_FOLD_TO_RAISE - opponent_model["pfr"]) * 0.07
+        if round_idx > 0:
+            adjustment += confidence * max(0.0, PRIOR_POSTFLOP_AGGR - opponent_model["postflop_aggr"]) * 0.06
+        adjustment -= confidence * max(0.0, opponent_model["allin_rate"] - PRIOR_ALLIN_RATE) * 0.08
+        adjustment -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.48) * 0.05
+        adjustment += min(0.04, spot_info["last_raise_pot_ratio"] * 0.04)
+
+    # v18 per-street profiling adjustments
+    if confidence >= 0.15:
+        if round_idx == 2:
+            barrel = opponent_model.get('barrel_freq', PRIOR_BARREL_FREQ)
+            if barrel >= 0.60:
+                adjustment -= confidence * (barrel - 0.50) * 0.100
+            elif barrel <= 0.30:
+                adjustment += confidence * (0.40 - barrel) * 0.060
+        elif round_idx == 3:
+            river_bb = opponent_model.get('avg_river_raise_bb', 5.5)
+            river_aggr = opponent_model.get('river_aggr', PRIOR_RIVER_AGGR)
+            if river_bb >= 8.0 and river_aggr >= 0.32:
+                adjustment += confidence * 0.060
+            elif river_bb <= 3.0 and river_aggr <= 0.22:
+                adjustment -= confidence * 0.050
+
+    # v18 aligned-signal boost
+    if confidence >= 0.15:
+        if round_idx == 2:
+            barrel = opponent_model.get('barrel_freq', PRIOR_BARREL_FREQ)
+            alignment = _aligned_signal_boost(opponent_model, 'barrel_freq', PRIOR_BARREL_FREQ, 'postflop_aggr', PRIOR_POSTFLOP_AGGR)
+            if alignment > 0:
+                if barrel >= 0.60:
+                    adjustment -= confidence * alignment * barrel * 1.5
+                elif barrel <= 0.30:
+                    adjustment += confidence * alignment * (1.0 - barrel) * 1.5
+        elif round_idx == 3:
+            river_aggr = opponent_model.get('river_aggr', PRIOR_RIVER_AGGR)
+            alignment = _aligned_signal_boost(opponent_model, 'river_aggr', PRIOR_RIVER_AGGR, 'postflop_aggr', PRIOR_POSTFLOP_AGGR)
+            if alignment > 0:
+                if river_aggr >= 0.32:
+                    adjustment += confidence * alignment * 1.5
+                elif river_aggr <= 0.22:
+                    adjustment -= confidence * alignment * 1.5
+
+    # v13 tighter clamp — prevents over-adjustment noise
+    return clamp(adjustment, -0.05, 0.07)
+
+
+def aggressive_line_strength(spot_info, board_texture):
+    strength = 0.0
+    if spot_info.get("opp_postflop_bet_count", 0) >= 2:
+        strength += 0.04
+    if spot_info.get("opp_current_round_bet_count", 0) >= 2:
+        strength += 0.08 if board_texture is not None and board_texture["paired"] else 0.05
+    if spot_info.get("opp_current_round_bet_count", 0) >= 3:
+        strength += 0.03
+    return clamp(strength, 0.0, 0.15)
+
+
+def choose_anti_lock_pressure_action(
+    state,
+    my_chips,
+    to_call,
+    pot,
+    round_idx,
+    win_rate,
+    opponent_model,
+    remaining_hands,
+    preflop_strength=None,
+    value_profile=None,
+    draw_info=None,
+    blocker_profile=None,
+    board_texture=None,
+):
+    if state["opponent_allin"] or my_chips <= 1:
+        return None
+    if to_call >= my_chips:
+        return -2
+
+    hands_left = remaining_hands if remaining_hands is not None else TOTAL_HANDS
+    pot_after_call = pot + to_call
+    fold_to_raise = opponent_model.get("fold_to_raise", PRIOR_FOLD_TO_RAISE)
+    confidence = opponent_model.get("confidence", 0.0)
+
+    tier = value_profile.get("tier", "none") if value_profile is not None else "none"
+    draw_quality = draw_info.get("quality", 0.0) if draw_info is not None else 0.0
+    has_draw = draw_info.get("semi_bluff", False) if draw_info is not None else False
+    has_blocker = blocker_profile is not None and blocker_profile.get("eligible", False)
+
+    weak_showdown = tier in ("none", "thin") and draw_quality < 0.14 and win_rate < 0.45
+    high_fold_pressure = confidence < 0.20 or fold_to_raise >= 0.42
+    emergency_jam = (
+        hands_left <= 3
+        or (to_call > 0 and to_call / max(1, pot) >= 0.35)
+        or (weak_showdown and high_fold_pressure and hands_left <= 6)
+        or (win_rate < 0.18 and hands_left <= 5)
+    )
+    if tier in ("strong", "nut") or has_draw:
+        emergency_jam = emergency_jam and hands_left <= 3
+
+    if emergency_jam:
+        return -2
+
+    min_raise_action = state.get("min_raise_action", state["round_raise"])
+
+    if round_idx == 0:
+        ratio = ANTI_LOCK_PREFLOP_OPEN_RATIO if to_call == 0 else ANTI_LOCK_PREFLOP_FACING_RATIO
+        target = int(to_call + pot_after_call * ratio)
+        strength = preflop_strength if preflop_strength is not None else win_rate
+        target = max(target, int((5.5 + max(0.0, strength - 0.50) * 3.0) * BIG_BLIND) - state["my_round_bet"])
+    elif round_idx == 1:
+        target = int(to_call + pot_after_call * ANTI_LOCK_FLOP_RATIO)
+    elif round_idx == 2:
+        target = int(to_call + pot_after_call * ANTI_LOCK_TURN_RATIO)
+    else:
+        target = int(to_call + pot_after_call * ANTI_LOCK_RIVER_RATIO)
+
+    if board_texture is not None and board_texture.get("dynamic", False):
+        target = int(target * ANTI_LOCK_DYNAMIC_MULT)
+    if has_blocker or has_draw:
+        target = int(target * ANTI_LOCK_BLOCKER_DRAW_MULT)
+    if weak_showdown:
+        target = int(target * ANTI_LOCK_WEAK_SHOWDOWN_MULT)
+
+    amount = max(min_raise_action, target)
+    if amount >= my_chips * ANTI_LOCK_JAM_STACK_RATIO:
+        return -2
+    amount = min(amount, my_chips - 1)
+    if amount <= to_call or amount < min_raise_action:
+        return -2 if hands_left <= 4 else None
+    return amount
+
+
+def paired_board_stackoff_profile(pair_profile, paired_board_profile, board_texture, spot_info, round_idx):
+    info = {
+        "active": False,
+        "severe": False,
+        "line_strength": 0.0,
+        "size_bucket": "small",
+    }
+
+    if round_idx <= 0 or board_texture is None or not board_texture["paired"]:
+        return info
+
+    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
+    line_strength = 0.0
+    active = False
+
+    if paired_board_profile is not None and paired_board_profile["board_two_pair"]:
+        active = True
+        line_strength += 0.05
+    elif pair_profile is not None and pair_profile["pair_type"] == "overpair":
+        active = True
+        line_strength += 0.04
+
+    if not active:
+        return info
+
+    if spot_info["facing_postflop_aggression"]:
+        line_strength += 0.03
+    if spot_info.get("opp_current_round_bet_count", 0) >= 2:
+        line_strength += 0.08
+    elif size_bucket in ("medium", "large"):
+        line_strength += 0.04
+    if round_idx >= 2:
+        line_strength += 0.02
+
+    info["active"] = True
+    info["severe"] = (
+        spot_info["facing_postflop_aggression"]
+        and spot_info.get("opp_current_round_bet_count", 0) >= 2
+        and size_bucket in ("medium", "large")
+    )
+    info["line_strength"] = clamp(line_strength, 0.0, 0.18)
+    info["size_bucket"] = size_bucket
+    return info
+
+
+def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength, round_idx, has_position, texture_class="none"):
+    if round_idx <= 0:
+        return 0.0
+
+    margin = 0.0
+    air_hand = made_strength < 0.18 and draw_strength < 0.08
+    weak_showdown = made_strength < 0.22
+    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
+
+    if weak_showdown:
+        margin += 0.020
+    if air_hand:
+        margin += 0.028
+
+    if spot_info["facing_postflop_aggression"]:
+        margin += 0.008
+        if size_bucket == "small":
+            margin += 0.032
+        elif size_bucket == "medium":
+            margin += 0.010
+        else:
+            margin += 0.024
+
+        if spot_info.get("opp_postflop_bet_count", 0) >= 2:
+            margin += 0.024 if size_bucket == "small" else 0.014
+        if round_idx >= 2 and air_hand:
+            margin += 0.020
+        if round_idx == 3 and size_bucket == "large":
+            margin += 0.032
+
+    if not has_position:
+        margin += 0.008
+
+    confidence = opponent_model["confidence"]
+    if air_hand:
+        margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.015
+    else:
+        margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.008
+
+    if texture_class == "dry":
+        margin -= 0.025
+    elif texture_class in ("draw_heavy", "monotone"):
+        margin += 0.020
+
+    return clamp(margin, 0.0, 0.08)
+
+
+def realized_postflop_equity(
+    win_rate,
+    made_strength,
+    draw_strength,
+    round_idx,
+    has_position,
+    spot_info,
+    pair_profile=None,
+    opponent_model=None,
+):
+    air_hand = made_strength < 0.18 and draw_strength < 0.08
+    if round_idx <= 0:
+        return win_rate
+
+    eqr = 1.0
+
+    if air_hand:
+        eqr = 0.65 if has_position else 0.55
+
+        if spot_info.get("opp_postflop_bet_count", 0) >= 2:
+            eqr -= 0.10
+        if round_idx == 2:
+            eqr -= 0.05
+        elif round_idx == 3:
+            eqr -= 0.12
+
+        eqr = clamp(eqr, 0.45, 0.85)
+        return win_rate * eqr
+
+    if pair_profile is not None and pair_profile["made_class"] == 1:
+        pair_type = pair_profile["pair_type"]
+
+        if pair_type in ("middle_pair", "bottom_pair", "underpair", "board_pair"):
+            eqr = 0.82 if has_position else 0.72
+
+            if pair_profile["weak_kicker"]:
+                eqr -= 0.05
+            if spot_info.get("opp_postflop_bet_count", 0) >= 2:
+                eqr -= 0.06
+            if round_idx == 3:
+                eqr -= 0.06
+
+            eqr = clamp(eqr, 0.65, 0.92)
+            return win_rate * eqr
+
+        if pair_type == "top_pair" and pair_profile["weak_kicker"]:
+            eqr = 0.88 if has_position else 0.80
+            if spot_info.get("opp_postflop_bet_count", 0) >= 2:
+                eqr -= 0.04
+            eqr = clamp(eqr, 0.75, 0.95)
+            return win_rate * eqr
+
+    return win_rate
+
+
+def choose_raise(
+    min_raise,
+    my_chips,
+    my_round_bet,
+    to_call,
+    pot,
+    win_rate,
+    round_idx,
+    spot_name,
+    preflop_strength,
+    has_position,
+    opponent_model,
+    semi_bluff=False,
+    value_profile=None,
+    value_plan=None,
+    board_texture=None,
+    draw_info=None,
+    blocker_bluff=False,
+    probe_mode=False,
+    pressure_line=False,
+    induce_mode=False,
+    nutted_risk_score=0.0,
+    match_sizing_delta=0.0,
+    passive_thin_value=False,
+    overbet_mode=False,
+):
+    if my_chips <= max(min_raise, to_call) + 1:
+        return None
+
+    pot_after_call = pot + to_call
+    confidence = opponent_model["confidence"]
+    fold_to_raise = opponent_model["fold_to_raise"]
+    if value_profile is None:
+        value_profile = {"tier": "none", "size_bonus": 0.0}
+    if value_plan is None:
+        value_plan = {"size_delta": 0.0, "induce": False, "protect": False, "thin_control": False}
+    if board_texture is None:
+        board_texture = {"wetness": 0.0, "dynamic": False}
+    if draw_info is None:
+        draw_info = empty_draw_profile()
+    wetness = board_texture["wetness"]
+
+    if round_idx == 0:
+        ratio = RAISE_RATIO_PREFLOP_OPEN if to_call == 0 else RAISE_RATIO_PREFLOP_FACING
+    elif round_idx == 1:
+        ratio = RAISE_RATIO_FLOP
+    elif round_idx == 2:
+        ratio = RAISE_RATIO_TURN
+    else:
+        ratio = RAISE_RATIO_RIVER
+
+    ratio += max(0.0, win_rate - 0.55) * (0.90 + 0.20 * round_idx)
+    ratio += -0.05 if has_position else 0.05
+    ratio += confidence * max(0.0, fold_to_raise - 0.52) * (0.20 if semi_bluff else 0.10)
+    ratio += value_profile.get("size_bonus", 0.0)
+    ratio += value_plan.get("size_delta", 0.0)
+    ratio += match_sizing_delta
+    if round_idx > 0 and value_profile.get("tier") == "strong" and not semi_bluff and not pressure_line:
+        if not board_texture["dynamic"]:
+            ratio -= 0.05
+        if wetness <= 0.20:
+            ratio -= 0.02
+    if board_texture["dynamic"]:
+        if value_profile.get("tier") in ("strong", "nut"):
+            ratio += 0.05 * wetness
+        elif value_profile.get("tier") == "thin":
+            ratio -= 0.04 * wetness
+    if semi_bluff:
+        ratio -= 0.08
+        ratio += 0.02 * wetness
+        ratio += draw_info.get("size_bonus", 0.0)
+        if draw_info.get("type") == "gutshot":
+            ratio -= 0.04
+    if pressure_line:
+        ratio += 0.05 + 0.04 * wetness
+    if nutted_risk_score > 0.0 and value_profile.get("tier") != "nut":
+        ratio -= min(0.10, nutted_risk_score * 0.55)
+    if blocker_bluff:
+        ratio = min(ratio, BLOCKER_BLUFF_CAP_BASE + BLOCKER_BLUFF_WET_SCALE * wetness + BLOCKER_BLUFF_STREET_SCALE * max(0, round_idx - 1))
+        ratio += confidence * max(0.0, fold_to_raise - 0.58) * 0.22
+    inducing_value = (induce_mode or value_plan.get("induce", False)) and to_call == 0 and value_profile.get("tier") == "nut"
+    if inducing_value:
+        induce_cap = 0.29 + 0.05 * round_idx + 0.05 * wetness
+        ratio = min(ratio, induce_cap)
+    if probe_mode:
+        probe_ratio = 0.25 + 0.08 * wetness
+        if value_profile.get("tier") == "thin":
+            probe_ratio += 0.08
+        if blocker_bluff and round_idx == 3:
+            probe_ratio = max(probe_ratio, 0.34 + 0.08 * wetness)
+        elif round_idx == 3:
+            probe_ratio += 0.05
+        ratio = min(ratio, probe_ratio)
+    thin_cap = None
+    if value_plan.get("thin_control", False) and value_profile.get("tier") != "nut":
+        thin_cap = 0.30 if round_idx <= 2 else 0.38
+        ratio = min(ratio, thin_cap)
+
+    # ── Mutation: passive-exploit thin value sizing ────────────────────────────
+    # vs confirmed passive opponents, use smaller bet sizing on river/turn with
+    # medium-strength hands to maximize calls from weaker holdings
+    if passive_thin_value:
+        ratio = min(ratio, PASSIVE_THIN_VALUE_MAX_RATIO)
+
+    low_ratio = 0.28 if inducing_value else 0.22 if probe_mode or (blocker_bluff and to_call == 0) else 0.40
+    if thin_cap is not None:
+        low_ratio = min(low_ratio, thin_cap)
+    # Overbet mode bypasses the 1.45 cap to allow 1.3x-1.8x pot sizing
+    max_ratio = OVERBET_MAX_RATIO if overbet_mode else RAISE_MAX_RATIO
+    ratio = clamp(ratio, low_ratio, max_ratio)
+
+    amount = int(to_call + pot_after_call * ratio)
+
+    if round_idx == 0 and preflop_strength is not None:
+        if spot_name == "sb_open":
+            desired_total = int((SB_OPEN_BASE_BB + max(0.0, preflop_strength - SB_OPEN_STRENGTH_OFFSET) * SB_OPEN_STRENGTH_SCALE) * BIG_BLIND)
+            amount = max(amount, desired_total - my_round_bet)
+        elif spot_name == "bb_vs_limp":
+            desired_total = int((BB_ISO_BASE_BB + max(0.0, preflop_strength - BB_ISO_STRENGTH_OFFSET) * BB_ISO_STRENGTH_SCALE) * BIG_BLIND)
+            amount = max(amount, desired_total - my_round_bet)
+
+    amount = max(min_raise, amount)
+    if semi_bluff and fold_to_raise < 0.45:
+        amount = min(amount, max(min_raise, int(to_call + pot_after_call * 0.60)))
+    if blocker_bluff:
+        bluff_cap = max(min_raise, int(to_call + pot_after_call * (0.45 if round_idx == 3 and to_call == 0 else 0.56 + 0.16 * wetness)))
+        amount = min(amount, bluff_cap)
+    amount = min(amount, my_chips - 1)
+
+    if amount <= to_call or amount < min_raise or amount >= my_chips:
+        return None
+    return amount
+
+
+def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile, opp_archetype='unknown'):
+    my_chips = req["my_chips"]
+    to_call = state["to_call"]
+    match_adjust = match_risk_adjustment(req, req["my_id"], get_remaining_hands(req))
+    confidence = opponent_model["confidence"]
+    loose_bonus = confidence * max(0.0, opponent_model["vpip"] - PRIOR_VPIP) * 0.03
+    trash_hand = is_preflop_trash_hand(req["my_cards"], preflop_strength)
+
+    if spot_info["preflop_spot"] == "sb_open":
+        open_threshold = SB_OPEN_THRESHOLD + match_adjust + SB_OPEN_MATCH_ADJ + match_profile["open_delta"]
+        limp_threshold = SB_LIMP_THRESHOLD + match_adjust
+        raise_amount = choose_raise(
+            state["min_raise_action"],
+            my_chips,
+            state["my_round_bet"],
+            to_call,
+            state["pot"],
+            max(win_rate, preflop_strength),
+            0,
+            spot_info["preflop_spot"],
+            preflop_strength,
+            spot_info["has_position"],
+            opponent_model,
+            match_sizing_delta=match_profile["sizing_delta"],
+        )
+        if not trash_hand and preflop_strength >= open_threshold and raise_amount is not None:
+            return raise_amount
+        if preflop_strength <= limp_threshold - loose_bonus:
+            return -1
+        return 0
+
+    if spot_info["preflop_spot"] == "bb_vs_limp":
+        iso_threshold = BB_ISO_THRESHOLD + match_adjust - loose_bonus + match_profile["open_delta"]
+        iso_threshold -= confidence * max(0.0, opponent_model["vpip"] - 0.58) * BB_VPIP_FOLD_ADJUST_SCALE
+        iso_threshold -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.52) * BB_FTR_FOLD_ADJUST_SCALE
+        raise_amount = choose_raise(
+            state["min_raise_action"],
+            my_chips,
+            state["my_round_bet"],
+            to_call,
+            state["pot"],
+            max(win_rate, preflop_strength),
+            0,
+            spot_info["preflop_spot"],
+            preflop_strength,
+            spot_info["has_position"],
+            opponent_model,
+            match_sizing_delta=match_profile["sizing_delta"],
+        )
+        if not trash_hand and preflop_strength >= iso_threshold and raise_amount is not None:
+            return raise_amount
+        return 0
+
+    elif spot_info['preflop_spot'] == 'bb_vs_raise':
+        pot_odds_pf = to_call / (to_call + state['pot']) if to_call > 0 else 0.0
+        # ── PREFLOP_JAM_DEFENSE: early return before BB_DEFENSE bucket logic ──
+        raise_to_total_jam = to_call + state['my_round_bet']
+        eff_stack_jam = my_chips + state['my_round_bet']
+        if state.get('opponent_allin', False) or (eff_stack_jam > 0 and raise_to_total_jam >= 0.50 * eff_stack_jam):
+            jam_decision = _preflop_jam_call_decision(
+                win_rate, pot_odds_pf,
+                opponent_model.get('allin_rate', PRIOR_ALLIN_RATE),
+                opponent_model['confidence'],
+            )
+            if jam_decision is not None:
+                return jam_decision
+        # ── BB Defense-Depth Matrix: adjust thresholds by SB open size ────
+        raise_to_total = to_call + state['my_round_bet']
+        _def_adj = _bb_defense_depth_adjustments(raise_to_total)
+        # ── Historical sizing-tendency adjustment (NEW v287 axis) ─────────
+        # Distinct from _def_adj (immediate raise size). Tighten vs confirmed
+        # large openers (polarized range, doesn't fold to 3bets); widen vs
+        # confirmed small openers (wide range we outdraw).
+        # [v33 mutation per experience_pool PARAMETER_TUNING] Gate the historical
+        # axis to fire only on cross-axis disagreement vs the immediate bucket.
+        # When both axes agree, _def_adj already encodes the effect; stacking the
+        # historical delta double-counts EV on the same call/bluff thresholds.
+        _opp_hist_bucket = classify_opp_open_sizing(opponent_model)
+        _immediate_bucket = _classify_open_raise_size(raise_to_total)
+        _hist_call_delta = 0.0
+        _hist_bluff_freq_delta = 0.0
+        _hist_axis_active = _opp_hist_bucket != 'unknown' and _opp_hist_bucket != _immediate_bucket
+        if _hist_axis_active:
+            if _opp_hist_bucket in ('large', 'xl'):
+                _hist_call_delta = +0.015
+                _hist_bluff_freq_delta = -0.10
+            elif _opp_hist_bucket == 'small':
+                _hist_call_delta = -0.015
+        sys.stderr.write(
+            f"BB_VS_RAISE_HIST_SIZING hist_bucket={_opp_hist_bucket} "
+            f"immediate_bucket={_immediate_bucket} "
+            f"cross_axis_active={1 if _hist_axis_active else 0} "
+            f"call_d={_hist_call_delta:+.3f} bluff_freq_d={_hist_bluff_freq_delta:+.3f}\n"
+        )
+        eff_value_3bet = BB_VALUE_3BET_THRESHOLD + _def_adj['value_3bet_delta']
+        eff_bluff_low = BB_BLUFF_3BET_LOW + _def_adj['bluff_low_delta']
+        eff_bluff_high = BB_BLUFF_3BET_HIGH + _def_adj['bluff_high_delta']
+        eff_bluff_freq = BB_BLUFF_3BET_FREQ + _def_adj['bluff_freq_delta'] + _hist_bluff_freq_delta
+        eff_call_threshold = BB_CALL_THRESHOLD + _def_adj['call_delta'] + _hist_call_delta
+        # Value 3bet: TT+, AK, AQs (strength >= BB_VALUE_3BET_THRESHOLD)
+        if preflop_strength >= eff_value_3bet and not trash_hand:
+            raise_amount = choose_raise(
+                state['min_raise_action'], my_chips, state['my_round_bet'],
+                to_call, state['pot'], max(win_rate, preflop_strength),
+                0, 'bb_vs_raise', preflop_strength,
+                True, opponent_model,
+                match_sizing_delta=match_profile['sizing_delta'],
+            )
+            if raise_amount is not None:
+                return raise_amount
+            return 0  # Call if 3bet sizing fails
+        # Bluff 3bet: medium suited/connected hands, ~25% frequency
+        # [v44 mutation] Game-state entropy instead of deterministic hash
+        # [v283 crossover from v38] Skip bluff 3bet vs calling_station archetype:
+        #   calling stations don't fold enough to make bluff 3-bets profitable.
+        #   v38's H2H edge vs v269/v235/v236 traces back to this archetype gate.
+        can_bluff_3bet = opp_archetype != 'calling_station'
+        if can_bluff_3bet and eff_bluff_low <= preflop_strength <= eff_bluff_high and not trash_hand:
+            hand_idx = req.get("hand", 0)
+            bluff_roll = ((hash(tuple(req['my_cards'])) * 31 + hash((hand_idx, my_chips))) % 100) / 100.0
+            if bluff_roll < eff_bluff_freq:
+                raise_amount = choose_raise(
+                    state['min_raise_action'], my_chips, state['my_round_bet'],
+                    to_call, state['pot'], max(win_rate, preflop_strength),
+                    0, 'bb_vs_raise', preflop_strength,
+                    True, opponent_model,
+                    match_sizing_delta=match_profile['sizing_delta'],
+                )
+                if raise_amount is not None:
+                    return raise_amount
+        # Call with playable hands
+        if preflop_strength >= eff_call_threshold or win_rate >= pot_odds_pf - 0.02:
+            return 0
+        return -1
+
+    elif spot_info['preflop_spot'] == 'sb_vs_reraise':
+        pot_odds_sbr = to_call / (to_call + state['pot']) if to_call > 0 else 0.0
+        # ── PREFLOP_JAM_DEFENSE: early return before SB_PREMIUM_4BET path ──
+        raise_to_total_sbr = to_call + state['my_round_bet']
+        eff_stack_sbr = my_chips + state['my_round_bet']
+        if state.get('opponent_allin', False) or (eff_stack_sbr > 0 and raise_to_total_sbr >= 0.50 * eff_stack_sbr):
+            jam_decision = _preflop_jam_call_decision(
+                win_rate, pot_odds_sbr,
+                opponent_model.get('allin_rate', PRIOR_ALLIN_RATE),
+                opponent_model['confidence'],
+            )
+            if jam_decision is not None:
+                return jam_decision
+        # 4bet/jam with premiums: AA, KK, QQ, AKs (strength >= SB_PREMIUM_4BET_THRESHOLD)
+        if preflop_strength >= SB_PREMIUM_4BET_THRESHOLD:
+            raise_amount = choose_raise(
+                state['min_raise_action'], my_chips, state['my_round_bet'],
+                to_call, state['pot'], max(win_rate, preflop_strength),
+                0, 'sb_vs_reraise', preflop_strength,
+                False, opponent_model,
+                match_sizing_delta=match_profile['sizing_delta'],
+            )
+            if raise_amount is not None:
+                return raise_amount
+            # If raise sizing fails (e.g. too many chips needed), call with premiums
+            return 0
+        # Facing all-in: call with any strong hand (AKs, AQs, JJ+)
+        if state.get("opponent_allin", False) and preflop_strength >= SB_FACING_ALLIN_CALL:
+            return 0
+        # Non-all-in: call with strong hands if pot odds are reasonable
+        if preflop_strength >= SB_VS_RERAISE_CALL and win_rate >= pot_odds_sbr - SB_VS_RERAISE_POT_SLACK:
+            return 0
+        # [v283 crossover from v38] Call wider vs confirmed LAG archetype:
+        #   LAGs 3bet light, so medium-strength hands (>=0.38) realize more equity
+        #   than vs tight 3bettors. This is the second half of v38's archetype edge.
+        if opp_archetype == 'lag' and preflop_strength >= 0.38:
+            if win_rate >= pot_odds_sbr - 0.05:
+                return 0
+        # 4-bet light: exploit opponents who 3-bet wide with playable hands
+        light_4bet = _should_4bet_light(req["my_cards"], preflop_strength, opponent_model, state, my_chips)
+        if light_4bet > 0:
+            return light_4bet
+        # Fold everything else
+        return -1
+
+    return None
+
+
+# ── v45 pot-odds-equity should_fold_postflop ──────────────────────────────────────
+# Replaces v44 sequential gate chain (0% fold rate) with single pot-odds comparison.
+# Equity adjusted by EQR (position, street, bet-size, texture, opponent barrels).
+
+def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, texture_class="none", opponent_model=None, spr=999.0, pot_odds=0.0, win_rate=0.0, has_position=True):
+    if round_idx <= 0:
+        return False
+    tier = value_profile.get("tier", "none") if value_profile else "none"
+    if tier in ("strong", "nut"):
+        return False
+    has_draw = draw_strength >= 0.14
+    if not spot_info["facing_postflop_aggression"]:
+        return False
+
+    # Estimate effective equity from made strength and simulation
+    equity = max(made_strength, win_rate * 0.6)
+    if has_draw:
+        equity = max(equity, made_strength + draw_strength * 0.25)
+    equity = min(equity, 0.95)
+
+    # EQR adjustments: reduce equity estimate for unfavorable conditions
+    eqr = 1.0
+    if not has_position:
+        eqr -= 0.06
+    if round_idx == 3:
+        eqr -= 0.08
+    elif round_idx == 2:
+        eqr -= 0.03
+    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
+    if size_bucket == "large":
+        eqr -= 0.05
+    elif size_bucket == "medium":
+        eqr -= 0.02
+    if texture_class == "dry":
+        eqr -= 0.04
+    # Opponent aggression: frequent barrels mean stronger range
+    if opponent_model is not None and opponent_model.get("confidence", 0) >= 0.15:
+        barrel = opponent_model.get("barrel_freq", PRIOR_BARREL_FREQ)
+        if barrel >= 0.55 and round_idx >= 2:
+            eqr -= 0.04
+    eqr = max(eqr, 0.55)
+    realized_equity = equity * eqr
+
+    # Fold when realized equity is insufficient vs pot odds
+    # Safety margin increases on later streets (less implied odds)
+    safety = 0.04 * round_idx
+    if not has_draw:
+        safety += 0.03
+    if spot_info.get("opp_current_round_bet_count", 0) >= 2:
+        safety += 0.03
+    return realized_equity < pot_odds + safety
+
+
+def pot_odds_call_threshold(pot_odds, has_position, round_idx, draw_info, spr):
+    """Compute minimum equity needed to call based on pot odds with adjustments.
+
+    Base: equity must exceed pot_odds to be profitable.
+    Adjustments:
+    - Position: IP needs ~2% less equity (better realization)
+    - Draw implied odds: strong draws need less equity
+    - SPR commitment: low SPR means already committed
+    - Street: less future action = less implied odds
+    """
+    threshold = pot_odds
+
+    # Position adjustment
+    if has_position:
+        threshold -= 0.02
+
+    # Draw implied odds
+    if draw_info is not None:
+        if draw_info.get("type") == "combo_draw":
+            threshold -= 0.06
+        elif draw_info.get("nut_flush_draw"):
+            threshold -= 0.04
+        elif draw_info.get("type") == "open_ended_straight_draw":
+            threshold -= 0.03
+
+    # SPR commitment
+    if spr < 3:
+        threshold -= 0.03
+    elif spr < 6:
+        threshold -= 0.01
+
+    # Turn/river: less future action = less implied odds
+    if round_idx == 3:
+        threshold += 0.02
+    elif round_idx == 2:
+        threshold += 0.01
+
+    return max(0.05, threshold)
+
+
+def _river_thin_value_construct(
+    round_idx, to_call, value_profile, made_strength, draw_strength,
+    opponent_model, opp_archetype, board_texture, nutted_risk,
+    paired_board_stackoff, pot, my_chips, match_profile, anti_lock_pressure,
+    state, preflop_strength, spot_info,
+):
+    """River thin-value raise vs calling-prone opponents.
+
+    Re-establishes the v279-dropped `_river_value_raise_construct` lineage:
+    tier=='thin' river made hands (top-pair-good-kicker, low two-pair) raised
+    at 0.46-0.62x pot vs calling-station opponents to extract value from worse
+    holdings that check-call. Smaller sizing than standard 0.85x value raise
+    to maximize call frequency.
+    M5/M6: unconditional telemetry at function scope, every branch prints.
+    """
+    # Guard: river only, we are aggressor or checked-to (to_call==0)
+    if round_idx != 3 or to_call > 0:
+        sys.stderr.write("RIVER_THIN_VALUE reason=skip_not_river_to0\n")
+        return None
+    tier = value_profile.get("tier", "none") if value_profile else "none"
+    if tier != "thin":
+        sys.stderr.write(f"RIVER_THIN_VALUE reason=skip_tier={tier}\n")
+        return None
+    # Real made hand floor; if a real draw is present, defer to semi_bluff path
+    if made_strength < 0.45 or draw_strength > 0.18:
+        sys.stderr.write(f"RIVER_THIN_VALUE reason=skip_made={made_strength:.2f}_draw={draw_strength:.2f}\n")
+        return None
+    # Board safety
+    if nutted_risk.get("vulnerable", False) or paired_board_stackoff.get("severe", False):
+        sys.stderr.write("RIVER_THIN_VALUE reason=skip_vulnerable\n")
+        return None
+    if anti_lock_pressure:
+        sys.stderr.write("RIVER_THIN_VALUE reason=skip_anti_lock\n")
+        return None
+    # Calling-prone gate (CRITICAL: only fire vs opponents who call worse)
+    vpip = opponent_model.get("vpip", 0.58)
+    ftr = opponent_model.get("fold_to_raise", 0.44)
+    is_calling_prone = (
+        opp_archetype == "calling_station"
+        or (vpip > 0.52 and ftr < 0.45)
+    )
+    if not is_calling_prone:
+        sys.stderr.write(
+            f"RIVER_THIN_VALUE reason=skip_not_calling vpip={vpip:.2f} "
+            f"ftr={ftr:.2f} arch={opp_archetype}\n"
+        )
+        return None
+    if my_chips < pot * 0.4 or my_chips <= 1:
+        sys.stderr.write("RIVER_THIN_VALUE reason=skip_low_chips\n")
+        return None
+    # Sizing: 0.50 at floor, scales up with made_strength, capped 0.62
+    ratio = 0.50 + 0.04 * (made_strength - 0.45)
+    ratio = max(0.46, min(ratio, 0.62))
+    ratio += match_profile.get("sizing_delta", 0.0) * 0.5
+    ratio = max(0.42, min(ratio, 0.65))
+    amount = int(pot * ratio)  # to_call==0 so pot_after_call == pot
+    min_raise = state.get("min_raise_action", BIG_BLIND)
+    my_round_bet = state.get("my_round_bet", 0)
+    if amount < min_raise:
+        amount = max(min_raise, BIG_BLIND)
+    raise_to_total = my_round_bet + amount
+    # Never all-in for thin value (sanity; sanitize_action will also catch)
+    if amount >= my_chips:
+        sys.stderr.write("RIVER_THIN_VALUE reason=skip_allin_boundary\n")
+        return None
+    sys.stderr.write(
+        f"RIVER_THIN_VALUE reason=fired made={made_strength:.2f} "
+        f"vpip={vpip:.2f} ftr={ftr:.2f} arch={opp_archetype} "
+        f"ratio={ratio:.2f} amount={amount} raise_to={raise_to_total}\n"
+    )
+    return raise_to_total
+
+
+def _turn_draw_raise_construct(
+    round_idx, to_call, draw_info, draw_strength, made_strength,
+    value_profile, opponent_model, opp_archetype, board_texture,
+    nutted_risk, paired_board_stackoff, pot, my_chips, match_profile,
+    anti_lock_pressure, state, preflop_strength, spot_info,
+):
+    """Turn draw semi-bluff / value-build construct.
+
+    Fires on the turn (round_idx == 2) when checked to (to_call == 0) with a
+    qualifying draw. Dual-mode: semibluff vs fold-prone opponents (capitalize
+    on fold equity), value-build vs calling stations (build pot for draw
+    completion). Fills the documented _semibluff_raise_construct gap.
+    M5/M6: unconditional telemetry at function scope.
+    """
+    if round_idx != 2 or to_call > 0:
+        sys.stderr.write("TURN_DRAW_RAISE reason=skip_not_turn_to0\n")
+        return None
+    # Require a real draw
+    has_flush_draw = draw_info.get('flush_draw', False) if draw_info else False
+    straight_draw = draw_info.get('straight_draw', 'none') if draw_info else 'none'
+    if draw_strength < 0.14 or (not has_flush_draw and straight_draw == 'none'):
+        sys.stderr.write(f"TURN_DRAW_RAISE reason=skip_no_draw ds={draw_strength:.2f}\n")
+        return None
+    # Defer to standard value path for strong made hands
+    tier = value_profile.get('tier', 'none') if value_profile else 'none'
+    if tier in ('strong', 'nut') or made_strength >= 0.55:
+        sys.stderr.write(f"TURN_DRAW_RAISE reason=skip_strong tier={tier} made={made_strength:.2f}\n")
+        return None
+    # Board safety
+    if nutted_risk.get('vulnerable', False) or paired_board_stackoff.get('severe', False):
+        sys.stderr.write("TURN_DRAW_RAISE reason=skip_vulnerable\n")
+        return None
+    if anti_lock_pressure:
+        sys.stderr.write("TURN_DRAW_RAISE reason=skip_anti_lock\n")
+        return None
+    # Draw classification — only fire for quality draws
+    is_nut_flush = draw_info.get('nut_flush_draw', False)
+    is_combo = draw_info.get('combo_draw', False)
+    is_oesd = straight_draw == 'open_ended'
+    is_double_gs = straight_draw == 'double_gutshot'
+    if not (is_combo or is_nut_flush or is_oesd or is_double_gs or draw_strength >= 0.17):
+        sys.stderr.write(f"TURN_DRAW_RAISE reason=skip_weak_draw type={draw_info.get('type','?')} ds={draw_strength:.2f}\n")
+        return None
+    if my_chips < pot * 0.35 or my_chips <= 1:
+        sys.stderr.write("TURN_DRAW_RAISE reason=skip_low_chips\n")
+        return None
+
+    confidence = opponent_model.get('confidence', 0.0)
+    fold_to_raise = opponent_model.get('fold_to_raise', 0.44)
+    vpip = opponent_model.get('vpip', 0.58)
+
+    # Dual-mode sizing
+    if confidence >= 0.25 and fold_to_raise >= 0.48:
+        mode = 'semibluff'
+        base_ratio = 0.58
+        if is_combo:
+            base_ratio += 0.08
+        elif is_nut_flush:
+            base_ratio += 0.05
+    elif confidence >= 0.30 and (opp_archetype == 'calling_station' or vpip >= 0.55):
+        mode = 'value_build'
+        base_ratio = 0.52
+        if is_combo:
+            base_ratio += 0.06
+        elif is_nut_flush:
+            base_ratio += 0.04
+    else:
+        sys.stderr.write(
+            f"TURN_DRAW_RAISE reason=skip_no_edge ftr={fold_to_raise:.2f} "
+            f"vpip={vpip:.2f} conf={confidence:.2f} arch={opp_archetype}\n"
+        )
+        return None
+
+    ratio = base_ratio + match_profile.get('sizing_delta', 0.0) * 0.5
+    ratio = max(0.42, min(ratio, 0.75))
+    amount = int(pot * ratio)
+    min_raise = state.get('min_raise_action', BIG_BLIND)
+    my_round_bet = state.get('my_round_bet', 0)
+    if amount < min_raise:
+        amount = max(min_raise, BIG_BLIND)
+    raise_to_total = my_round_bet + amount
+    if amount >= my_chips:
+        sys.stderr.write("TURN_DRAW_RAISE reason=skip_allin_boundary\n")
+        return None
+    sys.stderr.write(
+        f"TURN_DRAW_RAISE reason=fired mode={mode} type={draw_info.get('type','?')} "
+        f"ds={draw_strength:.2f} made={made_strength:.2f} ftr={fold_to_raise:.2f} "
+        f"vpip={vpip:.2f} conf={confidence:.2f} ratio={ratio:.2f} "
+        f"amount={amount} raise_to={raise_to_total}\n"
+    )
+    return raise_to_total
+
+
+def select_postflop_facing_bet(
+    win_rate, pot, to_call, draw_strength,
+    value_profile, draw_info, opponent_model, round_idx, has_position, board_texture
+):
+    """EV-based parallel action selector for postflop facing bet.
+
+    Evaluates fold/call/raise simultaneously instead of defaulting to call.
+    Returns -1 (fold), 0 (call), or 'raise'.
+    """
+    tier = value_profile.get('tier', 'none') if value_profile else 'none'
+    has_draw = draw_info is not None and draw_info.get('quality', 0) >= 0.14
+    draw_quality = draw_info.get('quality', 0) if draw_info else 0.0
+    pot_odds = to_call / (pot + to_call) if to_call > 0 else 0.0
+    confidence = opponent_model.get('confidence', 0.0)
+    fold_to_raise = opponent_model.get('fold_to_raise', 0.44)
+
+    # Fold EV = 0 (baseline)
+    fold_ev = 0.0
+
+    # Call EV = (equity - pot_odds) * pot_after_call
+    call_ev = (win_rate - pot_odds) * (pot + to_call)
+
+    # Implied odds bonus for draws (not river)
+    if has_draw and round_idx < 3:
+        streets_left = 3 - round_idx
+        call_ev += draw_quality * pot * 0.3 * streets_left
+
+    # Raise EV = fold_equity * pot + (1-fe) * call_ev
+    effective_fe = fold_to_raise * min(1.0, confidence * 1.5 + 0.3)
+    raise_ev = effective_fe * (pot + to_call) + (1 - effective_fe) * call_ev
+
+    # Value bonus for strong/nut hands
+    if tier == 'nut':
+        raise_ev += win_rate * pot * 0.6
+    elif tier == 'strong':
+        raise_ev += win_rate * pot * 0.3
+
+    # Select best EV
+    best_ev = max(fold_ev, call_ev, raise_ev)
+
+    # Safety: never fold strong/nut hands
+    if best_ev == fold_ev and tier in ('strong', 'nut'):
+        return 0
+    # Safety: don't fold decent draws with reasonable equity
+    if best_ev == fold_ev and has_draw and win_rate >= pot_odds - 0.10:
+        return 0
+
+    if best_ev == fold_ev:
+        return -1
+    elif best_ev == raise_ev and raise_ev > call_ev + pot * 0.05:
+        return 'raise'
+    return 0
+
+
+def _river_stackoff_fold_gate(round_idx, to_call, pot, made_strength, value_profile, win_rate, pot_odds):
+    """Mandatory fix #4: hard river fold gate for thin/none hands.
+
+    Folds unconditionally when raw monte-carlo equity < pot_odds on the river
+    with thin/none-tier marginal hands facing a large bet. This gate bypasses
+    anti_lock_call_continue — never stack off with a mathematically -EV call.
+    Returns True if the hand should fold, False to defer to existing logic.
+    """
+    if round_idx != 3 or to_call <= 0:
+        return False
+    tier = value_profile.get('tier', 'none') if value_profile else 'none'
+    if tier not in ('thin', 'none'):
+        return False
+    if made_strength >= 0.55:
+        return False
+    bet_ratio = to_call / max(1, pot)
+    if bet_ratio < 0.50:
+        return False
+    if win_rate >= pot_odds:
+        return False
+    sys.stderr.write(
+        f'SPR_FOLD round=3 tier={tier} made={made_strength:.2f} '
+        f'wr={win_rate:.3f} po={pot_odds:.3f} bet_ratio={bet_ratio:.2f}\n'
+    )
+    return True
+
+
+def get_action(req, requests):
+    my_id = req["my_id"]
+    my_chips = req["my_chips"]
+    my_cards = req["my_cards"]
+    public_cards = req["public_cards"]
+
+    state = reconstruct_state(req)
+    if should_lock_win(req, state, my_id):
+        return -1
+
+    opponent_model = build_opponent_model(requests, my_id)
+    spot_info = analyze_current_spot(req, state)
+    opp_archetype = classify_opponent_archetype(opponent_model)
+    round_idx = state["round"]
+    to_call = state["to_call"]
+    pot = max(1, state["pot"])
+    remaining_hands = get_remaining_hands(req)
+    match_profile = match_pressure_profile(req, my_id, remaining_hands)
+    anti_lock_pressure = fold_gives_opponent_lock(req, state, my_id)
+    if anti_lock_pressure:
+        match_profile = apply_anti_lock_pressure(match_profile)
+
+    preflop_strength = estimate_preflop_strength(my_cards) if not public_cards else None
+    preflop_3bet_candidate = is_preflop_3bet_candidate(my_cards) if preflop_strength is not None else False
+    combos, weights = build_opponent_range(my_cards, public_cards, state, opponent_model, spot_info)
+
+    simulations = SIMULATIONS_BY_PUBLIC_COUNT.get(len(public_cards), 700)
+
+    win_rate = estimate_weighted_win_rate(my_cards, public_cards, combos, weights, simulations)
+
+    critical_spot = to_call > 0 and (
+        to_call / pot >= CRITICAL_SPOT_RATIO or to_call >= BIG_BLIND * CRITICAL_SPOT_BB_MULT or spot_info["facing_allin"]
+    )
+    extra = EXTRA_SIMULATIONS_BY_PUBLIC_COUNT.get(len(public_cards), 0)
+    if critical_spot and extra > 0:
+        refined = estimate_weighted_win_rate(my_cards, public_cards, combos, weights, extra)
+        win_rate = (win_rate * simulations + refined * extra) / (simulations + extra)
+
+    if round_idx == 0 and preflop_strength is not None:
+        spot_action = choose_preflop_spot_action(
+            req,
+            state,
+            spot_info,
+            opponent_model,
+            preflop_strength,
+            win_rate,
+            match_profile,
+            opp_archetype=opp_archetype,
+        )
+        if spot_action is not None:
+            if anti_lock_pressure and spot_action <= 0:
+                anti_lock_attack = choose_anti_lock_pressure_action(
+                    state,
+                    my_chips,
+                    to_call,
+                    pot,
+                    round_idx,
+                    win_rate,
+                    opponent_model,
+                    remaining_hands,
+                    preflop_strength=preflop_strength,
+                )
+                if anti_lock_attack is not None:
+                    return anti_lock_attack
+                if spot_action == -1 and to_call < my_chips:
+                    return 0
+            return spot_action
+
+    pot_odds = to_call / (pot + to_call) if to_call > 0 else 0.0
+    made_strength = made_hand_metric(my_cards, public_cards) if len(public_cards) >= 3 else 0.0
+    pair_profile = pair_board_profile(my_cards, public_cards) if len(public_cards) >= 3 else None
+    board_texture = board_texture_profile(public_cards) if len(public_cards) >= 3 else None
+    street_texture = classify_street_texture(public_cards) if len(public_cards) >= 3 else {"class": "none", "dry_score": 0.5, "bluff_combos": 0.5}
+    draw_info = draw_profile(my_cards, public_cards, board_texture) if len(public_cards) >= 3 else empty_draw_profile()
+    draw_strength = draw_info["quality"]
+    marginal_pair = marginal_pair_under_pressure(pair_profile, board_texture) if len(public_cards) >= 3 else False
+    paired_board_profile = paired_board_outcome_profile(my_cards, public_cards) if len(public_cards) >= 3 else None
+    value_profile = value_hand_tier(my_cards, public_cards, pair_profile, board_texture, paired_board_profile) if len(public_cards) >= 3 else None
+    flush_profile = made_flush_profile(my_cards, public_cards, board_texture) if len(public_cards) >= 3 else None
+    blocker_profile = blocker_bluff_profile(my_cards, public_cards, pair_profile, board_texture) if len(public_cards) >= 3 else None
+    nutted_risk = (
+        nutted_risk_profile(my_cards, public_cards, pair_profile, board_texture, value_profile, paired_board_profile)
+        if len(public_cards) >= 3
+        else {"risk": 0.0, "label": "none", "vulnerable": False}
+    )
+    value_plan = (
+        value_bet_plan(value_profile, board_texture, paired_board_profile, pair_profile, nutted_risk, round_idx, pot)
+        if len(public_cards) >= 3
+        else {"size_delta": 0.0, "induce": False, "protect": False, "thin_control": False}
+    )
+    line_strength = aggressive_line_strength(spot_info, board_texture) if len(public_cards) >= 3 else 0.0
+    check_resistance = check_probe_resistance_margin(spot_info, opponent_model, round_idx) if len(public_cards) >= 3 else 0.0
+    paired_board_stackoff = (
+        paired_board_stackoff_profile(pair_profile, paired_board_profile, board_texture, spot_info, round_idx)
+        if len(public_cards) >= 3
+        else {"active": False, "severe": False, "line_strength": 0.0, "size_bucket": "small"}
+    )
+    repeated_raise_trap = (
+        round_idx > 0
+        and spot_info["facing_postflop_aggression"]
+        and spot_info.get("opp_current_round_bet_count", 0) >= 2
+    )
+    strong_flush_repressure_continue = (
+        flush_profile is not None
+        and (
+            flush_profile["repressure_continue"]
+            or flush_profile["nut_like"]
+            or (
+                board_texture is not None
+                and not board_texture["paired"]
+                and flush_profile["high_hole_rank"] >= 12
+                and flush_profile["better_unseen_ranks"] <= 1
+            )
+        )
+    )
+    hard_repressure_fold = (
+        repeated_raise_trap
+        and not strong_flush_repressure_continue
+        and (value_profile is None or value_profile["tier"] != "nut")
+        and (
+            (board_texture is not None and board_texture["paired"])
+            or bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large")
+        )
+    )
+
+    # ── Mutation: passive-exploit thin value detection ─────────────────────────
+    passive_opp = _is_passive_opponent(opponent_model)
+    passive_thin_value = (
+        passive_opp
+        and to_call == 0
+        and round_idx >= 2
+        and 0.40 <= made_strength < 0.65
+        and draw_strength < 0.12
+        and not anti_lock_pressure
+        and (value_profile is not None and value_profile["tier"] in ("thin", "strong"))
+        and (nutted_risk["risk"] <= 0.05)
+    )
+
+    strong = STRONG_THRESHOLD[round_idx]
+    medium = MEDIUM_THRESHOLD[round_idx]
+
+    if spot_info["has_position"]:
+        strong += THRESHOLD_POS_IP_STRONG
+        medium += THRESHOLD_POS_IP_MEDIUM
+    else:
+        strong += THRESHOLD_POS_OOP_STRONG
+        medium += THRESHOLD_POS_OOP_MEDIUM
+
+    if preflop_strength is not None:
+        if preflop_strength >= THRESHOLD_PREMIUM_FLOOR:
+            strong += THRESHOLD_PREMIUM_STRONG
+            medium += THRESHOLD_PREMIUM_MEDIUM
+        elif preflop_strength <= THRESHOLD_WEAK_FLOOR:
+            strong += THRESHOLD_WEAK_STRONG
+            medium += THRESHOLD_WEAK_MEDIUM
+
+    match_adjust = match_risk_adjustment(req, my_id, remaining_hands)
+    pressure_adjust = opponent_pressure_adjustment(opponent_model, spot_info, round_idx)
+    strong += match_adjust + pressure_adjust + match_profile["threshold_delta"]
+    medium += match_adjust + pressure_adjust * 0.8 + 0.75 * match_profile["threshold_delta"]
+    strong += 0.30 * line_strength + 0.45 * paired_board_stackoff["line_strength"]
+    medium += 0.18 * line_strength + 0.22 * paired_board_stackoff["line_strength"]
+    strong += 0.30 * check_resistance
+    medium += 0.20 * check_resistance
+    if value_profile is not None:
+        if value_profile["tier"] == "nut":
+            strong -= 0.07
+            medium -= 0.04
+        elif value_profile["tier"] == "strong":
+            strong -= 0.04
+            medium -= 0.02
+        elif value_profile["tier"] == "thin":
+            medium -= 0.01
+    strong += NUTTED_RISK_STRONG_MULT * nutted_risk["risk"]
+    medium += NUTTED_RISK_MEDIUM_MULT * nutted_risk["risk"]
+
+    if state["opponent_allin"]:
+        jam_cost = max(state["allin_call_amount"], to_call)
+        jam_odds = jam_cost / (pot + jam_cost) if jam_cost > 0 else 0.0
+        jam_buffer = JAM_BASE_BUFFER + max(0.0, strong - JAM_STRONG_OFFSET) * JAM_STRONG_SCALE
+        if value_profile is not None and value_profile["tier"] == "thin":
+            jam_buffer += JAM_THIN_BONUS
+        jam_buffer += nutted_risk["risk"]
+        jam_buffer += JAM_MATCH_PROTECT_SCALE * match_profile["protect"]
+        jam_buffer += line_strength + paired_board_stackoff["line_strength"]
+        jam_buffer += check_resistance
+        if remaining_hands == 1:
+            total_win_chips = req.get("total_win_chips", [0] * N_PLAYERS)
+            if len(total_win_chips) > my_id and total_win_chips[my_id] < 0:
+                jam_buffer -= 0.03
+        if preflop_strength is not None and preflop_strength < 0.42:
+            jam_buffer += 0.02
+        if anti_lock_pressure:
+            jam_buffer += JAM_ANTI_LOCK_PENALTY
+        anti_lock_jam_continue = anti_lock_can_continue(
+            anti_lock_pressure,
+            win_rate,
+            jam_odds,
+            round_idx,
+            value_profile,
+            draw_info,
+            made_strength,
+        )
+        if hard_repressure_fold or paired_board_stackoff["severe"]:
+            if not anti_lock_jam_continue:
+                return -1
+        jam_buffer = clamp(jam_buffer, -0.05 if anti_lock_pressure else 0.0, JAM_BUFFER_CAP)
+        return -2 if win_rate >= jam_odds + jam_buffer or anti_lock_jam_continue else -1
+
+    if to_call >= my_chips:
+        shove_odds = my_chips / (pot + my_chips)
+        shove_buffer = SHOVE_BASE_BUFFER + max(0.0, strong - SHOVE_STRONG_OFFSET) * JAM_STRONG_SCALE
+        if value_profile is not None and value_profile["tier"] == "thin":
+            shove_buffer += 0.04
+        shove_buffer += nutted_risk["risk"]
+        shove_buffer += JAM_MATCH_PROTECT_SCALE * match_profile["protect"]
+        shove_buffer += line_strength + paired_board_stackoff["line_strength"]
+        shove_buffer += check_resistance
+        if anti_lock_pressure:
+            shove_buffer += JAM_ANTI_LOCK_PENALTY
+        anti_lock_shove_continue = anti_lock_can_continue(
+            anti_lock_pressure,
+            win_rate,
+            shove_odds,
+            round_idx,
+            value_profile,
+            draw_info,
+            made_strength,
+        )
+        if hard_repressure_fold or paired_board_stackoff["severe"]:
+            if not anti_lock_shove_continue:
+                return -1
+        shove_buffer = clamp(shove_buffer, -0.05 if anti_lock_pressure else 0.0, JAM_BUFFER_CAP)
+        return -2 if win_rate >= shove_odds + shove_buffer or anti_lock_shove_continue else -1
+
+    if to_call > 0:
+        if round_idx == 0:
+            call_margin = PREFLOP_CALL_BASE + (PREFLOP_CALL_OOP_BONUS if not spot_info["has_position"] else 0.0)
+            if preflop_strength is not None and preflop_strength <= PREFLOP_TRASH_STRENGTH:
+                call_margin += PREFLOP_CALL_TRASH_BONUS
+            realized_rate = win_rate
+            call_threshold = pot_odds + call_margin
+        else:
+            spr = my_chips / max(1, pot)
+            base_threshold = pot_odds_call_threshold(pot_odds, spot_info["has_position"], round_idx, draw_info, spr)
+            call_margin = postflop_call_margin(
+                spot_info,
+                opponent_model,
+                made_strength,
+                draw_strength,
+                round_idx,
+                spot_info["has_position"],
+                texture_class=street_texture["class"],
+            )
+            call_margin += pair_domination_margin(
+                pair_profile,
+                spot_info,
+                round_idx,
+            )
+            call_margin += draw_call_margin(
+                draw_info,
+                board_texture,
+                round_idx,
+                spot_info,
+            )
+            if (
+                round_idx == 2
+                and spot_info["facing_postflop_aggression"]
+                and pair_profile is not None
+                and pair_profile["made_class"] == 1
+                and pair_profile["pair_type"] in ("middle_pair", "bottom_pair", "underpair")
+            ):
+                call_margin += 0.035
+            call_margin += line_strength + paired_board_stackoff["line_strength"]
+            call_margin += check_resistance
+            call_margin += NUTTED_RISK_CALL_MULT * nutted_risk["risk"]
+            if round_idx == 3 and made_strength < 0.40 and not (blocker_profile and blocker_profile["eligible"]):
+                call_margin += 0.04
+            if round_idx == 3 and paired_board_profile is not None and paired_board_profile["fold_to_raise"]:
+                call_margin += 0.05
+            call_margin += disciplined_opp_river_margin(
+                opponent_model, value_profile, round_idx,
+            )
+            realized_rate = realized_postflop_equity(
+                win_rate,
+                made_strength,
+                draw_strength,
+                round_idx,
+                spot_info["has_position"],
+                spot_info,
+                pair_profile,
+                opponent_model,
+            )
+            call_threshold = base_threshold + call_margin
+        if anti_lock_pressure:
+            call_threshold -= 0.07
+        anti_lock_call_continue = anti_lock_can_continue(
+            anti_lock_pressure,
+            win_rate,
+            pot_odds,
+            round_idx,
+            value_profile,
+            draw_info,
+            made_strength,
+        )
+        strong_made_continue = must_continue_vs_raise(
+            value_profile,
+            made_strength,
+            pot_odds,
+            nutted_risk,
+            board_texture,
+        )
+        # === SPR COMMITMENT GATE (mandatory fix #4; turn/river axis) ===
+        # Committed made hands never fold regardless of pot-odds/realized-equity;
+        # OR into strong_made_continue so all five downstream fold gates no-op.
+        if round_idx >= 2 and len(public_cards) >= 4:
+            from card_utils import evaluate_best
+            _made_hand_class = evaluate_best(my_cards + public_cards)[0]
+            _bt_flush = board_texture.get('flush_pressure', 0.0) if board_texture else 0.0
+            _bt_straight = board_texture.get('straight_pressure', 0.0) if board_texture else 0.0
+            spr_committed, _spr_val, _spr_thresh, _spr_label = spr_commitment_gate(
+                my_chips, pot, value_profile, pair_profile, _made_hand_class,
+                board_texture=board_texture,
+            )
+            if spr_committed:
+                strong_made_continue = True
+            sys.stderr.write(
+                f'SPR_COMMITMENT_PROBE committed={1 if spr_committed else 0} '
+                f'spr={_spr_val:.2f} threshold={_spr_thresh:.1f} label={_spr_label} '
+                f'round={round_idx} made_class={_made_hand_class} '
+                f'flush_pressure={_bt_flush:.2f} straight_pressure={_bt_straight:.2f} '
+                f'tightened={1 if _spr_label in ("tptk_polarized_jam", "tptk_dynamic") else 0}\n'
+            )
+        anti_lock_attack = None
+        if anti_lock_pressure:
+            anti_lock_attack = choose_anti_lock_pressure_action(
+                state,
+                my_chips,
+                to_call,
+                pot,
+                round_idx,
+                win_rate,
+                opponent_model,
+                remaining_hands,
+                preflop_strength=preflop_strength,
+                value_profile=value_profile,
+                draw_info=draw_info,
+                blocker_profile=blocker_profile,
+                board_texture=board_texture,
+            )
+        fragile_river_raise_fold = (
+            round_idx == 3
+            and spot_info["facing_postflop_aggression"]
+            and bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large")
+            and paired_board_profile is not None
+            and paired_board_profile["fold_to_raise"]
+            and paired_board_profile["hand_class"] == 2
+            and (value_profile is None or value_profile["tier"] != "nut")
+        )
+        fragile_pair_raise_fold = (
+            round_idx > 0
+            and spot_info["facing_postflop_aggression"]
+            and marginal_pair
+            and draw_strength < 0.14
+            and bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large")
+            and (value_profile is None or value_profile["tier"] not in ("strong", "nut"))
+        )
+        if anti_lock_attack is not None:
+            return anti_lock_attack
+        # === POLARIZED-JAM TPTK CALL OVERRIDE (v293) ===
+        # When spr_commitment_gate tightened TPTK commitment on polarized-jam
+        # texture (flush_pressure>=1.0 OR straight_pressure>=1.0) but our raw
+        # monte_carlo win_rate still clears pot_odds + safety, CALL instead of
+        # over-folding via downstream gates (rescue vs v36/v45/v46/v284/v287/v291).
+        # experience_pool.md RECENT_LESSONS line 42 escalation.
+        if (
+            round_idx >= 2
+            and to_call > 0
+            and not spr_committed
+            and _made_hand_class == 1
+            and board_texture is not None
+            and (
+                board_texture.get('flush_pressure', 0.0) >= 1.0
+                or board_texture.get('straight_pressure', 0.0) >= 1.0
+            )
+        ):
+            _polarized_call = polarized_jam_call_gate(
+                value_profile, pair_profile, _made_hand_class, board_texture,
+                win_rate, pot_odds, round_idx, to_call, opponent_model,
+            )
+            sys.stderr.write(
+                f'POLARIZED_JAM_CALL_OVERRIDE fired={1 if _polarized_call else 0} '
+                f'pair_type={pair_profile.get("pair_type", "?") if pair_profile else "?"} '
+                f'tier={value_profile.get("tier", "?") if value_profile else "?"} '
+                f'wr={win_rate:.2f} po={pot_odds:.2f} '
+                f'spr={_spr_val:.2f} round={round_idx}\n'
+            )
+            if _polarized_call:
+                return 0  # call — override downstream fold gates
+        # === RIVER STACK-OFF HARD FOLD GATE (mandatory fix #4) ===
+        # Bypasses anti_lock_call_continue — never stack off with -EV thin calls.
+        if _river_stackoff_fold_gate(round_idx, to_call, pot, made_strength, value_profile, win_rate, pot_odds):
+            return -1
+        # Crossover from v10: include strong_made_continue guard in fragile fold checks
+        # Prevents over-folding genuinely strong hands facing aggression
+        if fragile_river_raise_fold:
+            if not anti_lock_call_continue and not strong_made_continue:
+                return -1
+        if fragile_pair_raise_fold:
+            if not anti_lock_call_continue and not strong_made_continue:
+                return -1
+        # [v44 crossover] Enhanced fold gate with opponent_model + SPR from v20
+        _spr = my_chips / max(1, pot)
+        if should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, texture_class=street_texture["class"], opponent_model=opponent_model, spr=_spr, pot_odds=pot_odds, win_rate=win_rate, has_position=spot_info["has_position"]):
+            if not anti_lock_call_continue and not strong_made_continue:
+                return -1
+        if hard_repressure_fold or paired_board_stackoff["severe"]:
+            if not anti_lock_call_continue and not strong_made_continue:
+                return -1
+        if realized_rate < call_threshold:
+            if not anti_lock_call_continue and not strong_made_continue:
+                return -1
+        # [v20 crossover] Smarter repeated-raise-trap: fold weak hands vs aggression
+        if repeated_raise_trap and (value_profile is None or value_profile["tier"] != "nut"):
+            trap_size = bet_size_bucket(spot_info["last_raise_pot_ratio"])
+            if made_strength < 0.25 and draw_strength < 0.14 and trap_size in ("medium", "large"):
+                return -1
+            return 0
+
+        raise_fold_threshold = RAISE_FOLD_THRESHOLD - BLUFF_DELTA_RAISE_SCALE * match_profile["bluff_delta"]
+        blocker_raise_threshold = BLOCKER_RAISE_THRESHOLD - BLUFF_DELTA_BLOCKER_SCALE * match_profile["bluff_delta"]
+        draw_raise_threshold = clamp(raise_fold_threshold - draw_info["fold_threshold_delta"], 0.46, 0.68)
+        draw_equity_slack = DRAW_EQUITY_SLACK_PREMIUM if draw_info["type"] in ("combo_draw", "nut_flush_draw") else DRAW_EQUITY_SLACK_NORMAL
+        semi_bluff = (
+            round_idx > 0
+            and draw_info["semi_bluff"]
+            and draw_strength >= SEMI_BLUFF_MIN_DRAW
+            and opponent_model["confidence"] >= SEMI_BLUFF_MIN_CONFIDENCE
+            and opponent_model["fold_to_raise"] > draw_raise_threshold
+            and win_rate >= pot_odds - draw_equity_slack
+        )
+        blocker_raise = (
+            round_idx == 1
+            and spot_info["facing_postflop_aggression"]
+            and opponent_model["confidence"] >= SEMI_BLUFF_MIN_CONFIDENCE
+            and opponent_model["fold_to_raise"] > blocker_raise_threshold
+            and blocker_profile is not None
+            and blocker_profile["eligible"]
+            and made_strength < 0.18
+            and draw_strength < 0.12
+            and allow_low_frequency_blocker_bluff(req, my_cards, public_cards, blocker_profile, round_idx)
+        )
+        trap_nut_slowplay = (
+            round_idx in (1, 2)
+            and value_profile is not None
+            and value_profile["tier"] == "nut"
+            and board_texture is not None
+            and not board_texture["dynamic"]
+            and spot_info["facing_postflop_aggression"]
+            and bet_size_bucket(spot_info["last_raise_pot_ratio"]) != "large"
+            and pot < TRAP_NUT_MAX_POT
+            and nutted_risk["risk"] <= 0.02
+            and match_profile["chase"] <= 0.45
+            and opponent_model["confidence"] >= 0.20
+            and (
+                opponent_model["postflop_aggr"] >= 0.38
+                or opponent_model["aggression"] >= 0.34
+                or opponent_model["fold_to_raise"] < 0.46
+            )
+        )
+        flop_checkraise_exploit = (
+            round_idx == 1
+            and spot_info["facing_postflop_aggression"]
+            and opponent_model["confidence"] >= 0.25
+            and opponent_model["fold_to_raise"] > blocker_raise_threshold
+            and (
+                (value_profile and value_profile["tier"] in ("strong", "nut"))
+                or (draw_info["semi_bluff"] and draw_strength >= 0.15)
+                or blocker_raise
+            )
+        )
+
+        if trap_nut_slowplay:
+            return 0
+        preflop_defensive_only = (
+            round_idx == 0
+            and to_call > 0
+            and not preflop_3bet_candidate
+        )
+        if not preflop_defensive_only and (win_rate >= max(strong, pot_odds + 0.12) or semi_bluff or flop_checkraise_exploit):
+            raise_amount = choose_raise(
+                state["min_raise_action"],
+                my_chips,
+                state["my_round_bet"],
+                to_call,
+                pot,
+                win_rate,
+                round_idx,
+                spot_info["preflop_spot"],
+                preflop_strength,
+                spot_info["has_position"],
+                opponent_model,
+                semi_bluff=semi_bluff or (flop_checkraise_exploit and draw_info["semi_bluff"] and draw_strength >= 0.15),
+                value_profile=value_profile,
+                value_plan=value_plan,
+                board_texture=board_texture,
+                draw_info=draw_info,
+                blocker_bluff=blocker_raise,
+                pressure_line=flop_checkraise_exploit,
+                nutted_risk_score=nutted_risk["risk"],
+                match_sizing_delta=match_profile["sizing_delta"],
+            )
+            if raise_amount is not None and raise_amount > to_call:
+                return raise_amount
+        # ── EV-based action selection (replaces default call) ────────────────────
+        if round_idx > 0:
+            ev_action = select_postflop_facing_bet(
+                win_rate, pot, to_call, draw_strength,
+                value_profile, draw_info, opponent_model, round_idx,
+                spot_info["has_position"], board_texture,
+            )
+            if ev_action == -1:
+                return -1
+            if ev_action == 'raise':
+                raise_amount = choose_raise(
+                    state["min_raise_action"], my_chips, state["my_round_bet"],
+                    to_call, pot, win_rate, round_idx, spot_info["preflop_spot"],
+                    preflop_strength, spot_info["has_position"], opponent_model,
+                    semi_bluff=semi_bluff,
+                    value_profile=value_profile, value_plan=value_plan,
+                    board_texture=board_texture, draw_info=draw_info,
+                    nutted_risk_score=nutted_risk["risk"],
+                    match_sizing_delta=match_profile["sizing_delta"],
+                )
+                if raise_amount is not None and raise_amount > to_call:
+                    return raise_amount
+        return 0
+
+    weak_pair_river = (
+        round_idx == 3
+        and pair_profile is not None
+        and pair_profile["made_class"] == 1
+        and pair_profile["pair_type"] in ("middle_pair", "bottom_pair", "underpair", "board_pair")
+    )
+    opp_double_barrel_then_river_check = (
+        round_idx == 3
+        and to_call == 0
+        and spot_info.get("opp_postflop_bet_count", 0) >= 2
+        and spot_info["last_opp_action_type"] == "check"
+    )
+    bad_river_bluff_candidate = (
+        round_idx == 3
+        and to_call == 0
+        and made_strength >= 0.18
+        and made_strength < 0.40
+        and not (blocker_profile and blocker_profile["eligible"])
+        and not (value_profile and value_profile["tier"] in ("strong", "nut"))
+    )
+    weak_bottom_pair_barrel = (
+        round_idx >= 2
+        and to_call == 0
+        and pair_profile is not None
+        and pair_profile["made_class"] == 1
+        and pair_profile["pair_type"] in ("bottom_pair", "underpair", "board_pair")
+        and made_strength < 0.40
+        and draw_strength < 0.12
+    )
+    weak_pair_after_raise_barrel = (
+        round_idx >= 2
+        and to_call == 0
+        and marginal_pair
+        and draw_strength < 0.14
+        and (value_profile is None or value_profile["tier"] not in ("strong", "nut"))
+        and (
+            spot_info.get("opp_previous_round_raise_count", 0) > 0
+            or spot_info.get("opp_prior_postflop_raise_count", 0) > 0
+        )
+    )
+    bad_river_value_bet = (
+        round_idx == 3
+        and to_call == 0
+        and paired_board_profile is not None
+        and paired_board_profile["board_paired"]
+        and paired_board_profile["prefer_check"]
+        and paired_board_profile["hand_class"] == 2
+        and nutted_risk["risk"] >= 0.05
+        and (value_profile is None or value_profile["tier"] != "nut")
+    )
+    bad_stackoff_overpair = (
+        round_idx > 0
+        and to_call == 0
+        and paired_board_stackoff["active"]
+        and pot > 3000
+        and (value_profile is None or value_profile["tier"] != "nut")
+    )
+    big_pot_threshold = int(clamp(BIG_POT_BASE - BIG_POT_PROTECT_SCALE * match_profile["protect"] + BIG_POT_CHASE_SCALE * match_profile["chase"], BIG_POT_FLOOR, BIG_POT_CEIL))
+    big_pot = pot >= big_pot_threshold
+    # ── Thin-hand pot-control: avoid inflating already-large pots with thin
+    # turn/river holdings (made < 0.50, negligible draw). Suppresses full-sized
+    # barrels (RAISE_RATIO_TURN/RIVER) that create -15k/-20k stack-off losses.
+    thin_big_pot_control = (
+        round_idx >= 2
+        and to_call == 0
+        and value_profile is not None
+        and value_profile["tier"] == "thin"
+        and made_strength < 0.50
+        and draw_strength < 0.14
+        and big_pot
+        and not anti_lock_pressure
+        and not (opponent_model.get("confidence", 0) >= 0.25 and opponent_model.get("fold_to_raise", 0.44) > 0.50)
+    )
+    induce_nut_value = (
+        round_idx > 0
+        and to_call == 0
+        and value_profile is not None
+        and value_profile["tier"] == "nut"
+        and board_texture is not None
+        and not board_texture["dynamic"]
+        and not big_pot
+        and match_profile["chase"] <= 0.55
+        and opponent_model["confidence"] >= 0.20
+        and (
+            opponent_model["postflop_aggr"] >= 0.38
+            or opponent_model["aggression"] >= 0.34
+            or opponent_model["fold_to_raise"] < 0.46
+        )
+    )
+    anti_lock_attack = None
+    if anti_lock_pressure:
+        anti_lock_attack = choose_anti_lock_pressure_action(
+            state,
+            my_chips,
+            to_call,
+            pot,
+            round_idx,
+            win_rate,
+            opponent_model,
+            remaining_hands,
+            preflop_strength=preflop_strength,
+            value_profile=value_profile,
+            draw_info=draw_info,
+            blocker_profile=blocker_profile,
+            board_texture=board_texture,
+        )
+        if anti_lock_attack is not None:
+            # Cap anti-lock river all-in for non-nut hands
+            if round_idx == 3 and anti_lock_attack == -2:
+                tier = value_profile.get("tier", "none") if value_profile else "none"
+                if tier != "nut":
+                    pot_raise = int(pot * 1.0)
+                    pot_raise = max(pot_raise, state["min_raise_action"])
+                    pot_raise = min(pot_raise, my_chips - 1)
+                    if pot_raise > 0 and pot_raise < my_chips:
+                        anti_lock_attack = pot_raise
+            return anti_lock_attack
+
+    # ── Thin-hand pot-control: check (not bet) thin turn/river hands when the
+    # pot is already large, to avoid inflating pots with marginal holdings.
+    # Must fire before ANY betting/raise logic in the to_call==0 path so that
+    # full-sized barrels (and passive_thin_value bets) are suppressed.
+    if thin_big_pot_control:
+        sys.stderr.write(
+            f'THIN_POT_CONTROL round={round_idx} tier=thin '
+            f'made={made_strength:.2f} pot={pot} big_pot={1 if big_pot else 0}\n'
+        )
+        return 0  # check — keep pot manageable with thin hands
+
+    # ── Mutation: passive-exploit thin value bet bypass ────────────────────────
+    # vs confirmed passive opponents, bypass thin_static_showdown_control and
+    # bet medium-strength made hands for thin value with smaller sizing
+    if passive_thin_value and not thin_static_showdown_control_check(
+        round_idx, value_profile, board_texture, draw_strength, anti_lock_pressure
+    ):
+        raise_amount = choose_raise(
+            state["min_raise_action"],
+            my_chips,
+            state["my_round_bet"],
+            to_call,
+            pot,
+            win_rate,
+            round_idx,
+            spot_info["preflop_spot"],
+            preflop_strength,
+            spot_info["has_position"],
+            opponent_model,
+            value_profile=value_profile,
+            value_plan=value_plan,
+            board_texture=board_texture,
+            passive_thin_value=True,
+            nutted_risk_score=nutted_risk["risk"],
+            match_sizing_delta=match_profile["sizing_delta"],
+        )
+        if raise_amount is not None:
+            return raise_amount
+
+    if opp_double_barrel_then_river_check and weak_pair_river:
+        return 0
+    if bad_river_bluff_candidate:
+        return 0
+    if weak_bottom_pair_barrel:
+        return 0
+    if weak_pair_after_raise_barrel:
+        return 0
+    if bad_river_value_bet:
+        return 0
+    if bad_stackoff_overpair:
+        return 0
+    if big_pot and round_idx == 3 and (value_profile is None or value_profile["tier"] not in ("strong", "nut")):
+        if blocker_profile is None or not blocker_profile["eligible"]:
+            return 0
+    thin_static_showdown_control = (
+        round_idx >= 2
+        and value_profile is not None
+        and value_profile["tier"] == "thin"
+        and board_texture is not None
+        and not board_texture["dynamic"]
+        and draw_strength < 0.12
+        and not anti_lock_pressure
+    )
+    if thin_static_showdown_control:
+        return 0
+
+    # ── E3: Overbet evaluation ─────────────────────────────────────────────────
+    # River overbet with nut hands on dry/static boards
+    overbet = should_overbet(
+        round_idx, to_call, value_profile, board_texture,
+        nutted_risk, paired_board_profile, opponent_model,
+        my_cards, public_cards, pot, my_chips,
+    )
+    if overbet["eligible"]:
+        raise_amount = overbet_sizing(
+            overbet["ratio"], to_call, pot,
+            state["min_raise_action"], my_chips, state["my_round_bet"],
+        )
+        if raise_amount is not None:
+            return raise_amount
+
+    # ── E3: Donk bet evaluation ────────────────────────────────────────────────
+    # Donk into PFR as BB on favorable flop textures
+    donk = should_donk_bet(
+        round_idx, to_call, spot_info, value_profile, board_texture,
+        made_strength, draw_strength, draw_info, opponent_model,
+        my_cards, public_cards, pot, req.get("history", []), state,
+    )
+    if donk["eligible"]:
+        raise_amount = donk_probe_sizing(
+            donk["ratio"], to_call, pot,
+            state["min_raise_action"], my_chips, state["my_round_bet"],
+        )
+        if raise_amount is not None:
+            return raise_amount
+
+    # ── E3: Probe bet evaluation ───────────────────────────────────────────────
+    # Probe after PFR checked previous street
+    probe = should_probe_bet(
+        round_idx, to_call, spot_info, value_profile, board_texture,
+        made_strength, draw_strength, draw_info, opponent_model,
+        my_cards, public_cards, pot, req.get("history", []), state,
+    )
+    if probe["eligible"]:
+        raise_amount = donk_probe_sizing(
+            probe["ratio"], to_call, pot,
+            state["min_raise_action"], my_chips, state["my_round_bet"],
+        )
+        if raise_amount is not None:
+            return raise_amount
+
+    river_bluff_threshold = 0.62 - 0.28 * match_profile["bluff_delta"]
+    probe_fold_threshold = 0.56 - 0.32 * match_profile["bluff_delta"]
+    semi_bluff_threshold = 0.58 - 0.28 * match_profile["bluff_delta"]
+    draw_bet_threshold = clamp(semi_bluff_threshold - draw_info["fold_threshold_delta"], 0.46, 0.70)
+    check_probe_signal = (
+        spot_info["last_opp_action_type"] == "check"
+        and (
+            spot_info.get("opp_postflop_check_count", 0) >= 2
+            or (
+                opponent_model["confidence"] >= 0.20
+                and opponent_model.get("postflop_check_rate", 0.42) >= 0.52
+            )
+        )
+    )
+    river_blocker_bluff = (
+        round_idx == 3
+        and made_strength < 0.16
+        and draw_strength < 0.08
+        and opponent_model["confidence"] >= 0.35
+        and opponent_model["fold_to_raise"] > river_bluff_threshold
+        and blocker_profile is not None
+        and blocker_profile["eligible"]
+        and allow_low_frequency_blocker_bluff(req, my_cards, public_cards, blocker_profile, round_idx)
+    )
+    small_probe = (
+        round_idx > 0
+        and opponent_model["confidence"] >= 0.25
+        and opponent_model["fold_to_raise"] > probe_fold_threshold
+        and made_strength < 0.62
+        and draw_strength < 0.16
+        and board_texture is not None
+        and board_texture["wetness"] <= 0.32
+        and not (value_profile and value_profile["tier"] in ("strong", "nut"))
+    )
+    check_probe = (
+        round_idx > 0
+        and check_probe_signal
+        and board_texture is not None
+        and board_texture["wetness"] <= 0.55
+        and made_strength < 0.58
+        and draw_strength < 0.20
+        and not (value_profile and value_profile["tier"] in ("strong", "nut"))
+        and not (round_idx == 3 and made_strength >= 0.18 and not (blocker_profile and blocker_profile["eligible"]))
+    )
+    blocker_bluff = (
+        river_blocker_bluff
+    )
+    semi_bluff = (
+        round_idx > 0
+        and draw_info["semi_bluff"]
+        and draw_strength >= 0.12
+        and opponent_model["confidence"] >= 0.25
+        and opponent_model["fold_to_raise"] > draw_bet_threshold
+    )
+    thin_value_raise = _river_thin_value_construct(
+        round_idx, to_call, value_profile, made_strength, draw_strength,
+        opponent_model, opp_archetype, board_texture, nutted_risk,
+        paired_board_stackoff, pot, my_chips, match_profile, anti_lock_pressure,
+        state, preflop_strength, spot_info,
+    )
+    if thin_value_raise is not None and thin_value_raise > 0:
+        return thin_value_raise
+    turn_draw_raise = _turn_draw_raise_construct(
+        round_idx, to_call, draw_info, draw_strength, made_strength,
+        value_profile, opponent_model, opp_archetype, board_texture,
+        nutted_risk, paired_board_stackoff, pot, my_chips, match_profile,
+        anti_lock_pressure, state, preflop_strength, spot_info,
+    )
+    if turn_draw_raise is not None and turn_draw_raise > 0:
+        return turn_draw_raise
+    if win_rate >= medium or semi_bluff or blocker_bluff or small_probe or check_probe or made_strength >= 0.62 or (value_profile and value_profile["tier"] in ("strong", "nut")):
+        # Check-raise trap: check with strong/nut hands on dry flop vs aggressive opponents
+        # Trap line: check flop -> call opponent bet -> raise turn for max value
+        is_pure_value_raise = (
+            value_profile is not None
+            and value_profile["tier"] in ("strong", "nut")
+            and not semi_bluff
+            and not blocker_bluff
+            and not small_probe
+            and not check_probe
+        )
+        if is_pure_value_raise and _should_checkraise_trap(value_profile, round_idx, board_texture, opponent_model, my_cards, public_cards):
+            return 0  # check (trap) — plan to call flop bet, raise turn
+        raise_amount = choose_raise(
+            state["min_raise_action"],
+            my_chips,
+            state["my_round_bet"],
+            to_call,
+            pot,
+            win_rate,
+            round_idx,
+            spot_info["preflop_spot"],
+            preflop_strength,
+            spot_info["has_position"],
+            opponent_model,
+            semi_bluff=semi_bluff and win_rate < medium,
+            value_profile=value_profile,
+            value_plan=value_plan,
+            board_texture=board_texture,
+            draw_info=draw_info,
+            blocker_bluff=blocker_bluff and win_rate < medium and not semi_bluff,
+            probe_mode=check_probe or small_probe or (value_profile and value_profile["tier"] == "thin" and board_texture and not board_texture["dynamic"]),
+            induce_mode=induce_nut_value or value_plan.get("induce", False),
+            nutted_risk_score=nutted_risk["risk"],
+            match_sizing_delta=match_profile["sizing_delta"],
+        )
+        if raise_amount is not None:
+            # River cap: prevent all-in for non-nut hands
+            if round_idx == 3 and raise_amount >= my_chips * 0.60:
+                tier = value_profile.get("tier", "none") if value_profile else "none"
+                if tier != "nut":
+                    # Cap at 1.0x pot for strong, 0.75x pot for thin/none
+                    cap_ratio = 1.0 if tier == "strong" else 0.75
+                    capped = int(to_call + (pot + to_call) * cap_ratio)
+                    capped = max(capped, state["min_raise_action"])
+                    capped = min(capped, my_chips - 1)
+                    if capped > to_call and capped < my_chips:
+                        raise_amount = capped
+            return raise_amount
+    return 0
+
+
+def thin_static_showdown_control_check(round_idx, value_profile, board_texture, draw_strength, anti_lock_pressure):
+    """Extracted check for reuse in passive-exploit bypass path."""
+    return (
+        round_idx >= 2
+        and value_profile is not None
+        and value_profile["tier"] == "thin"
+        and board_texture is not None
+        and not board_texture["dynamic"]
+        and draw_strength < 0.12
+        and not anti_lock_pressure
+    )
+
+
+if __name__ == '__main__':
+    # M5/M6-style live-defaults self-test (helper must return non-None for clear spots)
+    assert _preflop_jam_call_decision(0.60, 0.50, 0.05, 0.0) == 0, 'clear +EV jam must call'
+    assert _preflop_jam_call_decision(0.30, 0.50, 0.05, 0.0) == -1, 'clear -EV jam must fold'
+    assert _preflop_jam_call_decision(0.48, 0.50, 0.05, 0.0) is None, 'borderline defers'
+    assert _preflop_jam_call_decision(0.45, 0.50, 0.40, 0.30) == 0, 'wide jammer tight slack calls 0.45 vs 0.50'
+    print('jam-defense self-test OK')
+
+if __name__ == '__main__':
+    # Self-test: _turn_draw_raise_construct fires for qualifying draws
+    _fake_state = {'min_raise_action': 100, 'my_round_bet': 0}
+    _fake_opp = {'confidence': 0.30, 'fold_to_raise': 0.50, 'vpip': 0.58}
+    _fake_draw_nut = {'flush_draw': True, 'nut_flush_draw': True, 'straight_draw': 'none',
+                      'combo_draw': False, 'type': 'nut_flush_draw', 'quality': 0.21}
+    _fake_bt = {'wetness': 0.3, 'flush_pressure': 0.75, 'straight_pressure': 0.0,
+                'paired': False, 'high_card': 12, 'dynamic': True}
+    _fake_nr = {'risk': 0.0, 'vulnerable': False}
+    _fake_pbs = {'active': False, 'severe': False, 'line_strength': 0.0}
+    _fake_mp = {'sizing_delta': 0.0, 'bluff_delta': 0.0, 'chase': 0.0, 'protect': 0.0}
+    _fake_spot = {'has_position': True, 'preflop_spot': 'sb_open'}
+    # Nut flush draw, fold-prone opponent → should fire (semibluff mode)
+    result = _turn_draw_raise_construct(
+        2, 0, _fake_draw_nut, 0.21, 0.30, None, _fake_opp, 'unknown',
+        _fake_bt, _fake_nr, _fake_pbs, 500, 8000, _fake_mp, False,
+        _fake_state, 0.50, _fake_spot,
+    )
+    assert result is not None and result > 0, f'Semibluff mode must fire for nut flush draw, got {result}'
+    # No draw → should return None
+    _fake_draw_none = {'flush_draw': False, 'nut_flush_draw': False, 'straight_draw': 'none',
+                       'combo_draw': False, 'type': 'none', 'quality': 0.0}
+    result2 = _turn_draw_raise_construct(
+        2, 0, _fake_draw_none, 0.05, 0.30, None, _fake_opp, 'unknown',
+        _fake_bt, _fake_nr, _fake_pbs, 500, 8000, _fake_mp, False,
+        _fake_state, 0.50, _fake_spot,
+    )
+    assert result2 is None, f'No-draw should return None, got {result2}'
+    # Calling station value_build mode
+    _fake_opp_cs = {'confidence': 0.30, 'fold_to_raise': 0.35, 'vpip': 0.60}
+    result3 = _turn_draw_raise_construct(
+        2, 0, _fake_draw_nut, 0.21, 0.30, None, _fake_opp_cs, 'calling_station',
+        _fake_bt, _fake_nr, _fake_pbs, 500, 8000, _fake_mp, False,
+        _fake_state, 0.50, _fake_spot,
+    )
+    assert result3 is not None and result3 > 0, f'Value_build mode must fire for nut flush vs calling station, got {result3}'
+    print('Self-test passed')
