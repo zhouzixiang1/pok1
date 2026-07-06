@@ -112,7 +112,7 @@ def _seed_checkpoint(next_v, source_v, stage="reviewed", generation_attempt=0,
 
 
 def _seed_review_checkpoint(next_v, source_v, stage="quality_passed", generation_attempt=0,
-                            review_infra_retry=None):
+                            review_infra_retry=None, review_parse_retry=None):
     """Seed pipeline_state.json with quality gates passing and given review retry state."""
     import evolution_infra
     import tempfile
@@ -124,6 +124,8 @@ def _seed_review_checkpoint(next_v, source_v, stage="quality_passed", generation
     review_gate = {}
     if review_infra_retry is not None:
         review_gate["review_infra_retry"] = review_infra_retry
+    if review_parse_retry is not None:
+        review_gate["review_parse_retry"] = review_parse_retry
 
     ckpt = {
         "next_v": next_v,
@@ -283,6 +285,62 @@ class TestRunReviewCodeRejection:
         assert ckpt["gate_results"]["review"]["approved"] is False
         assert ckpt["gate_results"]["review"]["quality_score"] == 4
         assert quality_failures
+
+
+class TestRunReviewParseRetry:
+    def _run(self, monkeypatch, review_retry=None):
+        import evolution_infra
+        import tool_gates
+
+        _seed_review_checkpoint(
+            101,
+            100,
+            stage="quality_passed",
+            generation_attempt=2,
+            review_parse_retry=review_retry,
+        )
+
+        async def fake_run_claude_query(*_a, **_kw):
+            return ("I inspected the diff but forgot the required JSON block.", None, None)
+
+        monkeypatch.setattr(tool_gates, "run_claude_query", fake_run_claude_query)
+        monkeypatch.setattr(tool_gates, "_idempotency_check", lambda *a, **k: None)
+        quality_failures = []
+        monkeypatch.setattr(
+            tool_gates,
+            "_record_quality_failure",
+            lambda *a, **k: quality_failures.append((a, k)),
+        )
+
+        result = asyncio.run(tool_gates.run_review.handler({"version": 101, "source_v": 100, "plan": []}))
+        data = json.loads(result["content"][0]["text"])
+        ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
+        return data, ckpt, quality_failures
+
+    def test_parse_error_retries_review_without_business_rejection(self, monkeypatch):
+        data, ckpt, quality_failures = self._run(monkeypatch, review_retry=0)
+
+        assert data["action"] == "retry_review"
+        assert data["llm_failed"] is True
+        assert data["parse_error"] is True
+        assert "error" not in data
+        assert ckpt["stage"] == "quality_passed"
+        assert ckpt["generation_attempt"] == 2
+        assert ckpt["reviewer_feedback"].startswith("Reviewer parse error:")
+        assert ckpt["gate_results"]["review"]["llm_failed"] is True
+        assert ckpt["gate_results"]["review"]["parse_error"] is True
+        assert ckpt["gate_results"]["review"]["review_parse_retry"] == 1
+        assert quality_failures == []
+
+    def test_parse_error_resets_retry_counter_on_abandon(self, monkeypatch):
+        data, ckpt, quality_failures = self._run(monkeypatch, review_retry=2)
+
+        assert data["action"] == "abandon_cycle"
+        assert data["llm_failed"] is True
+        assert data["parse_error"] is True
+        assert ckpt["stage"] == "quality_passed"
+        assert ckpt["gate_results"]["review"]["review_parse_retry"] == 0
+        assert quality_failures == []
 
 
 # ---------------------------------------------------------------------------

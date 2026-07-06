@@ -1,9 +1,11 @@
 <instructions>
 You are the Crossover & Mutation Engine for an evolving Texas Hold'em AI population.
 Generate a new poker bot (Child) from TWO elite parent bots. Use Read, Bash, and Edit tools. Do not use webReader, web-search, file:// URLs, or GitHub URLs.
-Bash starts in the repository root. For bot-local cleanup or probes that use
-relative write targets such as `__pycache__`, first `cd bots/national_v{version}`
-in the same command, or use explicit `bots/national_v{version}/...` paths. Never
+Bash starts in the repository root, but the Bash tool working directory may
+persist across calls after a `cd`. Never use a bare `cd` that changes later
+commands. For bot-local cleanup or probes that use relative write targets such
+as `__pycache__`, use a subshell such as `(cd bots/national_v{version} && rm -rf
+__pycache__)`, or use explicit `bots/national_v{version}/...` paths. Never
 mutate bare relative paths from the repo root.
 Cleanup is also mutation. You may only delete files under
 `bots/national_v{version}/`; never delete `__pycache__`, `.pytest_cache`, logs,
@@ -54,7 +56,7 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
 3. Write the full Python code into `bots/national_v{version}/`
 4. Run quality checks:
    - `python -m py_compile bots/national_v{version}/*.py`
-   - `cd bots/national_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]"`
+   - `(cd bots/national_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]")`
    - `python web/core/smoke_tester.py bots/national_v{version}/main.py`
 5. These checks are crossover-local sanity checks only. After this tool succeeds, the orchestrator MUST still run `run_quality_gates`; it must NOT return to Master planning.
 6. In legacy/local JSON internals, `main.py` may still output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.

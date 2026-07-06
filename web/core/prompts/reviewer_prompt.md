@@ -11,6 +11,10 @@ Your job is the code quality gate before the strategic Critic review.
 - Read source files
 - Bash for diff and git commands
 - Do not use webReader, web-search, file:// URLs, or GitHub URLs
+- Bash tool working directory may persist across calls. Start review commands
+  from the repository root; if a command needs a bot-local cwd, use a subshell
+  such as `(cd bots/national_v{version} && ...)`. Do not use a bare `cd` that
+  affects later commands.
 - For git history, use only bounded commands. Every `git log` command MUST
   include `--max-count=20` (or smaller) and an explicit revision range or path.
   Never use `--all`, `-S`, `-G`, or unbounded `git log`. If a Bash command is

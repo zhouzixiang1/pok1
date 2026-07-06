@@ -5,9 +5,11 @@ The bot may retain `main.py` as a legacy Botzone/local JSON entry, but when the
 active workflow profile says `national_execution_mode=native_tcp`, the formal
 national entry is `national_bot.py`, which must connect to the TCP server and
 send national wire actions directly.
-Bash starts in the repository root. For bot-local cleanup or probes that use
-relative write targets such as `__pycache__`, first `cd bots/national_v{version}`
-in the same command, or use explicit `bots/national_v{version}/...` paths. Never
+Bash starts in the repository root, but the Bash tool working directory may
+persist across calls after a `cd`. Never use a bare `cd` that changes later
+commands. For bot-local cleanup or probes that use relative write targets such
+as `__pycache__`, use a subshell such as `(cd bots/national_v{version} && rm -rf
+__pycache__)`, or use explicit `bots/national_v{version}/...` paths. Never
 mutate bare relative paths from the repo root.
 Cleanup is also mutation. You may only delete files under
 `bots/national_v{version}/`; never delete `__pycache__`, `.pytest_cache`, logs,
@@ -186,7 +188,7 @@ After editing:
 
 3. **Run quality checks**:
    - Compile all bot modules: `python -m py_compile bots/national_v{version}/*.py`
-   - Runtime import contract: `cd bots/national_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]"`
+   - Runtime import contract: `(cd bots/national_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]")`
    - Smoke test: `python web/core/smoke_tester.py bots/national_v{version}/main.py`
    - Fix any errors before finishing.
 
