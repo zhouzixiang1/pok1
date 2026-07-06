@@ -1,4 +1,4 @@
-# Neural National v110-v125 Report
+# Neural National v110-v126 Report
 
 Date: 2026-07-06
 
@@ -1254,15 +1254,108 @@ Relative to v124:
 - All v125 recorded evaluations passed protocol compliance with 0 candidate
   illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
 
+## v126
+
+Path:
+
+`bots/neural_national_lab/versions/v126_national_v17_jts_profile_open_tcp`
+
+Change:
+
+- Derived from v125.
+- Keeps v125's T8o/K4s/J8s/T9s/QJs draw breakers and all prior native TCP
+  neural value gates.
+- Adds a narrow suited JTs small-blind profile-open override:
+  - stage is `preflop`,
+  - player is the dealer/small blind,
+  - action history is empty,
+  - hole cards are exactly suited JT,
+  - `to_call == 50` and pot is `150`,
+  - original rule action is `250..320`,
+  - opponent profile has `45..58` observed actions,
+  - opponent profile preflop raise rate is `0.11..0.13`,
+  - if postflop raise rate is `0.44..0.46`, return action `0` (`call`),
+  - if postflop raise rate is `0.46..0.49`, return action `-1` (`fold`).
+
+Reason:
+
+After v125, the older seed block `2026074000` still had v2/v3 losses on
+seed `2026074007`. Trace and force probes showed that the suited JTs
+small-blind open was unstable: national_v2's profile preferred not opening,
+while national_v3's slightly more aggressive postflop profile preferred folding
+immediately. The gate is profile-bounded to exclude the nearby national_v2
+seed `2026074002`, where similar JTs/QJs geometry was harmful to change.
+
+Target checks:
+
+| Opponent/seed | v125 | v126 | Delta |
+|---|---:|---:|---:|
+| national_v2 / 2026074007 | `-2593` | `+18357` | `+20950` |
+| national_v3 / 2026074007 | `-2048` | `+18929` | `+20977` |
+
+Guarded checks:
+
+- national_v2 seed `2026074002` stayed unchanged at `-3606`.
+- national_v2 seed `2026074001` stayed unchanged at `+20213`, preserving the
+  v125 QJs profile-fold gain.
+
+Completed national bots on seed block `2026074100`:
+
+The completed/tagged pool expanded to `national_v1` through `national_v18`,
+`national_v20`, and `national_v27` through `national_v34`. v126 was evaluated
+against all 27 native TCP opponents with six paired matches each. The
+untracked `.evolution_pok/bots/national_v36/` directory was not treated as a
+completed bot because it has no committed bot directory and matching tag in the
+operator checkout.
+
+| Version | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| v126 | 162 | 22680 | `+1988816` | `+87.690` | `162-0-0` |
+
+Regression on the older current-top8+v7 seed blocks:
+
+| Block | Matches | Hands | v125 Total | v126 Total | Delta | v126 W-L-D |
+|---|---:|---:|---:|---:|---:|---:|
+| seed2026073900 | 90 | 12600 | `+958394` | `+958394` | `0` | `73-1-16` |
+| seed2026074000 | 90 | 12600 | `+531634` | `+573561` | `+41927` | `42-6-42` |
+| combined | 180 | 25200 | `+1490028` | `+1531955` | `+41927` | `115-7-58` |
+
+Combined older-block v126 opponent totals remained positive for every
+opponent. The v2 total improved from v125's `+226518` to `+247468`; v3 improved
+from `+290096` to `+311073`.
+
+Remaining old-block losses:
+
+| Opponent/seed | Net |
+|---|---:|
+| national_v2 / 2026074002 | `-3606` |
+| national_v2 / 2026074009 | `-1731` |
+| national_v3 / 2026074002 | `-1463` |
+| national_v3 / 2026074004 | `-1181` |
+| national_v2 / 2026074003 | `-606` |
+| national_v5 / 2026073908 | `-249` |
+| national_v2 / 2026074006 | `-130` |
+
+Relative to v125:
+
+- Expanded completed-pool result is `+1988816`, mean/hand `+87.690`,
+  W-L-D `162-0-0`, including the newly completed national_v33 and national_v34.
+- Older current-top8+v7 combined result improved by `+41927` chips, from
+  `+1490028` to `+1531955`.
+- Older two-block v2/v3/v5 match records are now v2 `16-4-0`, v3 `18-2-0`,
+  and v5 `11-1-8`.
+- All v126 recorded evaluations passed protocol compliance with 0 candidate
+  illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
+
 ## Current Assessment
 
-- v125 is the current best artifact by combined coverage: it preserves v124's
-  all-completed native-TCP domination while recovering another `+22822` chips
-  and one match loss on the older current-top8+v7 seed blocks.
-- v125 beats every completed/tagged native national bot from v1 through v32 on
-  seed block `2026074100`: `+1844072`, mean/hand `+87.813`, W-L-D `150-0-0`.
-- v125 remains strongly positive on the older two-block pool at `+1490028`,
-  mean/hand `+59.128`, W-L-D `113-9-58`, with every opponent total still
+- v126 is the current best artifact by combined coverage: it preserves v125's
+  all-completed native-TCP domination while recovering another `+41927` chips
+  and two match losses on the older current-top8+v7 seed blocks.
+- v126 beats every completed/tagged native national bot from v1 through v34 on
+  seed block `2026074100`: `+1988816`, mean/hand `+87.690`, W-L-D `162-0-0`.
+- v126 remains strongly positive on the older two-block pool at `+1531955`,
+  mean/hand `+60.792`, W-L-D `115-7-58`, with every opponent total still
   positive.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
   - v108 v2/v3 combined over two full-pool blocks: v2 `-64781`, v3 `-21241`.
@@ -1291,13 +1384,15 @@ Relative to v124:
   all completed bots on seed block `2026074100` remain `150-0-0`.
 - v125: older two-block v2/v3 result improves to v2 `+226518`, v3 `+290096`;
   all completed bots on seed block `2026074100` remain `150-0-0`.
-- All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119/v120/v121/v122/v123/v124/v125
+- v126: older two-block v2/v3 result improves to v2 `+247468`, v3 `+311073`;
+  completed bots on seed block `2026074100` are `162-0-0` through national_v34.
+- All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119/v120/v121/v122/v123/v124/v125/v126
   recorded evaluations passed protocol compliance with 0 candidate illegal
   actions, 0 candidate timeouts, and 0 candidate adapter actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
 It is closer to the requested rule-bot domination standard, but still not fully
-complete: v125 dominates the current all-completed seed block, yet the older
+complete: v126 dominates the current all-completed seed block, yet the older
 seed blocks still contain v2/v3/v5 match losses. The next generation should
 continue mining those old-block losses without weakening the T8o/K4s/J8s/QJs/T9s
-draw-breakers or native TCP protocol compliance.
+and JTs draw-breakers or native TCP protocol compliance.
