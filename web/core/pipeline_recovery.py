@@ -9,7 +9,7 @@ from typing import Any
 
 from bot_namespace import bot_relpath
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT
-from evaluation_contract import contract_bot_versions, evaluate_head_drift
+from evaluation_contract import build_evaluation_contract, contract_bot_versions, evaluate_head_drift
 from evolution_scope import classify_status_entries
 from pipeline_state import head_drift_resume_policy, head_drift_resume_stages
 from repo_state import git_worktree_snapshot
@@ -289,6 +289,12 @@ def checkpoint_recovery_diagnostics(
         next_v,
         contract_bot_versions=contract_bot_versions(
             candidate_v=next_v,
+            checkpoint=checkpoint,
+        ),
+        evaluation_contract=build_evaluation_contract(
+            root,
+            candidate_v=next_v,
+            source_v=checkpoint.get("source_v"),
             checkpoint=checkpoint,
         ),
     )

@@ -911,9 +911,10 @@ def test_runtime_guard_blocks_source_bot_contract_head_drift(monkeypatch):
     assert "bots/national_v299/main.py" in payload["head_contract_paths"]
 
 
-def test_evaluation_contract_classifies_dynamic_bot_versions():
+def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
     import evaluation_contract
 
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "default")
     contract = evaluation_contract.build_evaluation_contract(
         Path.cwd(),
         candidate_v=300,
@@ -953,6 +954,79 @@ def test_evaluation_contract_classifies_dynamic_bot_versions():
     assert "sever/国赛平台/通信协议.docx" in scope["external_paths"]
     assert "bots/neural_national_lab/data/run.json" in scope["external_paths"]
     assert "docs/notes.md" in scope["external_paths"]
+
+
+def test_evaluation_contract_excludes_local_engine_under_native_profile(monkeypatch):
+    import evaluation_contract
+
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+    contract = evaluation_contract.build_evaluation_contract(
+        Path.cwd(),
+        candidate_v=300,
+        source_v=299,
+        checkpoint={"stage": "workers_done", "next_v": 300, "source_v": 299},
+    )
+    scope = evaluation_contract.classify_contract_paths(
+        [
+            "engine/battle.py",
+            "web/core/engine/battle.py",
+            "web/core/smoke_tester.py",
+            "sever/server/tcp_server.py",
+            "web/core/national_native.py",
+            "bots/national_v300/main.py",
+            "bots/national_v299/main.py",
+        ],
+        contract,
+    )
+
+    assert contract["national_execution_mode"] == "native_tcp"
+    assert "engine/battle.py" in scope["external_paths"]
+    assert "web/core/engine/battle.py" in scope["external_paths"]
+    assert "web/core/smoke_tester.py" in scope["external_paths"]
+    assert "sever/server/tcp_server.py" in scope["contract_paths"]
+    assert "web/core/national_native.py" in scope["contract_paths"]
+    assert "bots/national_v300/main.py" in scope["contract_paths"]
+    assert "bots/national_v299/main.py" in scope["contract_paths"]
+
+
+def test_worktree_scope_uses_native_evaluation_contract_for_dirty_paths(monkeypatch):
+    import evaluation_contract
+    import evolution_scope
+
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+    checkpoint = {"stage": "workers_done", "next_v": 300, "source_v": 299}
+    contract = evaluation_contract.build_evaluation_contract(
+        Path.cwd(),
+        candidate_v=300,
+        source_v=299,
+        checkpoint=checkpoint,
+    )
+
+    scope = evolution_scope.classify_status_entries(
+        [
+            " M engine/battle.py",
+            " M web/core/smoke_tester.py",
+            " M sever/server/tcp_server.py",
+            " M bots/national_v299/main.py",
+            "?? bots/national_v300/",
+        ],
+        300,
+        contract_bot_versions=evaluation_contract.contract_bot_versions(
+            candidate_v=300,
+            checkpoint=checkpoint,
+        ),
+        evaluation_contract=contract,
+    )
+
+    assert " M engine/battle.py" in scope["external_entries"]
+    assert " M web/core/smoke_tester.py" in scope["external_entries"]
+    assert " M sever/server/tcp_server.py" in scope["critical_entries"]
+    assert " M bots/national_v299/main.py" in scope["foreign_bot_entries"]
+    assert "?? bots/national_v300/" in scope["candidate_entries"]
+    assert scope["blocking_entries"] == [
+        " M sever/server/tcp_server.py",
+        " M bots/national_v299/main.py",
+    ]
 
 
 def test_evaluation_contract_allows_noncritical_web_core_head_drift(monkeypatch):
