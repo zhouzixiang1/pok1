@@ -1391,19 +1391,19 @@ Target and guard checks:
 
 Completed national bots on seed block `2026074100`:
 
-The completed/tagged pool remained `national_v1` through `national_v18`,
-`national_v20`, and `national_v27` through `national_v34`. v127 was evaluated
-against all 27 native TCP opponents with six paired matches each. The
-untracked `.evolution_pok/bots/national_v36/` and `national_v37/` directories
-were not treated as completed bots for this table because they do not have
-completed bot directories and matching tags in the operator checkout.
+The comparable v126 pool was `national_v1` through `national_v18`,
+`national_v20`, and `national_v27` through `national_v34`. v127 matched v126 on
+that 27-opponent native TCP pool. During publish, `national_v36` and
+`national_v37` were also fetched as completed/tagged bots, and v127 beat both
+with the same six-seed block.
 
 | Version | Matches | Hands | Total | Mean/hand | W-L-D |
 |---|---:|---:|---:|---:|---:|
 | v126 | 162 | 22680 | `+1988816` | `+87.690` | `162-0-0` |
-| v127 | 162 | 22680 | `+1988816` | `+87.690` | `162-0-0` |
+| v127 through national_v34 | 162 | 22680 | `+1988816` | `+87.690` | `162-0-0` |
+| v127 through national_v37 | 174 | 24360 | `+2133560` | `+87.585` | `174-0-0` |
 
-Exploratory runtime-checkout opponents:
+Newly completed national_v36/national_v37 add-on:
 
 | Opponents | Matches | Hands | Total | Mean/hand | W-L-D |
 |---|---:|---:|---:|---:|---:|
@@ -1433,8 +1433,10 @@ Remaining old-block losses:
 
 Relative to v126:
 
-- Expanded completed-pool result stayed `+1988816`, mean/hand `+87.690`,
-  W-L-D `162-0-0`.
+- Comparable completed-pool result through national_v34 stayed `+1988816`,
+  mean/hand `+87.690`, W-L-D `162-0-0`.
+- Expanded completed-pool result through national_v37 is `+2133560`, mean/hand
+  `+87.585`, W-L-D `174-0-0`.
 - Older current-top8+v7 combined result improved by `+41333` chips, from
   `+1531955` to `+1573288`.
 - Older two-block v2/v3/v5 match records are now v2 `17-3-0`, v3 `19-1-0`,
@@ -1447,11 +1449,9 @@ Relative to v126:
 - v127 is the current best artifact by combined coverage: it preserves v126's
   all-completed native-TCP domination while recovering another `+41333` chips
   and two match losses on the older current-top8+v7 seed blocks.
-- v127 beats every completed/tagged native national bot from v1 through v34 on
-  seed block `2026074100`: `+1988816`, mean/hand `+87.690`, W-L-D `162-0-0`.
-- v127 also beat the uncompleted runtime-checkout national_v36/v37 sample at
-  `+144744`, mean/hand `+86.157`, W-L-D `12-0-0`; these rows are exploratory
-  and are not counted as completed/tagged coverage.
+- v127 beats every completed/tagged native national bot present through
+  national_v37 on seed block `2026074100`: `+2133560`, mean/hand `+87.585`,
+  W-L-D `174-0-0`.
 - v127 remains strongly positive on the older two-block pool at `+1573288`,
   mean/hand `+62.432`, W-L-D `117-5-58`, with every opponent total still
   positive.
@@ -1485,7 +1485,7 @@ Relative to v126:
 - v126: older two-block v2/v3 result improves to v2 `+247468`, v3 `+311073`;
   completed bots on seed block `2026074100` are `162-0-0` through national_v34.
 - v127: older two-block v2/v3 result improves to v2 `+268787`, v3 `+331087`;
-  completed bots on seed block `2026074100` remain `162-0-0` through national_v34.
+  completed bots on seed block `2026074100` are `174-0-0` through national_v37.
 - All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119/v120/v121/v122/v123/v124/v125/v126/v127
   recorded evaluations passed protocol compliance with 0 candidate illegal
   actions, 0 candidate timeouts, and 0 candidate adapter actions.
