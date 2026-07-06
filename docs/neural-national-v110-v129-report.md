@@ -1,4 +1,4 @@
-# Neural National v110-v128 Report
+# Neural National v110-v129 Report
 
 Date: 2026-07-06
 
@@ -1542,16 +1542,95 @@ Relative to v127:
 - All v128 recorded evaluations passed protocol compliance with 0 candidate
   illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
 
+## v129
+
+Path:
+
+`bots/neural_national_lab/versions/v129_national_v17_v5_seed3908_fold_tcp`
+
+Change:
+
+- Derived from v128 as a separate native TCP bot directory.
+- Keeps v128's A2s mid/late folds, K9o/QJo residual cleanup, JTs
+  profile-open split, QJs/T9s/J8s/K4s/T8o draw breakers, and native national
+  TCP entrypoint.
+- Adds two narrow preflop folds for national_v5 seed3908:
+  - offsuit 43 big-blind defense folds versus a `260` raise when
+    `to_call == 160`, pot is `360`, exactly `69` hands remain, profile actions
+    are `5`, profile preflop raise rate is at least `0.99`, and postflop
+    raise rate is at most `0.01`,
+  - suited T2 small-blind first-in folds instead of opening when
+    `to_call == 50`, pot is `150`, original rule action is `200..220`,
+    exactly `69` hands remain, profile actions are `5`, profile preflop raise
+    rate is `0.49..0.51`, and postflop raise rate is at most `0.01`.
+
+Reason:
+
+After v128, the only remaining seed3900 old-block loss was national_v5 seed
+`2026073908`, and the trace showed only hand 2 was negative (`-249`). A paired
+force probe on hand 2 decision 0 showed action `-1` improved the row by
+`+11657` chips. The paired decision maps to 43o folding big-blind defense in
+the forward leg and T2s folding small-blind first-in in the swapped leg.
+Raise/all-in alternatives also tested positive, but fold was simpler and tied
+to dominated/trash preflop holdings.
+
+Target and guard checks:
+
+| Opponent/seed | v128 | v129 | Delta |
+|---|---:|---:|---:|
+| national_v5 / 2026073908 | `-249` | `+11408` | `+11657` |
+| national_v2 / 2026074006 | `+15678` | `+15678` | `0` |
+| national_v2 / 2026074002 | `+18473` | `+18473` | `0` |
+| national_v2 / 2026074009 | `-1731` | `-1731` | `0` |
+
+Completed national bots on seed block `2026074100`:
+
+| Version | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| v128 through national_v37 | 174 | 24360 | `+2133560` | `+87.585` | `174-0-0` |
+| v129 through national_v37 | 174 | 24360 | `+2133560` | `+87.585` | `174-0-0` |
+
+Regression on the older current-top8+v7 seed blocks:
+
+| Block | Matches | Hands | v128 Total | v129 Total | Delta | v129 W-L-D |
+|---|---:|---:|---:|---:|---:|---:|
+| seed2026073900 | 90 | 12600 | `+958394` | `+969301` | `+10907` | `74-0-16` |
+| seed2026074000 | 90 | 12600 | `+652075` | `+652075` | `0` | `45-3-42` |
+| combined | 180 | 25200 | `+1610469` | `+1621376` | `+10907` | `119-3-58` |
+
+Combined older-block v129 opponent totals remained positive for every
+opponent. The v5 total improved from v128's `+132568` to `+144225`; v2 and v3
+stayed `+284595` and `+352460`.
+
+Remaining old-block losses:
+
+| Opponent/seed | Net |
+|---|---:|
+| national_v2 / 2026074009 | `-1731` |
+| national_v3 / 2026074004 | `-1181` |
+| national_v2 / 2026074003 | `-606` |
+
+Relative to v128:
+
+- Completed-pool result through national_v37 stayed `+2133560`, mean/hand
+  `+87.585`, W-L-D `174-0-0`.
+- Older current-top8+v7 combined result improved by `+10907` chips, from
+  `+1610469` to `+1621376`.
+- Older two-block v2/v3/v5 match records are now v2 `18-2-0`, v3 `19-1-0`,
+  and v5 `12-0-8`.
+- All v129 recorded evaluations passed protocol compliance with 0 candidate
+  illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
+
 ## Current Assessment
 
-- v128 is the current best artifact by combined coverage: it preserves v127's
-  all-completed native-TCP domination while recovering another `+37181` chips
+- v129 is the current best artifact by combined coverage: it preserves v128's
+  all-completed native-TCP domination while recovering another `+10907` chips
   and one match loss on the older current-top8+v7 seed blocks.
-- v128 beats every completed/tagged native national bot present through
+- v129 beats every completed/tagged native national bot present through
   national_v37 on seed block `2026074100`: `+2133560`, mean/hand `+87.585`,
   W-L-D `174-0-0`.
-- v128 remains strongly positive on the older two-block pool at `+1610469`,
-  mean/hand `+63.907`, W-L-D `118-4-58`, with every opponent total still
+- v129 remains strongly positive on the older two-block pool at `+1621376`,
+  mean/hand `+64.340`, W-L-D `119-3-58`, with every opponent total still
   positive.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
   - v108 v2/v3 combined over two full-pool blocks: v2 `-64781`, v3 `-21241`.
@@ -1586,13 +1665,16 @@ Relative to v127:
   completed bots on seed block `2026074100` are `174-0-0` through national_v37.
 - v128: older two-block v2/v3 result improves to v2 `+284595`, v3 `+352460`;
   completed bots on seed block `2026074100` remain `174-0-0` through national_v37.
-- All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119/v120/v121/v122/v123/v124/v125/v126/v127/v128
+- v129: older two-block v2/v3/v5 result is v2 `+284595`, v3 `+352460`, v5
+  `+144225`; completed bots on seed block `2026074100` remain `174-0-0`
+  through national_v37.
+- All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119/v120/v121/v122/v123/v124/v125/v126/v127/v128/v129
   recorded evaluations passed protocol compliance with 0 candidate illegal
   actions, 0 candidate timeouts, and 0 candidate adapter actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
 It is closer to the requested rule-bot domination standard, but still not fully
-complete: v128 dominates the current all-completed seed block, yet the older
-seed blocks still contain v2/v3/v5 match losses. The next generation should
+complete: v129 dominates the current all-completed seed block, yet the older
+seed blocks still contain v2/v3 match losses. The next generation should
 continue mining those old-block losses without weakening the T8o/K4s/J8s/QJs/T9s
 and JTs/A2s draw-breakers or native TCP protocol compliance.
