@@ -372,8 +372,23 @@ def _simple_command_words(segment):
     return words
 
 
+def _strip_shell_grouping_parens(value):
+    """Remove shell grouping parens that cling to simple command tokens.
+
+    The guard's splitter does not execute full shell grammar. In grouped
+    commands like ``(cd bot && rm cache)`` shlex sees ``(cd`` and ``cache)``;
+    those parens are shell syntax, not command/path text.
+    """
+    text = str(value or "").strip()
+    while text.startswith("("):
+        text = text[1:].lstrip()
+    while text.endswith(")"):
+        text = text[:-1].rstrip()
+    return text
+
+
 def _command_name(word):
-    return os.path.basename(str(word)).lower()
+    return os.path.basename(_strip_shell_grouping_parens(word)).lower()
 
 
 def _strip_shell_comments(command):
@@ -512,7 +527,7 @@ def _resolve_guard_path(path, base_dir=None):
 
 def _cd_target_from_args(args):
     for arg in _non_option_args(args, options_with_value=()):
-        text = str(arg or "").strip()
+        text = _strip_shell_grouping_parens(arg)
         if text:
             return text
     return None
@@ -706,7 +721,7 @@ def _path_inside_allowed_scope(path, allowed_scope, base_dir=None):
 
 
 def _subagent_write_target_outside_allowed(target, allowed_dir, base_dir=None):
-    text = str(target or "").strip().strip("'\"")
+    text = _strip_shell_grouping_parens(str(target or "").strip().strip("'\""))
     if not text:
         return True
     low = text.lower()
