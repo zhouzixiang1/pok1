@@ -1210,6 +1210,41 @@ def test_evolution_scope_is_exact_file_scoped():
     assert evolution_scope.classify_path("bots/national_v299/postflop.py", candidate_v=300) == "foreign_active_bot"
 
 
+def test_evolution_scope_can_limit_foreign_bot_blocking_to_contract_versions():
+    import evolution_scope
+
+    assert (
+        evolution_scope.classify_path(
+            "bots/national_v299/postflop.py",
+            candidate_v=300,
+            contract_bot_versions=[300, 299],
+        )
+        == "foreign_active_bot"
+    )
+    assert (
+        evolution_scope.classify_path(
+            "bots/national_v123/postflop.py",
+            candidate_v=300,
+            contract_bot_versions=[300, 299],
+        )
+        == "external"
+    )
+
+    scope = evolution_scope.classify_status_entries(
+        [
+            " M bots/national_v299/main.py",
+            " M bots/national_v123/main.py",
+            "?? bots/national_v300/",
+        ],
+        candidate_v=300,
+        contract_bot_versions=[300, 299],
+    )
+
+    assert scope["blocking_entries"] == [" M bots/national_v299/main.py"]
+    assert scope["external_entries"] == [" M bots/national_v123/main.py"]
+    assert scope["candidate_entries"] == ["?? bots/national_v300/"]
+
+
 def test_evaluation_contract_hash_ignores_non_contract_national_docs(tmp_path, monkeypatch):
     import evaluation_contract
 
@@ -2501,6 +2536,39 @@ def test_checkpoint_recovery_diagnostics_ignores_unrelated_dirty_entries(tmp_pat
     assert diag["recoverable"] is True
     assert "repo_unrelated_worktree_entries_ignored" in diag["warnings"]
     assert diag["worktree_scope"]["ignored_count"] == 2
+
+
+def test_checkpoint_recovery_diagnostics_only_blocks_contract_bot_versions(tmp_path):
+    import pipeline_recovery
+
+    (tmp_path / "bots" / "national_v258").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 258,
+        "source_v": 254,
+        "parent2_v": 111,
+        "stage": "workers_done",
+        "repo_baseline": {"branch": "main", "head": "same123"},
+    }
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "same123",
+        "entries": [
+            " M bots/national_v254/main.py",
+            " M bots/national_v999/main.py",
+        ],
+    }
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is False
+    assert "repo_blocking_worktree_entries" in diag["issues"]
+    assert diag["worktree_scope"]["blocking_entries"] == [" M bots/national_v254/main.py"]
+    assert diag["worktree_scope"]["ignored_entries"] == [" M bots/national_v999/main.py"]
 
 
 def test_checkpoint_recovery_diagnostics_blocks_critical_dirty_entries(tmp_path):

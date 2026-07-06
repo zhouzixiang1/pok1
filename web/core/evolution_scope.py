@@ -210,9 +210,34 @@ def is_candidate_bot_path(path: str, candidate_v: int | None) -> bool:
     return normalize_repo_path(path).startswith(bot_relpath(candidate_v) + "/")
 
 
-def is_foreign_active_bot_path(path: str, candidate_v: int | None) -> bool:
+def _normalize_bot_versions(values: Any) -> set[int] | None:
+    if values is None:
+        return None
+    versions: set[int] = set()
+    for value in values if isinstance(values, (list, tuple, set, frozenset)) else [values]:
+        try:
+            if isinstance(value, bool):
+                continue
+            versions.add(int(value))
+        except Exception:
+            continue
+    return versions
+
+
+def is_foreign_active_bot_path(
+    path: str,
+    candidate_v: int | None,
+    contract_bot_versions: Any = None,
+) -> bool:
     version = active_bot_version(path)
-    return version is not None and (candidate_v is None or version != int(candidate_v))
+    if version is None:
+        return False
+    if candidate_v is not None and version == int(candidate_v):
+        return False
+    allowed_versions = _normalize_bot_versions(contract_bot_versions)
+    if allowed_versions is None:
+        return True
+    return version in allowed_versions
 
 
 def is_critical_evolution_path(path: str) -> bool:
@@ -222,7 +247,11 @@ def is_critical_evolution_path(path: str) -> bool:
     return path in CRITICAL_EXACT or any(path.startswith(prefix) for prefix in CRITICAL_PREFIXES)
 
 
-def classify_path(path: str, candidate_v: int | None) -> str:
+def classify_path(
+    path: str,
+    candidate_v: int | None,
+    contract_bot_versions: Any = None,
+) -> str:
     """Classify a repo path for in-place evolution ownership checks."""
     path = normalize_repo_path(path)
     if not path:
@@ -233,14 +262,18 @@ def classify_path(path: str, candidate_v: int | None) -> str:
         return "external"
     if is_candidate_bot_path(path, candidate_v):
         return "candidate"
-    if is_foreign_active_bot_path(path, candidate_v):
+    if is_foreign_active_bot_path(path, candidate_v, contract_bot_versions):
         return "foreign_active_bot"
     if is_critical_evolution_path(path):
         return "critical"
     return "external"
 
 
-def classify_status_entries(entries: list[str] | tuple[str, ...] | None, candidate_v: int | None) -> dict[str, Any]:
+def classify_status_entries(
+    entries: list[str] | tuple[str, ...] | None,
+    candidate_v: int | None,
+    contract_bot_versions: Any = None,
+) -> dict[str, Any]:
     """Classify porcelain status entries into blocking and ignored groups."""
     groups: dict[str, list[str]] = {
         "candidate_entries": [],
@@ -256,7 +289,7 @@ def classify_status_entries(entries: list[str] | tuple[str, ...] | None, candida
         if not paths:
             groups["unknown_entries"].append(str(entry))
             continue
-        classes = {classify_path(path, candidate_v) for path in paths}
+        classes = {classify_path(path, candidate_v, contract_bot_versions) for path in paths}
         item = {"entry": str(entry), "paths": paths, "classes": sorted(classes)}
         entry_classes.append(item)
         if "critical" in classes:
@@ -284,9 +317,13 @@ def classify_status_entries(entries: list[str] | tuple[str, ...] | None, candida
     }
 
 
-def classify_paths(paths: list[str] | tuple[str, ...] | set[str], candidate_v: int | None) -> dict[str, Any]:
+def classify_paths(
+    paths: list[str] | tuple[str, ...] | set[str],
+    candidate_v: int | None,
+    contract_bot_versions: Any = None,
+) -> dict[str, Any]:
     entries = [f"?? {normalize_repo_path(path)}" for path in sorted(paths)]
-    return classify_status_entries(entries, candidate_v)
+    return classify_status_entries(entries, candidate_v, contract_bot_versions)
 
 
 def changed_paths_between_heads(root: str | Path, old_head: str, new_head: str) -> list[str] | None:
