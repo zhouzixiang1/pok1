@@ -328,33 +328,41 @@ def test_H5_mark_axis_exhausted_idempotent(tmp_path, monkeypatch):
 
 def test_H6_circuit_breaker_threshold_logic():
     """The cross-gen circuit-breaker condition: >= THRESHOLD distinct failed gens
-    trips it. Mirrors the logic added in execute_workers without invoking the full tool."""
-    THRESHOLD = 2
-    # Case A: 2 distinct failed gens -> trips
-    distinct = [215, 214]
-    assert len(distinct) >= THRESHOLD
-    # Case B: only 1 distinct gen -> does NOT trip (single gen retry is normal)
-    distinct = [215]
-    assert not (len(distinct) >= THRESHOLD)
-    # Case C: 3 distinct gens -> trips
-    distinct = [216, 215, 214]
-    assert len(distinct) >= THRESHOLD
+    trips it, but only inside the recent generation-distance window."""
+    import core.tool_planning as tp
+
+    # Case A: 2 nearby prior failed gens -> trips
+    distinct = tp._recent_prior_worker_failure_gens(
+        [{"gen": 215}, {"gen": 214}],
+        next_v=216,
+    )
+    assert len(distinct) >= tp.H6_CROSS_GEN_THRESHOLD
+    # Case B: only 1 nearby gen -> does NOT trip (single gen retry is normal)
+    distinct = tp._recent_prior_worker_failure_gens([{"gen": 215}], next_v=216)
+    assert not (len(distinct) >= tp.H6_CROSS_GEN_THRESHOLD)
+    # Case C: stale history does NOT combine with one nearby failure.
+    distinct = tp._recent_prior_worker_failure_gens(
+        [{"gen": 215}, {"gen": 11}],
+        next_v=216,
+    )
+    assert distinct == [215]
+    assert not (len(distinct) >= tp.H6_CROSS_GEN_THRESHOLD)
 
 
 def test_H6_circuit_breaker_only_counts_worker_category():
     """Reviewer/critic gate rejections (category != 'worker') must NOT trip the
     cross-gen worker circuit breaker — only real worker-exec failures count."""
+    import core.tool_planning as tp
+
     recent = [
         {"gen": 215, "category": "worker", "error": "compile"},
         {"gen": 214, "category": "reviewer", "error": "boundary"},   # ignored
         {"gen": 213, "category": "critic", "error": "score low"},    # ignored
         {"gen": 214, "category": "worker", "error": "smoke"},
     ]
-    worker_fails = [r for r in recent if r.get("category", "worker") == "worker"]
-    distinct = sorted({r["gen"] for r in worker_fails if isinstance(r.get("gen"), int)},
-                      reverse=True)
+    distinct = tp._recent_prior_worker_failure_gens(recent, next_v=216)
     assert distinct == [215, 214]
-    assert len(distinct) >= 2   # trips
+    assert len(distinct) >= tp.H6_CROSS_GEN_THRESHOLD   # trips
 
 
 # ──────────────────────────────────────────────

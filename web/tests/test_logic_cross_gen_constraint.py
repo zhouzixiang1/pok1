@@ -93,6 +93,44 @@ class TestLoadRecentCriticLocalOptima:
         assert tp._load_recent_critic_local_optima(next_v=82) == []
 
 
+class TestRecentPriorWorkerFailureGens:
+    def test_counts_only_prior_worker_gens_inside_window(self):
+        import core.tool_planning as tp
+
+        records = [
+            {"gen": 55, "category": "worker", "error": "boundary"},
+            {"gen": 54, "category": "worker", "error": "timeout"},
+            {"gen": 53, "category": "reviewer", "error": "ignored"},
+            {"gen": 56, "category": "worker", "error": "current gen ignored"},
+            {"gen": 44, "category": "worker", "error": "outside default window"},
+            {"gen": 55, "category": "worker", "error": "duplicate"},
+        ]
+
+        assert tp._recent_prior_worker_failure_gens(records, next_v=56) == [55, 54]
+
+    def test_ignores_stale_epoch_history_that_would_false_trip(self):
+        import core.tool_planning as tp
+
+        records = [
+            {"gen": 55, "category": "worker", "error": "current recent failure"},
+            {"gen": 11, "category": "worker", "error": "stale historical failure"},
+        ]
+
+        assert tp._recent_prior_worker_failure_gens(records, next_v=56) == [55]
+
+    def test_accepts_string_gen_but_rejects_bool_and_future(self):
+        import core.tool_planning as tp
+
+        records = [
+            {"gen": "55", "category": "worker"},
+            {"gen": True, "category": "worker"},
+            {"gen": 57, "category": "worker"},
+            {"gen": "not-int", "category": "worker"},
+        ]
+
+        assert tp._recent_prior_worker_failure_gens(records, next_v=56) == [55]
+
+
 class TestBuildCrossGenConstraintBlock:
     def test_no_inject_when_no_rejection_and_no_pool(self, failures_file, monkeypatch, tmp_path):
         """First-ever gen / clean crossover: no critic rejection + empty pool -> ''."""
