@@ -1521,6 +1521,79 @@ async def run_review(args):
     from llm_query import parse_json_output_with_mode
     data, _review_mode = parse_json_output_with_mode(output)
 
+    if not (data and "approved" in data):
+        error_msg = (
+            "Reviewer returned valid JSON but missing 'approved' field"
+            if data and isinstance(data, dict)
+            else f"Reviewer failed to produce valid JSON (mode={_review_mode})"
+        )
+        prev = ckpt.get("gate_results", {}).get("review", {}).get("review_parse_retry", 0) if ckpt else 0
+        parse_count = prev + 1
+        gate = _gate_payload(
+            v,
+            source_v,
+            False,
+            approved=False,
+            llm_failed=True,
+            parse_error=True,
+            review_parse_retry=0 if parse_count >= 3 else parse_count,
+            error=error_msg,
+            raw_output=output[:500] if output else "",
+        )
+        checkpoint_recorded = _record_gate(
+            v,
+            source_v,
+            "review",
+            gate,
+            stage=None,
+            master_plan=ckpt.get("master_plan") if ckpt else plan,
+            reviewer_feedback=f"Reviewer parse error: {error_msg}",
+            generation_attempt=ckpt.get("generation_attempt", 0) if ckpt else 0,
+        )
+        try:
+            log_system_event(
+                "pipeline.review_parse_error",
+                "warn",
+                f"Reviewer v{v} output parse failed attempt {parse_count}/3",
+                {
+                    "version": v,
+                    "parse_retry": parse_count,
+                    "mode": _review_mode,
+                    "checkpoint_recorded": checkpoint_recorded,
+                },
+            )
+        except Exception:
+            pass
+        ui.log_history(f"Reviewer output parse error (NOT a code rejection): {error_msg}", "warn")
+        result = {
+            "action": "abandon_cycle" if parse_count >= 3 else "retry_review",
+            "directive": (
+                f"Reviewer output parse failed {parse_count}x (NOT a code rejection). "
+                f"{'Soft-abandon this cycle; next cycle may retry run_review. ' if parse_count >= 3 else 'Call run_review AGAIN. '}"
+                "Do NOT retry_workers or run_master."
+            ),
+            "llm_failed": True,
+            "parse_error": True,
+            "approved": False,
+            "checkpoint_recorded": checkpoint_recorded,
+            "logs": ui.get_output(),
+        }
+        try:
+            log_system_event(
+                "pipeline.review_done",
+                "info",
+                f"Review finished for v{v} in {time.time() - _t0:.1f}s",
+                {
+                    "version": v,
+                    "approved": False,
+                    "parse_error": True,
+                    "elapsed_sec": round(time.time() - _t0, 2),
+                },
+            )
+        except Exception:
+            pass
+        return _json_tool_result(result)
+
     if data and "approved" in data:
         approved = data["approved"] is True
         feedback = data.get("feedback", "")
@@ -1564,37 +1637,6 @@ async def run_review(args):
             "checkpoint_recorded": checkpoint_recorded,
             "logs": ui.get_output(),
         }
-    else:
-        error_msg = (
-            "Reviewer returned valid JSON but missing 'approved' field"
-            if data and isinstance(data, dict)
-            else f"Reviewer failed to produce valid JSON (mode={_review_mode})"
-        )
-        gate = _gate_payload(
-            v,
-            source_v,
-            False,
-            approved=False,
-            error=error_msg,
-            raw_output=output[:500] if output else "",
-        )
-        checkpoint_recorded = _record_gate(
-            v,
-            source_v,
-            "review",
-            gate,
-            stage=None,
-            master_plan=ckpt.get("master_plan") if ckpt else plan,
-            reviewer_feedback=error_msg,
-        )
-        result = {
-            "approved": False,
-            "error": error_msg,
-            "raw_output": output[:500] if output else "",
-            "checkpoint_recorded": checkpoint_recorded,
-            "logs": ui.get_output(),
-        }
-
     try:
         log_system_event("pipeline.review_done", "info",
                          f"Review finished for v{v} in {time.time() - _t0:.1f}s",

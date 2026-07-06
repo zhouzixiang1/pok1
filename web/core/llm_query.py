@@ -1186,6 +1186,7 @@ def _format_runtime_path_contract(project_root, allowed_write_dir=None):
         "# Runtime Path Contract",
         f"- The active repository root for this run is `{root}`.",
         "- Bash starts in that directory; prefer relative paths from this root.",
+        "- Bash tool working directory may persist across calls. Do not use a bare `cd` that changes later commands. If a command needs a bot-local cwd, use a subshell such as `(cd bots/national_vN && python -B -c '...')`, or start the command with the active repository root explicitly.",
         "- Do not use sibling or parent checkout absolute paths as edit targets.",
         "- Do not write probe output, stderr captures, or temporary logs to `/tmp` or `/var/tmp`.",
         "- Prefer inline pipes such as `2>&1 | grep ...`; if a probe truly needs a file, place it inside the declared write scope and remove it in the same command.",
