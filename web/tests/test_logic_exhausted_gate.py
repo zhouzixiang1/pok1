@@ -195,6 +195,61 @@ class TestHardGateDirectionToken:
         assert warnings == []
         assert any("EXHAUSTED_DIRECTION_REPEATED" in error for error in errors)
 
+    def test_validate_master_plan_ignores_noisy_worker_prompt_when_structured_intent_is_novel(
+        self, tmp_path, monkeypatch
+    ):
+        """v58 regression: code skeleton terms in worker_prompt must not make a
+        novel BB-OOP probe plan look like a stale fold/SPR/bluff axis."""
+        import core.tool_planning as tp
+
+        pool = tmp_path / "experience_pool.md"
+        pool.write_text(
+            "## OPPONENT_MODELING\n"
+            "- Archetype-axis ports saturate to `standard`, reappear without WR-lift. "
+            + HARD_GATE_MARKER + "\n"
+            "## POSTFLOP_STRATEGY\n"
+            "- Polarized-jam call/fold: downstream fold gates alone are insufficient "
+            "if SPR_COMMITMENT_PROBE / POLARIZED_JAM_CALL_OVERRIDE fire <1% @>=30g. "
+            + HARD_GATE_MARKER + "\n"
+            "- Fold-side GENERIC nudges FORBIDDEN & dead (underbettor floors, value-tier ceilings). "
+            + HARD_GATE_MARKER + "\n"
+            "## BLUFF_CALIBRATION\n"
+            "- Board-texture bluff-raise (offense axis) retired as caution unless >=100g WR revives it. "
+            + HARD_GATE_MARKER + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(tp, "EXPERIENCE_FILE", pool)
+        plan = {
+            "analysis": "second attempt after a rejected stack-off plan",
+            "targeted_failure": "Missing BB-OOP turn/river probe line template after PFR check-back.",
+            "expected_behavior_change": "Add a bounded value extraction line in to_call==0 spots.",
+            "measurement_plan": "quality gates",
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["donk_probe.py", "strategy.py"],
+                "behavior_hypothesis": (
+                    "BB-OOP probe fires on turn/river after PFR check-back, extracting "
+                    "value from medium hands and semi-bluffing draws at controlled frequency."
+                ),
+                "expected_diff_shape": (
+                    "Add _BB_PROBE_* parameters, should_bb_oop_probe_bet(), and one "
+                    "strategy.py wiring block after the existing probe block."
+                ),
+                "worker_prompt": (
+                    "## Task: Add BB-OOP turn/river probe bet line template\n"
+                    "Do NOT revive the polarized-jam commitment axis. Add constants "
+                    "_BB_PROBE_MAX_WETNESS and _BB_PROBE_VALUE_FREQ_CAP; use board_texture, "
+                    "tier, value, semi_bluff, fold_to_raise, and telemetry reason=fired."
+                ),
+            }],
+        }
+
+        errors, warnings = tp._validate_master_plan(plan, next_v=58)
+
+        assert warnings == []
+        assert not any("EXHAUSTED_DIRECTION_REPEATED" in error for error in errors)
+
     def test_validate_master_plan_can_warn_for_repair_mode(self, param_pool, monkeypatch):
         import core.tool_planning as tp
 
