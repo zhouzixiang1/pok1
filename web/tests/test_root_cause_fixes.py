@@ -221,10 +221,12 @@ class TestP4ExhaustedDirection:
         assert callable(_validate_master_plan)
 
     def test_exhausted_check_in_source(self):
-        from core.tool_planning import _validate_master_plan
+        from core.tool_planning import _exhausted_plan_violations, _validate_master_plan
         source = inspect.getsource(_validate_master_plan)
-        assert "_extract_exhausted_keywords" in source
-        assert "_fuzzy_match_exhausted" in source
+        helper_source = inspect.getsource(_exhausted_plan_violations)
+        assert "_exhausted_plan_violations" in source
+        assert "_extract_exhausted_keywords" in helper_source
+        assert "_fuzzy_match_exhausted" in helper_source
 
 
 # ── P5: Replay Spotlight Card Fix ───────────────────────────────────

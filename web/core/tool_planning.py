@@ -704,8 +704,8 @@ def _verify_cited_replays(plan):
     results/spotlight_manifest.json listing every citation it actually emitted;
     this function cross-checks the plan's citations against it.
 
-    Returns a list of BLOCKING error strings (FABRICATED evidence is a hard error,
-    unlike the advisory exhausted-direction check).
+    Returns a list of BLOCKING error strings. Like EXHAUSTED-direction positive
+    intent, fabricated evidence must not reach workers.
     """
     anchor_map = _load_replay_anchor_map()
     tasks = plan if isinstance(plan, list) else (
@@ -723,12 +723,53 @@ def _verify_cited_replays(plan):
     return _check_citations(texts, anchor_map)
 
 
-def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None):
+def _exhausted_plan_violations(plan, next_v=None, precomputed_exhausted_keywords=None):
+    """Return blocking positive-intent matches against EXHAUSTED directions.
+
+    This deliberately inspects only positive execution intent. Guardrail prose
+    such as "do not repeat fold-gate tuning" is stripped by
+    _positive_execution_text_from_task, so the gate blocks plans that actually
+    ask workers to implement a stale axis, not plans that merely quote the ban.
+    """
+    exhausted_keywords = (
+        precomputed_exhausted_keywords
+        if precomputed_exhausted_keywords is not None
+        else _extract_exhausted_keywords()
+    )
+    if not exhausted_keywords or not isinstance(plan, dict):
+        return []
+
+    violations = []
+    for i, task in enumerate(plan.get("tasks", []) or []):
+        if not isinstance(task, dict):
+            continue
+        prompt_text = _positive_execution_text_from_task(task)
+        if _fuzzy_match_exhausted(prompt_text, exhausted_keywords, require_direction_token=True):
+            worker_id = task.get("worker_id", i)
+            violations.append(
+                "EXHAUSTED_DIRECTION_REPEATED: "
+                f"Task {i} (worker_id={worker_id}) positive implementation intent "
+                "matches an EXHAUSTED direction from experience_pool.md. "
+                "Produce a fundamentally different axis before executing workers."
+            )
+    return violations
+
+
+def _validate_master_plan(
+    plan,
+    next_v=None,
+    precomputed_exhausted_keywords=None,
+    exhausted_policy="error",
+):
     """Validate master plan constraints before dispatching workers.
 
     Returns (errors, warnings) — only errors block plan storage.
     Boundary warnings are logged but non-blocking; the reviewer/critic
     enforce actual role boundaries during code review.
+
+    exhausted_policy:
+    - "error": normal Master planning; stale directions must not reach workers.
+    - "warn": repair/backward-compatible callers; record risk without blocking.
     """
     errors = []
     warnings = []
@@ -834,16 +875,20 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
             f"Assign constants.py to Tuner only; other files go to Architect."
         )
 
-    # Check positive worker intent against exhausted directions from experience pool.
-    # Constraint prose such as "do not reopen EXHAUSTED axis" is intentionally
-    # ignored so safety instructions do not create worker_exhausted false positives.
-    exhausted_keywords = precomputed_exhausted_keywords if precomputed_exhausted_keywords is not None else _extract_exhausted_keywords()
-    if exhausted_keywords:
-        for i, task in enumerate(tasks):
-            prompt_text = _positive_execution_text_from_task(task)
-            if _fuzzy_match_exhausted(prompt_text, exhausted_keywords, require_direction_token=True):
-                warnings.append(f"Task {i}: worker prompt matches an EXHAUSTED direction from experience pool (advisory). This direction has been repeatedly tried with no measurable improvement; a fundamentally different approach is recommended but not required.")
-                # advisory only — no longer blocks the plan
+    # Check positive worker intent against exhausted directions from experience
+    # pool. This used to be advisory, which let v33 spend a full worker timeout
+    # on a direction the system had already identified as stale. Normal Master
+    # planning now blocks here; repair flows can request warning mode.
+    exhausted_violations = _exhausted_plan_violations(
+        plan,
+        next_v=next_v,
+        precomputed_exhausted_keywords=precomputed_exhausted_keywords,
+    )
+    if exhausted_violations:
+        if exhausted_policy == "warn":
+            warnings.extend(v.replace("EXHAUSTED_DIRECTION_REPEATED: ", "") for v in exhausted_violations)
+        else:
+            errors.extend(exhausted_violations)
 
     # A4 (evidence_gate, evolution-plan-refresh-jun21): BLOCKING — reject cited
     # replay hands that don't exist in the spotlight manifest (FABRICATED evidence,
@@ -4901,6 +4946,55 @@ async def execute_workers(args):
     # experience pool. Negative guardrail prose is ignored to prevent warnings
     # from firing merely because the prompt quotes a forbidden axis.
     exhausted_keywords = _extract_exhausted_keywords()
+    exhausted_violations = _exhausted_plan_violations(
+        {"tasks": tasks},
+        next_v=next_v,
+        precomputed_exhausted_keywords=exhausted_keywords,
+    )
+    if exhausted_violations and ckpt.get("stage") == "master_planned" and not reviewer_feedback:
+        audit_attempt = int(ckpt.get("audit_attempt") or 0) + 1
+        audit_context = {
+            "worker_exhausted_plan_blocked": {
+                "validation_errors": exhausted_violations,
+                "source_stage": ckpt.get("stage"),
+            }
+        }
+        write_pipeline_checkpoint(
+            next_v,
+            source_v,
+            "direction_audited",
+            master_plan={},
+            direction_audit=ckpt.get("direction_audit"),
+            worker_failure_count=ckpt.get("worker_failure_count", 0),
+            audit_attempt=audit_attempt,
+            audit_context=audit_context,
+            touch_stage_timestamp=True,
+        )
+        log_system_event(
+            "pipeline.worker_exhausted_plan_blocked",
+            "error",
+            f"Blocked worker execution for v{next_v}: saved Master plan repeats EXHAUSTED direction",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "validation_errors": exhausted_violations,
+                "audit_attempt": audit_attempt,
+            },
+        )
+        return _json_tool_result({
+            "error": "WORKER_EXHAUSTED_PLAN_BLOCKED",
+            "next_v": next_v,
+            "source_v": source_v,
+            "validation_errors": exhausted_violations,
+            "next_tool": "run_master",
+            "directive": (
+                "The saved Master plan repeats an EXHAUSTED direction and was "
+                "not allowed to reach workers. The checkpoint has been rolled "
+                "back to direction_audited with the invalid master_plan cleared. "
+                "Call run_master to produce a fundamentally different execution "
+                "axis before execute_workers."
+            ),
+        })
     if exhausted_keywords:
         for task in tasks:
             prompt_text = _positive_execution_text_from_task(task)

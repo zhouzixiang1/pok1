@@ -3194,6 +3194,52 @@ class TestWorkerFailureCircuitBreaker:
         # Should NOT have been blocked — execute_workers was called
         mock_exec.assert_called_once()
 
+    def test_execute_workers_blocks_stale_exhausted_master_plan(self, tmp_path, monkeypatch):
+        """Old master_planned checkpoints must not execute a plan that current
+        validation would reject as an EXHAUSTED direction."""
+        import asyncio
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
+        state = json.loads(ckpt_file.read_text())
+        state["direction_audit"] = {
+            "repetition_detected": True,
+            "exhausted_directions": ["fold margin clamp tuning"],
+            "llm_failed": False,
+        }
+        state["master_plan"] = {
+            "analysis": "stale plan",
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "worker_prompt": "Parameter tuning: adjust fold margin clamp and sizing_aggr constants.",
+            }],
+        }
+        ckpt_file.write_text(json.dumps(state))
+        monkeypatch.setattr(
+            tool_planning,
+            "_extract_exhausted_keywords",
+            lambda: [("parameter_tuning", "fold margin clamp sizing_aggr tuning")],
+        )
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec:
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+
+        assert data["error"] == "WORKER_EXHAUSTED_PLAN_BLOCKED"
+        assert data["next_tool"] == "run_master"
+        mock_exec.assert_not_called()
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "direction_audited"
+        assert ckpt["master_plan"] == {}
+        assert ckpt["audit_attempt"] == 1
+        assert ckpt["direction_audit"]["repetition_detected"] is True
+
     def test_backward_compat_old_invocation_count_key(self, tmp_path, monkeypatch):
         """Old checkpoint with worker_invocation_count (no worker_failure_count) should be read."""
         import asyncio

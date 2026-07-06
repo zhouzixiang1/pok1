@@ -288,6 +288,8 @@ def validate_stage_transition(current_stage, proposed_stage):
     }
     if proposed_stage == "master_planned" and current_stage in retry_sources:
         return True, "retry_reset"
+    if current_stage == "master_planned" and proposed_stage == "direction_audited":
+        return True, "master_plan_rejected_replan"
     if proposed_stage == "repair_planned" and current_stage in retry_sources:
         return True, "rework_planned"
     if proposed_stage == "repair_planned" and current_stage == "rework_running":
