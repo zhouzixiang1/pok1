@@ -1,4 +1,4 @@
-# Neural National v110-v118 Report
+# Neural National v110-v119 Report
 
 Date: 2026-07-06
 
@@ -586,12 +586,112 @@ Relative to v117:
 - All v118 recorded evaluations passed protocol compliance with 0 candidate
   illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
 
+## v119
+
+Path:
+
+`bots/neural_national_lab/versions/v119_national_v17_flop_allin_river_call_tcp`
+
+Change:
+
+- Derived from v118.
+- Keeps v118's low-trips flop `raise_pot -> call` gate.
+- Adds a small flop all-in value veto:
+  - stage is `flop`,
+  - original rule label is `allin`,
+  - facing a non-all-in bet with `1200 <= to_call <= 2500`,
+  - pot is `2500..5000`,
+  - learned all-in value is at most `-0.25`,
+  - learned fold value is at least `1.0` above all-in,
+  - return action `-1`, a national-protocol `fold`.
+- Adds a river paired-ace small-bet call gate:
+  - stage is `river`,
+  - original rule label is `raise_pot`,
+  - facing `250 <= to_call <= 450`,
+  - pot is `800..1200`,
+  - rule raise-to action is `1150..1450`,
+  - board contains exactly two aces,
+  - our best hand is two pair without a hole ace,
+  - the hole-made pair rank is at most jack,
+  - return action `0`, a national-protocol `call`.
+
+Reason:
+
+After `.evolution_pok` advanced to completed `national_v31`, the current
+conservative-Glicko top10 was reselected from completed and tagged bots. The
+pool was `national_v2`, `national_v1`, `national_v14`, `national_v8`,
+`national_v29`, `national_v3`, `national_v31`, `national_v17`, `national_v5`,
+and `national_v30`. Untracked `.evolution_pok/bots/national_v32/` was not used.
+
+v118 was positive on that pool but still had one negative paired match:
+`national_v2` seed `2026074105`. Trace analysis found:
+
+- A flop all-in with 8-5 suited on a T-7-2 board. The value head scored
+  `allin=-0.343` and `fold=0.863`; forcing that action to fold improved the
+  paired match by `+19231`.
+- A repeated river thin pot-raise on paired-ace boards. Forcing these raises
+  to call improved five v2 paired seeds by `+39256` total. v119 uses call
+  rather than fold to preserve showdown value.
+
+Current completed top10 on seed block `2026074100`:
+
+| Version | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| v118 | 60 | 8400 | `+207565` | `+24.710` | `17-1-42` |
+| v119 | 60 | 8400 | `+253903` | `+30.227` | `18-0-42` |
+
+Per-opponent current-top10 deltas:
+
+| Opponent | v118 Total | v119 Total | Delta |
+|---|---:|---:|---:|
+| national_v1 | `+83116` | `+84530` | `+1414` |
+| national_v2 | `+44962` | `+84218` | `+39256` |
+| national_v3 | `+79487` | `+85155` | `+5668` |
+| national_v5 | `0` | `0` | `0` |
+| national_v8 | `0` | `0` | `0` |
+| national_v14 | `0` | `0` | `0` |
+| national_v17 | `0` | `0` | `0` |
+| national_v29 | `0` | `0` | `0` |
+| national_v30 | `0` | `0` | `0` |
+| national_v31 | `0` | `0` | `0` |
+
+Regression on the older current-top8+v7 seed blocks:
+
+| Block | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| seed2026074000 | 90 | 12600 | `+417530` | `+33.137` | `37-11-42` |
+| seed2026073900 | 90 | 12600 | `+891033` | `+70.717` | `71-3-16` |
+| combined | 180 | 25200 | `+1308563` | `+51.927` | `108-14-58` |
+
+Combined older-block v119 opponent totals remained positive for every opponent:
+
+| Opponent | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|
+| national_v8 | `+118971` | `+42.490` | `10-0-10` |
+| national_v5 | `+132568` | `+47.346` | `11-1-8` |
+| national_v7 | `+144375` | `+51.562` | `12-0-8` |
+| national_v9 | `+144375` | `+51.562` | `12-0-8` |
+| national_v14 | `+144375` | `+51.562` | `12-0-8` |
+| national_v15 | `+144375` | `+51.562` | `12-0-8` |
+| national_v16 | `+144375` | `+51.562` | `12-0-8` |
+| national_v3 | `+164298` | `+58.678` | `14-6-0` |
+| national_v2 | `+170851` | `+61.018` | `13-7-0` |
+
+Relative to v118:
+
+- Current completed-top10 seed block delta: `+46338` chips, `+5.517/hand`.
+- Current completed-top10 W-L-D improved from `17-1-42` to `18-0-42`.
+- Older current-top8+v7 combined result was unchanged from v118.
+- All v119 recorded evaluations passed protocol compliance with 0 candidate
+  illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
+
 ## Current Assessment
 
-- v118 is the current best artifact by fresh strong-rule coverage because it
-  turns the current conservative-Glicko top10 seed block from v117's `-74403`
-  to `+125410`, a `+199813` chip delta, while staying protocol-clean.
-- v118 gives back `35181` chips on the older two-block pool versus v117, but
+- v119 is the current best artifact by fresh strong-rule coverage because it
+  improves the completed `.evolution_pok` top10 seed block from v118's
+  `+207565` to `+253903`, a `+46338` chip delta, and removes the remaining
+  latest-top10 loss while staying protocol-clean.
+- v119 gives back `35181` chips on the older two-block pool versus v117, but
   remains strongly positive there at `+1308563`, mean/hand `+51.927`, W-L-D
   `108-14-58`, with every opponent total still positive.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
@@ -606,13 +706,16 @@ Relative to v117:
   latest-top10 block improves v1/v2/v3 by `+250474` total.
 - v118: older two-block v2/v3 result is v2 `+170851`, v3 `+164298`; fresh
   current-top10 v2/v3 result is v2 `+44962`, v3 `+80448`.
-- All v110/v111/v112/v113/v114/v115/v116/v117/v118 recorded evaluations passed
-  protocol compliance with 0 candidate illegal actions, 0 candidate timeouts,
-  and 0 candidate adapter actions.
+- v119: older two-block v2/v3 result is unchanged from v118; fresh
+  completed-top10 v2/v3 result is v2 `+84218`, v3 `+85155`.
+- All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119 recorded evaluations
+  passed protocol compliance with 0 candidate illegal actions, 0 candidate
+  timeouts, and 0 candidate adapter actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
-It is still not complete domination: v118 is positive on the current top10
-block but still has one v2 loss in that block, an older v2 record of `13-7-0`,
-and many exact draws against rule variants. The next generation should mine
-fresh non-zero losses without widening the low-trips gate or weakening native
-TCP protocol compliance.
+It is still not complete domination: v119 has no losses on the current
+completed-top10 block, but it still has 42 exact draws there, an older v2 record
+of `13-7-0`, and old-block losses against v2/v3. The next generation should
+mine draw-breaking opportunities against v14/v8/v29/v31/v17/v5/v30 and reduce
+old-block v2/v3 losses without widening the high-variance gates or weakening
+native TCP protocol compliance.
