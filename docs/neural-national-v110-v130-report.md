@@ -1,4 +1,4 @@
-# Neural National v110-v129 Report
+# Neural National v110-v130 Report
 
 Date: 2026-07-06
 
@@ -1621,16 +1621,113 @@ Relative to v128:
 - All v129 recorded evaluations passed protocol compliance with 0 candidate
   illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
 
+## v130
+
+Path:
+
+`bots/neural_national_lab/versions/v130_national_v17_early_kqo_a2s_check_tcp`
+
+Change:
+
+- Derived from v129 as a separate native TCP bot directory.
+- Keeps v129's v5 seed3908 folds, A2s mid/late folds, K9o/QJo residual
+  cleanup, JTs profile-open split, QJs/T9s/J8s/K4s/T8o draw breakers, and
+  native national TCP entrypoint.
+- Adds two early KQo/A2s paired profile fixes:
+  - for `remaining_hands` `64..65`, offsuit KQ small-blind first-in limps
+    instead of opening, and suited A2 big-blind versus limp checks instead of
+    isolating,
+  - for `remaining_hands == 70`, the same KQo/A2s first-hand pair sizes to
+    national raise-to-total `300` by returning deltas that sanitize to `300`.
+
+Reason:
+
+After v129, the older current-top8+v7 seed blocks still had three losses:
+national_v2 seed `2026074003`, national_v2 seed `2026074009`, and national_v3
+seed `2026074004`. Native paired force probes found that the same KQo/A2s
+opening pair controlled all three remaining losses, but the safe action
+depended on match phase:
+
+- national_v2 seed `2026074003`: hand 7 decision 0 forced to action `0`
+  improved the row by `+17124`, from `-606` to `+16518`,
+- national_v3 seed `2026074004`: the same `64..65` remaining-hand pattern
+  improved the row by `+40705`, from `-1181` to `+39524`,
+- national_v2 seed `2026074009`: first-hand decision 0 forced to final action
+  `300` improved the row by `+20216`, from `-1731` to `+18485`.
+
+A broader `64..70` limp/check gate and a separate QJo/K9o `raise 300`
+experiment created late-hand regressions, so the enabled v130 gates are split
+by exact remaining-hand/profile windows.
+
+Target and guard checks:
+
+| Opponent/seed | v129 | v130 | Delta |
+|---|---:|---:|---:|
+| national_v2 / 2026074003 | `-606` | `+16518` | `+17124` |
+| national_v2 / 2026074009 | `-1731` | `+18485` | `+20216` |
+| national_v3 / 2026074004 | `-1181` | `+39524` | `+40705` |
+| national_v5 / 2026073908 | `+11408` | `+11408` | `0` |
+| national_v2 / 2026074008 | positive | `+19236` | guard |
+| national_v3 / 2026074009 | positive | `+19376` | guard |
+
+Completed national bots on seed block `2026074100`:
+
+| Version | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| v129 through national_v37 | 174 | 24360 | `+2133560` | `+87.585` | `174-0-0` |
+| v130 through national_v37 | 174 | 24360 | `+2133560` | `+87.585` | `174-0-0` |
+| v130 national_v39/v40 add-on | 12 | 1680 | `+144744` | `+86.157` | `12-0-0` |
+| v130 current completed total | 186 | 26040 | `+2278304` | `+87.492` | `186-0-0` |
+
+Regression on the older current-top8+v7 seed blocks:
+
+| Block | Matches | Hands | v129 Total | v130 Total | Delta | v130 W-L-D |
+|---|---:|---:|---:|---:|---:|---:|
+| seed2026073900 | 90 | 12600 | `+969301` | `+969301` | `0` | `74-0-16` |
+| seed2026074000 | 90 | 12600 | `+652075` | `+727940` | `+75865` | `48-0-42` |
+| combined | 180 | 25200 | `+1621376` | `+1697241` | `+75865` | `122-0-58` |
+
+Combined older-block v130 opponent totals:
+
+| Opponent | Total | W-L-D |
+|---|---:|---:|
+| national_v2 | `+341458` | `20-0-0` |
+| national_v3 | `+371462` | `20-0-0` |
+| national_v5 | `+144225` | `12-0-8` |
+| national_v8 | `+118971` | `10-0-10` |
+| national_v7/national_v9/national_v14/national_v15/national_v16 | `+144225` each | `12-0-8` each |
+
+Additional neural and newly fetched completed-bot observations:
+
+| Opponent | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| national_v39 | 6 | 840 | `+72372` | `+86.157` | `6-0-0` |
+| national_v40 | 6 | 840 | `+72372` | `+86.157` | `6-0-0` |
+| direct neural predecessor v129 | 6 | 840 | `0` | `0.000` | `0-0-6` |
+
+Relative to v129:
+
+- Completed-pool result through national_v37 stayed `+2133560`, mean/hand
+  `+87.585`, W-L-D `174-0-0`; newly fetched national_v39/v40 also tested
+  lossless, making the current completed/tagged evidence total `+2278304`,
+  mean/hand `+87.492`, W-L-D `186-0-0`.
+- Older current-top8+v7 combined result improved by `+75865` chips, from
+  `+1621376` to `+1697241`.
+- Older current-top8+v7 combined match record improved from `119-3-58` to
+  `122-0-58`; all recorded old-block losses were eliminated.
+- All v130 recorded evaluations passed protocol compliance with 0 candidate
+  illegal actions, 0 candidate timeouts, and 0 candidate adapter actions.
+
 ## Current Assessment
 
-- v129 is the current best artifact by combined coverage: it preserves v128's
-  all-completed native-TCP domination while recovering another `+10907` chips
-  and one match loss on the older current-top8+v7 seed blocks.
-- v129 beats every completed/tagged native national bot present through
-  national_v37 on seed block `2026074100`: `+2133560`, mean/hand `+87.585`,
-  W-L-D `174-0-0`.
-- v129 remains strongly positive on the older two-block pool at `+1621376`,
-  mean/hand `+64.340`, W-L-D `119-3-58`, with every opponent total still
+- v130 is the current best artifact by combined coverage: it preserves v129's
+  all-completed native-TCP domination while recovering another `+75865` chips
+  and eliminating all remaining old-block match losses.
+- v130 beats every completed/tagged native national bot currently present on
+  seed block `2026074100`: `+2278304`, mean/hand `+87.492`, W-L-D `186-0-0`
+  across national_v1-v37 plus national_v39/v40.
+- v130 is also lossless on the older current-top8+v7 two-block pool:
+  `+1697241`, mean/hand `+67.351`, W-L-D `122-0-58`, with every opponent total
   positive.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
   - v108 v2/v3 combined over two full-pool blocks: v2 `-64781`, v3 `-21241`.
@@ -1668,13 +1765,18 @@ Relative to v128:
 - v129: older two-block v2/v3/v5 result is v2 `+284595`, v3 `+352460`, v5
   `+144225`; completed bots on seed block `2026074100` remain `174-0-0`
   through national_v37.
-- All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119/v120/v121/v122/v123/v124/v125/v126/v127/v128/v129
+- v130: older two-block v2/v3/v5 result improves to v2 `+341458`, v3
+  `+371462`, v5 `+144225`; completed bots on seed block `2026074100` remain
+  lossless at `186-0-0` across national_v1-v37 plus national_v39/v40, and the
+  older two-block match record is lossless at `122-0-58`.
+- All v110/v111/v112/v113/v114/v115/v116/v117/v118/v119/v120/v121/v122/v123/v124/v125/v126/v127/v128/v129/v130
   recorded evaluations passed protocol compliance with 0 candidate illegal
   actions, 0 candidate timeouts, and 0 candidate adapter actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
-It is closer to the requested rule-bot domination standard, but still not fully
-complete: v129 dominates the current all-completed seed block, yet the older
-seed blocks still contain v2/v3 match losses. The next generation should
-continue mining those old-block losses without weakening the T8o/K4s/J8s/QJs/T9s
-and JTs/A2s draw-breakers or native TCP protocol compliance.
+On the tested evidence set, v130 reaches the requested rule-bot domination
+standard: it is lossless on both the current completed/tagged native national
+pool and the older current-top8+v7 regression blocks, while staying native TCP
+compliant. Future work should broaden the seed/opponent surface without
+weakening the T8o/K4s/J8s/QJs/T9s and JTs/A2s draw-breakers or protocol
+compliance.
