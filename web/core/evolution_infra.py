@@ -962,9 +962,22 @@ def get_active_bots():
             if v is None or not d.startswith(ACTIVE_BOT_PREFIX):
                 continue
             if os.path.isdir(BOTS_DIR / d) and (BOTS_DIR / d / ".completed").exists():
-                if v in tag_versions and v not in reaped_versions and is_active_bot_protocol_eligible(v):
+                if (
+                    v in tag_versions
+                    and v not in reaped_versions
+                    and is_active_bot_protocol_eligible(v)
+                    and _official_parent_eligible(BOTS_DIR / d)
+                ):
                     bots.append(d)
     return sorted(bots, key=version_sort_key)
+
+
+def _official_parent_eligible(bot_dir: Path) -> bool:
+    try:
+        from official_certification import parent_eligible
+        return bool(parent_eligible(bot_dir))
+    except Exception:
+        return True
 
 
 def find_current_v():

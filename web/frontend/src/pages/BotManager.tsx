@@ -34,6 +34,56 @@ const lifecycleTone = (status?: string) => {
   return "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300";
 };
 
+const certificationTone = (status?: string) => {
+  if (status === "official-certified") return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
+  if (status === "official-smoke-pass") return "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300";
+  if (status === "official-pending") return "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300";
+  if (status === "official-failed") return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300";
+  return "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300";
+};
+
+const certificationText = (status?: string) => (
+  status === "official-certified" ? "官方认证"
+    : status === "official-smoke-pass" ? "Smoke 通过"
+      : status === "official-pending" ? "官方排队"
+        : status === "official-failed" ? "官方失败"
+          : "本地通过"
+);
+
+const asRecord = (value: unknown): Record<string, unknown> | null => (
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
+);
+
+const firstString = (value: unknown): string | undefined => {
+  if (typeof value === "string" && value) return value;
+  if (Array.isArray(value)) return value.find((item): item is string => typeof item === "string" && item.length > 0);
+  return undefined;
+};
+
+const certificationEvidence = (certification?: BotSummary["official_certification"]) => {
+  const result = asRecord(certification?.result);
+  const report = asRecord(result?.report);
+  const rounds = Array.isArray(report?.rounds) ? report.rounds : [];
+  let receipt: string | undefined;
+  let thp: string | undefined;
+  let log: string | undefined;
+  let handRecords: number | undefined;
+  for (const round of rounds) {
+    const roundRecord = asRecord(round);
+    const artifacts = asRecord(roundRecord?.artifacts);
+    receipt ||= firstString(artifacts?.receipt);
+    thp ||= firstString(artifacts?.thp_files);
+    log ||= firstString(artifacts?.bot_a_log) || firstString(artifacts?.bot_b_log) || firstString(artifacts?.platform_log);
+    const summaries = Array.isArray(artifacts?.thp_summaries) ? artifacts.thp_summaries : [];
+    for (const item of summaries) {
+      const summary = asRecord(item);
+      const value = Number(summary?.hand_records ?? 0);
+      if (Number.isFinite(value)) handRecords = Math.max(handRecords ?? 0, value);
+    }
+  }
+  return { receipt, thp, log, handRecords };
+};
+
 function RatingBadge({ r, rd, h2hWr, games }: { r: number; rd: number; h2hWr?: number; games?: number }) {
   const conf = rd < 50 ? "text-green-600" : rd < 100 ? "text-yellow-600" : "text-orange-500";
   return (
@@ -132,6 +182,19 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
     }
   };
 
+  const handleCertification = async (mode: "smoke" | "full") => {
+    setToolLoading(`cert-${mode}`);
+    try {
+      const r = await api.enqueueCertification(bot.version, mode);
+      setDetail((prev) => prev ? { ...prev, official_certification: r } : prev);
+      onAction(`${bot.name} ${mode === "full" ? "full" : "smoke"} 官方验收已排队: ${r.status}`);
+    } catch (e) {
+      onAction(`官方验收排队失败: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setToolLoading(null);
+    }
+  };
+
   const displayName = compactBotName(bot.name);
   const conserv = bot.rating ? bot.rating.conservative.toFixed(0) : "—";
   const fallbackStrength = bot.rating ? Math.max(0, Math.min(1, 0.5 + (bot.rating.conservative - 1500) / 800)) : null;
@@ -140,6 +203,11 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
   const canRunTools = !bot.graveyard && (!bot.lifecycle_status || bot.lifecycle_status === "active" || bot.lifecycle_status === "candidate");
   const protocolErrors = bot.protocol_errors ?? [];
   const statusReasons = bot.status_reasons ?? [];
+  const certification = detail?.official_certification ?? bot.official_certification;
+  const certIssues = certification?.issues ?? [];
+  const certSummary = certification?.summary ?? {};
+  const certSuiteDir = typeof certSummary.suite_dir === "string" ? certSummary.suite_dir : undefined;
+  const certEvidence = certificationEvidence(certification);
 
   return (
     <div className={`rounded-xl border ${bot.graveyard ? "border-gray-300 opacity-60" : "border-gray-200 dark:border-border-subtle"} bg-white dark:bg-surface-1 overflow-hidden`}>
@@ -158,6 +226,11 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
           {bot.lifecycle_status && (
             <span className={`px-1.5 py-0.5 text-[10px] rounded ${lifecycleTone(bot.lifecycle_status)}`}>
               {bot.status_label ?? bot.lifecycle_status}
+            </span>
+          )}
+          {certification && (
+            <span className={`px-1.5 py-0.5 text-[10px] rounded ${certificationTone(certification.status)}`}>
+              {certificationText(certification.status)}
             </span>
           )}
         </div>
@@ -193,6 +266,41 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                         {protocolErrors.length > 6 && (
                           <li className="text-gray-400">还有 {protocolErrors.length - 6} 条</li>
                         )}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+              {certification && (
+                <div className={`rounded-lg border p-3 text-xs ${certification.status === "official-failed" ? "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300" : "border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300"}`}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`px-1.5 py-0.5 rounded ${certificationTone(certification.status)}`}>
+                      {certificationText(certification.status)}
+                    </span>
+                    {certification.mode && <span>模式: <span className="font-mono">{certification.mode}</span></span>}
+                    {certification.updated_at && <span>更新时间: <span className="font-mono">{certification.updated_at}</span></span>}
+                    {certification.cache_hit && <span className="text-emerald-600 dark:text-emerald-300">cache hit</span>}
+                    {certEvidence.handRecords != null && <span>THP 手牌: <span className="font-mono">{certEvidence.handRecords}</span></span>}
+                  </div>
+                  {certSuiteDir && (
+                    <p className="mt-2 break-all">证据目录: <span className="font-mono">{certSuiteDir}</span></p>
+                  )}
+                  {certEvidence.receipt && (
+                    <p className="mt-2 break-all">Receipt: <span className="font-mono">{certEvidence.receipt}</span></p>
+                  )}
+                  {certEvidence.thp && (
+                    <p className="mt-2 break-all">THP: <span className="font-mono">{certEvidence.thp}</span></p>
+                  )}
+                  {certification.status === "official-failed" && certEvidence.log && (
+                    <p className="mt-2 break-all">日志: <span className="font-mono">{certEvidence.log}</span></p>
+                  )}
+                  {certIssues.length > 0 && (
+                    <div className="mt-2">
+                      <p className="font-semibold">官方验收问题</p>
+                      <ul className="mt-1 space-y-1">
+                        {certIssues.slice(0, 5).map((issue) => (
+                          <li key={issue} className="font-mono text-[11px] break-all">{issue}</li>
+                        ))}
                       </ul>
                     </div>
                   )}
@@ -248,6 +356,20 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                     className="px-3 py-1.5 text-xs rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 flex items-center gap-1"
                   >
                     <CheckIcon /> {toolLoading === "commit" ? "提交中..." : "提交"}
+                  </button>
+                  <button
+                    onClick={() => handleCertification("smoke")}
+                    disabled={toolLoading === "cert-smoke"}
+                    className="px-3 py-1.5 text-xs rounded bg-cyan-600 text-white hover:bg-cyan-700 disabled:opacity-50 flex items-center gap-1"
+                  >
+                    <CheckIcon /> {toolLoading === "cert-smoke" ? "排队中..." : "排队 Smoke"}
+                  </button>
+                  <button
+                    onClick={() => handleCertification("full")}
+                    disabled={toolLoading === "cert-full"}
+                    className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
+                  >
+                    <CheckIcon /> {toolLoading === "cert-full" ? "排队中..." : "排队 Full"}
                   </button>
                 </div>
               )}

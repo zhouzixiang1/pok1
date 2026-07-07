@@ -119,26 +119,6 @@ async def _run_workflow_smoke_gate(
             "execution_mode": "native_tcp",
             "issues": [f"native_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
         }
-    if report.get("passed") and _official_gate_enabled("POK_OFFICIAL_SMOKE_GATE"):
-        official_hands = int(os.environ.get("POK_OFFICIAL_SMOKE_HANDS", "5"))
-        try:
-            from official_platform_harness import run_official_smoke
-            official_report = await run_official_smoke(
-                bot_dir,
-                target_hands=official_hands,
-            )
-        except Exception as exc:
-            official_report = {
-                "passed": False,
-                "execution_mode": "official_windows_platform",
-                "hands": official_hands,
-                "issues": [f"official_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
-            }
-        report["official_platform_smoke"] = official_report
-        if not official_report.get("passed"):
-            report["passed"] = False
-            report.setdefault("issues", [])
-            report["issues"].extend(official_report.get("issues") or ["official_platform_smoke_failed"])
     errors = list(report.get("issues") or []) if not report.get("passed") else []
     return errors, report
 
@@ -796,73 +776,76 @@ async def run_quality_gates(args):
             national_acceptance_errors = ["national_acceptance_skipped_due_to_failed_prerequisites"]
             national_acceptance_payload = {"skipped": True, "reason": national_acceptance_errors[0]}
 
-    official_acceptance_enabled = native_tcp_mode and _official_gate_enabled(
-        "POK_OFFICIAL_ACCEPTANCE_GATE",
-        include_required=False,
-    )
-    if official_acceptance_enabled:
+    official_smoke_ok = True
+    official_smoke_errors: list[str] = []
+    official_smoke_payload: dict = {}
+    official_smoke_mode = os.environ.get("POK_OFFICIAL_SMOKE_GATE", "queue").strip().lower()
+    official_smoke_enabled = native_tcp_mode and official_smoke_mode not in {"0", "false", "off", "disabled", "none"}
+    if official_smoke_enabled:
         try:
             _official_bot_under_project_bots = bot_dir.resolve().is_relative_to((PROJECT_ROOT / "bots").resolve())
         except AttributeError:
             _official_bot_under_project_bots = str(bot_dir.resolve()).startswith(str((PROJECT_ROOT / "bots").resolve()))
-        can_run_official_acceptance = (
+        can_request_official_smoke = (
             len(compile_errors) == 0
             and len(import_errors) == 0
             and len(protected_contract_errors) == 0
             and len(native_contract_errors) == 0
             and len(embedded_selftest_errors) == 0
             and len(smoke_errors) == 0
+            and len(national_protocol_errors) == 0
+            and national_acceptance_ok
             and (bot_dir / "national_bot.py").exists()
             and _official_bot_under_project_bots
         )
-        if can_run_official_acceptance:
-            official_opponent = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
-            official_self_rounds = int(os.environ.get("POK_OFFICIAL_SELF_PLAY_ROUNDS", "5"))
-            official_opponent_rounds = int(os.environ.get("POK_OFFICIAL_OPPONENT_ROUNDS", "3"))
-            official_hands = int(os.environ.get("POK_OFFICIAL_TARGET_HANDS", "70"))
+        if can_request_official_smoke:
+            official_opponent = os.environ.get("POK_OFFICIAL_OPPONENT", str(PROJECT_ROOT / "bots" / "national_v76")).strip()
             try:
-                from official_platform_harness import run_official_acceptance
-                _official_acceptance = await run_official_acceptance(
-                    bot_dir,
-                    opponent=official_opponent or None,
-                    self_play_rounds=official_self_rounds,
-                    opponent_rounds=official_opponent_rounds,
-                    target_hands=official_hands,
+                from official_certification import (
+                    STATUS_FAILED,
+                    build_spec,
+                    enqueue_certification,
+                    read_status,
+                    run_certification,
                 )
-                official_payload = _official_acceptance.model_dump()
-                national_acceptance_payload.setdefault("official_platform", official_payload)
-                if not _official_acceptance.passed:
-                    national_acceptance_ok = False
-                    official_errors = _official_acceptance.issues[:5] or ["official_platform_acceptance_failed"]
-                    official_suite_dir = (_official_acceptance.summary or {}).get("suite_dir")
-                    if official_suite_dir:
-                        official_errors.append(f"official_platform_evidence={official_suite_dir}")
-                    national_acceptance_errors.extend(official_errors)
+                _spec = build_spec("smoke", bot_dir, opponent=official_opponent or None)
+                if official_smoke_mode in {"1", "true", "yes", "on", "run", "required"}:
+                    official_smoke_payload = await asyncio.to_thread(
+                        run_certification,
+                        _spec,
+                        queue_on_busy=official_smoke_mode != "required",
+                    )
+                else:
+                    current = read_status(bot_dir)
+                    if current.get("status") in {"official-smoke-pass", "official-certified", "official-pending", STATUS_FAILED}:
+                        official_smoke_payload = current
+                    else:
+                        official_smoke_payload = enqueue_certification(_spec, reason="quality_gate_smoke")
+                if official_smoke_payload.get("status") == STATUS_FAILED:
+                    official_smoke_ok = False
+                    official_smoke_errors = official_smoke_payload.get("issues") or ["official_smoke_failed"]
                 log_system_event(
-                    "pipeline.official_platform_acceptance_passed" if _official_acceptance.passed else "pipeline.official_platform_acceptance_failed",
-                    "success" if _official_acceptance.passed else "error",
-                    f"Official Windows platform acceptance {'passed' if _official_acceptance.passed else 'failed'} for v{v}",
+                    "pipeline.official_smoke_failed" if not official_smoke_ok else "pipeline.official_smoke_status",
+                    "error" if not official_smoke_ok else "info",
+                    f"Official smoke status for v{v}: {official_smoke_payload.get('status', 'unknown')}",
                     {
                         "version": v,
                         "source_v": source_v,
-                        "self_play_rounds": official_self_rounds,
-                        "opponent_rounds": official_opponent_rounds,
-                        "hands": official_hands,
+                        "mode": official_smoke_mode,
                         "opponent": official_opponent,
-                        "issues": _official_acceptance.issues[:5],
-                        "summary": _official_acceptance.summary,
+                        "status": official_smoke_payload.get("status"),
+                        "issues": official_smoke_errors,
                     },
                 )
             except Exception as e:
-                national_acceptance_ok = False
-                err = f"official_platform_acceptance_exception: {type(e).__name__}: {str(e)[:200]}"
-                national_acceptance_errors.append(err)
-                national_acceptance_payload.setdefault("official_platform", {"error": err})
+                official_smoke_ok = False
+                official_smoke_errors = [f"official_smoke_exception: {type(e).__name__}: {str(e)[:200]}"]
+                official_smoke_payload = {"error": official_smoke_errors[0]}
         else:
-            national_acceptance_payload.setdefault("official_platform", {
+            official_smoke_payload = {
                 "skipped": True,
-                "reason": "official_platform_acceptance_skipped_due_to_failed_prerequisites",
-            })
+                "reason": "official_smoke_skipped_due_to_failed_prerequisites",
+            }
 
     # --- B3: Heuristic Dynamic Regression Tests from Diff ---
     # Deterministic coverage runs first. The LLM generator is now an augmenting
@@ -1030,6 +1013,7 @@ async def run_quality_gates(args):
         and len(smoke_errors) == 0
         and len(national_protocol_errors) == 0
         and national_acceptance_ok
+        and official_smoke_ok
         and decision_ok
         and len(oversized) == 0
         and code_changed  # MUST have at least one changed .py file
@@ -1065,6 +1049,9 @@ async def run_quality_gates(args):
         "national_acceptance_ok": national_acceptance_ok,
         "national_acceptance_errors": national_acceptance_errors[:5] if national_acceptance_errors else [],
         "national_acceptance": national_acceptance_payload,
+        "official_smoke_ok": official_smoke_ok,
+        "official_smoke_errors": official_smoke_errors[:5] if official_smoke_errors else [],
+        "official_smoke": official_smoke_payload,
         "decision_pass_rate": round(decision_rate, 2),
         "decision_ok": decision_ok,
         "critical_scenarios_passed": critical_ok,
@@ -1144,6 +1131,8 @@ async def run_quality_gates(args):
         failed_gates_detail.append("national_protocol_tests")
     if not national_acceptance_ok:
         failed_gates_detail.append("national_acceptance")
+    if not official_smoke_ok:
+        failed_gates_detail.append("official_smoke")
     if not decision_ok:
         failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
     if not code_changed:
@@ -1222,6 +1211,9 @@ async def run_quality_gates(args):
         "national_acceptance_ok": result["national_acceptance_ok"],
         "national_acceptance_errors": result["national_acceptance_errors"],
         "national_acceptance": national_acceptance_payload,
+        "official_smoke_ok": result["official_smoke_ok"],
+        "official_smoke_errors": result["official_smoke_errors"],
+        "official_smoke": official_smoke_payload,
         "dynamic_test_generation": dynamic_test_meta,
         "size_ok": result["size_ok"],
         "oversized_files": result["oversized_files"],
@@ -1294,6 +1286,19 @@ async def run_quality_gates(args):
         artifacts={"report": national_acceptance_payload} if national_acceptance_payload else {},
     ))
     scorecard.add(GateResult.from_bool(
+        "official_smoke",
+        official_smoke_ok,
+        failures=official_smoke_errors[:5],
+        metrics={
+            "status": official_smoke_payload.get("status"),
+            "mode": official_smoke_payload.get("mode"),
+            "queued": official_smoke_payload.get("queued"),
+            "cache_hit": official_smoke_payload.get("cache_hit"),
+        } if isinstance(official_smoke_payload, dict) else {},
+        artifacts={"report": official_smoke_payload} if official_smoke_payload else {},
+        blocking=not bool(official_smoke_payload.get("queued")) if isinstance(official_smoke_payload, dict) else True,
+    ))
+    scorecard.add(GateResult.from_bool(
         "decision",
         decision_ok,
         metrics={"pass_rate": round(decision_rate, 4), "total": decision_total},
@@ -1307,6 +1312,14 @@ async def run_quality_gates(args):
     scorecard.add(GateResult.from_bool("position_semantics", position_semantics_ok, failures=position_semantics_errors[:6]))
     result["scorecard"] = scorecard.model_dump()
     quality_detail["scorecard"] = result["scorecard"]
+    if all_passed and native_tcp_mode:
+        try:
+            from official_certification import record_local_pass
+            quality_detail["official_certification_status"] = record_local_pass(bot_dir)
+        except Exception as exc:
+            quality_detail["official_certification_status"] = {
+                "error": f"{type(exc).__name__}: {str(exc)[:200]}"
+            }
 
     log_system_event(
         "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",

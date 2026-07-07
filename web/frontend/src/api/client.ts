@@ -2,7 +2,7 @@ import type {
   BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog, LogContent,
   MatchSummary, MatchReplayData, DaemonStatus, BotSummary, BotDetail,
   PipelineCheckpoint, WorkerFailure, PromptInfo, OrchestratorSession, OrchestratorLogFile,
-  H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse,
+  H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse, OfficialCertification,
 } from "./types";
 
 const BASE = "/api";
@@ -187,6 +187,9 @@ export const api = {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   },
+  certificationStatus: (version: number) => fetchJSON<OfficialCertification>(`${BASE}/certification/${version}`),
+  enqueueCertification: (version: number, mode: "smoke" | "full" = "full") =>
+    postJSON<OfficialCertification>(`${BASE}/certification/${version}/enqueue?mode=${mode}`),
 
   // Pipeline
   pipelineCheckpoint: () => fetchJSON<PipelineCheckpoint | null>(`${BASE}/pipeline/checkpoint`),

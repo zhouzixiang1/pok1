@@ -122,6 +122,7 @@ from server.routes.evolution import router as evolution_router
 from server.routes.logs import router as logs_router
 from server.routes.control import router as control_router
 from server.routes.bots import router as bots_router
+from server.routes.certification import router as certification_router
 from server.routes.pipeline import router as pipeline_router
 from server.routes.prompts import router as prompts_router
 from server.routes.data_stream import router as data_stream_router
@@ -133,6 +134,7 @@ app.include_router(evolution_router)
 app.include_router(logs_router)
 app.include_router(control_router)
 app.include_router(bots_router)
+app.include_router(certification_router)
 app.include_router(pipeline_router)
 app.include_router(prompts_router)
 app.include_router(data_stream_router)

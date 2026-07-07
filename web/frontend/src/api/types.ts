@@ -129,6 +129,29 @@ export interface MatchReplayData extends MatchSummary {
 }
 
 // Bot management
+export type OfficialCertificationState =
+  | "local-pass"
+  | "official-smoke-pass"
+  | "official-pending"
+  | "official-certified"
+  | "official-failed";
+
+export interface OfficialCertification {
+  bot: string;
+  status: OfficialCertificationState | string;
+  status_label?: string;
+  mode?: "smoke" | "full" | null;
+  updated_at?: string | null;
+  cache_hit?: boolean;
+  queued?: boolean;
+  cache_key?: string;
+  reason?: string;
+  issues?: string[];
+  summary?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  certification_root?: string;
+}
+
 export interface BotSummary {
   name: string;
   version: number;
@@ -160,6 +183,7 @@ export interface BotSummary {
   lifecycle_status?: "active" | "candidate" | "reaped" | "protocol_ineligible" | "untagged" | "incomplete" | "graveyard" | "inactive";
   status_label?: string;
   status_reasons?: string[];
+  official_certification?: OfficialCertification;
 }
 
 export interface BotDetail extends BotSummary {

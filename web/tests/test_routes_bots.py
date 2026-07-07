@@ -40,6 +40,8 @@ class TestListBots:
             assert "status_label" in bot
             assert "status_reasons" in bot
             assert "protocol_errors" in bot
+            assert "official_certification" in bot
+            assert "status" in bot["official_certification"]
 
     @pytest.mark.requires_active_bot
     def test_data_stream_bot_snapshot_uses_active_namespace(self):
@@ -60,10 +62,43 @@ class TestBotDetail:
         assert data["version"] == active_bot_version
         assert "files" in data
         assert "total_lines" in data
+        assert "official_certification" in data
 
     def test_404(self, client):
         resp = client.get("/api/bots/9999")
         assert resp.status_code == 404
+
+
+class TestCertificationRoutes:
+    def test_status_and_enqueue(self, client, monkeypatch, tmp_path):
+        from server.routes import certification as cert_mod
+
+        bot_dir = tmp_path / bot_name(9999)
+        bot_dir.mkdir()
+        (bot_dir / "main.py").write_text("def main():\n    pass\n", encoding="utf-8")
+        (bot_dir / "national_bot.py").write_text(
+            "import socket\n# raise fold call check allin sock.recv _split_messages\n",
+            encoding="utf-8",
+        )
+        opponent = tmp_path / "national_v76"
+        opponent.mkdir()
+        (opponent / "main.py").write_text("def main():\n    pass\n", encoding="utf-8")
+
+        monkeypatch.setattr(cert_mod, "BOTS_DIR", tmp_path)
+        monkeypatch.setattr(cert_mod, "DEFAULT_OPPONENT", opponent)
+        monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+
+        status = client.get("/api/certification/9999")
+        assert status.status_code == 200
+        assert status.json()["status"] == "local-pass"
+
+        queued = client.post("/api/certification/9999/enqueue?mode=full")
+        assert queued.status_code == 200
+        assert queued.json()["status"] == "official-pending"
+
+        queue = client.get("/api/certification/queue")
+        assert queue.status_code == 200
+        assert queue.json()["pending"] == 1
 
 
 @pytest.mark.requires_active_bot

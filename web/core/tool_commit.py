@@ -348,6 +348,19 @@ async def commit_bot(args):
 
     (bot_dir / ".completed").touch()
 
+    official_certification_status = {}
+    try:
+        from official_certification import build_spec, enqueue_certification
+        default_opponent = PROJECT_ROOT / "bots" / "national_v76"
+        spec = build_spec(
+            "full",
+            bot_dir,
+            opponent=default_opponent if default_opponent.exists() else None,
+        )
+        official_certification_status = enqueue_certification(spec, reason="commit_bot_full")
+    except Exception as e:
+        _log.warning("Official full certification enqueue failed for v%d: %s", v, e)
+
     # Write reap_signal early so daemon discovers new bot immediately, even if archive/timeout interrupts later
     reap_signal = RESULTS_DIR / ".reap_signal"
     reap_signal.write_text(str(time.time()))
@@ -385,6 +398,12 @@ async def commit_bot(args):
             "critic_score": (_gr.get("critic") or {}).get("score"),
             "precommit_passed": (_gr.get("precommit_eval") or {}).get("passed"),
         }
+        if official_certification_status:
+            _commit_audit["official_certification"] = {
+                "status": official_certification_status.get("status"),
+                "mode": official_certification_status.get("mode"),
+                "cache_key": official_certification_status.get("cache_key"),
+            }
     except Exception:
         pass
     log_system_event("pipeline.committed", "success",

@@ -88,7 +88,7 @@ class OfficialPlatformConfig:
     no_progress_timeout_sec: float = 75.0
     round_timeout_sec: float = 900.0
     lock_timeout_sec: float = field(default_factory=lambda: float(os.environ.get("POK_OFFICIAL_LOCK_TIMEOUT_SEC", "900")))
-    settlement_grace_sec: float = 8.0
+    settlement_grace_sec: float = field(default_factory=lambda: float(os.environ.get("POK_OFFICIAL_SETTLEMENT_GRACE_SEC", "2.0")))
     artifact_grace_sec: float = 20.0
     lock_path: Path = field(default_factory=lambda: Path(os.environ.get("POK_OFFICIAL_LOCK_PATH", "/tmp/pok_official_platform.lock")))
     ui: PlatformUiProfile = field(default_factory=PlatformUiProfile)
@@ -417,6 +417,36 @@ def _screenshot(env: dict[str, str], output: Path) -> str | None:
     output.parent.mkdir(parents=True, exist_ok=True)
     proc = _run_quiet(["import", "-window", "root", str(output)], env=env, timeout=10)
     return str(output) if proc.returncode == 0 and output.exists() else None
+
+
+def _screenshot_policy() -> str:
+    return os.environ.get("POK_OFFICIAL_SCREENSHOTS", "minimal").strip().lower()
+
+
+def _maybe_screenshot(env: dict[str, str], output: Path, phase: str) -> str | None:
+    policy = _screenshot_policy()
+    if policy in {"0", "none", "off", "false"}:
+        return None
+    if policy == "all" or phase in {"start", "final"}:
+        return _screenshot(env, output)
+    return None
+
+
+def _bot_handshake_seen(path: Path) -> bool:
+    try:
+        if not path.exists():
+            return False
+        return "SEND name_handshake" in path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def _wait_for_bot_handshakes(log_a: Path, log_b: Path, *, timeout_sec: float = 4.0) -> None:
+    deadline = time.time() + max(0.0, timeout_sec)
+    while time.time() < deadline:
+        if _bot_handshake_seen(log_a) and _bot_handshake_seen(log_b):
+            return
+        time.sleep(0.2)
 
 
 def _close_window(env: dict[str, str], window_id: str | None) -> None:
@@ -757,7 +787,7 @@ def run_official_round(
             wine_proc = _popen(["wine", str(cfg.exe_path)], cwd=cfg.exe_path.parent, env=env, stdout=platform_out, stderr=platform_out)
             window_id = _wait_for_window(env, timeout_sec=cfg.startup_timeout_sec)
             receipt["window_id"] = window_id
-            first = _screenshot(env, round_dir / "screenshots" / "01_start.png")
+            first = _maybe_screenshot(env, round_dir / "screenshots" / "01_start.png", "start")
             if first:
                 screenshots.append(first)
 
@@ -765,7 +795,7 @@ def run_official_round(
             time.sleep(0.8)
             _click(env, window_id, cfg.ui.ip_x, cfg.ui.ip_y)
             _type_text(env, window_id, cfg.host)
-            second = _screenshot(env, round_dir / "screenshots" / "02_config.png")
+            second = _maybe_screenshot(env, round_dir / "screenshots" / "02_config.png", "config")
             if second:
                 screenshots.append(second)
             _click(env, window_id, cfg.ui.start_x, cfg.ui.start_y)
@@ -787,8 +817,8 @@ def run_official_round(
                 stdout_path=bot_b_stdout,
                 stderr_path=bot_b_stderr,
             )
-            time.sleep(4.0)
-            third = _screenshot(env, round_dir / "screenshots" / "03_connected.png")
+            _wait_for_bot_handshakes(log_a, log_b, timeout_sec=4.0)
+            third = _maybe_screenshot(env, round_dir / "screenshots" / "03_connected.png", "connected")
             if third:
                 screenshots.append(third)
             _click(env, window_id, cfg.ui.ok_x, cfg.ui.ok_y)
@@ -837,7 +867,7 @@ def run_official_round(
                     f"settlements={summary.get('settlements_min', 0)}"
                 )
 
-            final = _screenshot(env, round_dir / "screenshots" / "04_final.png")
+            final = _maybe_screenshot(env, round_dir / "screenshots" / "04_final.png", "final")
             if final:
                 screenshots.append(final)
             receipt["log_summary"] = summary or summarize_round_logs(log_a, log_b)

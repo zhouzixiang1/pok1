@@ -276,42 +276,34 @@ async def _run_national_precommit_backend(
 
     official_platform_result = {}
     if native_tcp_mode and _official_gate_enabled("POK_OFFICIAL_PRECOMMIT_GATE") and not blockers:
-        official_self_rounds = int(os.environ.get("POK_OFFICIAL_SELF_PLAY_ROUNDS", "5"))
-        official_opponent_rounds = int(os.environ.get("POK_OFFICIAL_OPPONENT_ROUNDS", "3"))
-        official_hands = int(os.environ.get("POK_OFFICIAL_TARGET_HANDS", "70"))
         official_opponent = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
         if not official_opponent and opponents_with_paths:
             official_opponent = _official_bot_token(opponents_with_paths[0].get("path") or opponents_with_paths[0].get("name"))
         try:
-            from official_platform_harness import run_official_acceptance
-            _official_result = await run_official_acceptance(
-                _official_bot_token(candidate_main),
-                opponent=official_opponent or None,
-                self_play_rounds=official_self_rounds,
-                opponent_rounds=official_opponent_rounds,
-                target_hands=official_hands,
+            from official_certification import (
+                STATUS_CERTIFIED,
+                STATUS_FAILED,
+                STATUS_PENDING,
+                build_spec,
+                enqueue_certification,
+                read_status,
             )
-            official_platform_result = _official_result.model_dump()
+            candidate_token = _official_bot_token(candidate_main)
+            _spec = build_spec("full", candidate_token, opponent=official_opponent or None)
+            current = read_status(candidate_token)
+            if current.get("status") in {STATUS_CERTIFIED, STATUS_FAILED, STATUS_PENDING}:
+                official_platform_result = current
+            else:
+                official_platform_result = enqueue_certification(_spec, reason="precommit_full")
+            official_platform_result["blocking"] = False
             national_result["official_platform"] = official_platform_result
-            if not _official_result.passed:
-                official_details = "; ".join(_official_result.issues[:5] or ["official platform acceptance failed"])
-                official_suite_dir = (_official_result.summary or {}).get("suite_dir")
-                if official_suite_dir:
-                    official_details = f"{official_details}; evidence={official_suite_dir}"
-                blockers.append({
-                    "reason": "official_platform_acceptance",
-                    "details": official_details,
-                })
         except Exception as exc:
             official_platform_result = {
                 "passed": False,
+                "blocking": False,
                 "issues": [f"official_platform_acceptance_exception: {type(exc).__name__}: {str(exc)[:500]}"],
             }
             national_result["official_platform"] = official_platform_result
-            blockers.append({
-                "reason": "official_platform_acceptance_exception",
-                "details": official_platform_result["issues"][0],
-            })
 
     total_wins = int(national_result.get("total_wins", 0) or 0)
     total_losses = int(national_result.get("total_losses", 0) or 0)
@@ -393,12 +385,21 @@ async def _run_national_precommit_backend(
         failures=[str(b)[:500] for b in blockers],
     ))
     if official_platform_result:
+        official_status = str(official_platform_result.get("status") or "")
+        official_issues = official_platform_result.get("issues", []) or []
         scorecard.add(GateResult.from_bool(
-            "official_platform_acceptance",
-            bool(official_platform_result.get("passed")),
-            metrics=official_platform_result.get("summary", {}),
-            failures=official_platform_result.get("issues", [])[:5],
-            artifacts={"report": official_platform_result.get("report", {})},
+            "official_full_certification",
+            official_status == "official-certified" or bool(official_platform_result.get("passed")),
+            metrics={
+                "status": official_status,
+                "mode": official_platform_result.get("mode"),
+                "queued": official_platform_result.get("queued"),
+                "cache_hit": official_platform_result.get("cache_hit"),
+                **(official_platform_result.get("summary", {}) or {}),
+            },
+            failures=official_issues[:5] if official_status == "official-failed" else [],
+            artifacts={"report": official_platform_result},
+            blocking=False,
         ))
     result["scorecard"] = scorecard.model_dump()
 

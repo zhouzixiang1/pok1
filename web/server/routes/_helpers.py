@@ -98,6 +98,16 @@ def build_bot_summary(
         "win_rate": bs.get("win_rate"), "games": bs.get("games", 0),
         "h2h_avg_wr": wr,
     }
+    try:
+        from official_certification import status_payload
+        summary["official_certification"] = status_payload(bot_dir)
+    except Exception:
+        summary["official_certification"] = {
+            "bot": bot_name,
+            "status": "local-pass",
+            "status_label": "local-pass",
+            "issues": [],
+        }
     for key in (
         "leaderboard_score", "rank_basis", "strength_confidence", "h2h_coverage",
         "h2h_games", "h2h_opponents", "h2h_opponents_total", "h2h_source",
