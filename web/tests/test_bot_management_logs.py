@@ -42,6 +42,7 @@ def _setup_reap_case(tmp_path, monkeypatch, max_active=1):
         "national_v1": 0.90,
         "national_v2": 0.10,
     })
+    monkeypatch.setattr(tbm, "record_reaped_bot", lambda *args, **kwargs: None)
     monkeypatch.setattr(tbm, "log_system_event", lambda *args: events.append(args))
 
     return tbm, bots_dir, events
