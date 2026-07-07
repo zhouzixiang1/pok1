@@ -331,7 +331,7 @@ Important current thresholds:
 - Helper `.py` files have a 1500 line base limit.
 - Hard cap is 2500 lines, with a 15 percent growth budget from the source bot.
 - Decision tests require pass rate at least 70 percent and no critical scenario failures.
-- `run_quality_gates` also runs `sever/tests/test_national_alignment.py` so prompt/adapter/platform regressions are caught before bot commits.
+- `run_quality_gates` runs the national protocol regression shard that matches the active execution mode. `national_native` runs `sever/tests/test_national_platform_alignment.py` without importing the legacy adapter; adapter workflows still run `sever/tests/test_national_alignment.py`.
 - Worker concurrency is capped by `MAX_PARALLEL_WORKERS = 3`, with adaptive throttling under API pressure.
 - `run_precommit_eval` is the final regression gate; critic is advisory in the current orchestrator prompt.
 - Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only when they point to an active bot backed by normal completion discovery (`.completed` plus `national-bot-v{N}` tag); rejected suggestions are logged as `pipeline.source_selection_rejected`.
