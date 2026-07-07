@@ -11,6 +11,7 @@ from official_platform_harness import (
     _sent_action_issue,
     _snapshot_platform_thp_files,
     _summarize_thp_files,
+    _read_issue_file,
     _target_reached,
 )
 
@@ -70,6 +71,41 @@ def test_parse_bot_log_counts_progress_and_issues(tmp_path):
     assert stats.max_gap_sec == 4
     assert stats.max_decision_sec == 0.25
     assert len(stats.issues) == 1
+
+
+def test_official_issue_file_ignores_benign_unknown_telemetry(tmp_path):
+    stderr = tmp_path / "bot.stderr.log"
+    stderr.write_text(
+        "\n".join(
+            [
+                "OPP_OPEN_SIZING bucket=unknown avg_raise_bb=3.15 samples=1 conf=0.00",
+                "BB_VS_RAISE_HIST_SIZING hist_bucket=unknown immediate_bucket=standard",
+                "PREFLOP_JAM_DEFENSE decision=0 reason=standard_jam",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert _read_issue_file(stderr) == []
+
+
+def test_official_issue_file_keeps_protocol_and_crash_errors(tmp_path):
+    stderr = tmp_path / "bot.stderr.log"
+    stderr.write_text(
+        "\n".join(
+            [
+                "Traceback (most recent call last):",
+                "RuntimeError: unknown action token 'bet'",
+                "protocol error: unexpected wire message",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    issues = _read_issue_file(stderr)
+
+    assert len(issues) == 3
+    assert all(issue.startswith("bot.stderr.log:") for issue in issues)
 
 
 def test_parse_bot_log_rejects_non_official_send_format(tmp_path):
