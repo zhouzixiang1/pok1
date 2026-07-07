@@ -86,6 +86,66 @@ run() {
     fi
 }
 
+latest_completed_national_version() {
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        printf '0\n'
+        return
+    fi
+    local latest
+    latest="$(git tag -l 'national-bot-v*' \
+        | sed -n 's/^national-bot-v\([0-9][0-9]*\)$/\1/p' \
+        | sort -n \
+        | tail -1)"
+    printf '%s\n' "${latest:-0}"
+}
+
+archive_unfinished_path() {
+    local src="$1"
+    local kind="$2"
+    [ -e "$src" ] || return 0
+
+    local base dst parent n
+    base="$(basename "$src")"
+    parent="$RESULTS_DIR/abandoned/$TS/$kind"
+    dst="$parent/$base"
+    n=1
+    while [ -e "$dst" ]; do
+        dst="$parent/${base}.$n"
+        n=$((n + 1))
+    done
+    run mkdir -p "$parent"
+    run mv "$src" "$dst"
+    log "archived unfinished $kind artifact: $src -> $dst"
+}
+
+archive_unfinished_generation_artifacts() {
+    local latest_v dir base v
+    latest_v="$(latest_completed_national_version)"
+    log "checking unfinished generation artifacts newer than national-bot-v${latest_v}"
+
+    shopt -s nullglob
+    for dir in "$RESULTS_DIR"/v[0-9]*; do
+        [ -d "$dir" ] || continue
+        base="$(basename "$dir")"
+        v="${base#v}"
+        [[ "$v" =~ ^[0-9]+$ ]] || continue
+        if [ "$v" -gt "$latest_v" ]; then
+            archive_unfinished_path "$dir" "results"
+        fi
+    done
+
+    for dir in bots/national_v[0-9]*; do
+        [ -d "$dir" ] || continue
+        base="$(basename "$dir")"
+        v="${base#national_v}"
+        [[ "$v" =~ ^[0-9]+$ ]] || continue
+        if [ "$v" -gt "$latest_v" ]; then
+            archive_unfinished_path "$dir" "bots"
+        fi
+    done
+    shopt -u nullglob
+}
+
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     echo "Another restart is already running: $LOCK_FILE" >&2
@@ -119,9 +179,12 @@ fi
 
 if [ "$OBSERVE_ONLY" = "1" ]; then
     log "observe-only mode: no checkpoint/session/config changes and no restart"
-elif [ "$CLEAR_CHECKPOINT" = "backup-and-clear" ] && [ -f "$RESULTS_DIR/pipeline_state.json" ]; then
-    run cp "$RESULTS_DIR/pipeline_state.json" "$RESULTS_DIR/pipeline_state.${TS}.bak.json"
-    run rm -f "$RESULTS_DIR/pipeline_state.json"
+elif [ "$CLEAR_CHECKPOINT" = "backup-and-clear" ]; then
+    if [ -f "$RESULTS_DIR/pipeline_state.json" ]; then
+        run cp "$RESULTS_DIR/pipeline_state.json" "$RESULTS_DIR/pipeline_state.${TS}.bak.json"
+        run rm -f "$RESULTS_DIR/pipeline_state.json"
+    fi
+    archive_unfinished_generation_artifacts
 fi
 
 SESSION_FILE="$RESULTS_DIR/orchestrator_session.json"
