@@ -1134,6 +1134,29 @@ def _subagent_readonly_mutation_violation(tool_name, tool_input):
     return None
 
 
+def _readonly_guard_recovery_hint(violation: str) -> str:
+    """Give read-only roles a concrete non-mutating alternative after a block."""
+    base = (
+        "Use observe/read commands only. Do not create temp files, write redirects, "
+        "tee output, mkdir/touch/rm, or mutate git state."
+    )
+    if str(violation or "").startswith("write_redirect:"):
+        return (
+            base
+            + " For comparisons, run direct read-only commands such as "
+            "`diff -u parent_file target_file`, `git diff --no-index -- parent target`, "
+            "`sed -n 'START,ENDp' file`, or `python -c` snippets that only open/read "
+            "files and print results. Redirect only to `/dev/null` for stderr noise."
+        )
+    if str(violation or "").startswith("tee:"):
+        return (
+            base
+            + " Replace `tee` with a plain pipe to the next reader or print the output "
+            "directly; do not materialize probe logs."
+        )
+    return base
+
+
 def _make_subagent_readonly_guard(role_name):
     """Build a hook that enforces read-only tools for non-worker LLM roles."""
     async def handler(hook_input, tool_use_id, context):
@@ -1155,7 +1178,7 @@ def _make_subagent_readonly_guard(role_name):
                     command_text = ""
             blocked = (
                 f"{role_name} is a read-only role; {tool_name} mutation is denied "
-                f"({violation}). Use observe/read commands only."
+                f"({violation}). {_readonly_guard_recovery_hint(violation)}"
             )
             try:
                 from system_log import log_system_event
@@ -1228,6 +1251,13 @@ def _format_runtime_path_contract(project_root, allowed_write_dir=None):
                 "them in place. The harness ignores those caches; their owning checkout/process "
                 "is responsible for cleanup."
             )
+    else:
+        lines.extend([
+            "- This LLM role is read-only: Bash may read, diff, grep, count, and print, but must not create, modify, delete, move, tag, checkout, or write any file anywhere.",
+            "- Do not use output redirection (`>`, `>>`, `&>`, `&>>`) or `tee` except redirects to `/dev/null` for stderr/stdout noise.",
+            "- For snippet comparisons, use direct read-only commands such as `diff -u A B`, `git diff --no-index -- A B`, `sed -n 'START,ENDp' file`, `rg`, or `python -c` that opens files read-only and prints results.",
+            "- Never write comparison snippets to `/tmp`, `/var/tmp`, the bot directory, or `web/core/results`; if a Bash command is denied, do not retry the same mutating pattern.",
+        ])
     return "\n".join(lines) + "\n\n"
 
 

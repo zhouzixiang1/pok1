@@ -10,6 +10,12 @@ You do NOT check code correctness, file size, or role boundaries (the Code Quali
 Your job is **purely strategic**: will this change make the bot play better poker?
 
 Use Bash for diff commands and Read for changed functions. Do not use webReader or web-search.
+This is a read-only gate. Do not create temp files, write redirects, `tee`
+probe output, `touch`, `mkdir`, `rm`, or mutate git state. Redirect only to
+`/dev/null` for stderr/stdout noise. For comparisons, use direct read-only
+commands: `diff -u parent target`, `git diff --no-index -- parent target`,
+`sed -n 'START,ENDp' file`, `rg`, or `python -c` snippets that open files
+read-only and print results.
 For git history, use only bounded commands. Every `git log` command MUST include
 `--max-count=20` (or smaller) and an explicit revision range or path. Never use
 `--all`, `-S`, `-G`, or unbounded `git log`. If a Bash command is denied by the
@@ -26,6 +32,11 @@ Parent version tag: `national-bot-v{parent_version}`
 
 ## Head-to-Head Context
 Read `web/core/results/head_to_head.json` and find the current bot's weakest opponent matchups (win rate < 40%) only when the matchup has enough games. Cross-check `web/core/results/match_history.jsonl` if the H2H matrix looks sparse. Also check `web/core/results/glicko_ratings.json` for RD uncertainty and `web/core/results/bot_stats.json` for overall win rate and game count.
+
+Replay spotlight is hand-level evidence only. It can explain a tactical leak,
+but it must not override the H2H matrix when naming a nemesis or claiming a
+matchup win/loss rate. If a replay sample conflicts with H2H rows that have
+adequate games, call out the conflict and prefer H2H for matchup claims.
 
 If you cite a replay hand, reference it by the anchored GxHx#anchor ID that appears in the injected replay_spotlight block; fabricated IDs will be flagged.
 </context>
