@@ -414,7 +414,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                precommit_attempt=None, reset_precommit_attempt=False,
                                precommit_rework_count=None,
                                timeout_extensions=None, touch_stage_timestamp=False,
-                               literature_probe=None):
+                               literature_probe=None, prepare_scope_files=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -455,6 +455,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_timeout_extensions = 0
         existing_literature_probe = None
         existing_repo_baseline = None
+        existing_prepare_scope_files = []
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
@@ -480,6 +481,11 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_audit_context = existing.get("audit_context", {}) or {}
             existing_literature_probe = existing.get("literature_probe")
             existing_repo_baseline = existing.get("repo_baseline")
+            existing_prepare_scope_files = [
+                str(item).strip()
+                for item in existing.get("prepare_scope_files", []) or []
+                if str(item).strip()
+            ]
         elif existing:
             active_stage = existing.get("stage")
             dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
@@ -532,6 +538,15 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_audit_context.update(audit_context)
         if literature_probe is not None:
             existing_literature_probe = literature_probe
+        if prepare_scope_files is not None:
+            existing_prepare_scope_files = sorted({
+                *existing_prepare_scope_files,
+                *(
+                    str(item).strip()
+                    for item in prepare_scope_files
+                    if str(item).strip()
+                ),
+            })
 
         # Merge last_stage_change_ts: take max of existing vs current time.
         # This preserves the most recent genuine stage-change time on partial re-writes
@@ -641,6 +656,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "workflow_profile_id": current_workflow_profile_id,
             "national_execution_mode": current_national_execution_mode,
             "repo_baseline": existing_repo_baseline,
+            "prepare_scope_files": existing_prepare_scope_files,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write

@@ -165,6 +165,52 @@ class TestApplyKnownFixes:
         assert "BOT-002a" in skipped
         assert "Fix BOT-002a search not found in state.py" in caplog.text
 
+    def test_bot006_repairs_native_position_semantics(self, fix_injection, tmp_path):
+        """Imported native bots must not keep Botzone-style dealer/SB math."""
+
+        bot_dir = tmp_path / "national_v101"
+        bot_dir.mkdir()
+        (bot_dir / "national_bot.py").write_text("def main():\n    pass\n", encoding="utf-8")
+        (bot_dir / "opponent.py").write_text(
+            "def analyze(req):\n"
+            "    dealer_id = req['dealer_id']\n"
+            "    sb = next_player(dealer_id, 1)\n"
+            "    bb = next_player(dealer_id, 2)\n"
+            "    return sb, bb\n",
+            encoding="utf-8",
+        )
+        (bot_dir / "state.py").write_text(
+            "def reconstruct(req):\n"
+            "    dealer_id = req['dealer_id']\n"
+            "    sb = next_player(dealer_id, 1)\n"
+            "    bb = next_player(dealer_id, 2)\n"
+            "    return sb, bb\n\n"
+            "def future(current_dealer, my_id):\n"
+            "    future_dealer = next_player(current_dealer, 1)\n"
+            "    future_sb = next_player(future_dealer, 1)\n"
+            "    future_bb = next_player(future_dealer, 2)\n"
+            "    return future_sb, future_bb\n",
+            encoding="utf-8",
+        )
+
+        applied, skipped = fix_injection.apply_known_fixes(bot_dir)
+
+        assert "BOT-006" in applied
+        assert "BOT-006" not in skipped
+        assert "sb = dealer_id" in (bot_dir / "opponent.py").read_text(encoding="utf-8")
+        state_text = (bot_dir / "state.py").read_text(encoding="utf-8")
+        assert "bb = 1 - dealer_id" in state_text
+        assert "future_sb = future_dealer" in state_text
+        assert "future_bb = 1 - future_dealer" in state_text
+
+        sys.path.insert(0, str(CORE_DIR))
+        try:
+            import tool_gates
+
+            assert tool_gates.detect_position_semantics_errors(bot_dir) == []
+        finally:
+            sys.path.remove(str(CORE_DIR))
+
 
 class TestFixRegistry:
     """Test the MANDATORY_FIXES registry."""
@@ -176,6 +222,7 @@ class TestFixRegistry:
         assert "BOT-002b" in fix_ids
         assert "BOT-004" in fix_ids
         assert "BOT-005" in fix_ids
+        assert "BOT-006" in fix_ids
 
     def test_all_fixes_are_active(self, fix_injection):
         for fix in fix_injection.MANDATORY_FIXES:

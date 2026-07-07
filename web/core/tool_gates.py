@@ -123,7 +123,7 @@ async def _run_workflow_smoke_gate(
     return errors, report
 
 
-def _declared_scope_tasks_from_plan(master_plan):
+def _declared_scope_tasks_from_plan(master_plan, checkpoint=None):
     tasks = []
     if isinstance(master_plan, dict):
         raw_tasks = master_plan.get("tasks", []) or []
@@ -143,6 +143,22 @@ def _declared_scope_tasks_from_plan(master_plan):
                 "role": "Scope Ledger",
                 "target_files": [],
                 "files_allowed": sorted(set(repair_scope_files)),
+            })
+    if isinstance(checkpoint, dict):
+        raw_prepare_scope = checkpoint.get("prepare_scope_files", []) or []
+        if not isinstance(raw_prepare_scope, list):
+            raw_prepare_scope = []
+        prepare_scope_files = [
+            str(item).strip()
+            for item in raw_prepare_scope
+            if str(item).strip()
+        ]
+        if prepare_scope_files:
+            tasks.append({
+                "worker_id": "prepare_scope_history",
+                "role": "Prepare Scope Ledger",
+                "target_files": [],
+                "files_allowed": sorted(set(prepare_scope_files)),
             })
     return tasks
 
@@ -443,7 +459,7 @@ async def run_quality_gates(args):
         _quality_ckpt_for_scope,
         changed_files_list,
     )
-    _plan_tasks = _declared_scope_tasks_from_plan(_master_plan_for_scope)
+    _plan_tasks = _declared_scope_tasks_from_plan(_master_plan_for_scope, _quality_ckpt_for_scope)
     if native_tcp_mode and _plan_tasks:
         _plan_tasks = list(_plan_tasks) + [{
             "worker_id": "platform_native_entry",
@@ -1569,6 +1585,20 @@ async def prepare_next_gen(args):
         require_native_tcp=native_tcp,
         overwrite_native_entry=native_tcp,
     )
+    prepare_scope_files = [
+        p for p in _py_files_changed_between(source_dir, next_dir) if 'backup' not in p
+    ]
+    if prepare_scope_files:
+        log_system_event(
+            "pipeline.prepare_scope_captured",
+            "info",
+            f"Prepare baseline for v{next_v} changed {len(prepare_scope_files)} file(s)",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "prepare_scope_files": prepare_scope_files[:20],
+            },
+        )
     if native_tcp:
         log_system_event(
             "pipeline.native_entry_prepared",
@@ -1578,7 +1608,13 @@ async def prepare_next_gen(args):
         )
 
     # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call run_direction_audit"
-    if not write_pipeline_checkpoint(next_v, source_v, "prepared", worker_failure_count=0):
+    if not write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "prepared",
+        worker_failure_count=0,
+        prepare_scope_files=prepare_scope_files,
+    ):
         return _json_tool_result({
             "error": f"Failed to persist prepared checkpoint for v{next_v}; generation recovery remains at preparing."
         })

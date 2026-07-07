@@ -1742,6 +1742,39 @@ class TestWorkerFailureCircuitBreaker:
         assert result.passed is True
         assert result.allowed_files == ["opponent.py", "state.py", "strategy_helpers.py"]
 
+    def test_declared_scope_uses_prepare_scope_files(self):
+        """Prepare-time deterministic migrations are baseline scope, not worker drift."""
+        import tool_gates
+        from worker_boundary import audit_changed_files_against_plan
+
+        plan = {
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "worker_prompt": "add one strategy gate",
+            }],
+        }
+        ckpt = {
+            "prepare_scope_files": ["card_utils.py", "opponent.py", "state.py"],
+            "master_plan": plan,
+        }
+
+        tasks = tool_gates._declared_scope_tasks_from_plan(plan, ckpt)
+        result = audit_changed_files_against_plan(
+            ["card_utils.py", "opponent.py", "state.py", "strategy.py"],
+            tasks,
+            next_v=89,
+        )
+
+        assert result.passed is True
+        assert result.allowed_files == [
+            "card_utils.py",
+            "opponent.py",
+            "state.py",
+            "strategy.py",
+        ]
+
     def test_crossover_repair_scope_includes_existing_candidate_diff(self, tmp_path, monkeypatch):
         """Crossover rework scope must include pre-existing fused candidate files."""
         import tool_planning
