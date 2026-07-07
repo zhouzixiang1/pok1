@@ -268,6 +268,25 @@ def test_quality_smoke_gate_uses_native_tcp_backend(monkeypatch, tmp_path):
     assert called["source_v"] == 12
 
 
+def test_national_protocol_gate_uses_platform_shard_for_native(monkeypatch):
+    import code_verification
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(code_verification.subprocess, "run", fake_run)
+
+    assert code_verification.run_national_protocol_tests(native_tcp_mode=True) == []
+    assert calls
+    assert str(calls[-1][0][3]).endswith("sever/tests/test_national_platform_alignment.py")
+
+    assert code_verification.run_national_protocol_tests(native_tcp_mode=False) == []
+    assert str(calls[-1][0][3]).endswith("sever/tests/test_national_alignment.py")
+
+
 def _write_random_probe_native_bot(bot_dir: Path) -> None:
     bot_dir.mkdir(parents=True, exist_ok=True)
     (bot_dir / "main.py").write_text("# native-only seed probe\n", encoding="utf-8")

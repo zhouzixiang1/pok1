@@ -925,17 +925,21 @@ def run_decision_test_details(directory, extra_scenarios=None):
     return _run_detail(main_path, verbose=False, extra_scenarios=extra_scenarios)
 
 
-def run_national_protocol_tests():
+def run_national_protocol_tests(*, native_tcp_mode: bool = False):
     """Run the national TCP platform alignment tests.
 
-    This gate keeps protocol parsing, validator behavior, adapter legacy
-    compatibility, runout handling, and THP output aligned with the national
-    documents. In national_native workflow, direct TCP bot smoke/precommit runs
-    are separate hard gates; adapter coverage here is legacy regression only.
+    Native TCP workflows run the platform-only test shard, which does not import
+    the legacy Botzone adapter. Adapter workflows keep the historical alignment
+    shard because their pass/fail semantics still include JSON-to-TCP bridging.
     """
-    test_path = PROJECT_ROOT / "sever" / "tests" / "test_national_alignment.py"
+    test_name = (
+        "test_national_platform_alignment.py"
+        if native_tcp_mode
+        else "test_national_alignment.py"
+    )
+    test_path = PROJECT_ROOT / "sever" / "tests" / test_name
     if not test_path.exists():
-        return ["sever national alignment tests not found"]
+        return [f"sever national alignment tests not found: {test_name}"]
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", str(test_path), "-q"],
         cwd=str(PROJECT_ROOT),

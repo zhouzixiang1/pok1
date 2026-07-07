@@ -21,6 +21,7 @@ from evolution_scope import (
     CRITICAL_EVALUATION_GATE_EXACT,
     CRITICAL_EXACT,
     CRITICAL_GENERATION_EXACT,
+    CRITICAL_LEGACY_ADAPTER_EXACT,
     CRITICAL_NATIONAL_PLATFORM_EXACT,
     CRITICAL_PREFIXES,
     CRITICAL_PROMPT_EXACT,
@@ -54,6 +55,7 @@ EVALUATION_RUNTIME_EXACT = frozenset().union(
     ALWAYS_CRITICAL_EXACT,
     CRITICAL_ENGINE_EXACT,
     CRITICAL_NATIONAL_PLATFORM_EXACT,
+    CRITICAL_LEGACY_ADAPTER_EXACT,
     CRITICAL_EVALUATION_GATE_EXACT,
 )
 
@@ -159,13 +161,13 @@ WORKER_REPAIR_STAGE_EXACT = frozenset().union(
 QUALITY_STAGE_EXACT = frozenset().union(
     ALWAYS_CRITICAL_EXACT,
     CRITICAL_NATIONAL_PLATFORM_EXACT,
+    CRITICAL_LEGACY_ADAPTER_EXACT,
     {
         "web/core/candidate_hygiene.py",
         "web/core/code_verification.py",
         "web/core/decision_tester.py",
         "web/core/eval_stats.py",
         "web/core/fix_verification.py",
-        "web/core/national_acceptance.py",
         "web/core/national_native.py",
         "web/core/protected_contracts.py",
         "web/core/smoke_tester.py",
@@ -199,12 +201,11 @@ CRITIC_STAGE_EXACT = frozenset().union(
 PRECOMMIT_STAGE_EXACT = frozenset().union(
     ALWAYS_CRITICAL_EXACT,
     CRITICAL_NATIONAL_PLATFORM_EXACT,
+    CRITICAL_LEGACY_ADAPTER_EXACT,
     {
         "web/core/battle_scheduler.py",
         "web/core/elo_daemon.py",
         "web/core/eval_stats.py",
-        "web/core/national_acceptance.py",
-        "web/core/national_eval.py",
         "web/core/national_native.py",
         "web/core/tool_eval.py",
     },
@@ -241,7 +242,7 @@ NATIVE_TCP_EXCLUDED_EXACT = frozenset(CRITICAL_ENGINE_EXACT).union({
     # Used only by the legacy local JSON smoke subprocess. The national_native
     # quality gate runs a direct TCP smoke through national_native.py instead.
     "web/core/smoke_tester.py",
-})
+}, CRITICAL_LEGACY_ADAPTER_EXACT)
 
 
 def _active_national_execution_mode(explicit: str | None = None) -> str:

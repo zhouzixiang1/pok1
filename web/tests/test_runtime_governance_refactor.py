@@ -971,7 +971,13 @@ def test_evaluation_contract_excludes_local_engine_under_native_profile(monkeypa
             "engine/battle.py",
             "web/core/engine/battle.py",
             "web/core/smoke_tester.py",
+            "sever/bot_adapter.py",
+            "sever/tests/test_national_alignment.py",
+            "scripts/national_acceptance_matrix.py",
             "sever/server/tcp_server.py",
+            "sever/tests/test_national_platform_alignment.py",
+            "web/core/national_acceptance.py",
+            "web/core/national_eval.py",
             "web/core/national_native.py",
             "bots/national_v300/main.py",
             "bots/national_v299/main.py",
@@ -983,10 +989,50 @@ def test_evaluation_contract_excludes_local_engine_under_native_profile(monkeypa
     assert "engine/battle.py" in scope["external_paths"]
     assert "web/core/engine/battle.py" in scope["external_paths"]
     assert "web/core/smoke_tester.py" in scope["external_paths"]
+    assert "sever/bot_adapter.py" in scope["external_paths"]
+    assert "sever/tests/test_national_alignment.py" in scope["external_paths"]
+    assert "scripts/national_acceptance_matrix.py" in scope["external_paths"]
     assert "sever/server/tcp_server.py" in scope["contract_paths"]
+    assert "sever/tests/test_national_platform_alignment.py" in scope["contract_paths"]
+    assert "web/core/national_acceptance.py" in scope["external_paths"]
+    assert "web/core/national_eval.py" in scope["external_paths"]
     assert "web/core/national_native.py" in scope["contract_paths"]
     assert "bots/national_v300/main.py" in scope["contract_paths"]
     assert "bots/national_v299/main.py" in scope["contract_paths"]
+
+
+def test_evaluation_contract_tracks_adapter_files_in_adapter_profile(monkeypatch):
+    import evaluation_contract
+
+    contract = evaluation_contract.build_evaluation_contract(
+        Path.cwd(),
+        candidate_v=300,
+        source_v=299,
+        checkpoint={"stage": "workers_done", "next_v": 300, "source_v": 299},
+        national_execution_mode="adapter",
+    )
+    scope = evaluation_contract.classify_contract_paths(
+        [
+            "sever/bot_adapter.py",
+            "sever/tests/test_national_alignment.py",
+            "scripts/national_acceptance_matrix.py",
+            "web/core/national_acceptance.py",
+            "web/core/national_eval.py",
+            "sever/tests/test_national_platform_alignment.py",
+        ],
+        contract,
+    )
+
+    assert contract["national_execution_mode"] == "adapter"
+    assert scope["contract_paths"] == [
+        "scripts/national_acceptance_matrix.py",
+        "sever/bot_adapter.py",
+        "sever/tests/test_national_alignment.py",
+        "sever/tests/test_national_platform_alignment.py",
+        "web/core/national_acceptance.py",
+        "web/core/national_eval.py",
+    ]
+    assert scope["external_paths"] == []
 
 
 def test_worktree_scope_uses_native_evaluation_contract_for_dirty_paths(monkeypatch):
@@ -1006,7 +1052,9 @@ def test_worktree_scope_uses_native_evaluation_contract_for_dirty_paths(monkeypa
         [
             " M engine/battle.py",
             " M web/core/smoke_tester.py",
+            " M sever/bot_adapter.py",
             " M sever/server/tcp_server.py",
+            " M web/core/national_acceptance.py",
             " M bots/national_v299/main.py",
             "?? bots/national_v300/",
         ],
@@ -1020,7 +1068,9 @@ def test_worktree_scope_uses_native_evaluation_contract_for_dirty_paths(monkeypa
 
     assert " M engine/battle.py" in scope["external_entries"]
     assert " M web/core/smoke_tester.py" in scope["external_entries"]
+    assert " M sever/bot_adapter.py" in scope["external_entries"]
     assert " M sever/server/tcp_server.py" in scope["critical_entries"]
+    assert " M web/core/national_acceptance.py" in scope["external_entries"]
     assert " M bots/national_v299/main.py" in scope["foreign_bot_entries"]
     assert "?? bots/national_v300/" in scope["candidate_entries"]
     assert scope["blocking_entries"] == [
