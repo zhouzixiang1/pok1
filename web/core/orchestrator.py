@@ -1469,6 +1469,8 @@ def _checkpoint_recovery_context(reason: str, ui=None, *, log_level: str = "warn
         "stage": stage,
         "next_v": next_v,
         "source_v": source_v,
+        "log_level": log_level,
+        "label": label,
     }
 
     msg = f"{label} Resuming v{next_v} at '{stage}' after {reason} (new LLM session)."
@@ -1489,6 +1491,16 @@ def _checkpoint_recovery_context(reason: str, ui=None, *, log_level: str = "warn
     except Exception:
         pass
     return recovery
+
+
+def _recovery_route_log_kwargs(recovery):
+    """Return deterministic-route log metadata carried by a recovery context."""
+    if not isinstance(recovery, dict):
+        return {}
+    return {
+        "log_level": recovery.get("log_level") or "warn",
+        "label": recovery.get("label") or "[Recovery]",
+    }
 
 
 def _extract_tool_result_json(result):
@@ -2313,8 +2325,13 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
 
             # If recovering, skip Phase 1 (context already known from checkpoint)
             if recovery and recovery.get("action") == "resume":
-                if await _try_deterministic_checkpoint_route(recovery, ui):
-                    recovery = _checkpoint_recovery_context("deterministic_route", ui)
+                route_log_kwargs = _recovery_route_log_kwargs(recovery)
+                if await _try_deterministic_checkpoint_route(recovery, ui, **route_log_kwargs):
+                    recovery = _checkpoint_recovery_context(
+                        "deterministic_route",
+                        ui,
+                        **route_log_kwargs,
+                    )
                     if ui:
                         ui.reset_gen_cost()
                     await asyncio.sleep(1)
