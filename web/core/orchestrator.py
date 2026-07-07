@@ -1363,7 +1363,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     return total_cost
 
 
-def _checkpoint_recovery_context(reason: str, ui=None):
+def _checkpoint_recovery_context(reason: str, ui=None, *, log_level: str = "warn", label: str = "[Recovery]"):
     """Build a recovery context from an active pipeline checkpoint.
 
     LLM sessions are disposable after SDK/cost-cap failures; pipeline checkpoints
@@ -1442,14 +1442,17 @@ def _checkpoint_recovery_context(reason: str, ui=None):
         "source_v": source_v,
     }
 
-    msg = f"[Recovery] Resuming v{next_v} at '{stage}' after {reason} (new LLM session)."
+    msg = f"{label} Resuming v{next_v} at '{stage}' after {reason} (new LLM session)."
     if ui:
-        ui.log_history(msg, "warn")
+        ui.log_history(msg, log_level)
     else:
-        log.warning(msg)
+        if log_level == "info":
+            log.info(msg)
+        else:
+            log.warning(msg)
     try:
         log_system_event(
-            "orchestrator.recovery_decision", "warn", msg,
+            "orchestrator.recovery_decision", log_level, msg,
             {"case": f"resume_after_{reason}",
              "next_v": next_v, "source_v": source_v,
              "stage": stage, "session_present": False},
@@ -1495,7 +1498,7 @@ def _is_crossover_incompatible_result(data):
     return str(data.get("error") or "") == "CROSSOVER_INCOMPATIBLE"
 
 
-async def _try_deterministic_checkpoint_route(recovery, ui=None):
+async def _try_deterministic_checkpoint_route(recovery, ui=None, *, log_level: str = "warn", label: str = "[Recovery]"):
     """Execute safe checkpoint routes without asking the Orchestrator LLM again."""
     if not recovery or recovery.get("action") != "resume":
         return False
@@ -1545,17 +1548,20 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
         return False
 
     msg = (
-        f"[Recovery] Deterministically routing v{next_v} at {stage} "
+        f"{label} Deterministically routing v{next_v} at {stage} "
         f"to {next_tool}."
     )
     if ui:
-        ui.log_history(msg, "warn")
+        ui.log_history(msg, log_level)
     else:
-        log.warning(msg)
+        if log_level == "info":
+            log.info(msg)
+        else:
+            log.warning(msg)
     try:
         log_system_event(
             f"pipeline.deterministic_route_{next_tool}",
-            "warn",
+            log_level,
             msg,
             {
                 "next_v": next_v,
@@ -2329,6 +2335,33 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                         await asyncio.sleep(backoff)
                     continue
                 consecutive_prep_fails = 0
+
+                selected_recovery = _checkpoint_recovery_context(
+                    "selected_after_prepare",
+                    ui,
+                    log_level="info",
+                    label="[Pipeline]",
+                )
+                if selected_recovery and selected_recovery.get("action") == "blocked":
+                    recovery = selected_recovery
+                    continue
+                if selected_recovery and selected_recovery.get("action") == "resume":
+                    if await _try_deterministic_checkpoint_route(
+                        selected_recovery,
+                        ui,
+                        log_level="info",
+                        label="[Pipeline]",
+                    ):
+                        recovery = _checkpoint_recovery_context(
+                            "deterministic_route",
+                            ui,
+                            log_level="info",
+                            label="[Pipeline]",
+                        )
+                        if ui:
+                            ui.reset_gen_cost()
+                        await asyncio.sleep(1)
+                        continue
 
             # Phase 2: Run one generation (preserves state on interrupt)
             cost = await _run_one_cycle(
