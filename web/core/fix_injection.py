@@ -4,7 +4,10 @@ Known critical fixes that must be present in every bot generation.
 Applied automatically after prepare_next_gen, run_crossover, and worker retry.
 
 Each fix uses idempotent search-and-replace with guard checks.
-If a fix's search string is not found, it is logged as skipped for visibility.
+If a fix's search string is not found in a relevant legacy template, it is
+logged as skipped for visibility. Native national bots may not carry legacy
+helper files such as card_utils.py/constants.py/postflop.py; those patches are
+classified as not applicable instead of noisy skipped fixes.
 """
 
 import fcntl
@@ -25,6 +28,7 @@ class Patch:
     search: str            # exact text to search for (must match verbatim)
     replace: str           # replacement text
     guard: str | None = None  # if present in file, skip this patch (idempotency)
+    relevance_markers: tuple[str, ...] = ()
 
 
 @dataclass
@@ -64,6 +68,7 @@ MANDATORY_FIXES: list[Fix] = [
                     "    if is_flush and is_straight:"
                 ),
                 guard="{14, 2, 3, 4, 5}",
+                relevance_markers=("evaluate_5", "is_straight", "straight_high"),
             ),
         ],
     ),
@@ -76,6 +81,7 @@ MANDATORY_FIXES: list[Fix] = [
                 search="    min_raise_action = max(0, 2 * last_raise_to - my_round_bet)",
                 replace="    min_raise_action = max(0, 2 * last_raise_to + 1 - my_round_bet)",
                 guard="2 * last_raise_to + 1 - my_round_bet",
+                relevance_markers=("min_raise_action", "last_raise_to"),
             ),
         ],
     ),
@@ -88,6 +94,7 @@ MANDATORY_FIXES: list[Fix] = [
                 search="    min_raise_action = max(0, 2 * judge_round_raise - my_round_bet)",
                 replace="    min_raise_action = max(0, 2 * judge_round_raise + 1 - my_round_bet)",
                 guard="2 * judge_round_raise + 1 - my_round_bet",
+                relevance_markers=("min_raise_action", "judge_round_raise"),
             ),
         ],
         active=False,  # DEPRECATED dead template: no evolved bot uses judge_round_raise (all claude_v* use last_raise_to variant). Kept inactive in registry for historical reference; do not re-enable. Tests assert its presence+inactive status, so do NOT delete without updating tests.
@@ -101,6 +108,7 @@ MANDATORY_FIXES: list[Fix] = [
                 search="TOTAL_HANDS = 50",
                 replace="TOTAL_HANDS = 70",
                 guard="TOTAL_HANDS = 70",
+                relevance_markers=("TOTAL_HANDS",),
             ),
         ],
     ),
@@ -119,6 +127,7 @@ MANDATORY_FIXES: list[Fix] = [
                     "    long-tail H2H is unaffected.\n"
                 ),
                 guard="Standard-bucket (vpip>=0.62, pfr>=0.32)",
+                relevance_markers=("disciplined_opp_river_margin", "Standard-bucket", "std_om"),
             ),
             Patch(
                 file_rel="postflop.py",
@@ -131,10 +140,36 @@ MANDATORY_FIXES: list[Fix] = [
                     "    std_om = {\"vpip\": 0.62, \"pfr\": 0.32, \"confidence\": 0.5}\n"
                 ),
                 guard='std_om = {"vpip": 0.62, "pfr": 0.32',
+                relevance_markers=("disciplined_opp_river_margin", "Standard-bucket", "std_om"),
             ),
         ],
     ),
 ]
+
+
+def _native_national_layout(bot_dir: Path) -> bool:
+    """Return True for national-native bot directories.
+
+    Native bots have a TCP entrypoint and can legitimately omit legacy
+    Botzone-era helpers. We intentionally avoid importing the bot or running the
+    full protocol checker here: fix injection is called during candidate
+    preparation, before later hygiene/gates have finished normalizing the bot.
+    """
+
+    return bot_dir.name.startswith("national_v") and (bot_dir / "national_bot.py").exists()
+
+
+def _patch_relevant_to_native_file(content: str, patch: Patch) -> bool:
+    """Decide whether a missing textual search is a real skipped fix.
+
+    For native bot layouts, an absent legacy symbol means the patch is outside
+    that bot's implementation surface. If a marker is present, the file still
+    looks like the legacy area the patch protects, so skipping remains visible.
+    """
+
+    if not patch.relevance_markers:
+        return True
+    return any(marker in content for marker in patch.relevance_markers)
 
 
 def _locked_read_write(path: Path, new_content: str) -> None:
@@ -155,32 +190,54 @@ def apply_known_fixes(bot_dir: Path) -> tuple[list[str], list[str]]:
 
     Returns (applied_fix_ids, skipped_fix_ids).
     A fix is "applied" if at least one of its patches was applied.
-    A fix is "skipped" if ALL of its patches were skipped (guard present or search not found).
+    A fix is "skipped" if ALL of its applicable patches were skipped (guard
+    present or relevant search not found). For national-native layouts, legacy
+    patches whose files/symbols are absent are not applicable and are omitted
+    from both return lists.
     """
+    bot_dir = Path(bot_dir)
     applied: list[str] = []
     skipped: list[str] = []
+    native_layout = _native_national_layout(bot_dir)
 
     for fix in MANDATORY_FIXES:
         if not fix.active:
             continue
 
         fix_applied = False
-        fix_skipped = True
+        applicable_seen = False
+        skipped_seen = False
 
         for patch in fix.patches:
             target = bot_dir / patch.file_rel
             if not target.exists():
-                log.warning("Fix %s patch target missing: %s", fix.fix_id, target)
+                if native_layout:
+                    log.debug("Fix %s not applicable: %s missing in native layout", fix.fix_id, patch.file_rel)
+                else:
+                    applicable_seen = True
+                    skipped_seen = True
+                    log.warning("Fix %s patch target missing: %s", fix.fix_id, target)
                 continue
 
             content = target.read_text()
 
             # Guard check: if fixed code already present, skip
             if patch.guard and patch.guard in content:
+                applicable_seen = True
+                skipped_seen = True
                 continue
 
             # Search check: if search string not found, skip
             if patch.search not in content:
+                if native_layout and not _patch_relevant_to_native_file(content, patch):
+                    log.debug(
+                        "Fix %s not applicable: %s has no legacy relevance markers",
+                        fix.fix_id,
+                        patch.file_rel,
+                    )
+                    continue
+                applicable_seen = True
+                skipped_seen = True
                 log.warning(
                     "Fix %s search not found in %s",
                     fix.fix_id, patch.file_rel,
@@ -190,17 +247,19 @@ def apply_known_fixes(bot_dir: Path) -> tuple[list[str], list[str]]:
             # Apply patch
             new_content = content.replace(patch.search, patch.replace, 1)
             if new_content == content:
+                applicable_seen = True
+                skipped_seen = True
                 log.warning("Fix %s replacement had no effect in %s", fix.fix_id, patch.file_rel)
                 continue
 
             _locked_read_write(target, new_content)
+            applicable_seen = True
             fix_applied = True
-            fix_skipped = False
             log.info("Applied fix %s to %s", fix.fix_id, patch.file_rel)
 
         if fix_applied:
             applied.append(fix.fix_id)
-        elif fix_skipped:
+        elif applicable_seen and skipped_seen:
             skipped.append(fix.fix_id)
 
     return applied, skipped

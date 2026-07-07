@@ -7,6 +7,7 @@ critical fixes are applied to every new bot generation.
 import sys
 import shutil
 import asyncio
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -120,6 +121,49 @@ class TestApplyKnownFixes:
         assert len(skipped) == active_count, (
             f"All {active_count} active fixes should be skipped"
         )
+
+    def test_native_minimal_bot_treats_legacy_fixes_as_not_applicable(
+        self, fix_injection, tmp_path, caplog
+    ):
+        """Raw national-native scaffolds do not need legacy Botzone helper patches."""
+
+        bot_dir = tmp_path / "national_v99"
+        bot_dir.mkdir()
+        (bot_dir / "national_bot.py").write_text("def main():\n    pass\n", encoding="utf-8")
+        (bot_dir / "state.py").write_text(
+            "def reconstruct_state(message):\n"
+            "    return {'raw': message}\n",
+            encoding="utf-8",
+        )
+
+        caplog.set_level(logging.WARNING, logger="pok.fixes")
+        applied, skipped = fix_injection.apply_known_fixes(bot_dir)
+
+        assert applied == []
+        assert skipped == []
+        assert "Fix BOT-" not in caplog.text
+
+    def test_native_relevant_unmatched_fix_still_warns(
+        self, fix_injection, tmp_path, caplog
+    ):
+        """Native layouts still surface real skipped fixes in relevant files."""
+
+        bot_dir = tmp_path / "national_v100"
+        bot_dir.mkdir()
+        (bot_dir / "national_bot.py").write_text("def main():\n    pass\n", encoding="utf-8")
+        (bot_dir / "state.py").write_text(
+            "def min_raise(last_raise_to, my_round_bet):\n"
+            "    min_raise_action = max(0, last_raise_to * 2 - my_round_bet)\n"
+            "    return min_raise_action\n",
+            encoding="utf-8",
+        )
+
+        caplog.set_level(logging.WARNING, logger="pok.fixes")
+        applied, skipped = fix_injection.apply_known_fixes(bot_dir)
+
+        assert applied == []
+        assert "BOT-002a" in skipped
+        assert "Fix BOT-002a search not found in state.py" in caplog.text
 
 
 class TestFixRegistry:

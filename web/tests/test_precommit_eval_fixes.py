@@ -6,6 +6,7 @@ P3: Stage-aware timeout skip for verified/critic_checked stages (orchestrator.py
 """
 
 import inspect
+import logging
 import os
 from pathlib import Path
 
@@ -262,6 +263,32 @@ class TestP1TimeBasedRefresh:
         text = source.read_text()
         # Find the time-based refresh block and verify it uses 30
         assert "last_bot_refresh_time >= 30" in text
+
+
+class TestDaemonSignalNoise:
+    """Daemon status logs should be usable during long-running evolution."""
+
+    def test_pick_match_info_log_is_throttled(self, monkeypatch, caplog):
+        import elo_daemon
+
+        clock = [1000.0]
+        monkeypatch.setattr(elo_daemon.time, "time", lambda: clock[0])
+        monkeypatch.setattr(elo_daemon, "PICK_MATCH_LOG_INTERVAL_SEC", 30.0)
+        elo_daemon._pick_match_log_state.clear()
+
+        caplog.set_level(logging.INFO, logger="pok.daemon")
+        elo_daemon._log_pick_matches(1, 1, None, 2)
+        clock[0] += 1.0
+        elo_daemon._log_pick_matches(1, 1, None, 2)
+        clock[0] += 31.0
+        elo_daemon._log_pick_matches(1, 1, None, 2)
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "pok.daemon" and "pick_matches:" in record.getMessage()
+        ]
+        assert len(messages) == 2
 
 
 # ── P3: Stage-Aware Timeout ──────────────────────────────────────────

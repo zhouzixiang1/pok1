@@ -118,6 +118,10 @@ HEARTBEAT_STALE_SEC = 120
 
 running = True
 
+PICK_MATCH_LOG_INTERVAL_SEC = float(os.environ.get("POK_PICK_MATCH_LOG_INTERVAL_SEC", "30"))
+ACTION_STATS_REFRESH_INTERVAL_SEC = float(os.environ.get("POK_ACTION_STATS_REFRESH_INTERVAL_SEC", "30"))
+_pick_match_log_state: dict[str, object] = {"last_signature": None, "last_ts": 0.0}
+
 
 def _write_heartbeat(scheduler_capable=True):
     """Refresh the last_heartbeat field in .daemon_pid atomically.
@@ -356,6 +360,34 @@ def _load_priority_eval():
         return None
 
 
+def _log_pick_matches(selected_count: int, candidate_count: int, priority_bot, bot_count: int) -> None:
+    """Keep daemon match-selection logs useful without flooding app.log.
+
+    The daemon can refill the queue several times per second when the active
+    pool is tiny and matches are fast. A per-call INFO line drowns out
+    orchestrator, quality-gate, and official-platform signals. Log immediately
+    when the scheduling shape changes, otherwise emit one heartbeat per
+    interval and leave repeated details at DEBUG.
+    """
+
+    signature = (selected_count, candidate_count, priority_bot, bot_count)
+    now = time.time()
+    last_signature = _pick_match_log_state.get("last_signature")
+    last_ts = float(_pick_match_log_state.get("last_ts") or 0.0)
+    should_info = signature != last_signature or now - last_ts >= PICK_MATCH_LOG_INTERVAL_SEC
+    log_fn = log.info if should_info else log.debug
+    log_fn(
+        "pick_matches: %d pairs from %d candidates (priority=%s, bots=%d)",
+        selected_count,
+        candidate_count,
+        priority_bot,
+        bot_count,
+    )
+    if should_info:
+        _pick_match_log_state["last_signature"] = signature
+        _pick_match_log_state["last_ts"] = now
+
+
 def pick_matches(active_bots, h2h, ratings, n_picks=None):
     if n_picks is None:
         n_picks = multiprocessing.cpu_count()
@@ -416,8 +448,7 @@ def pick_matches(active_bots, h2h, ratings, n_picks=None):
             selected.append((a, b))
             bot_counts[a] += 1
             bot_counts[b] += 1
-    log.info("pick_matches: %d pairs from %d candidates (priority=%s, bots=%d)",
-             len(selected), len(pairs), priority_bot, len(active_bots))
+    _log_pick_matches(len(selected), len(pairs), priority_bot, len(active_bots))
     return selected
 
 
@@ -768,6 +799,7 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
 # injection — no commit gate depends on them — so an async background refresh with a
 # one-cycle-stale read is acceptable.
 _action_stats_thread = None
+_last_action_stats_refresh_start = 0.0
 
 
 def _refresh_action_stats_async(active_bots):
@@ -778,9 +810,13 @@ def _refresh_action_stats_async(active_bots):
     bot_action_stats.json is updated in the worker via write_locked_json
     (fcntl-protected), so concurrent readers stay safe.
     """
-    global _action_stats_thread
+    global _action_stats_thread, _last_action_stats_refresh_start
     if _action_stats_thread is not None and _action_stats_thread.is_alive():
         return
+    now = time.monotonic()
+    if now - _last_action_stats_refresh_start < ACTION_STATS_REFRESH_INTERVAL_SEC:
+        return
+    _last_action_stats_refresh_start = now
 
     bots_snapshot = list(active_bots)
 
