@@ -148,8 +148,15 @@ def _env_enabled(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _official_gate_enabled(name: str) -> bool:
-    return _env_enabled("POK_OFFICIAL_REQUIRED") or _env_enabled(name)
+def _official_gate_enabled(name: str, *, include_required: bool = True) -> bool:
+    return (include_required and _env_enabled("POK_OFFICIAL_REQUIRED")) or _env_enabled(name)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _official_bot_token(value) -> str:
@@ -276,9 +283,11 @@ async def _run_national_precommit_backend(
 
     official_platform_result = {}
     if native_tcp_mode and _official_gate_enabled("POK_OFFICIAL_PRECOMMIT_GATE") and not blockers:
-        official_self_rounds = int(os.environ.get("POK_OFFICIAL_SELF_PLAY_ROUNDS", "5"))
-        official_opponent_rounds = int(os.environ.get("POK_OFFICIAL_OPPONENT_ROUNDS", "3"))
-        official_hands = int(os.environ.get("POK_OFFICIAL_TARGET_HANDS", "70"))
+        # The official Windows platform is a protocol/compliance oracle here.
+        # Strength and long-run tracking stay on the local native TCP harness.
+        official_self_rounds = max(0, _env_int("POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS", 1))
+        official_opponent_rounds = max(0, _env_int("POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS", 1))
+        official_hands = max(1, min(70, _env_int("POK_OFFICIAL_PRECOMMIT_TARGET_HANDS", 70)))
         official_opponent = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
         if not official_opponent and opponents_with_paths:
             official_opponent = _official_bot_token(opponents_with_paths[0].get("path") or opponents_with_paths[0].get("name"))
@@ -294,22 +303,22 @@ async def _run_national_precommit_backend(
             official_platform_result = _official_result.model_dump()
             national_result["official_platform"] = official_platform_result
             if not _official_result.passed:
-                official_details = "; ".join(_official_result.issues[:5] or ["official platform acceptance failed"])
+                official_details = "; ".join(_official_result.issues[:5] or ["official platform compliance failed"])
                 official_suite_dir = (_official_result.summary or {}).get("suite_dir")
                 if official_suite_dir:
                     official_details = f"{official_details}; evidence={official_suite_dir}"
                 blockers.append({
-                    "reason": "official_platform_acceptance",
+                    "reason": "official_platform_compliance",
                     "details": official_details,
                 })
         except Exception as exc:
             official_platform_result = {
                 "passed": False,
-                "issues": [f"official_platform_acceptance_exception: {type(exc).__name__}: {str(exc)[:500]}"],
+                "issues": [f"official_platform_compliance_exception: {type(exc).__name__}: {str(exc)[:500]}"],
             }
             national_result["official_platform"] = official_platform_result
             blockers.append({
-                "reason": "official_platform_acceptance_exception",
+                "reason": "official_platform_compliance_exception",
                 "details": official_platform_result["issues"][0],
             })
 
@@ -394,7 +403,7 @@ async def _run_national_precommit_backend(
     ))
     if official_platform_result:
         scorecard.add(GateResult.from_bool(
-            "official_platform_acceptance",
+            "official_platform_compliance",
             bool(official_platform_result.get("passed")),
             metrics=official_platform_result.get("summary", {}),
             failures=official_platform_result.get("issues", [])[:5],
