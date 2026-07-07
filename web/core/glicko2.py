@@ -28,15 +28,27 @@ EPSILON = 0.000001
 DEFAULT_R = 1500.0
 DEFAULT_RD = 350.0
 DEFAULT_SIGMA = 0.06
+MIN_RATING = -1000.0
+MAX_RATING = 3000.0
+
+
+def _bounded_rd(rd):
+    try:
+        rd = float(rd)
+    except (TypeError, ValueError):
+        return DEFAULT_RD
+    if not math.isfinite(rd):
+        return DEFAULT_RD
+    return min(max(rd, 1e-6), DEFAULT_RD)
 
 
 class Glicko2Player:
     __slots__ = ('r', 'rd', 'sigma', 'last_play_period')
 
     def __init__(self, r=DEFAULT_R, rd=DEFAULT_RD, sigma=DEFAULT_SIGMA, last_play_period=None):
-        self.r = r
-        self.rd = rd
-        self.sigma = sigma
+        self.r = float(r)
+        self.rd = _bounded_rd(rd)
+        self.sigma = float(sigma)
         self.last_play_period = last_play_period
 
     def to_dict(self):
@@ -184,8 +196,15 @@ def update_rating_period(player, results):
     r_new = mu_new * SCALE + DEFAULT_R
     rd_new = phi_new * SCALE
 
-    # Reject pathological updates (numerical blow-ups: |delta|>200 or out-of-range)
-    if abs(r_new - player.r) > 200 or not (-1000 <= r_new <= 3000):
+    # Reject only numerical blow-ups. Large one-period moves are legitimate for
+    # high-RD players after decisive batches; rejecting them traps new bots at
+    # 1500 while RD grows, making conservative Glicko unusable.
+    if (
+        not math.isfinite(r_new)
+        or not math.isfinite(rd_new)
+        or not math.isfinite(sigma_star)
+        or not (MIN_RATING <= r_new <= MAX_RATING)
+    ):
         phi_star = math.sqrt(phi * phi + player.sigma * player.sigma)
         return Glicko2Player(player.r, phi_star * SCALE, player.sigma, last_play_period)
 
