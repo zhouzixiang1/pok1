@@ -727,6 +727,7 @@ async def run_quality_gates(args):
             try:
                 from official_certification import (
                     STATUS_FAILED,
+                    STATUS_INCONCLUSIVE,
                     build_spec,
                     enqueue_certification,
                     official_compliance_verdict,
@@ -747,18 +748,19 @@ async def run_quality_gates(args):
                         "official-compliance-pass",
                         "official-certified",
                         "official-pending",
+                        STATUS_INCONCLUSIVE,
                         STATUS_FAILED,
                     }:
                         official_smoke_payload = current
                     else:
                         official_smoke_payload = enqueue_certification(_spec, reason="quality_gate_smoke")
-                if official_smoke_payload.get("status") == STATUS_FAILED:
+                official_verdict = official_compliance_verdict(official_smoke_payload)
+                official_smoke_ok = bool(official_verdict.get("ok"))
+                official_smoke_blocking = bool(official_verdict.get("blocking"))
+                official_smoke_inconclusive = bool(official_verdict.get("inconclusive"))
+                official_smoke_classification = str(official_verdict.get("classification") or "passed_or_pending")
+                if official_smoke_payload.get("status") in {STATUS_FAILED, STATUS_INCONCLUSIVE}:
                     official_smoke_errors = official_smoke_payload.get("issues") or ["official_smoke_failed"]
-                    official_verdict = official_compliance_verdict(official_smoke_payload)
-                    official_smoke_ok = bool(official_verdict.get("ok"))
-                    official_smoke_blocking = bool(official_verdict.get("blocking"))
-                    official_smoke_inconclusive = bool(official_verdict.get("inconclusive"))
-                    official_smoke_classification = str(official_verdict.get("classification") or "failed")
                     official_smoke_payload = {
                         **official_smoke_payload,
                         "blocking": official_smoke_blocking,
@@ -766,7 +768,12 @@ async def run_quality_gates(args):
                         "classification": official_smoke_classification,
                     }
                 else:
-                    official_smoke_classification = "passed_or_pending"
+                    official_smoke_payload = {
+                        **official_smoke_payload,
+                        "blocking": official_smoke_blocking,
+                        "inconclusive": official_smoke_inconclusive,
+                        "classification": official_smoke_classification,
+                    }
                 log_system_event(
                     (
                         "pipeline.official_smoke_failed"

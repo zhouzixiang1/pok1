@@ -453,7 +453,7 @@ def test_quality_gate_treats_official_port_busy_as_inconclusive(monkeypatch, tmp
         "scenarios": [],
     })
     monkeypatch.setattr(official_certification, "run_certification", lambda *_a, **_k: {
-        "status": official_certification.STATUS_FAILED,
+        "status": official_certification.STATUS_INCONCLUSIVE,
         "mode": "smoke",
         "issues": ["self_play_1: port_busy_before_start: 127.0.0.1:10001"],
     })

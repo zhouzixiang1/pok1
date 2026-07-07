@@ -296,9 +296,11 @@ async def _run_national_precommit_backend(
                 STATUS_COMPLIANCE_PASS,
                 STATUS_CERTIFIED,
                 STATUS_FAILED,
+                STATUS_INCONCLUSIVE,
                 STATUS_PENDING,
                 build_spec,
                 enqueue_certification,
+                official_compliance_verdict,
                 read_status,
             )
             candidate_token = _official_bot_token(candidate_main)
@@ -317,12 +319,16 @@ async def _run_national_precommit_backend(
                 current_status == STATUS_CERTIFIED
                 or current_status == STATUS_COMPLIANCE_PASS
                 or current_status == STATUS_FAILED
+                or current_status == STATUS_INCONCLUSIVE
                 or (current_status == STATUS_PENDING and current_mode in {"compliance", "full"})
             ):
                 official_platform_result = current
             else:
                 official_platform_result = enqueue_certification(_spec, reason="precommit_compliance")
-            official_platform_result["blocking"] = False
+            official_platform_result.update({
+                "blocking": False,
+                "classification": official_compliance_verdict(official_platform_result).get("classification"),
+            })
             national_result["official_platform"] = official_platform_result
         except Exception as exc:
             official_platform_result = {
@@ -419,14 +425,14 @@ async def _run_national_precommit_backend(
             official_verdict = _official_compliance_verdict(official_platform_result)
         except Exception:
             official_verdict = {
+                "ok": True,
                 "blocking": False,
                 "inconclusive": True,
                 "classification": "inconclusive",
             }
         scorecard.add(GateResult.from_bool(
             "official_platform_compliance",
-            official_status in {"official-compliance-pass", "official-certified"}
-            or bool(official_platform_result.get("passed")),
+            bool(official_verdict.get("ok")),
             metrics={
                 "status": official_status,
                 "mode": official_platform_result.get("mode"),

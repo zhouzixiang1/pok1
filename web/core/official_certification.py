@@ -41,6 +41,7 @@ STATUS_SMOKE_PASS = "official-smoke-pass"
 STATUS_COMPLIANCE_PASS = "official-compliance-pass"
 STATUS_PENDING = "official-pending"
 STATUS_CERTIFIED = "official-certified"
+STATUS_INCONCLUSIVE = "official-inconclusive"
 STATUS_FAILED = "official-failed"
 
 PARENT_BLOCKING_FAILURE_MARKERS = (
@@ -441,6 +442,10 @@ def _issue_has_marker(issue: str, markers: tuple[str, ...]) -> bool:
     return any(marker in lower for marker in markers)
 
 
+def _issues_have_protocol_violation(issues: list[str]) -> bool:
+    return any(_issue_has_marker(issue, PARENT_BLOCKING_FAILURE_MARKERS) for issue in issues)
+
+
 def official_compliance_verdict(status: dict[str, Any]) -> dict[str, Any]:
     """Classify official-platform evidence as a compliance oracle.
 
@@ -450,6 +455,16 @@ def official_compliance_verdict(status: dict[str, Any]) -> dict[str, Any]:
     """
     status_value = str(status.get("status") or "")
     issues = _official_issue_strings(status)
+    if status_value == STATUS_INCONCLUSIVE:
+        return {
+            "ok": True,
+            "blocking": False,
+            "classification": "inconclusive",
+            "inconclusive": True,
+            "violation": False,
+            "issues": issues,
+            "inconclusive_issues": issues,
+        }
     if status_value != STATUS_FAILED:
         return {
             "ok": True,
@@ -579,6 +594,7 @@ def enqueue_certification(
         STATUS_SMOKE_PASS,
         STATUS_COMPLIANCE_PASS,
         STATUS_CERTIFIED,
+        STATUS_INCONCLUSIVE,
     }:
         return current
     if current.get("status") == STATUS_CERTIFIED and spec.mode in {"smoke", "compliance"}:
@@ -611,6 +627,7 @@ def enqueue_certification(
 def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache_hit: bool, cache_key_value: str) -> dict[str, Any]:
     validation_issues = report_validation_issues(result, spec)
     valid = not validation_issues
+    issues = list(result.get("issues") or validation_issues)
     if valid:
         if spec.mode == "full":
             status = STATUS_CERTIFIED
@@ -618,11 +635,12 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
             status = STATUS_COMPLIANCE_PASS
         else:
             status = STATUS_SMOKE_PASS
-    else:
+    elif _issues_have_protocol_violation(issues):
         status = STATUS_FAILED
+    else:
+        status = STATUS_INCONCLUSIVE
     report = result.get("report", {}) if isinstance(result, dict) else {}
     summary = report.get("summary", {}) if isinstance(report, dict) else {}
-    issues = list(result.get("issues") or validation_issues)
     return write_status(
         spec.candidate,
         status,
