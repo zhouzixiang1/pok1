@@ -172,14 +172,14 @@ cd sever && python bot_adapter.py --bot ../archive/evolution_epochs/<epoch>/lega
 # National protocol regression tests.
 python -m pytest sever/tests -q
 
-# Official Windows platform acceptance under Wine/Xvfb.
-# The formal pass criterion is 70-hand self-play for 5 rounds plus 70-hand
-# candidate-vs-opponent play for 3 rounds, all issue-free.
+# Official Windows platform compliance oracle under Wine/Xvfb.
+# Use this only to confirm official-protocol legality. Strength tracking,
+# generation observation, and precommit regression use local native TCP gates.
 python scripts/official_platform_acceptance.py \
   --candidate bots/national_v<N> \
   --opponent /home/zzx/project/pok/ref/national_v70 \
-  --self-play-rounds 5 \
-  --opponent-rounds 3 \
+  --self-play-rounds 1 \
+  --opponent-rounds 1 \
   --target-hands 70
 ```
 

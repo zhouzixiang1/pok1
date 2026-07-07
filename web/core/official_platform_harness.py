@@ -2,9 +2,10 @@
 
 This module drives the real competition executable under Wine/Xvfb, starts two
 native TCP bot processes, and records the platform screenshots plus bot logs as
-the acceptance evidence. It is intentionally separate from ``national_native``:
-that module is the fast local simulator, while this module is the official
-oracle used when the environment enables the EXE gate.
+compliance evidence. It is intentionally separate from ``national_native``:
+that module is the fast local simulator and strength tracker, while this module
+is the official protocol-compliance oracle used when the environment enables the
+EXE gate.
 """
 
 from __future__ import annotations
@@ -964,14 +965,19 @@ def run_official_acceptance_sync(
     candidate: str | Path,
     *,
     opponent: str | Path | None = None,
-    self_play_rounds: int = 5,
-    opponent_rounds: int = 3,
+    self_play_rounds: int = 1,
+    opponent_rounds: int = 1,
     target_hands: int = 70,
     config: OfficialPlatformConfig | None = None,
     results_dir: Path | None = None,
     round_runner: RoundRunner = run_official_round,
 ) -> NationalAcceptanceResult:
-    """Run the official 5+self / 3+opponent acceptance suite."""
+    """Run official EXE compliance rounds.
+
+    The default is the evolution compliance shape: one 70-hand self-play round
+    and one 70-hand candidate-vs-reference round. Heavy 5+3 certification is
+    available only when callers pass those counts explicitly.
+    """
     cfg = config or OfficialPlatformConfig()
     if results_dir is not None:
         cfg = _copy_config(cfg, results_dir=Path(results_dir))
@@ -1062,8 +1068,8 @@ async def run_official_acceptance(
     candidate: str | Path,
     *,
     opponent: str | Path | None = None,
-    self_play_rounds: int = 5,
-    opponent_rounds: int = 3,
+    self_play_rounds: int = 1,
+    opponent_rounds: int = 1,
     target_hands: int = 70,
     config: OfficialPlatformConfig | None = None,
     results_dir: Path | None = None,

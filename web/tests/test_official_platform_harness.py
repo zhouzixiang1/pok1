@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 from official_platform_harness import (
     BotLaunchConfig,
@@ -14,6 +15,11 @@ from official_platform_harness import (
 )
 
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
 def test_official_required_does_not_enable_quality_long_acceptance(monkeypatch):
     import tool_gates
 
@@ -25,6 +31,16 @@ def test_official_required_does_not_enable_quality_long_acceptance(monkeypatch):
         "POK_OFFICIAL_ACCEPTANCE_GATE",
         include_required=False,
     )
+
+
+def test_official_platform_cli_defaults_to_compliance_rounds():
+    from scripts.official_platform_acceptance import parse_args
+
+    args = parse_args(["--candidate", "bots/national_v1"])
+
+    assert args.self_play_rounds == 1
+    assert args.opponent_rounds == 1
+    assert args.target_hands == 70
 
 
 def test_parse_bot_log_counts_progress_and_issues(tmp_path):
@@ -142,6 +158,39 @@ def test_acceptance_scheduler_runs_self_and_opponent_rounds(tmp_path):
     assert calls[0][1].seat == "lower"
     assert calls[-1][0].name == "Candidate"
     assert calls[-1][1].name == "Opponent"
+
+
+def test_acceptance_scheduler_defaults_to_one_plus_one_compliance(tmp_path):
+    candidate = tmp_path / "candidate"
+    opponent = tmp_path / "opponent"
+    candidate.mkdir()
+    opponent.mkdir()
+    (candidate / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    (opponent / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    calls = []
+
+    def fake_round(bot_a, bot_b, *, target_hands, round_kind, round_index, config, out_dir):
+        calls.append((round_kind, round_index, target_hands, bot_a.name, bot_b.name))
+        return {
+            "passed": True,
+            "issues": [],
+            "round_kind": round_kind,
+            "round_index": round_index,
+            "log_summary": {"hands_started_min": target_hands, "settlements_min": target_hands - 1},
+        }
+
+    result = run_official_acceptance_sync(
+        candidate,
+        opponent=opponent,
+        results_dir=tmp_path / "results",
+        round_runner=fake_round,
+    )
+
+    assert result.passed
+    assert result.summary["self_play_rounds"] == 1
+    assert result.summary["opponent_rounds"] == 1
+    assert result.summary["rounds_requested"] == 2
+    assert [(call[0], call[1]) for call in calls] == [("self_play", 1), ("opponent", 1)]
 
 
 def test_acceptance_scheduler_reports_round_failure(tmp_path):

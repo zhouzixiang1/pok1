@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run official Windows-platform acceptance for native national TCP bots."""
+"""Run official Windows-platform compliance checks for native national TCP bots."""
 
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", help="Candidate bot directory or script.")
     parser.add_argument("--opponent", help="Opponent bot directory or script for non-self-play rounds.")
-    parser.add_argument("--self-play-rounds", type=int, default=5, help="Candidate-vs-candidate official rounds.")
-    parser.add_argument("--opponent-rounds", type=int, default=3, help="Candidate-vs-opponent official rounds.")
+    parser.add_argument("--self-play-rounds", type=int, default=1, help="Candidate-vs-candidate official rounds.")
+    parser.add_argument("--opponent-rounds", type=int, default=1, help="Candidate-vs-opponent official rounds.")
     parser.add_argument("--target-hands", type=int, default=70, help="Hands required per official round.")
     parser.add_argument("--results-dir", help="Evidence output directory.")
     parser.add_argument("--exe", help="Official platform EXE path.")

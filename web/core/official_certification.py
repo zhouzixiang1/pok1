@@ -1,9 +1,10 @@
 """Official EXE certification status, cache, and queue helpers.
 
-The fast national-native gates answer whether a bot is locally protocol-clean.
-This module tracks the slower official Windows platform evidence separately so
-daily evolution is not blocked by 5+3 full EXE suites, while final submission
-status remains tied to real official receipts and THP records.
+The fast national-native gates own strength tracking and regression. This module
+tracks slower official Windows platform evidence separately as a compliance
+oracle: real protocol violations can block future parent selection, but EXE
+runtime/infrastructure ambiguity must not become the evolution score or
+multi-generation tracking loop.
 """
 
 from __future__ import annotations

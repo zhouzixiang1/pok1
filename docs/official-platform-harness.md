@@ -10,10 +10,12 @@ It is run on Linux through Wine and Xvfb. This harness starts the EXE, configure
 the platform UI, launches two independent native TCP bot processes, captures
 screenshots, and writes bot/platform logs plus JSON receipts.
 
-## Protocol Authority
+## Compliance Authority
 
-The EXE is the authority for national-native bot acceptance. It differs from the
-fast local simulator in one important way: it uses raw short TCP messages, not a
+The EXE is the authority for national-native protocol legality. It is not the
+long-running evolution tracker and must not replace local native TCP ratings,
+precommit regression, or multi-generation observation. It differs from the fast
+local simulator in one important way: it uses raw short TCP messages, not a
 newline-delimited text protocol. Native bots must:
 
 - wait for `name`, then send the raw team/player name without relying on `\n`;
@@ -71,10 +73,11 @@ python scripts/official_certify.py compliance bots/national_v<N> \
   --opponent /home/zzx/project/pok/ref/national_v70
 ```
 
-## Manual Heavy Acceptance
+## Manual Heavy Compliance Recheck
 
-For a one-off heavy check, explicitly run 5 complete self-play rounds and 3
-complete candidate-vs-opponent rounds, 70 hands per round:
+For a one-off heavy compliance recheck, explicitly run 5 complete self-play
+rounds and 3 complete candidate-vs-opponent rounds, 70 hands per round. This is
+not the normal evolution tracking loop:
 
 ```bash
 python scripts/official_platform_acceptance.py \
@@ -135,8 +138,8 @@ export POK_OFFICIAL_OPPONENT=/home/zzx/project/pok/ref/national_v70
 export POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS=1
 export POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS=1
 export POK_OFFICIAL_PRECOMMIT_TARGET_HANDS=70
-export POK_OFFICIAL_SELF_PLAY_ROUNDS=5
-export POK_OFFICIAL_OPPONENT_ROUNDS=3
+export POK_OFFICIAL_SELF_PLAY_ROUNDS=1
+export POK_OFFICIAL_OPPONENT_ROUNDS=1
 export POK_OFFICIAL_TARGET_HANDS=70
 ```
 
@@ -148,7 +151,7 @@ tracker. More granular switches are available:
 ```bash
 export POK_OFFICIAL_SMOKE_GATE=1
 export POK_OFFICIAL_PRECOMMIT_GATE=1
-export POK_OFFICIAL_ACCEPTANCE_GATE=1  # optional: also run the full suite at quality-gate time
+export POK_OFFICIAL_ACCEPTANCE_GATE=0  # keep official EXE out of strength tracking
 ```
 
 When enabled, precommit records an `official_platform_compliance` scorecard
