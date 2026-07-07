@@ -10,6 +10,19 @@ from official_platform_harness import (
 )
 
 
+def test_official_required_does_not_enable_quality_long_acceptance(monkeypatch):
+    import tool_gates
+
+    monkeypatch.setenv("POK_OFFICIAL_REQUIRED", "1")
+    monkeypatch.delenv("POK_OFFICIAL_ACCEPTANCE_GATE", raising=False)
+
+    assert tool_gates._official_gate_enabled("POK_OFFICIAL_SMOKE_GATE")
+    assert not tool_gates._official_gate_enabled(
+        "POK_OFFICIAL_ACCEPTANCE_GATE",
+        include_required=False,
+    )
+
+
 def test_parse_bot_log_counts_progress_and_issues(tmp_path):
     log = tmp_path / "bot.log"
     log.write_text(

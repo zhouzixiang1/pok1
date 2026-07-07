@@ -70,8 +70,8 @@ def _env_enabled(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _official_gate_enabled(name: str) -> bool:
-    return _env_enabled("POK_OFFICIAL_REQUIRED") or _env_enabled(name)
+def _official_gate_enabled(name: str, *, include_required: bool = True) -> bool:
+    return (include_required and _env_enabled("POK_OFFICIAL_REQUIRED")) or _env_enabled(name)
 
 
 async def _run_workflow_smoke_gate(
@@ -796,7 +796,10 @@ async def run_quality_gates(args):
             national_acceptance_errors = ["national_acceptance_skipped_due_to_failed_prerequisites"]
             national_acceptance_payload = {"skipped": True, "reason": national_acceptance_errors[0]}
 
-    official_acceptance_enabled = native_tcp_mode and _official_gate_enabled("POK_OFFICIAL_ACCEPTANCE_GATE")
+    official_acceptance_enabled = native_tcp_mode and _official_gate_enabled(
+        "POK_OFFICIAL_ACCEPTANCE_GATE",
+        include_required=False,
+    )
     if official_acceptance_enabled:
         try:
             _official_bot_under_project_bots = bot_dir.resolve().is_relative_to((PROJECT_ROOT / "bots").resolve())
