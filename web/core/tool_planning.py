@@ -3401,6 +3401,69 @@ def _precommit_changed_python_files(ckpt):
     return sorted(normalized, key=lambda rel: (preferred_order.get(rel, 100), rel))
 
 
+_PRECOMMIT_STRATEGY_REPAIR_FILES = [
+    "strategy.py",
+    "postflop.py",
+    "preflop.py",
+    "strategy_helpers.py",
+    "opponent.py",
+    "state.py",
+    "constants.py",
+]
+
+_PRECOMMIT_PROTOCOL_REPAIR_FILES = {"national_bot.py", "main.py"}
+
+_PRECOMMIT_PROTOCOL_EVIDENCE_MARKERS = (
+    "official_smoke",
+    "official smoke",
+    "official-platform",
+    "official platform",
+    "illegal action",
+    "illegal wire",
+    "invalid action",
+    "malformed action",
+    "protocol violation",
+    "wire output",
+    "action serialization",
+    "action format",
+    "botzone json",
+    "json response",
+    "debug text to stdout",
+    "stdout",
+    "bet keyword",
+    "extra spaces",
+    "leading/trailing",
+)
+
+
+def _precommit_protocol_compliance_failure(failures, feedback=""):
+    """Whether a precommit failure contains exact illegal/protocol evidence.
+
+    National/official harnesses are compliance oracles in this pipeline. A plain
+    W-L regression is a strategy repair and should not ask workers to tune the
+    TCP entrypoint. Protocol files are only repair targets when the failure text
+    names an illegal wire/action-format problem.
+    """
+
+    parts = [str(item) for item in failures or [] if item is not None]
+    if feedback:
+        parts.append(str(feedback))
+    text = "\n".join(parts).lower()
+    return any(marker in text for marker in _PRECOMMIT_PROTOCOL_EVIDENCE_MARKERS)
+
+
+def _precommit_filter_repair_targets(files, *, allow_protocol_files=False):
+    allowed = []
+    for item in files or []:
+        rel = Path(str(item)).name
+        if not rel or not rel.endswith(".py"):
+            continue
+        if rel in _PRECOMMIT_PROTOCOL_REPAIR_FILES and not allow_protocol_files:
+            continue
+        allowed.append(rel)
+    return allowed
+
+
 def _limit_precommit_repair_targets(files):
     try:
         limit = int(os.environ.get("POK_PRECOMMIT_REPAIR_MAX_TARGETS", "3"))
@@ -3425,23 +3488,34 @@ def _precommit_repair_target_files(ckpt, feedback):
     if not evidence_files and feedback:
         evidence_files = _extract_quality_failure_files([feedback])
 
+    allow_protocol_files = _precommit_protocol_compliance_failure(failures, feedback)
     changed_files = _precommit_changed_python_files(ckpt)
+    changed_repair_files = _precommit_filter_repair_targets(
+        changed_files,
+        allow_protocol_files=allow_protocol_files,
+    )
+    evidence_repair_files = _precommit_filter_repair_targets(
+        evidence_files,
+        allow_protocol_files=allow_protocol_files,
+    )
     if changed_files and evidence_files:
-        evidence_set = set(evidence_files)
-        intersected = [name for name in changed_files if name in evidence_set]
+        evidence_set = set(evidence_repair_files)
+        intersected = [name for name in changed_repair_files if name in evidence_set]
         if intersected:
             return _limit_precommit_repair_targets(intersected)
-    if changed_files:
-        return _limit_precommit_repair_targets(changed_files)
-    if evidence_files:
-        return _limit_precommit_repair_targets(evidence_files)
+    if changed_repair_files:
+        return _limit_precommit_repair_targets(changed_repair_files)
+    if evidence_repair_files:
+        return _limit_precommit_repair_targets(evidence_repair_files)
 
-    preferred = ["strategy.py", "postflop.py", "preflop.py", "strategy_helpers.py", "opponent.py"]
     try:
         next_v = ckpt.get("next_v") if isinstance(ckpt, dict) else None
         bot_dir = get_bot_dir(next_v) if next_v is not None else None
         if bot_dir:
-            existing = [name for name in preferred if (bot_dir / name).exists()]
+            existing = [
+                name for name in _PRECOMMIT_STRATEGY_REPAIR_FILES
+                if (bot_dir / name).exists()
+            ]
             if existing:
                 return _limit_precommit_repair_targets(existing[:1])
     except Exception:
@@ -4434,6 +4508,10 @@ def _precommit_repair_task(filename, ckpt, feedback):
     next_v = ckpt.get("next_v")
     source_v = ckpt.get("source_v")
     suffix = _task_id_suffix(filename)
+    protocol_compliance_task = (
+        filename in _PRECOMMIT_PROTOCOL_REPAIR_FILES
+        and _precommit_protocol_compliance_failure(_precommit_failure_items(ckpt), feedback)
+    )
     line_note = ""
     try:
         path = get_bot_dir(next_v) / filename
@@ -4446,6 +4524,51 @@ def _precommit_repair_task(filename, ckpt, feedback):
                 )
     except Exception:
         line_note = ""
+
+    if protocol_compliance_task:
+        prompt = (
+            "This is one file-scoped national protocol compliance repair from a failed "
+            f"precommit/official compliance signal for bots/national_v{next_v}.\n\n"
+            f"Target file: `{filename}`\n"
+            f"Source parent for diff: bots/national_v{source_v}/\n"
+            f"Failed candidate: bots/national_v{next_v}/\n\n"
+            f"Exact compliance feedback:\n{feedback}\n\n"
+            "Boundary:\n"
+            "- The official Windows/national platform is only a compliance oracle here; "
+            "do not use this task for full-flow strength tuning.\n"
+            "- `national_bot.py` and `main.py` are protocol entrypoint files, not EV policy files.\n"
+            "- Fix only the exact illegal wire/action-format/entrypoint behavior shown in the evidence.\n"
+            "- Do not add strategy thresholds, matchup heuristics, range logic, or broad action gates here.\n"
+            "- If the diff contains non-protocol strategy logic in this file, remove or narrow it instead "
+            "of tuning it.\n\n"
+            "Required method:\n"
+            f"- Only edit `{filename}`. Other files are intentionally out of scope for this worker.\n"
+            f"- First inspect `diff bots/national_v{source_v}/{filename} bots/national_v{next_v}/{filename}`.\n"
+            "- Preserve card mapping, seat handling, native TCP line formatting, and legal-action sanitization.\n"
+            "- Ensure actions serialize only as `fold`, `call`, `check`, `allin`, or `raise <amount>` with "
+            "exactly one ASCII space for raises.\n"
+            "- Run a compile check for the bot package before finishing."
+            f"{line_note}"
+        )
+        return {
+            "worker_id": f"auto_precommit_repair_{suffix}",
+            "role": "Protocol Compliance Repair Architect",
+            "target_files": [filename],
+            "must_change_files": [filename],
+            "worker_prompt": prompt,
+            "task_kind": "precommit_repair",
+            "repair_blocker": "precommit_regression",
+            "repair_contract": {
+                "blocker": "precommit_regression",
+                "subtype": "protocol_compliance",
+                "file": filename,
+                "evidence": feedback[:2000],
+                "protected_invariants": [
+                    "national_position_semantics",
+                    "protocol_compliance_only",
+                ],
+            },
+        }
 
     prompt = (
         "This is one file-scoped precommit regression repair from a failed native "
@@ -4467,6 +4590,8 @@ def _precommit_repair_task(filename, ckpt, feedback):
         "preserve the candidate's native national position semantics and BOT-006 repairs.\n\n"
         "Required method:\n"
         f"- Only edit `{filename}`. Other files are intentionally out of scope for this worker.\n"
+        "- This is a strategy/matchup repair. Do not edit or reason around `national_bot.py` or `main.py`; "
+        "those protocol entrypoints are compliance-only unless exact illegal wire output was reported.\n"
         f"- First inspect `diff bots/national_v{source_v}/{filename} bots/national_v{next_v}/{filename}` "
         "and identify which changed behavior could explain the losing 70-hand national TCP matchups.\n"
         "- Make one bounded EV/matchup correction in this file. Prefer tightening, gating, or partially "
