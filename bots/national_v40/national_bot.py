@@ -2,7 +2,7 @@
 """Native national TCP entrypoint for this bot.
 
 This file is the formal national-platform submission entry. It connects to the
-TCP server, maintains line-protocol state, calls the local strategy in process,
+TCP server, maintains raw-stream state, calls the local strategy in process,
 and sends only national wire actions: raise <amount>, fold, call, check, allin.
 It deliberately uses no legacy bridge module and prints no JSON responses to
 stdout.
@@ -15,6 +15,7 @@ import os
 import re
 import socket
 import sys
+import time
 import traceback
 
 
@@ -28,6 +29,30 @@ INITIAL_CHIPS = 20000
 TOTAL_HANDS = 70
 CARD_RE = re.compile(r"<(\d+),(\d+)>")
 TCP_TO_JUDGE_SUIT = {0: 2, 1: 0, 2: 1, 3: 3}
+ACTION_PREFIX_RE = re.compile(r"^(raise|bet)\s+(\d+)")
+EARN_PREFIX_RE = re.compile(r"^earnChips\s+-?\d+")
+
+_LOG_FP = None
+
+
+def _log_open(path: str) -> None:
+    global _LOG_FP
+    if not path:
+        return
+    try:
+        _LOG_FP = open(path, "a", encoding="utf-8", buffering=1)
+    except Exception:
+        _LOG_FP = None
+
+
+def _log(msg: str) -> None:
+    if _LOG_FP is None:
+        return
+    try:
+        import time as _time
+        _LOG_FP.write(f"[{_time.strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
 
 
 def _tcp_card_to_int(suit: int, rank: int) -> int:
@@ -39,16 +64,82 @@ def _parse_cards(text: str) -> list[int]:
 
 
 def _parse_action(raw: str) -> tuple[str, int | None]:
-    if raw.startswith("raise ") and raw[6:].isdigit() and raw.count(" ") == 1:
-        return "raise", int(raw.split(" ", 1)[1])
-    if raw in {"call", "check", "fold", "allin"}:
-        return raw, None
+    parts = raw.strip().split()
+    if not parts:
+        return "unknown", None
+    head = parts[0]
+    if head in {"raise", "bet"} and len(parts) >= 2 and parts[1].isdigit():
+        return "raise", int(parts[1])
+    if head in {"call", "check", "fold", "allin"}:
+        return head, None
     return "unknown", None
 
 
+def _take_card_message(buffer: str, prefix: str, count: int) -> tuple[str | None, str]:
+    if not buffer.startswith(prefix):
+        return None, buffer
+    pos = len(prefix)
+    for _ in range(count):
+        match = CARD_RE.match(buffer, pos)
+        if not match:
+            return None, buffer
+        pos = match.end()
+    return buffer[:pos], buffer[pos:]
+
+
+def _take_message(buffer: str) -> tuple[str | None, str]:
+    buffer = buffer.lstrip("\r\n\t ")
+    if not buffer:
+        return None, ""
+    if buffer.startswith("name"):
+        return "name", buffer[4:]
+    for blind in ("SMALLBLIND", "BIGBLIND"):
+        msg, rest = _take_card_message(buffer, f"preflop|{blind}|", 2)
+        if msg is not None:
+            return msg, rest
+    for prefix, count in (("flop|", 3), ("turn|", 1), ("river|", 1), ("oppo_hands|", 2)):
+        msg, rest = _take_card_message(buffer, prefix, count)
+        if msg is not None:
+            return msg, rest
+    match = EARN_PREFIX_RE.match(buffer)
+    if match:
+        return buffer[:match.end()], buffer[match.end():]
+    match = ACTION_PREFIX_RE.match(buffer)
+    if match:
+        return buffer[:match.end()], buffer[match.end():]
+    for word in ("allin", "check", "call", "fold"):
+        if buffer.startswith(word):
+            return word, buffer[len(word):]
+    return None, buffer
+
+
+def _split_messages(buffer: str) -> tuple[list[str], str]:
+    messages: list[str] = []
+    while buffer:
+        msg, rest = _take_message(buffer)
+        if msg is None:
+            return messages, rest
+        messages.append(msg)
+        buffer = rest
+    return messages, ""
+
+
+def _resolve_seat(name: str, seat: str) -> str:
+    value = seat.lower()
+    if value in {"upper", "lower"}:
+        return value
+    lowered = name.strip().lower()
+    if lowered.endswith(("b", "2", "_lower", "-lower", "lower", "bottom")):
+        return "lower"
+    if lowered.endswith(("a", "1", "_upper", "-upper", "upper", "top")):
+        return "upper"
+    return "unknown"
+
+
 class NativeNationalBot:
-    def __init__(self, name: str):
+    def __init__(self, name: str, seat: str = "auto"):
         self.name = name
+        self.seat = _resolve_seat(name, seat)
         from main import sanitize_action
         from state import infer_remaining_hands_from_requests, reconstruct_state
         from strategy import get_action
@@ -83,6 +174,19 @@ class NativeNationalBot:
         self._total_win_games = [0, 0]
         self._last_earned = 0
         self._showdowns: list[dict] = []
+
+    def _acts_first_postflop(self) -> bool:
+        return not self._is_sb
+
+    def _responding_to_check(self) -> bool:
+        round_num = self._round_num()
+        return (
+            self._my_action_count == 0
+            and self._history
+            and self._history[-1].get("round") == round_num
+            and self._history[-1].get("player_id") == self._opponent_id
+            and self._history[-1].get("action_type") == "check"
+        )
 
     def _round_num(self) -> int:
         return {"preflop": 0, "flop": 1, "turn": 2, "river": 3}.get(self._stage, 0)
@@ -147,7 +251,10 @@ class NativeNationalBot:
         elif action_type == "allin":
             action_val = -2
         elif action_type == "raise" and amount is not None:
-            action_val = amount
+            if player_id == self._my_id:
+                action_val = self._my_stage_bet
+            else:
+                action_val = self._opponent_stage_bet
         else:
             return
         entry = {
@@ -171,6 +278,7 @@ class NativeNationalBot:
         if action_type == "call":
             committed = min(max(0, self._my_stage_bet - self._opponent_stage_bet), self._opponent_chips)
         elif action_type == "raise" and amount is not None:
+            # Official wire raises are stage totals, not deltas.
             committed = min(max(0, amount - self._opponent_stage_bet), self._opponent_chips)
         elif action_type == "allin":
             committed = self._opponent_chips
@@ -197,25 +305,60 @@ class NativeNationalBot:
     def _zero_action(self) -> tuple[str, str, int | None]:
         if self._opponent_stage_bet > self._my_stage_bet:
             return "call", "call", None
+        if (
+            self._stage == "preflop"
+            and not self._is_sb
+            and self._my_action_count == 0
+            and self._opponent_stage_bet == self._my_stage_bet
+        ):
+            return "check", "check", None
+        if self._responding_to_check():
+            return "call", "call", None
+        if (
+            self._stage != "preflop"
+            and self._my_action_count == 0
+            and self._opponent_stage_bet == 0
+            and self._my_stage_bet == 0
+        ):
+            if self._my_chips <= BIG_BLIND:
+                return "allin", "allin", None
+            return f"raise {BIG_BLIND}", "raise", BIG_BLIND
+        return "check", "check", None
+
+    def _minimum_raise_to(self) -> int:
         if self._stage == "preflop":
-            return ("call", "call", None) if self._is_sb else ("check", "check", None)
-        opp_acted = any(h.get("round") == self._round_num() and h.get("player_id") == self._opponent_id for h in self._history)
-        return ("call", "call", None) if opp_acted else ("check", "check", None)
+            if (
+                self._my_action_count == 0
+                and self._my_stage_bet <= BIG_BLIND
+                and self._opponent_stage_bet <= BIG_BLIND
+            ):
+                return BIG_BLIND * 2
+            if self._opponent_stage_bet > 0:
+                return self._opponent_stage_bet * 2 + 1
+            return BIG_BLIND * 2
+        if self._opponent_stage_bet > 0:
+            return self._opponent_stage_bet * 2 + 1
+        return BIG_BLIND
 
     def _action_to_tcp(self, action: int) -> tuple[str, str, int | None]:
         if action == -1:
+            if self._opponent_stage_bet <= self._my_stage_bet:
+                return self._zero_action()
             return "fold", "fold", None
         if action == -2:
             if self._opponent_chips == 0 and self._opponent_stage_bet > self._my_stage_bet:
                 return "call", "call", None
             return "allin", "allin", None
         if action > 0:
-            needed = action - self._my_stage_bet
-            if needed >= self._my_chips:
-                return "allin", "allin", None
-            if needed <= 0:
+            if self._responding_to_check():
                 return self._zero_action()
-            return f"raise {action}", "raise", action
+            target = max(action, self._minimum_raise_to())
+            committed = target - self._my_stage_bet
+            if committed <= 0:
+                return self._zero_action()
+            if committed >= self._my_chips:
+                return "allin", "allin", None
+            return f"raise {target}", "raise", target
         return self._zero_action()
 
     def _should_respond(self, action_type: str) -> bool:
@@ -230,14 +373,30 @@ class NativeNationalBot:
         return False
 
     def _send_decision(self, sock: socket.socket) -> None:
+        t0 = time.perf_counter()
+        _log(
+            f"DECIDE start name={self.name} hand={self._hand_num} stage={self._stage} "
+            f"act_cnt={self._my_action_count} my_sb={self._my_stage_bet} "
+            f"opp_sb={self._opponent_stage_bet} my_chips={self._my_chips} "
+            f"opp_chips={self._opponent_chips} is_sb={self._is_sb}"
+        )
         try:
             action = self._strategy_action()
         except Exception:
             traceback.print_exc(file=sys.stderr)
+            _log("DECIDE exception -> fold")
             action = -1
+        elapsed = time.perf_counter() - t0
+        _log(f"DECIDE done action={action!r} elapsed={elapsed:.3f}s")
         self._responses.append(int(action))
         msg, action_type, amount = self._action_to_tcp(int(action))
-        sock.sendall((msg + "\n").encode("utf-8"))
+        sock.sendall(msg.encode("utf-8"))
+        _log(
+            f"SEND name={self.name} hand={self._hand_num} stage={self._stage} "
+            f"act_cnt={self._my_action_count} my_sb={self._my_stage_bet} "
+            f"opp_sb={self._opponent_stage_bet} my_chips={self._my_chips} "
+            f"opp_chips={self._opponent_chips} is_sb={self._is_sb} msg={msg!r}"
+        )
         committed = self._apply_my_action(action_type, amount)
         self._record_action(self._my_id, action_type, amount, committed)
         if action_type == "call" and (self._current_round_has_allin() or self._my_chips == 0 or self._opponent_chips == 0):
@@ -245,10 +404,11 @@ class NativeNationalBot:
         self._my_action_count += 1
 
     def handle(self, line: str, sock: socket.socket) -> None:
-        if line == "name":
-            sock.sendall((self.name + "\n").encode("utf-8"))
+        if line.startswith("name"):
+            sock.sendall(self.name.encode("utf-8"))
+            _log(f"SEND name_handshake name={self.name!r}")
             return
-        if line.startswith("preflop|"):
+        if line.startswith("preflop"):
             parts = line.split("|", 2)
             blind = parts[1]
             self._is_sb = blind == "SMALLBLIND"
@@ -276,14 +436,14 @@ class NativeNationalBot:
             if self._is_sb:
                 self._send_decision(sock)
             return
-        if line.startswith(("flop|", "turn|", "river|")):
+        if line.startswith(("flop", "turn", "river")):
             stage, cards = line.split("|", 1)
             self._stage = stage
             self._public_cards.extend(_parse_cards(cards))
             self._my_action_count = 0
             self._my_stage_bet = 0
             self._opponent_stage_bet = 0
-            if not self._in_allin_runout and not self._is_sb:
+            if not self._in_allin_runout and self._acts_first_postflop():
                 self._send_decision(sock)
             return
         if line.startswith("earnChips"):
@@ -309,6 +469,9 @@ class NativeNationalBot:
             return
 
         action_type, amount = _parse_action(line)
+        if action_type == "unknown":
+            _log(f"UNKNOWN message={line!r}")
+            return
         committed = self._apply_opponent_action(action_type, amount)
         self._record_action(self._opponent_id, action_type, amount, committed)
         if action_type == "call" and (self._current_round_has_allin() or self._my_chips == 0 or self._opponent_chips == 0):
@@ -317,16 +480,25 @@ class NativeNationalBot:
             self._send_decision(sock)
 
 
-def run_client(host: str, port: int, name: str) -> int:
-    bot = NativeNationalBot(name)
+def run_client(host: str, port: int, name: str, log_path: str = "", seat: str = "auto") -> int:
+    _log_open(log_path)
+    bot = NativeNationalBot(name, seat)
+    _log(f"START name={name} seat={bot.seat} host={host} port={port} log={log_path or '-'}")
     with socket.create_connection((host, port), timeout=30) as sock:
         sock.settimeout(180)
-        stream = sock.makefile("r", encoding="utf-8", newline="\n")
+        buffer = ""
         while True:
-            line = stream.readline()
-            if not line:
+            data = sock.recv(4096)
+            if not data:
+                _log("RECV empty -> server closed")
                 return 0
-            bot.handle(line.rstrip("\r\n"), sock)
+            chunk = data.decode("utf-8", "replace")
+            buffer += chunk
+            _log(f"RECV raw={chunk!r} buffer={buffer!r}")
+            messages, buffer = _split_messages(buffer)
+            for line in messages:
+                _log(f"DISPATCH line={line!r}")
+                bot.handle(line, sock)
 
 
 def main() -> int:
@@ -334,9 +506,12 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=10001)
     parser.add_argument("--name", default="Bot")
+    parser.add_argument("--seat", choices=("auto", "upper", "lower"), default="auto",
+                        help="Desktop seat hint; action order is still inferred from blind state.")
+    parser.add_argument("--log", default="", help="Log file path. Empty disables file logging.")
     args = parser.parse_args()
     try:
-        return run_client(args.host, args.port, args.name)
+        return run_client(args.host, args.port, args.name, args.log, args.seat)
     except Exception:
         traceback.print_exc(file=sys.stderr)
         return 2

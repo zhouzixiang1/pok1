@@ -278,9 +278,8 @@ class NativeNationalBot:
         if action_type == "call":
             committed = min(max(0, self._my_stage_bet - self._opponent_stage_bet), self._opponent_chips)
         elif action_type == "raise" and amount is not None:
-            # The national platform's wire value is the extra chips added by
-            # the raiser, not the final round total.
-            committed = min(max(0, amount), self._opponent_chips)
+            # Official wire raises are stage totals, not deltas.
+            committed = min(max(0, amount - self._opponent_stage_bet), self._opponent_chips)
         elif action_type == "allin":
             committed = self._opponent_chips
         if committed > 0:
@@ -304,16 +303,6 @@ class NativeNationalBot:
         return committed
 
     def _zero_action(self) -> tuple[str, str, int | None]:
-        if (
-            self._stage != "preflop"
-            and self._my_action_count == 0
-            and self._my_stage_bet == 0
-            and self._opponent_stage_bet > 0
-        ):
-            needed = self._opponent_stage_bet * 2
-            if needed >= self._my_chips:
-                return "allin", "allin", None
-            return f"raise {needed}", "raise", needed
         if self._opponent_stage_bet > self._my_stage_bet:
             return "call", "call", None
         if (
@@ -322,75 +311,54 @@ class NativeNationalBot:
             and self._my_action_count == 0
             and self._opponent_stage_bet == self._my_stage_bet
         ):
-            return "fold", "fold", None
+            return "check", "check", None
+        if self._responding_to_check():
+            return "call", "call", None
         if (
             self._stage != "preflop"
             and self._my_action_count == 0
             and self._opponent_stage_bet == 0
             and self._my_stage_bet == 0
-            and not self._responding_to_check()
         ):
             if self._my_chips <= BIG_BLIND:
                 return "allin", "allin", None
             return f"raise {BIG_BLIND}", "raise", BIG_BLIND
-        if self._responding_to_check():
-            return "call", "call", None
         return "check", "check", None
+
+    def _minimum_raise_to(self) -> int:
+        if self._stage == "preflop":
+            if (
+                self._my_action_count == 0
+                and self._my_stage_bet <= BIG_BLIND
+                and self._opponent_stage_bet <= BIG_BLIND
+            ):
+                return BIG_BLIND * 2
+            if self._opponent_stage_bet > 0:
+                return self._opponent_stage_bet * 2 + 1
+            return BIG_BLIND * 2
+        if self._opponent_stage_bet > 0:
+            return self._opponent_stage_bet * 2 + 1
+        return BIG_BLIND
 
     def _action_to_tcp(self, action: int) -> tuple[str, str, int | None]:
         if action == -1:
-            if self._stage != "preflop" and self._opponent_stage_bet > self._my_stage_bet:
-                if self._my_action_count == 0 and self._my_stage_bet == 0:
-                    needed = self._opponent_stage_bet * 2
-                    if needed >= self._my_chips:
-                        return "allin", "allin", None
-                    return f"raise {needed}", "raise", needed
-                return "call", "call", None
-            return "fold", "fold", None
-        if (
-            self._stage == "preflop"
-            and not self._is_sb
-            and self._my_action_count == 0
-            and self._opponent_stage_bet > self._my_stage_bet
-        ):
-            return "call", "call", None
-        if (
-            self._stage == "preflop"
-            and not self._is_sb
-            and self._my_action_count == 0
-            and self._opponent_stage_bet == self._my_stage_bet
-        ):
+            if self._opponent_stage_bet <= self._my_stage_bet:
+                return self._zero_action()
             return "fold", "fold", None
         if action == -2:
             if self._opponent_chips == 0 and self._opponent_stage_bet > self._my_stage_bet:
                 return "call", "call", None
             return "allin", "allin", None
         if action > 0:
-            if (
-                self._stage != "preflop"
-                and self._my_action_count == 0
-                and self._opponent_stage_bet == 0
-                and self._my_stage_bet == 0
-                and not self._responding_to_check()
-            ):
-                if self._my_chips <= BIG_BLIND:
-                    return "allin", "allin", None
-                return f"raise {BIG_BLIND}", "raise", BIG_BLIND
-            needed = action - self._my_stage_bet
-            if needed >= self._my_chips:
-                return "allin", "allin", None
-            if needed <= 0:
+            if self._responding_to_check():
                 return self._zero_action()
-            if (
-                self._stage != "preflop"
-                and self._opponent_stage_bet > self._my_stage_bet
-                and self._my_stage_bet > 0
-            ):
-                return "call", "call", None
-            if self._opponent_stage_bet > 0:
-                needed = self._opponent_stage_bet * 2
-                action = self._my_stage_bet + needed
-            return f"raise {needed}", "raise", action
+            target = max(action, self._minimum_raise_to())
+            committed = target - self._my_stage_bet
+            if committed <= 0:
+                return self._zero_action()
+            if committed >= self._my_chips:
+                return "allin", "allin", None
+            return f"raise {target}", "raise", target
         return self._zero_action()
 
     def _should_respond(self, action_type: str) -> bool:
@@ -551,4 +519,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
