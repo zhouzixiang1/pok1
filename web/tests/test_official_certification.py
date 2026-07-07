@@ -15,6 +15,7 @@ from official_certification import (
     process_certification_queue,
     queue_snapshot,
     record_local_pass,
+    report_validation_issues,
     report_valid_for_spec,
     run_certification,
     write_status,
@@ -70,6 +71,31 @@ def _report(*, target_hands: int, rounds: int, passed=True, issues=None, thp_han
     }
 
 
+def _smoke_report_without_thp(*, target_hands: int = 10, rounds: int = 2):
+    receipts = []
+    for _idx in range(rounds):
+        receipts.append({
+            "passed": True,
+            "issues": [],
+            "target_hands": target_hands,
+            "log_summary": {
+                "hands_started_min": target_hands,
+                "settlements_min": target_hands - 1,
+            },
+            "artifacts": {
+                "thp_summaries": [],
+            },
+        })
+    return {
+        "passed": True,
+        "issues": [],
+        "report": {
+            "summary": {"suite_dir": "/tmp/suite", "rounds_run": rounds},
+            "rounds": receipts,
+        },
+    }
+
+
 def test_cache_key_changes_when_inputs_change(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v1")
@@ -116,6 +142,28 @@ def test_bad_receipts_are_not_valid_for_cache(tmp_path):
 
     assert report_valid_for_spec(_report(target_hands=70, rounds=8, issues=["illegal"]), spec) is False
     assert report_valid_for_spec(_report(target_hands=70, rounds=8, thp_hands=69), spec) is False
+
+
+def test_short_smoke_can_use_log_progress_when_thp_is_absent(tmp_path):
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    smoke = build_spec("smoke", candidate, opponent=opponent)
+    full = build_spec("full", candidate, opponent=opponent)
+    payload = _smoke_report_without_thp(target_hands=10, rounds=2)
+
+    assert report_valid_for_spec(payload, smoke) is True
+    assert report_valid_for_spec(payload, full) is False
+    assert any("round_count_mismatch" in issue for issue in report_validation_issues(payload, full))
+
+
+def test_full_certification_requires_thp_records(tmp_path):
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    spec = build_spec("full", candidate, opponent=opponent)
+    payload = _smoke_report_without_thp(target_hands=70, rounds=8)
+
+    assert report_valid_for_spec(payload, spec) is False
+    assert any("thp_incomplete_for_full_certification" in issue for issue in report_validation_issues(payload, spec))
 
 
 def test_run_certification_uses_valid_cache(tmp_path, monkeypatch):
@@ -174,6 +222,25 @@ def test_compliance_certification_has_distinct_status(tmp_path, monkeypatch):
 
     assert result["status"] == STATUS_COMPLIANCE_PASS
     assert result["mode"] == "compliance"
+
+
+def test_failed_status_includes_validation_issues(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("full", candidate, opponent=opponent)
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *_args, **_kwargs: FakeResult(_smoke_report_without_thp(target_hands=70, rounds=8)),
+        queue_on_busy=False,
+    )
+
+    assert result["status"] == STATUS_FAILED
+    assert result["issues"]
+    assert any("thp_incomplete_for_full_certification" in issue for issue in result["issues"])
 
 
 def test_record_local_pass_does_not_clear_failed_status(tmp_path, monkeypatch):

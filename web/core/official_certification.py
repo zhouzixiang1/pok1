@@ -280,26 +280,64 @@ def _max_thp_hands(receipt: dict[str, Any]) -> int:
     return max(values, default=0)
 
 
-def receipt_valid_for_spec(receipt: dict[str, Any], spec: CertificationSpec) -> bool:
+def _log_target_reached(receipt: dict[str, Any], target_hands: int) -> bool:
+    summary = receipt.get("log_summary") or {}
+    try:
+        hands_started = int(summary.get("hands_started_min", 0) or 0)
+        settlements = int(summary.get("settlements_min", 0) or 0)
+    except Exception:
+        return False
+    return hands_started >= target_hands and settlements >= max(0, target_hands - 1)
+
+
+def receipt_validation_issues(receipt: dict[str, Any], spec: CertificationSpec) -> list[str]:
+    issues: list[str] = []
     if receipt.get("passed") is not True:
-        return False
-    if receipt.get("issues"):
-        return False
-    if int(receipt.get("target_hands", 0) or 0) != spec.target_hands:
-        return False
-    return _max_thp_hands(receipt) >= spec.target_hands
+        issues.append("receipt_not_passed")
+    receipt_issues = receipt.get("issues") or []
+    if receipt_issues:
+        issues.extend(str(issue) for issue in receipt_issues)
+    try:
+        receipt_target_hands = int(receipt.get("target_hands", 0) or 0)
+    except Exception:
+        receipt_target_hands = 0
+    if receipt_target_hands != spec.target_hands:
+        issues.append(f"target_hands_mismatch: receipt={receipt_target_hands} spec={spec.target_hands}")
+
+    thp_hands = _max_thp_hands(receipt)
+    if spec.mode == "full" or spec.target_hands >= 70:
+        if thp_hands < spec.target_hands:
+            issues.append(f"thp_incomplete_for_full_certification: hands={thp_hands} target={spec.target_hands}")
+    elif thp_hands < spec.target_hands and not _log_target_reached(receipt, spec.target_hands):
+        # Short smoke stops the official EXE before its natural 70-hand THP export.
+        # Use bot/platform logs as smoke evidence; full certification still requires THP.
+        issues.append(f"smoke_progress_incomplete: thp_hands={thp_hands} target={spec.target_hands}")
+    return issues
 
 
-def report_valid_for_spec(report: dict[str, Any], spec: CertificationSpec) -> bool:
+def receipt_valid_for_spec(receipt: dict[str, Any], spec: CertificationSpec) -> bool:
+    return not receipt_validation_issues(receipt, spec)
+
+
+def report_validation_issues(report: dict[str, Any], spec: CertificationSpec) -> list[str]:
+    issues: list[str] = []
     if report.get("passed") is not True:
-        return False
-    if report.get("issues"):
-        return False
+        issues.append("report_not_passed")
+    report_issues = report.get("issues") or []
+    if report_issues:
+        issues.extend(str(issue) for issue in report_issues)
     rounds = report.get("report", {}).get("rounds", []) or []
     expected = spec.self_play_rounds + spec.opponent_rounds
     if len(rounds) != expected:
-        return False
-    return all(receipt_valid_for_spec(dict(receipt), spec) for receipt in rounds)
+        issues.append(f"round_count_mismatch: rounds={len(rounds)} expected={expected}")
+    for index, receipt in enumerate(rounds, start=1):
+        receipt_issues = receipt_validation_issues(dict(receipt), spec)
+        issues.extend(f"round_{index}: {issue}" for issue in receipt_issues)
+    return issues
+
+
+def report_valid_for_spec(report: dict[str, Any], spec: CertificationSpec) -> bool:
+    return not report_validation_issues(report, spec)
 
 
 def _cache_hit(spec: CertificationSpec, config: OfficialPlatformConfig | None = None) -> dict[str, Any] | None:
@@ -489,7 +527,8 @@ def enqueue_certification(
 
 
 def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache_hit: bool, cache_key_value: str) -> dict[str, Any]:
-    valid = report_valid_for_spec(result, spec)
+    validation_issues = report_validation_issues(result, spec)
+    valid = not validation_issues
     if valid:
         if spec.mode == "full":
             status = STATUS_CERTIFIED
@@ -501,7 +540,7 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
         status = STATUS_FAILED
     report = result.get("report", {}) if isinstance(result, dict) else {}
     summary = report.get("summary", {}) if isinstance(report, dict) else {}
-    issues = list(result.get("issues") or [])
+    issues = list(result.get("issues") or validation_issues)
     return write_status(
         spec.candidate,
         status,
