@@ -43,6 +43,7 @@ from tool_helpers import (
     _set_pipeline_status,
     compute_h2h_avg_winrate, _load_h2h_data,
     read_pipeline_checkpoint,
+    _py_files_changed_between,
 )
 from system_log import log_system_event
 
@@ -979,6 +980,29 @@ async def run_crossover(args):
 
     # Write checkpoint so quality gates → review → critic → commit can proceed
     if success:
+        prepare_scope_files = []
+        try:
+            prepare_scope_files = [
+                p for p in _py_files_changed_between(
+                    get_bot_dir(parent_a),
+                    get_bot_dir(target_v),
+                )
+                if "backup" not in p
+            ]
+            if prepare_scope_files:
+                log_system_event(
+                    "pipeline.crossover_scope_captured",
+                    "info",
+                    f"Crossover baseline for v{target_v} changed {len(prepare_scope_files)} file(s)",
+                    {
+                        "target_v": target_v,
+                        "parent_a": parent_a,
+                        "parent_b": parent_b,
+                        "prepare_scope_files": prepare_scope_files[:20],
+                    },
+                )
+        except Exception as exc:
+            _log.warning("Failed to capture crossover prepare scope for v%s: %s", target_v, exc)
         crossover_plan = {
             "strategy": "crossover",
             "tasks": [],
@@ -990,6 +1014,7 @@ async def run_crossover(args):
         write_pipeline_checkpoint(target_v, parent_a, "workers_done",
                                   master_plan=crossover_plan,
                                   parent2_v=parent_b,
+                                  prepare_scope_files=prepare_scope_files,
                                   audit_context={"crossover": {"parent_a": parent_a, "parent_b": parent_b}})
         try:
             log_system_event('pipeline.crossover_done', 'info',

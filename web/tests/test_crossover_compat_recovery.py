@@ -146,3 +146,57 @@ def test_run_crossover_incompatible_pair_records_and_abandons(tmp_path, monkeypa
     assert data["abandon_result"]["abandoned_v"] == 25
     assert cleared == [True]
     assert crossover_compat.is_crossover_pair_blocked(7, 1) is True
+
+
+def test_run_crossover_records_prepare_scope_files(tmp_path, monkeypatch):
+    import audit_agents
+    import tool_commit
+
+    parent_a_dir = tmp_path / "national_v7"
+    parent_b_dir = tmp_path / "national_v1"
+    target_dir = tmp_path / "national_v25"
+    for path in (parent_a_dir, parent_b_dir):
+        path.mkdir()
+        (path / "main.py").write_text("# parent\n", encoding="utf-8")
+        (path / ".completed").touch()
+    target_dir.mkdir()
+    (target_dir / "main.py").write_text("# child\n", encoding="utf-8")
+
+    def _bot_dir(version):
+        return {
+            7: parent_a_dir,
+            1: parent_b_dir,
+            25: target_dir,
+        }[int(version)]
+
+    async def _compat(_parent_a, _parent_b, _ui):
+        return {"compatible": True, "compatibility_score": 8}
+
+    async def _crossover_ok(*_args, **_kwargs):
+        return True
+
+    captured = {}
+
+    def _write_checkpoint(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return True
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", _bot_dir)
+    monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(tool_commit, "_run_crossover", _crossover_ok)
+    monkeypatch.setattr(tool_commit, "_py_files_changed_between", lambda *_a: ["card_utils.py", "state.py"])
+    monkeypatch.setattr(tool_commit, "write_pipeline_checkpoint", _write_checkpoint)
+    monkeypatch.setattr(audit_agents, "_run_crossover_compatibility_audit", _compat)
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 7,
+        "parent_b": 1,
+        "target_v": 25,
+    }))
+    data = _tool_json(result)
+
+    assert data["success"] is True
+    assert captured["args"][:3] == (25, 7, "workers_done")
+    assert captured["kwargs"]["parent2_v"] == 1
+    assert captured["kwargs"]["prepare_scope_files"] == ["card_utils.py", "state.py"]
