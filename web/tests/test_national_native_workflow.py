@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
 import sys
 
@@ -383,6 +384,175 @@ def test_quality_smoke_gate_uses_native_tcp_backend(monkeypatch, tmp_path):
     assert payload["execution_mode"] == "native_tcp"
     assert called["candidate"] == bot_dir
     assert called["source_v"] == 12
+
+
+def test_quality_gate_treats_official_port_busy_as_inconclusive(monkeypatch, tmp_path):
+    import code_verification
+    import evolution_infra
+    import national_native
+    import official_certification
+    import tool_gates
+
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+    monkeypatch.setenv("POK_OFFICIAL_SMOKE_GATE", "run")
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+
+    project = tmp_path / "project"
+    source = project / "bots" / "national_v1"
+    child = project / "bots" / "national_v2"
+    _write_minimal_strategy_bot(source)
+    _write_minimal_strategy_bot(child)
+    ensure_native_entry(child)
+    (child / "strategy.py").write_text("def get_action(req, requests):\n    return 1\n", encoding="utf-8")
+    evolution_infra.write_pipeline_checkpoint(2, 1, "workers_done")
+
+    class FakeAcceptance:
+        passed = True
+        issues = []
+        opponents = ["national_v1"]
+        summary = {"pairs": 1}
+
+        def model_dump(self):
+            return {
+                "passed": True,
+                "issues": [],
+                "opponents": self.opponents,
+                "summary": self.summary,
+            }
+
+    async def _fake_native_acceptance(*_args, **_kwargs):
+        return FakeAcceptance()
+
+    async def _fake_smoke(*_args, **_kwargs):
+        return [], {"passed": True, "execution_mode": "native_tcp", "issues": []}
+
+    monkeypatch.setattr(tool_gates, "PROJECT_ROOT", project)
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: project / "bots" / f"national_v{v}")
+    monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["strategy.py"])
+    monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
+    monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
+    monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
+    monkeypatch.setattr(tool_gates, "detect_position_semantics_errors", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "_run_workflow_smoke_gate", _fake_smoke)
+    monkeypatch.setattr(national_native, "check_native_contract", lambda _bot_dir: [])
+    monkeypatch.setattr(national_native, "run_native_acceptance_for_candidate", _fake_native_acceptance)
+    monkeypatch.setattr(code_verification, "run_bot_embedded_self_tests", lambda _bot_dir: [])
+    monkeypatch.setattr(code_verification, "detect_placement_shadow_warnings", lambda _bot_dir: [])
+    monkeypatch.setattr(code_verification, "detect_telemetry_fidelity_warnings", lambda _bot_dir: [])
+    monkeypatch.setattr(code_verification, "detect_new_function_reachability_warnings", lambda *_a, **_k: [])
+    monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
+        "pass_rate": 1.0,
+        "passed": 1,
+        "total": 1,
+        "critical_passed": 1,
+        "critical_total": 1,
+        "critical_failures": [],
+        "failures": [],
+        "scenarios": [],
+    })
+    monkeypatch.setattr(official_certification, "run_certification", lambda *_a, **_k: {
+        "status": official_certification.STATUS_FAILED,
+        "mode": "smoke",
+        "issues": ["self_play_1: port_busy_before_start: 127.0.0.1:10001"],
+    })
+
+    result = asyncio.run(tool_gates.run_quality_gates.handler({"version": 2, "source_v": 1}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["all_passed"] is True
+    assert data["official_smoke_ok"] is True
+    assert data["official_smoke_inconclusive"] is True
+    assert data["official_smoke_blocking"] is False
+    assert "official_smoke" not in data["failed_gates"]
+    gates = {gate["name"]: gate for gate in data["scorecard"]["gates"]}
+    assert gates["official_smoke"]["blocking"] is False
+    assert gates["official_smoke"]["metrics"]["classification"] == "inconclusive"
+
+
+def test_quality_gate_blocks_official_protocol_violation(monkeypatch, tmp_path):
+    import code_verification
+    import evolution_infra
+    import national_native
+    import official_certification
+    import tool_gates
+
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+    monkeypatch.setenv("POK_OFFICIAL_SMOKE_GATE", "run")
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+
+    project = tmp_path / "project"
+    source = project / "bots" / "national_v1"
+    child = project / "bots" / "national_v2"
+    _write_minimal_strategy_bot(source)
+    _write_minimal_strategy_bot(child)
+    ensure_native_entry(child)
+    (child / "strategy.py").write_text("def get_action(req, requests):\n    return 1\n", encoding="utf-8")
+    evolution_infra.write_pipeline_checkpoint(2, 1, "workers_done")
+
+    class FakeAcceptance:
+        passed = True
+        issues = []
+        opponents = ["national_v1"]
+        summary = {"pairs": 1}
+
+        def model_dump(self):
+            return {
+                "passed": True,
+                "issues": [],
+                "opponents": self.opponents,
+                "summary": self.summary,
+            }
+
+    async def _fake_native_acceptance(*_args, **_kwargs):
+        return FakeAcceptance()
+
+    async def _fake_smoke(*_args, **_kwargs):
+        return [], {"passed": True, "execution_mode": "native_tcp", "issues": []}
+
+    monkeypatch.setattr(tool_gates, "PROJECT_ROOT", project)
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: project / "bots" / f"national_v{v}")
+    monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["strategy.py"])
+    monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
+    monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
+    monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
+    monkeypatch.setattr(tool_gates, "detect_position_semantics_errors", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "_run_workflow_smoke_gate", _fake_smoke)
+    monkeypatch.setattr(national_native, "check_native_contract", lambda _bot_dir: [])
+    monkeypatch.setattr(national_native, "run_native_acceptance_for_candidate", _fake_native_acceptance)
+    monkeypatch.setattr(code_verification, "run_bot_embedded_self_tests", lambda _bot_dir: [])
+    monkeypatch.setattr(code_verification, "detect_placement_shadow_warnings", lambda _bot_dir: [])
+    monkeypatch.setattr(code_verification, "detect_telemetry_fidelity_warnings", lambda _bot_dir: [])
+    monkeypatch.setattr(code_verification, "detect_new_function_reachability_warnings", lambda *_a, **_k: [])
+    monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
+        "pass_rate": 1.0,
+        "passed": 1,
+        "total": 1,
+        "critical_passed": 1,
+        "critical_total": 1,
+        "critical_failures": [],
+        "failures": [],
+        "scenarios": [],
+    })
+    monkeypatch.setattr(official_certification, "run_certification", lambda *_a, **_k: {
+        "status": official_certification.STATUS_FAILED,
+        "mode": "smoke",
+        "issues": ["self_play_1: protocol_raise_format: msg='raise  200'"],
+    })
+
+    result = asyncio.run(tool_gates.run_quality_gates.handler({"version": 2, "source_v": 1}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["all_passed"] is False
+    assert data["official_smoke_ok"] is False
+    assert data["official_smoke_blocking"] is True
+    assert "official_smoke" in data["failed_gates"]
+    gates = {gate["name"]: gate for gate in data["scorecard"]["gates"]}
+    assert gates["official_smoke"]["blocking"] is True
+    assert gates["official_smoke"]["metrics"]["classification"] == "protocol_violation"
 
 
 def test_national_protocol_gate_uses_platform_shard_for_native(monkeypatch):

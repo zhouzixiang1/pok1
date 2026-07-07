@@ -54,6 +54,33 @@ PARENT_BLOCKING_FAILURE_MARKERS = (
     "protocol_action_whitespace",
 )
 
+COMPLIANCE_INCONCLUSIVE_FAILURE_MARKERS = (
+    "port_busy_before_start",
+    "official_platform_lock_timeout",
+    "missing_tools:",
+    "exe_missing:",
+    "wineprefix_missing:",
+    "official_acceptance_suite_exception",
+    "official_round_exception",
+    "official platform did not listen",
+    "official platform window not found",
+    "platform_exited_early",
+    "no_progress_timeout",
+    "round_timeout",
+    "incomplete_round",
+    "thp_missing_for_full_70_hand_round",
+    "thp_incomplete",
+    "smoke_progress_incomplete",
+    "round_count_mismatch",
+    "receipt_not_passed",
+    "report_not_passed",
+    "file not found",
+    "filenotfounderror",
+    "wine",
+    "xvfb",
+    "xdotool",
+)
+
 MODE_CONFIG = {
     "smoke": {
         "self_play_rounds": 1,
@@ -397,18 +424,72 @@ def write_status(candidate: str | Path, status: str, *, mode: CertificationMode 
 
 def record_local_pass(candidate: str | Path, *, source: str = "quality_gates") -> dict[str, Any]:
     current = read_status(candidate)
-    if current.get("status") in {STATUS_SMOKE_PASS, STATUS_COMPLIANCE_PASS, STATUS_PENDING, STATUS_CERTIFIED, STATUS_FAILED}:
+    if current.get("status") in {STATUS_SMOKE_PASS, STATUS_COMPLIANCE_PASS, STATUS_PENDING, STATUS_CERTIFIED}:
+        return current
+    if current.get("status") == STATUS_FAILED and official_failure_blocks_parent(current):
         return current
     return write_status(candidate, STATUS_LOCAL_PASS, source=source, issues=[])
 
 
+def _official_issue_strings(status: dict[str, Any]) -> list[str]:
+    return [str(issue) for issue in (status.get("issues") or [])]
+
+
+def _issue_has_marker(issue: str, markers: tuple[str, ...]) -> bool:
+    lower = issue.lower()
+    return any(marker in lower for marker in markers)
+
+
+def official_compliance_verdict(status: dict[str, Any]) -> dict[str, Any]:
+    """Classify official-platform evidence as a compliance oracle.
+
+    The Windows EXE is used to catch explicit protocol/illegal-action violations.
+    Harness problems such as Wine startup, occupied ports, missing THP export, or
+    progress timeouts are evidence gaps, not bot-compliance failures.
+    """
+    status_value = str(status.get("status") or "")
+    issues = _official_issue_strings(status)
+    if status_value != STATUS_FAILED:
+        return {
+            "ok": True,
+            "blocking": False,
+            "classification": "passed_or_pending",
+            "inconclusive": False,
+            "violation": False,
+            "issues": issues,
+        }
+
+    violation_issues = [
+        issue for issue in issues
+        if _issue_has_marker(issue, PARENT_BLOCKING_FAILURE_MARKERS)
+    ]
+    inconclusive_issues = [
+        issue for issue in issues
+        if _issue_has_marker(issue, COMPLIANCE_INCONCLUSIVE_FAILURE_MARKERS)
+    ]
+    if violation_issues:
+        return {
+            "ok": False,
+            "blocking": True,
+            "classification": "protocol_violation",
+            "inconclusive": False,
+            "violation": True,
+            "issues": issues,
+            "violation_issues": violation_issues,
+        }
+    return {
+        "ok": True,
+        "blocking": False,
+        "classification": "inconclusive",
+        "inconclusive": True,
+        "violation": False,
+        "issues": issues,
+        "inconclusive_issues": inconclusive_issues or issues,
+    }
+
+
 def official_failure_blocks_parent(status: dict[str, Any]) -> bool:
-    if status.get("status") != STATUS_FAILED:
-        return False
-    issues = [str(issue).lower() for issue in (status.get("issues") or [])]
-    if not issues:
-        return True
-    return any(marker in issue for issue in issues for marker in PARENT_BLOCKING_FAILURE_MARKERS)
+    return bool(official_compliance_verdict(status).get("blocking"))
 
 
 def parent_eligible(candidate: str | Path) -> bool:

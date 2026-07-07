@@ -2973,6 +2973,8 @@ def _normalize_repair_blocker(value):
         return "position_semantics"
     if text in {"national_native", "national_native_contract", "native_tcp_contract"}:
         return "national_native_contract"
+    if text in {"official_smoke", "official_platform", "official_platform_compliance"}:
+        return "official_smoke"
     if text in {"quality", "quality_gate", "protected_contract", "compile", "smoke_test"}:
         return "quality_gate"
     return text
@@ -3492,6 +3494,7 @@ def _quality_failure_items(ckpt):
         "smoke_errors",
         "national_protocol_errors",
         "national_acceptance_errors",
+        "official_smoke_errors",
         "declared_scope_errors",
         "critical_failures",
         "position_semantics_errors",
@@ -3584,6 +3587,22 @@ def _is_national_native_contract_failure_text(item):
             )
         )
     )
+
+
+def _is_official_smoke_protocol_failure_text(item):
+    text = str(item or "").lower()
+    if any(marker in text for marker in (
+        "protocol_",
+        "protocol error",
+        "illegal_bet_action",
+        "protocol_raise_format",
+        "protocol_action_format",
+        "protocol_action_whitespace",
+        "invalid action",
+        "unknown action",
+    )):
+        return True
+    return "illegal" in text and "official" in text
 
 
 def _declared_scope_ledger_files(ckpt, reviewer_feedback=""):
@@ -3799,6 +3818,35 @@ def _national_native_contracts(quality, failures):
     ]
 
 
+def _official_smoke_contracts(quality, failures):
+    """Return a national_bot.py repair contract for real official-platform violations."""
+    classification = str(quality.get("official_smoke_classification") or "").lower()
+    blocking = bool(quality.get("official_smoke_blocking"))
+    if classification != "protocol_violation" and not blocking:
+        return []
+
+    source_items = []
+    source_items.extend(_flatten_text_items(quality.get("official_smoke_errors")))
+    source_items.extend(
+        item for item in failures or []
+        if _is_official_smoke_protocol_failure_text(item)
+    )
+    source_items = [
+        str(item).strip()
+        for item in source_items
+        if str(item).strip() and _is_official_smoke_protocol_failure_text(item)
+    ]
+    if blocking and not source_items:
+        source_items.append("official_smoke protocol_violation")
+    if not source_items:
+        return []
+    return [{
+        "blocker": "official_smoke",
+        "file": "national_bot.py",
+        "evidence": "\n".join(dict.fromkeys(source_items)),
+    }]
+
+
 def _generic_quality_contracts(quality, failures, claimed_files):
     """Build file-scoped fallback contracts for non-mechanical quality blockers."""
     evidence_items = []
@@ -3818,6 +3866,7 @@ def _generic_quality_contracts(quality, failures, claimed_files):
         item for item in evidence_items
         if not _is_declared_scope_failure_text(item)
         and not _is_national_native_contract_failure_text(item)
+        and not _is_official_smoke_protocol_failure_text(item)
     ]
     if not evidence_items:
         evidence_items = [
@@ -3826,11 +3875,13 @@ def _generic_quality_contracts(quality, failures, claimed_files):
             and not _is_position_semantics_failure_text(item)
             and not _is_declared_scope_failure_text(item)
             and not _is_national_native_contract_failure_text(item)
+            and not _is_official_smoke_protocol_failure_text(item)
         ]
     evidence_files = _extract_quality_failure_files(evidence_items)
     mechanical_files = {c["file"] for c in _line_count_contracts(quality, failures)}
     mechanical_files.update(c["file"] for c in _position_contracts(quality))
     mechanical_files.update(c["file"] for c in _national_native_contracts(quality, failures))
+    mechanical_files.update(c["file"] for c in _official_smoke_contracts(quality, failures))
     generic_files = evidence_files or [f for f in claimed_files if f not in mechanical_files]
     if not generic_files:
         return []
@@ -3861,6 +3912,7 @@ def _quality_repair_contracts(ckpt, feedback=""):
     contracts.extend(_line_count_contracts(quality, failures))
     contracts.extend(_position_contracts(quality))
     contracts.extend(_national_native_contracts(quality, failures))
+    contracts.extend(_official_smoke_contracts(quality, failures))
     contracts.extend(_generic_quality_contracts(quality, failures, claimed_files))
 
     ordered = []
@@ -3995,6 +4047,33 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "worker_prompt": prompt,
             "task_kind": task_kind,
             "repair_blocker": "national_native_contract",
+            "repair_contract": contract,
+        }
+    if blocker == "official_smoke":
+        prompt = (
+            f"{preservation.format(next_v=next_v)}\n\n"
+            "Repair contract: official_smoke\n"
+            f"- Target file: `{filename}`\n"
+            f"- Official-platform evidence:\n{contract.get('evidence') or 'official smoke reported a protocol violation'}\n\n"
+            "Authoritative official compliance rule:\n"
+            "- The Windows national platform is only a compliance oracle here; fix the exact illegal wire output it observed.\n"
+            "- `national_bot.py` must send exactly one of `fold`, `call`, `check`, `allin`, or `raise <amount>`.\n"
+            "- `raise <amount>` uses exactly one ASCII space, no tabs, no leading/trailing whitespace, and no `bet` keyword.\n"
+            "- Do not print debug/prose to stdout; logs must go to stderr or the configured log file.\n\n"
+            "Required method:\n"
+            f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
+            "- Fix the action serialization/sanitization path that produced the official-platform evidence above.\n"
+            "- Preserve card mapping, seat handling, and local native TCP behavior that already passed.\n"
+            "- Add or tighten a local guard if needed so impossible/internal actions degrade to a legal official action string."
+        )
+        return {
+            "worker_id": f"auto_quality_repair_official_smoke_{suffix}",
+            "role": "Protocol Integration Architect",
+            "target_files": [filename],
+            "must_change_files": [filename],
+            "worker_prompt": prompt,
+            "task_kind": task_kind,
+            "repair_blocker": "official_smoke",
             "repair_contract": contract,
         }
     evidence = contract.get('evidence') or 'quality gate failed'

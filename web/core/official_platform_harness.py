@@ -464,6 +464,12 @@ def _wait_for_wine_idle(env: dict[str, str], *, timeout_sec: float) -> None:
         pass
 
 
+def _kill_wineprefix(env: dict[str, str]) -> None:
+    if not shutil.which("wineserver"):
+        return
+    _run_quiet(["wineserver", "-k"], env=env, timeout=5)
+
+
 def _port_listening(host: str, port: int) -> bool:
     if not shutil.which("ss"):
         return False
@@ -746,9 +752,14 @@ def run_official_round(
         _write_json(round_dir / "receipt.json", receipt)
         return receipt
     if _port_busy_before_start(cfg):
-        receipt["issues"].append(f"port_busy_before_start: {cfg.host}:{cfg.port}")
-        _write_json(round_dir / "receipt.json", receipt)
-        return receipt
+        cleanup_env = os.environ.copy()
+        cleanup_env.update(cfg.locale_env())
+        _kill_wineprefix(cleanup_env)
+        _wait_for_wine_idle(cleanup_env, timeout_sec=3.0)
+        if _port_busy_before_start(cfg):
+            receipt["issues"].append(f"port_busy_before_start: {cfg.host}:{cfg.port}")
+            _write_json(round_dir / "receipt.json", receipt)
+            return receipt
 
     display = _choose_display()
     xvfb_proc: subprocess.Popen | None = None
@@ -885,6 +896,9 @@ def run_official_round(
         _terminate_process(wine_proc)
         if platform_env is not None:
             _wait_for_wine_idle(platform_env, timeout_sec=cfg.artifact_grace_sec)
+            if _port_busy_before_start(cfg):
+                _kill_wineprefix(platform_env)
+                _wait_for_wine_idle(platform_env, timeout_sec=3.0)
         _terminate_process(xvfb_proc)
         for proc in (wine_proc, xvfb_proc):
             _close_process_files(proc)

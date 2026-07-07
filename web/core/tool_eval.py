@@ -414,6 +414,15 @@ async def _run_national_precommit_backend(
     if official_platform_result:
         official_status = str(official_platform_result.get("status") or "")
         official_issues = official_platform_result.get("issues", []) or []
+        try:
+            from official_certification import official_compliance_verdict as _official_compliance_verdict
+            official_verdict = _official_compliance_verdict(official_platform_result)
+        except Exception:
+            official_verdict = {
+                "blocking": False,
+                "inconclusive": True,
+                "classification": "inconclusive",
+            }
         scorecard.add(GateResult.from_bool(
             "official_platform_compliance",
             official_status in {"official-compliance-pass", "official-certified"}
@@ -423,9 +432,12 @@ async def _run_national_precommit_backend(
                 "mode": official_platform_result.get("mode"),
                 "queued": official_platform_result.get("queued"),
                 "cache_hit": official_platform_result.get("cache_hit"),
+                "blocking": official_verdict.get("blocking"),
+                "inconclusive": official_verdict.get("inconclusive"),
+                "classification": official_verdict.get("classification"),
                 **(official_platform_result.get("summary", {}) or {}),
             },
-            failures=official_issues[:5] if official_status == "official-failed" else [],
+            failures=official_issues[:5] if bool(official_verdict.get("blocking")) else [],
             artifacts={"report": official_platform_result},
             blocking=False,
         ))

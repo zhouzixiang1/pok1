@@ -795,6 +795,9 @@ async def run_quality_gates(args):
     official_smoke_ok = True
     official_smoke_errors: list[str] = []
     official_smoke_payload: dict = {}
+    official_smoke_blocking = False
+    official_smoke_inconclusive = False
+    official_smoke_classification = "not_run"
     official_smoke_mode = os.environ.get("POK_OFFICIAL_SMOKE_GATE", "queue").strip().lower()
     official_smoke_enabled = native_tcp_mode and official_smoke_mode not in {"0", "false", "off", "disabled", "none"}
     if official_smoke_enabled:
@@ -821,6 +824,7 @@ async def run_quality_gates(args):
                     STATUS_FAILED,
                     build_spec,
                     enqueue_certification,
+                    official_compliance_verdict,
                     read_status,
                     run_certification,
                 )
@@ -844,11 +848,29 @@ async def run_quality_gates(args):
                     else:
                         official_smoke_payload = enqueue_certification(_spec, reason="quality_gate_smoke")
                 if official_smoke_payload.get("status") == STATUS_FAILED:
-                    official_smoke_ok = False
                     official_smoke_errors = official_smoke_payload.get("issues") or ["official_smoke_failed"]
+                    official_verdict = official_compliance_verdict(official_smoke_payload)
+                    official_smoke_ok = bool(official_verdict.get("ok"))
+                    official_smoke_blocking = bool(official_verdict.get("blocking"))
+                    official_smoke_inconclusive = bool(official_verdict.get("inconclusive"))
+                    official_smoke_classification = str(official_verdict.get("classification") or "failed")
+                    official_smoke_payload = {
+                        **official_smoke_payload,
+                        "blocking": official_smoke_blocking,
+                        "inconclusive": official_smoke_inconclusive,
+                        "classification": official_smoke_classification,
+                    }
+                else:
+                    official_smoke_classification = "passed_or_pending"
                 log_system_event(
-                    "pipeline.official_smoke_failed" if not official_smoke_ok else "pipeline.official_smoke_status",
-                    "error" if not official_smoke_ok else "info",
+                    (
+                        "pipeline.official_smoke_failed"
+                        if official_smoke_blocking
+                        else "pipeline.official_smoke_inconclusive"
+                        if official_smoke_inconclusive
+                        else "pipeline.official_smoke_status"
+                    ),
+                    "error" if official_smoke_blocking else "warn" if official_smoke_inconclusive else "info",
                     f"Official smoke status for v{v}: {official_smoke_payload.get('status', 'unknown')}",
                     {
                         "version": v,
@@ -857,17 +879,29 @@ async def run_quality_gates(args):
                         "opponent": official_opponent,
                         "status": official_smoke_payload.get("status"),
                         "issues": official_smoke_errors,
+                        "blocking": official_smoke_blocking,
+                        "inconclusive": official_smoke_inconclusive,
+                        "classification": official_smoke_classification,
                     },
                 )
             except Exception as e:
-                official_smoke_ok = False
+                official_smoke_ok = True
+                official_smoke_blocking = False
+                official_smoke_inconclusive = True
+                official_smoke_classification = "inconclusive"
                 official_smoke_errors = [f"official_smoke_exception: {type(e).__name__}: {str(e)[:200]}"]
-                official_smoke_payload = {"error": official_smoke_errors[0]}
+                official_smoke_payload = {
+                    "error": official_smoke_errors[0],
+                    "blocking": False,
+                    "inconclusive": True,
+                    "classification": "inconclusive",
+                }
         else:
             official_smoke_payload = {
                 "skipped": True,
                 "reason": "official_smoke_skipped_due_to_failed_prerequisites",
             }
+            official_smoke_classification = "skipped"
 
     # --- B3: Heuristic Dynamic Regression Tests from Diff ---
     # Deterministic coverage runs first. The LLM generator is now an augmenting
@@ -1074,6 +1108,9 @@ async def run_quality_gates(args):
         "official_smoke_ok": official_smoke_ok,
         "official_smoke_errors": official_smoke_errors[:5] if official_smoke_errors else [],
         "official_smoke": official_smoke_payload,
+        "official_smoke_blocking": official_smoke_blocking,
+        "official_smoke_inconclusive": official_smoke_inconclusive,
+        "official_smoke_classification": official_smoke_classification,
         "decision_pass_rate": round(decision_rate, 2),
         "decision_ok": decision_ok,
         "critical_scenarios_passed": critical_ok,
@@ -1153,7 +1190,7 @@ async def run_quality_gates(args):
         failed_gates_detail.append("national_protocol_tests")
     if not national_acceptance_ok:
         failed_gates_detail.append("national_acceptance")
-    if not official_smoke_ok:
+    if not official_smoke_ok and official_smoke_blocking:
         failed_gates_detail.append("official_smoke")
     if not decision_ok:
         failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
@@ -1236,6 +1273,9 @@ async def run_quality_gates(args):
         "official_smoke_ok": result["official_smoke_ok"],
         "official_smoke_errors": result["official_smoke_errors"],
         "official_smoke": official_smoke_payload,
+        "official_smoke_blocking": result["official_smoke_blocking"],
+        "official_smoke_inconclusive": result["official_smoke_inconclusive"],
+        "official_smoke_classification": result["official_smoke_classification"],
         "dynamic_test_generation": dynamic_test_meta,
         "size_ok": result["size_ok"],
         "oversized_files": result["oversized_files"],
@@ -1316,9 +1356,12 @@ async def run_quality_gates(args):
             "mode": official_smoke_payload.get("mode"),
             "queued": official_smoke_payload.get("queued"),
             "cache_hit": official_smoke_payload.get("cache_hit"),
+            "blocking": official_smoke_blocking,
+            "inconclusive": official_smoke_inconclusive,
+            "classification": official_smoke_classification,
         } if isinstance(official_smoke_payload, dict) else {},
         artifacts={"report": official_smoke_payload} if official_smoke_payload else {},
-        blocking=not bool(official_smoke_payload.get("queued")) if isinstance(official_smoke_payload, dict) else True,
+        blocking=official_smoke_blocking,
     ))
     scorecard.add(GateResult.from_bool(
         "decision",

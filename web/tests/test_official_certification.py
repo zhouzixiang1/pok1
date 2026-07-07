@@ -11,6 +11,7 @@ from official_certification import (
     build_spec,
     cache_key,
     enqueue_certification,
+    official_compliance_verdict,
     official_failure_blocks_parent,
     process_certification_queue,
     queue_snapshot,
@@ -254,15 +255,38 @@ def test_record_local_pass_does_not_clear_failed_status(tmp_path, monkeypatch):
     assert result["issues"] == ["protocol_raise_format"]
 
 
+def test_record_local_pass_clears_inconclusive_official_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+
+    write_status(candidate, STATUS_FAILED, mode="smoke", issues=["self_play_1: port_busy_before_start: 127.0.0.1:10001"])
+    result = record_local_pass(candidate)
+
+    assert result["status"] == "local-pass"
+    assert result["issues"] == []
+
+
 def test_only_protocol_official_failures_block_parent_selection():
-    assert official_failure_blocks_parent({
+    protocol_failure = {
         "status": STATUS_FAILED,
         "issues": ["self_play_1: protocol_raise_format: msg='raise  200'"],
-    })
+    }
+    infra_failure = {
+        "status": STATUS_FAILED,
+        "issues": ["self_play_1: port_busy_before_start: 127.0.0.1:10001"],
+    }
+    empty_failure = {"status": STATUS_FAILED, "issues": []}
+
+    assert official_failure_blocks_parent(protocol_failure)
+    assert official_compliance_verdict(protocol_failure)["classification"] == "protocol_violation"
+    assert not official_failure_blocks_parent(infra_failure)
+    assert official_compliance_verdict(infra_failure)["classification"] == "inconclusive"
     assert not official_failure_blocks_parent({
         "status": STATUS_FAILED,
         "issues": ["official_acceptance_suite_exception: FileNotFoundError: wine"],
     })
+    assert not official_failure_blocks_parent(empty_failure)
+    assert official_compliance_verdict(empty_failure)["inconclusive"] is True
 
 
 def test_smoke_enqueue_does_not_downgrade_certified_status(tmp_path, monkeypatch):

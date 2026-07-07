@@ -1281,6 +1281,69 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["master_plan"]["work_item"]["kind"] == "crossover_quality_repair"
         assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
 
+    def test_official_smoke_protocol_failure_synthesizes_native_entry_repair(self, tmp_path, monkeypatch):
+        """Official-platform violations should repair national_bot.py, not loop with no tasks."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "national_bot.py").write_text("def send_action(sock):\n    sock.sendall(b'raise 200')\n")
+        (next_dir / "national_bot.py").write_text("def send_action(sock):\n    sock.sendall(b'raise  200')\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="quality_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["master_plan"] = {"strategy": "native_repair", "tasks": []}
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["official_smoke"],
+                "official_smoke_ok": False,
+                "official_smoke_blocking": True,
+                "official_smoke_inconclusive": False,
+                "official_smoke_classification": "protocol_violation",
+                "official_smoke_errors": [
+                    "self_play_1: protocol_raise_format: msg='raise  200'",
+                ],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        def _reset_must_not_run(*_args, **_kwargs):
+            raise AssertionError("official smoke quality repair should be in-place")
+
+        monkeypatch.setattr(tool_planning, "_incremental_reset_next_dir", _reset_must_not_run)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["national_bot.py"]):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        tasks = mock_exec.call_args.args[0]
+        assert len(tasks) == 1
+        task = tasks[0]
+        assert task["repair_blocker"] == "official_smoke"
+        assert task["target_files"] == ["national_bot.py"]
+        assert task["must_change_files"] == ["national_bot.py"]
+        assert "protocol_raise_format" in task["worker_prompt"]
+        assert "exactly one ASCII space" in task["worker_prompt"]
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["master_plan"]["tasks"][0]["repair_blocker"] == "official_smoke"
+
     def test_quality_failed_refreshes_stale_rework_task_targets(self, tmp_path, monkeypatch):
         """A second quality failure must replace old repair targets with current blockers."""
         import asyncio
