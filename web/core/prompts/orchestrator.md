@@ -80,7 +80,7 @@ EXHAUSTED-direction matches in a normal Master plan are BLOCKING validation
 errors: do not execute workers from a plan that repeats an exhausted direction.
 Repair tasks may receive EXHAUSTED warnings, but initial generation tasks must
 return to `run_master` for a different axis. `worker_prompt` hard-size
-violations are also BLOCKING validation errors and must not reach
+violations are BLOCKING validation errors and must not reach
 `execute_workers`.
 code_changed=false, declared-scope
 violation, runtime import contract failure, py_compile failure, protected-contract

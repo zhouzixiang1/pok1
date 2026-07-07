@@ -65,6 +65,11 @@ def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_pat
     text = entry.read_text(encoding="utf-8")
     assert "bot_adapter" not in text
     assert '"response"' not in text
+    assert "sock.recv" in text
+    assert "_split_messages" in text
+    assert "makefile(" not in text
+    assert ".readline(" not in text
+    assert "msg + \"\\n\"" not in text
 
     entry.write_text(
         "from sever.bot_adapter import BotAdapter\n"
@@ -75,6 +80,25 @@ def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_pat
     errors = check_native_contract(bot_dir)
     assert any("bot_adapter" in err or "BotAdapter" in err for err in errors)
     assert any("'response'" in err for err in errors)
+
+
+def test_native_entry_contract_rejects_legacy_newline_protocol(tmp_path):
+    bot_dir = tmp_path / "BotA"
+    bot_dir.mkdir()
+    (bot_dir / "national_bot.py").write_text(
+        "import socket\n\n"
+        "def main(sock):\n"
+        "    stream = sock.makefile('r', encoding='utf-8', newline='\\n')\n"
+        "    line = stream.readline()\n"
+        "    msg = 'fold'\n"
+        "    sock.sendall((msg + '\\n').encode('utf-8'))\n"
+        "# required wire tokens: raise fold call check allin\n",
+        encoding="utf-8",
+    )
+
+    errors = check_native_contract(bot_dir)
+
+    assert any("legacy newline TCP token" in err for err in errors)
 
 
 def test_native_entry_contract_rejects_sanitizer_exception_pass(tmp_path):
@@ -113,6 +137,33 @@ def test_candidate_hygiene_removes_completion_and_restores_native_entry(tmp_path
     assert not (bot_dir / ".completed").exists()
     assert (bot_dir / "national_bot.py").exists()
     assert check_native_contract(bot_dir) == []
+
+
+def test_candidate_hygiene_overwrites_legacy_native_entry_for_new_candidate(tmp_path):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    (bot_dir / "national_bot.py").write_text(
+        "import socket\n\n"
+        "def main(sock):\n"
+        "    stream = sock.makefile('r', encoding='utf-8', newline='\\n')\n"
+        "    line = stream.readline()\n"
+        "    msg = 'fold'\n"
+        "    sock.sendall((msg + '\\n').encode('utf-8'))\n"
+        "# required wire tokens: raise fold call check allin\n",
+        encoding="utf-8",
+    )
+
+    result = sanitize_candidate_dir(
+        bot_dir,
+        require_native_tcp=True,
+        overwrite_native_entry=True,
+    )
+    text = (bot_dir / "national_bot.py").read_text(encoding="utf-8")
+
+    assert result["native_entry"] == "national_bot.py"
+    assert check_native_contract(bot_dir) == []
+    assert "sock.recv" in text
+    assert ".readline(" not in text
 
 
 def test_quality_gate_ok_rejects_adapter_cache_under_native_profile(monkeypatch):
@@ -287,35 +338,95 @@ def test_national_protocol_gate_uses_platform_shard_for_native(monkeypatch):
     assert str(calls[-1][0][3]).endswith("sever/tests/test_national_alignment.py")
 
 
-def _write_random_probe_native_bot(bot_dir: Path) -> None:
-    bot_dir.mkdir(parents=True, exist_ok=True)
-    (bot_dir / "main.py").write_text("# native-only seed probe\n", encoding="utf-8")
-    (bot_dir / "national_bot.py").write_text(
+def _raw_probe_native_source(*, startup: str = "", on_small_blind: str = "sock.sendall(b'fold')", delay_sec: float = 0.0) -> str:
+    return (
         "import argparse\n"
+        "import os\n"
         "import random\n"
+        "import re\n"
         "import socket\n"
-        "import sys\n\n"
-        "print(f'RANDOM_PROBE {random.random():.12f}', file=sys.stderr, flush=True)\n\n"
+        "import sys\n"
+        "import time\n\n"
+        "CARD_RE = re.compile(r'<(\\d+),(\\d+)>')\n"
+        "ACTION_RE = re.compile(r'^(raise|bet)\\s+(\\d+)')\n"
+        "EARN_RE = re.compile(r'^earnChips\\s+-?\\d+')\n\n"
+        "def _take_card_message(buffer, prefix, count):\n"
+        "    if not buffer.startswith(prefix):\n"
+        "        return None, buffer\n"
+        "    pos = len(prefix)\n"
+        "    for _ in range(count):\n"
+        "        match = CARD_RE.match(buffer, pos)\n"
+        "        if not match:\n"
+        "            return None, buffer\n"
+        "        pos = match.end()\n"
+        "    return buffer[:pos], buffer[pos:]\n\n"
+        "def _take_message(buffer):\n"
+        "    buffer = buffer.lstrip('\\r\\n\\t ')\n"
+        "    if not buffer:\n"
+        "        return None, ''\n"
+        "    if buffer.startswith('name'):\n"
+        "        return 'name', buffer[4:]\n"
+        "    for blind in ('SMALLBLIND', 'BIGBLIND'):\n"
+        "        msg, rest = _take_card_message(buffer, f'preflop|{blind}|', 2)\n"
+        "        if msg is not None:\n"
+        "            return msg, rest\n"
+        "    for prefix, count in (('flop|', 3), ('turn|', 1), ('river|', 1), ('oppo_hands|', 2)):\n"
+        "        msg, rest = _take_card_message(buffer, prefix, count)\n"
+        "        if msg is not None:\n"
+        "            return msg, rest\n"
+        "    match = EARN_RE.match(buffer)\n"
+        "    if match:\n"
+        "        return buffer[:match.end()], buffer[match.end():]\n"
+        "    match = ACTION_RE.match(buffer)\n"
+        "    if match:\n"
+        "        return buffer[:match.end()], buffer[match.end():]\n"
+        "    for word in ('allin', 'check', 'call', 'fold'):\n"
+        "        if buffer.startswith(word):\n"
+        "            return word, buffer[len(word):]\n"
+        "    return None, buffer\n\n"
+        "def _split_messages(buffer):\n"
+        "    messages = []\n"
+        "    while buffer:\n"
+        "        msg, rest = _take_message(buffer)\n"
+        "        if msg is None:\n"
+        "            return messages, rest\n"
+        "        messages.append(msg)\n"
+        "        buffer = rest\n"
+        "    return messages, ''\n\n"
+        f"{startup}\n"
         "def main():\n"
         "    parser = argparse.ArgumentParser()\n"
         "    parser.add_argument('--host')\n"
         "    parser.add_argument('--port', type=int)\n"
         "    parser.add_argument('--name')\n"
         "    args = parser.parse_args()\n"
+        f"    time.sleep({float(delay_sec)!r})\n"
         "    with socket.create_connection((args.host, args.port), timeout=5) as sock:\n"
-        "        stream = sock.makefile('r', encoding='utf-8', newline='\\n')\n"
+        "        buffer = ''\n"
         "        while True:\n"
-        "            line = stream.readline()\n"
-        "            if not line:\n"
+        "            data = sock.recv(4096)\n"
+        "            if not data:\n"
         "                return 0\n"
-        "            line = line.rstrip('\\r\\n')\n"
-        "            if line == 'name':\n"
-        "                sock.sendall((args.name + '\\n').encode('utf-8'))\n"
-        "            elif line.startswith('preflop|SMALLBLIND|'):\n"
-        "                sock.sendall(b'fold\\n')\n\n"
+        "            buffer += data.decode('utf-8', 'replace')\n"
+        "            messages, buffer = _split_messages(buffer)\n"
+        "            for line in messages:\n"
+        "                if line == 'name':\n"
+        "                    sock.sendall(args.name.encode('utf-8'))\n"
+        "                elif line.startswith('preflop|SMALLBLIND|'):\n"
+        f"                    {on_small_blind}\n\n"
         "if __name__ == '__main__':\n"
         "    raise SystemExit(main())\n"
-        "# required wire tokens: raise fold call check allin\n",
+        "# required wire tokens: raise fold call check allin\n"
+    )
+
+
+def _write_random_probe_native_bot(bot_dir: Path) -> None:
+    bot_dir.mkdir(parents=True, exist_ok=True)
+    (bot_dir / "main.py").write_text("# native-only seed probe\n", encoding="utf-8")
+    (bot_dir / "national_bot.py").write_text(
+        _raw_probe_native_source(
+            startup="print(f'RANDOM_PROBE {random.random():.12f}', file=sys.stderr, flush=True)",
+        ),
         encoding="utf-8",
     )
 
@@ -324,34 +435,14 @@ def _write_trace_probe_native_bot(bot_dir: Path) -> None:
     bot_dir.mkdir(parents=True, exist_ok=True)
     (bot_dir / "main.py").write_text("# native-only trace probe\n", encoding="utf-8")
     (bot_dir / "national_bot.py").write_text(
-        "import argparse\n"
-        "import json\n"
-        "import os\n"
-        "import socket\n"
-        "import sys\n\n"
-        "def main():\n"
-        "    parser = argparse.ArgumentParser()\n"
-        "    parser.add_argument('--host')\n"
-        "    parser.add_argument('--port', type=int)\n"
-        "    parser.add_argument('--name')\n"
-        "    args = parser.parse_args()\n"
-        "    with socket.create_connection((args.host, args.port), timeout=5) as sock:\n"
-        "        stream = sock.makefile('r', encoding='utf-8', newline='\\n')\n"
-        "        while True:\n"
-        "            line = stream.readline()\n"
-        "            if not line:\n"
-        "                return 0\n"
-        "            line = line.rstrip('\\r\\n')\n"
-        "            if line == 'name':\n"
-        "                sock.sendall((args.name + '\\n').encode('utf-8'))\n"
-        "            elif line.startswith('preflop|SMALLBLIND|'):\n"
-        "                if os.environ.get('POK_TRACE_DECISIONS') == '1':\n"
-        "                    row = {'type': 'decision', 'hand': 1, 'final_action': -1}\n"
-        "                    print('POK_TRACE_DECISION ' + json.dumps(row), file=sys.stderr, flush=True)\n"
-        "                sock.sendall(b'fold\\n')\n\n"
-        "if __name__ == '__main__':\n"
-        "    raise SystemExit(main())\n"
-        "# required wire tokens: raise fold call check allin\n",
+        _raw_probe_native_source(
+            startup="import json",
+            on_small_blind=(
+                "print('POK_TRACE_DECISION ' + json.dumps({'type': 'decision', 'hand': 1, 'final_action': -1}), "
+                "file=sys.stderr, flush=True) if os.environ.get('POK_TRACE_DECISIONS') == '1' else None; "
+                "sock.sendall(b'fold')"
+            ),
+        ),
         encoding="utf-8",
     )
 
@@ -360,31 +451,7 @@ def _write_delay_connect_native_bot(bot_dir: Path, delay_sec: float) -> None:
     bot_dir.mkdir(parents=True, exist_ok=True)
     (bot_dir / "main.py").write_text("# native-only delay probe\n", encoding="utf-8")
     (bot_dir / "national_bot.py").write_text(
-        "import argparse\n"
-        "import socket\n"
-        "import time\n\n"
-        f"DELAY_SEC = {float(delay_sec)!r}\n\n"
-        "def main():\n"
-        "    parser = argparse.ArgumentParser()\n"
-        "    parser.add_argument('--host')\n"
-        "    parser.add_argument('--port', type=int)\n"
-        "    parser.add_argument('--name')\n"
-        "    args = parser.parse_args()\n"
-        "    time.sleep(DELAY_SEC)\n"
-        "    with socket.create_connection((args.host, args.port), timeout=5) as sock:\n"
-        "        stream = sock.makefile('r', encoding='utf-8', newline='\\n')\n"
-        "        while True:\n"
-        "            line = stream.readline()\n"
-        "            if not line:\n"
-        "                return 0\n"
-        "            line = line.rstrip('\\r\\n')\n"
-        "            if line == 'name':\n"
-        "                sock.sendall((args.name + '\\n').encode('utf-8'))\n"
-        "            elif line.startswith('preflop|SMALLBLIND|'):\n"
-        "                sock.sendall(b'fold\\n')\n\n"
-        "if __name__ == '__main__':\n"
-        "    raise SystemExit(main())\n"
-        "# required wire tokens: raise fold call check allin\n",
+        _raw_probe_native_source(delay_sec=delay_sec),
         encoding="utf-8",
     )
 

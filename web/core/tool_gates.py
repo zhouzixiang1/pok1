@@ -1538,7 +1538,11 @@ async def prepare_next_gen(args):
     workflow_profile = get_workflow_profile()
     native_tcp = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
     from candidate_hygiene import sanitize_candidate_dir
-    hygiene = sanitize_candidate_dir(next_dir, require_native_tcp=native_tcp)
+    hygiene = sanitize_candidate_dir(
+        next_dir,
+        require_native_tcp=native_tcp,
+        overwrite_native_entry=native_tcp,
+    )
     if native_tcp:
         log_system_event(
             "pipeline.native_entry_prepared",
