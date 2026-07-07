@@ -2700,6 +2700,66 @@ class TestWorkerFailureCircuitBreaker:
         assert "<= 2493 lines" in tasks[-1]["worker_prompt"]
         assert "print() emits TCP action text" in tasks[-2]["worker_prompt"]
 
+    def test_reviewer_feedback_quality_repair_uses_primary_files_not_all_mentions(self):
+        import tool_planning
+
+        ckpt = {
+            "next_v": 95,
+            "source_v": 37,
+            "parent2_v": 72,
+            "stage": "repair_planned",
+            "master_plan": {"strategy": "crossover", "tasks": []},
+            "gate_results": {"quality": {"all_passed": True, "failed_gates": []}},
+        }
+        feedback = (
+            "Two code-quality issues block approval:\n\n"
+            "1. Role boundary violation in constants.py: the worker is assigned as "
+            "Algorithmic Logic Architect but edited the existing module-level constant "
+            "BB_CALL_THRESHOLD (0.41 -> 0.35). Editing existing numeric constants in "
+            "constants.py is Hyperparameter Tuner scope, not Architect scope.\n\n"
+            "2. Dead code in opponent.py: PRIOR_BETSIZE_POLARITY and "
+            "PRIOR_BETSIZE_POLARITY_WEIGHT are defined at module level but never "
+            "referenced anywhere in the bot. Additionally, opponent.py computes and "
+            "returns betsize_polarity, flop_polarity, turn_polarity, river_polarity, "
+            "shove_rate, flop_shove_rate, turn_shove_rate, and river_shove_rate, but "
+            "none of these keys are consumed by strategy.py, postflop.py, "
+            "national_bot.py, or main.py.\n\n"
+            "Other checks: all changed files compile and import cleanly; national_bot.py "
+            "is unchanged and remains a valid raw TCP client."
+        )
+
+        tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt, feedback)
+
+        assert [(task["role"], task["target_files"]) for task in tasks] == [
+            ("Hyperparameter Tuner", ["constants.py"]),
+            ("Algorithmic Logic Architect", ["opponent.py"]),
+        ]
+        assert "BB_CALL_THRESHOLD" in tasks[0]["worker_prompt"]
+        assert "Constants-only role method" in tasks[0]["worker_prompt"]
+        assert "PRIOR_BETSIZE_POLARITY" in tasks[1]["worker_prompt"]
+        assert tool_planning._quality_failure_target_files(ckpt, feedback) == {
+            "constants.py",
+            "opponent.py",
+        }
+
+    def test_empty_quality_evidence_does_not_expand_to_changed_files(self):
+        import tool_planning
+
+        ckpt = {
+            "next_v": 95,
+            "source_v": 37,
+            "parent2_v": 72,
+            "stage": "repair_planned",
+            "master_plan": {"strategy": "crossover", "tasks": []},
+            "gate_results": {"quality": {"all_passed": True, "failed_gates": []}},
+        }
+        feedback = (
+            "Other checks: strategy.py, postflop.py, national_bot.py, and main.py "
+            "compile and import cleanly."
+        )
+
+        assert tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt, feedback) == []
+
     def test_quality_rework_refreshes_outdated_file_size_contract_prompt(self):
         import tool_planning
 

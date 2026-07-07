@@ -3164,6 +3164,10 @@ def _task_must_change_filenames(task):
 
 
 def _quality_failure_target_files(ckpt, reviewer_feedback=""):
+    if reviewer_feedback:
+        contracts = _quality_repair_contracts(ckpt, reviewer_feedback)
+        if contracts:
+            return {contract["file"] for contract in contracts if contract.get("file")}
     failures = [
         item for item in _quality_failure_items(ckpt)
         if not _is_declared_scope_failure_text(item)
@@ -3847,6 +3851,120 @@ def _official_smoke_contracts(quality, failures):
     }]
 
 
+def _split_reviewer_quality_feedback(feedback):
+    """Return actionable reviewer issue snippets, excluding positive check text."""
+    text = str(feedback or "").strip()
+    if not text:
+        return []
+    if text.lower().startswith("quality gates failed:"):
+        return []
+
+    chunks = []
+    for part in re.split(r"(?m)(?:^|\n)\s*(?=\d+[\.)]\s+)", text):
+        cleaned = re.sub(r"^\s*\d+[\.)]\s+", "", part.strip())
+        if cleaned:
+            chunks.append(cleaned)
+    if not chunks:
+        chunks = [text]
+
+    actionable = []
+    problem_markers = (
+        "block",
+        "issue",
+        "violation",
+        "dead code",
+        "unused",
+        "unconsumed",
+        "must be",
+        "must not",
+        "rejected",
+        "reject",
+        "flag",
+        "risk",
+        "failed",
+        "failure",
+        "scope",
+    )
+    positive_markers = (
+        "other checks",
+        "compile cleanly",
+        "compiles",
+        "imports succeed",
+        "valid raw tcp client",
+        "unchanged and remains",
+    )
+    for chunk in chunks:
+        chunk = re.split(r"(?i)\bOther checks\s*:", chunk, maxsplit=1)[0].strip()
+        if not chunk:
+            continue
+        lower = chunk.lower()
+        if not re.search(r"[A-Za-z0-9_./-]+\.py", chunk):
+            continue
+        if any(marker in lower for marker in positive_markers) and not any(
+            marker in lower for marker in ("but", "however", "block", "issue", "violation", "dead code", "unused")
+        ):
+            continue
+        if any(marker in lower for marker in problem_markers):
+            actionable.append(chunk.strip())
+    return actionable
+
+
+def _primary_feedback_file(item):
+    text = str(item or "")
+    patterns = (
+        r"(?:in|on|file)\s+([A-Za-z0-9_./-]+\.py)\s*:",
+        r"([A-Za-z0-9_./-]+\.py)\s*:",
+        r"([A-Za-z0-9_./-]+\.py)\s+(?:edits|changes|changed|computes|defines|returns|stores)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            rel = Path(match.group(1)).name
+            if rel:
+                return rel
+    files = _extract_quality_failure_files([text])
+    return files[0] if files else ""
+
+
+def _feedback_quality_contracts(feedback):
+    """Return file-scoped contracts from reviewer feedback.
+
+    Reviewer prose often names consumer files while describing a producer-file
+    problem, for example "opponent.py returns fields never read by strategy.py".
+    Use the first/primary file in the issue snippet as the repair target instead
+    of expanding to every mentioned file.
+    """
+    by_file = {}
+    for item in _split_reviewer_quality_feedback(feedback):
+        rel = _primary_feedback_file(item)
+        if not rel:
+            continue
+        by_file.setdefault(rel, []).append(item)
+
+    contracts = []
+    for rel in sorted(by_file):
+        evidence = "\n".join(dict.fromkeys(by_file[rel]))
+        contract = {
+            "blocker": "quality_gate",
+            "file": rel,
+            "evidence": evidence,
+        }
+        lower = evidence.lower()
+        if (
+            rel == "constants.py"
+            and (
+                "hyperparameter tuner" in lower
+                or "role boundary" in lower
+                or "existing numeric" in lower
+                or "existing constant" in lower
+                or "threshold" in lower
+            )
+        ):
+            contract["role_hint"] = "tuner"
+        contracts.append(contract)
+    return contracts
+
+
 def _generic_quality_contracts(quality, failures, claimed_files):
     """Build file-scoped fallback contracts for non-mechanical quality blockers."""
     evidence_items = []
@@ -3882,6 +4000,8 @@ def _generic_quality_contracts(quality, failures, claimed_files):
     mechanical_files.update(c["file"] for c in _position_contracts(quality))
     mechanical_files.update(c["file"] for c in _national_native_contracts(quality, failures))
     mechanical_files.update(c["file"] for c in _official_smoke_contracts(quality, failures))
+    if not evidence_items:
+        return []
     generic_files = evidence_files or [f for f in claimed_files if f not in mechanical_files]
     if not generic_files:
         return []
@@ -3913,6 +4033,7 @@ def _quality_repair_contracts(ckpt, feedback=""):
     contracts.extend(_position_contracts(quality))
     contracts.extend(_national_native_contracts(quality, failures))
     contracts.extend(_official_smoke_contracts(quality, failures))
+    contracts.extend(_feedback_quality_contracts(feedback))
     contracts.extend(_generic_quality_contracts(quality, failures, claimed_files))
 
     ordered = []
@@ -4077,6 +4198,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "repair_contract": contract,
         }
     evidence = contract.get('evidence') or 'quality gate failed'
+    role = "Hyperparameter Tuner" if contract.get("role_hint") == "tuner" else "Algorithmic Logic Architect"
     reachability_guidance = ""
     if "reachability" in str(evidence).lower():
         reachability_guidance = (
@@ -4088,12 +4210,25 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "- Do not add a dummy reference, unused import, or unreachable call just "
             "to silence the gate.\n"
         )
+    role_guidance = ""
+    if role == "Hyperparameter Tuner":
+        role_guidance = (
+            "\nConstants-only role method:\n"
+            "- This repair is assigned to Hyperparameter Tuner because the reviewer "
+            "evidence concerns an existing numeric constant/threshold in `constants.py`.\n"
+            "- Edit only `constants.py`; do not add imports, functions, classes, loops, "
+            "or control flow.\n"
+            "- Fix the exact reviewer evidence by reverting or retuning the named "
+            "numeric constant as a Tuner-owned change, with adjacent rationale if needed.\n"
+            "- Do not touch protocol/card mapping or non-constant strategy code.\n"
+        )
     prompt = (
         f"{preservation.format(next_v=next_v)}\n\n"
         f"Repair contract: quality_gate\n"
         f"- Target file: `{filename}`\n"
         f"- Evidence:\n{evidence}\n\n"
         f"{reachability_guidance}"
+        f"{role_guidance}"
         "Required method:\n"
         f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
         "- Fix only the listed gate blocker.\n"
@@ -4102,7 +4237,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
     )
     return {
         "worker_id": f"auto_quality_repair_gate_{suffix}",
-        "role": "Algorithmic Logic Architect",
+        "role": role,
         "target_files": [filename],
         "must_change_files": [filename],
         "worker_prompt": prompt,
@@ -4440,6 +4575,8 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
         return _precommit_repair_tasks(ckpt, feedback)
     elif quality_contracts:
         target_files = [contract["file"] for contract in quality_contracts]
+    elif reviewer_feedback:
+        return []
     else:
         failures = _quality_failure_items(ckpt)
         target_files = _extract_quality_failure_files(failures)
