@@ -861,6 +861,8 @@ def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versio
     for version in sorted(tag_versions):
         if version in reaped_versions:
             continue
+        if not is_active_bot_protocol_eligible(version):
+            continue
         bot_dir = BOTS_DIR / bot_name(version)
         sentinel = bot_dir / ".completed"
         if not bot_dir.is_dir() or sentinel.exists():
@@ -885,6 +887,35 @@ def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versio
     return restored
 
 
+def active_native_contract_filter_enabled() -> bool:
+    raw = os.environ.get("POK_ACTIVE_NATIVE_CONTRACT_FILTER")
+    if raw is None:
+        return EVALUATION_EPOCH == "national_native_v1"
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def active_bot_protocol_errors(version: int) -> list[str]:
+    """Return active-pool protocol errors for a tagged bot version.
+
+    Historical active-epoch tags are retained for auditability, but the current
+    national-native runtime must not schedule old newline/readline TCP entries
+    as rating opponents or evolution sources.
+    """
+
+    if not active_native_contract_filter_enabled():
+        return []
+    bot_dir = BOTS_DIR / bot_name(version)
+    try:
+        from national_native import check_native_contract
+        return list(check_native_contract(bot_dir))
+    except Exception as exc:
+        return [f"native_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}"]
+
+
+def is_active_bot_protocol_eligible(version: int) -> bool:
+    return not active_bot_protocol_errors(version)
+
+
 def _target_rel(path, version):
     raw = str(path).strip()
     if not raw:
@@ -904,7 +935,7 @@ def _target_rel(path, version):
 
 
 def get_active_bots():
-    """Active bots = those with BOTH a .completed sentinel AND a git tag.
+    """Active bots = tagged, completed, and protocol-eligible bots.
 
     Trust model mirrors find_current_v(): the git tag for the active epoch is the single
     authoritative completion proof. A bare .completed file (written by prepare
@@ -912,8 +943,13 @@ def get_active_bots():
     it is exactly how a "ghost bot" like v107 (completed-but-untagged) leaked
     into find_latest_active_v() and was used as an evolution source.
 
+    In the national-native epoch, static native TCP contract compliance is also
+    required. Old tagged newline/readline bots remain in git history but must
+    not be scheduled as rating opponents or selected as evolution sources.
+
     Collecting all tags once here (instead of calling git_has_tag per bot)
-    keeps this O(1 git call) regardless of bot count.
+    keeps this O(1 git call) regardless of bot count, plus local file checks for
+    protocol eligibility.
     """
     tag_versions = _tagged_bot_versions()
     reaped_versions = load_reaped_bot_versions()
@@ -926,7 +962,7 @@ def get_active_bots():
             if v is None or not d.startswith(ACTIVE_BOT_PREFIX):
                 continue
             if os.path.isdir(BOTS_DIR / d) and (BOTS_DIR / d / ".completed").exists():
-                if v in tag_versions and v not in reaped_versions:
+                if v in tag_versions and v not in reaped_versions and is_active_bot_protocol_eligible(v):
                     bots.append(d)
     return sorted(bots, key=version_sort_key)
 
