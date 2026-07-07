@@ -39,13 +39,19 @@ def _call_bot_subprocess(bot_path, payload):
 class _PersistentBot:
     """Persistent bot process — one Popen per game, line-delimited JSON communication."""
 
-    def __init__(self, bot_path):
+    def __init__(self, bot_path, decision_timeout_sec=60.0):
         self.bot_path = bot_path
+        self.decision_timeout_sec = float(decision_timeout_sec)
         self.proc = None
         self._alive = False
+        self._stderr_buf = []
+        self._stderr_lock = threading.Lock()
+        self._stderr_thread = None
         self._start()
 
     def _start(self):
+        with self._stderr_lock:
+            self._stderr_buf.clear()
         try:
             self.proc = subprocess.Popen(
                 [sys.executable, self.bot_path],
@@ -58,6 +64,28 @@ class _PersistentBot:
             self._alive = True
         except Exception:
             self._alive = False
+            return
+        try:
+            self._stderr_thread = threading.Thread(
+                target=self._stderr_drain_loop,
+                daemon=True,
+            )
+            self._stderr_thread.start()
+        except Exception:
+            pass
+
+    def _stderr_drain_loop(self):
+        """Drain stderr for the process lifetime so verbose bots cannot block."""
+        try:
+            for line in iter(self.proc.stderr.readline, ''):
+                with self._stderr_lock:
+                    self._stderr_buf.append(line)
+        except Exception:
+            pass
+
+    def _clear_stderr_snapshot(self):
+        with self._stderr_lock:
+            self._stderr_buf.clear()
 
     def call(self, payload):
         if not self._alive:
@@ -83,7 +111,7 @@ class _PersistentBot:
 
         t = threading.Thread(target=_read, daemon=True)
         t.start()
-        t.join(timeout=60)
+        t.join(timeout=self.decision_timeout_sec)
 
         if t.is_alive():
             self._alive = False
@@ -92,6 +120,8 @@ class _PersistentBot:
             except Exception:
                 pass
             return -1, "TIMEOUT", None
+
+        self._clear_stderr_snapshot()
 
         if error[0] is not None:
             self._alive = False

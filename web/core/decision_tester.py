@@ -21,6 +21,7 @@ import subprocess
 import sys
 import os
 import time
+import argparse
 from collections import OrderedDict
 
 from evolution_infra import locked_file
@@ -1216,22 +1217,29 @@ def run_decision_tests_sprt_aggregate(bot_path, extra_scenarios=None,
     }
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python decision_tester.py <bot_main.py> [--verbose]")
-        sys.exit(1)
+def _parse_cli_args(argv):
+    parser = argparse.ArgumentParser(
+        description="Run decision scenario tests against a poker bot.",
+    )
+    parser.add_argument("bot_path", help="Path to the bot main.py script.")
+    parser.add_argument("--verbose", action="store_true", help="Print per-scenario details.")
+    return parser.parse_args(argv)
 
-    bot_path = sys.argv[1]
-    verbose = "--verbose" in sys.argv
 
+def main(argv=None):
+    args = _parse_cli_args(sys.argv[1:] if argv is None else argv)
     from logging_config import configure_logging
     configure_logging()
 
-    result = run_decision_tests_detail(bot_path, verbose=verbose)
+    result = run_decision_tests_detail(args.bot_path, verbose=args.verbose)
     rate = result["pass_rate"]
     log.info("Decision test pass rate: %.0f%% (%d%%)", rate * 100, int(rate * 100))
     if result["critical_failures"]:
         log.error("Critical failures: %d", len(result["critical_failures"]))
         for failure in result["critical_failures"]:
             log.error("  - %s: %s", failure['id'], failure['details'])
-    sys.exit(0 if rate >= 0.7 and not result["critical_failures"] else 1)
+    return 0 if rate >= 0.7 and not result["critical_failures"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
