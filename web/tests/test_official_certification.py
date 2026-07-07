@@ -124,16 +124,16 @@ def test_smoke_receipt_cannot_satisfy_full_certification(tmp_path):
     assert report_valid_for_spec(payload, full) is False
 
 
-def test_compliance_mode_requires_two_full_70_hand_rounds(tmp_path):
+def test_compliance_mode_requires_two_short_protocol_rounds(tmp_path):
     candidate = _bot(tmp_path / "national_v1")
     opponent = _bot(tmp_path / "national_v2")
     compliance = build_spec("compliance", candidate, opponent=opponent)
 
     assert compliance.self_play_rounds == 1
     assert compliance.opponent_rounds == 1
-    assert compliance.target_hands == 70
-    assert report_valid_for_spec(_report(target_hands=70, rounds=2), compliance) is True
-    assert report_valid_for_spec(_report(target_hands=10, rounds=2), compliance) is False
+    assert compliance.target_hands == 10
+    assert report_valid_for_spec(_report(target_hands=10, rounds=2), compliance) is True
+    assert report_valid_for_spec(_report(target_hands=70, rounds=2), compliance) is False
 
 
 def test_bad_receipts_are_not_valid_for_cache(tmp_path):
@@ -217,7 +217,7 @@ def test_compliance_certification_has_distinct_status(tmp_path, monkeypatch):
     result = run_certification(
         spec,
         config=cfg,
-        runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=70, rounds=2)),
+        runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=10, rounds=2)),
         queue_on_busy=False,
     )
 

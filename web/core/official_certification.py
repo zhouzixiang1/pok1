@@ -93,9 +93,9 @@ MODE_CONFIG = {
     "compliance": {
         "self_play_rounds": 1,
         "opponent_rounds": 1,
-        "target_hands": 70,
-        "round_timeout_sec": 900.0,
-        "no_progress_timeout_sec": 75.0,
+        "target_hands": 10,
+        "round_timeout_sec": 180.0,
+        "no_progress_timeout_sec": 60.0,
     },
     "full": {
         "self_play_rounds": 5,

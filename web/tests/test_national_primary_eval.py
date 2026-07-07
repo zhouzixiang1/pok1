@@ -442,14 +442,14 @@ def test_tool_eval_native_precommit_uses_official_compliance_defaults(tmp_path, 
     ))
     result = json.loads(wrapped["content"][0]["text"])
 
-    assert calls == [("compliance", str(bot_a), str(bot_b), 1, 1, 70)]
+    assert calls == [("compliance", str(bot_a), str(bot_b), 1, 1, 10)]
     assert result["passed"] is True
     assert result["official_platform"]["status"] == "official-pending"
     assert result["official_platform"]["mode"] == "compliance"
     assert result["official_platform"]["summary"] == {
         "self_play_rounds": 1,
         "opponent_rounds": 1,
-        "target_hands": 70,
+        "target_hands": 10,
     }
     gate_names = [gate["name"] for gate in result["scorecard"]["gates"]]
     assert "official_platform_compliance" in gate_names

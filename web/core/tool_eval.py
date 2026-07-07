@@ -287,7 +287,7 @@ async def _run_national_precommit_backend(
         # Strength and long-run tracking stay on the local native TCP harness.
         official_self_rounds = max(0, _env_int("POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS", 1))
         official_opponent_rounds = max(0, _env_int("POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS", 1))
-        official_hands = max(1, min(70, _env_int("POK_OFFICIAL_PRECOMMIT_TARGET_HANDS", 70)))
+        official_hands = max(1, min(70, _env_int("POK_OFFICIAL_PRECOMMIT_TARGET_HANDS", 10)))
         official_opponent = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
         if not official_opponent and opponents_with_paths:
             official_opponent = _official_bot_token(opponents_with_paths[0].get("path") or opponents_with_paths[0].get("name"))
