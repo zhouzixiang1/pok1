@@ -113,7 +113,7 @@ def test_quality_gate_records_runtime_import_failure_as_quality_failed(monkeypat
         "traceback": "ImportError: missing_symbol",
     }])
     monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
-    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
     monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
     monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
     monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
@@ -156,7 +156,7 @@ def test_quality_gate_records_smoke_failure_details(monkeypatch):
     monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: ["smoke test emitted failure output despite exit 0: boom"])
-    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
     monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
     monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
     monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
@@ -211,7 +211,7 @@ def test_quality_gate_blocks_unreachable_new_function(monkeypatch, tmp_path):
     monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
-    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
     monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
     monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
     monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
@@ -264,7 +264,7 @@ def test_quality_gate_allows_unreachable_verify_helper(monkeypatch, tmp_path):
     monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
-    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
     monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
     monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
     monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
@@ -328,7 +328,7 @@ def test_quality_gate_reruns_when_cached_code_fingerprint_is_stale(monkeypatch, 
     monkeypatch.setattr(tool_gates, "verify_code", _verify)
     monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
-    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
     monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
     monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
     monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
@@ -377,7 +377,7 @@ def test_quality_gate_skips_dynamic_llm_when_heuristics_sufficient(monkeypatch, 
     monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
-    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
     monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
     monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
     monkeypatch.setattr(tool_gates, "DYNAMIC_TEST_HEURISTIC_SUFFICIENT", 1)
@@ -459,7 +459,7 @@ def test_quality_gate_records_placement_shadow_review_scorecard(monkeypatch, tmp
     monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
-    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
     monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
     monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
     monkeypatch.setattr(code_verification, "detect_placement_shadow_warnings", lambda _bot_dir: [

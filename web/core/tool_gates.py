@@ -685,7 +685,7 @@ async def run_quality_gates(args):
         native_contract_errors=native_contract_errors,
         embedded_selftest_errors=embedded_selftest_errors,
     )
-    national_protocol_errors = run_national_protocol_tests()
+    national_protocol_errors = run_national_protocol_tests(native_tcp_mode=native_tcp_mode)
     national_acceptance_ok = True
     national_acceptance_errors = []
     national_acceptance_payload = {}

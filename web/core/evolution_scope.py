@@ -32,7 +32,6 @@ CRITICAL_ENGINE_EXACT = frozenset({
 
 CRITICAL_NATIONAL_PLATFORM_EXACT = frozenset({
     # National TCP platform logic that native gates and precommit execute.
-    "sever/bot_adapter.py",
     "sever/engine/deck.py",
     "sever/engine/evaluator.py",
     "sever/engine/game.py",
@@ -40,8 +39,18 @@ CRITICAL_NATIONAL_PLATFORM_EXACT = frozenset({
     "sever/engine/validator.py",
     "sever/server/protocol.py",
     "sever/server/tcp_server.py",
+    "sever/tests/test_national_platform_alignment.py",
+})
+
+CRITICAL_LEGACY_ADAPTER_EXACT = frozenset({
+    # Botzone JSON-to-national bridge and adapter-backed regression paths. These
+    # are still critical for adapter workflows, but native TCP bots do not depend
+    # on them as pass/fail infrastructure.
+    "sever/bot_adapter.py",
     "sever/tests/test_national_alignment.py",
     "scripts/national_acceptance_matrix.py",
+    "web/core/national_acceptance.py",
+    "web/core/national_eval.py",
 })
 
 CRITICAL_EVALUATION_GATE_EXACT = frozenset({
@@ -53,8 +62,6 @@ CRITICAL_EVALUATION_GATE_EXACT = frozenset({
     "web/core/elo_daemon.py",
     "web/core/eval_stats.py",
     "web/core/fix_verification.py",
-    "web/core/national_acceptance.py",
-    "web/core/national_eval.py",
     "web/core/national_native.py",
     "web/core/protected_contracts.py",
     "web/core/smoke_tester.py",
@@ -148,6 +155,7 @@ CRITICAL_PROMPT_EXACT = frozenset({
 CRITICAL_EXACT = frozenset().union(
     CRITICAL_ENGINE_EXACT,
     CRITICAL_NATIONAL_PLATFORM_EXACT,
+    CRITICAL_LEGACY_ADAPTER_EXACT,
     CRITICAL_EVALUATION_GATE_EXACT,
     CRITICAL_GENERATION_EXACT,
     CRITICAL_PROMPT_EXACT,
