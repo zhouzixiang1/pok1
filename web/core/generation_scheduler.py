@@ -786,11 +786,17 @@ def _decide_strategy(combined, current_v, ratings):
     # from that oscillating set to break out of the cycle.
     oscillating = _detect_source_oscillation(n=8, max_unique=3)
     if oscillating:
+        active_versions = _active_source_versions()
+        selectable_oscillating = (
+            oscillating & active_versions
+            if active_versions and (oscillating & active_versions)
+            else set(oscillating)
+        )
         # Find highest and lowest rated bots within the oscillating set, using the
         # conservative rating (r - 2*rd) so RD-inflated point estimates don't bias
         # which bots are treated as "strongest"/"weakest" crossover parents.
         osc_ratings = {}
-        for sv in oscillating:
+        for sv in selectable_oscillating:
             bot_key = bot_name(sv)
             if bot_key in ratings:
                 osc_ratings[sv] = ratings[bot_key].conservative_rating()
@@ -1043,6 +1049,18 @@ def _get_unified_leader_v(ratings):
     """
     if not ratings:
         return None
+    active_versions = _active_source_versions()
+    rating_versions = {
+        version for version in (_parse_branch_from(name) for name in ratings)
+        if version is not None
+    }
+    filter_by_active = bool(active_versions and (rating_versions & active_versions))
+    eligible_bots = [
+        name for name in ratings
+        if (_parse_branch_from(name) in active_versions if filter_by_active else True)
+    ]
+    if not eligible_bots:
+        return None
     try:
         from tool_helpers import load_selection_scores
         selection_scores = load_selection_scores()
@@ -1064,7 +1082,7 @@ def _get_unified_leader_v(ratings):
         except Exception:
             return float("-inf")
 
-    best_bot = max(ratings, key=lambda b: (_score(b), _parse_branch_from(b) or -1))
+    best_bot = max(eligible_bots, key=lambda b: (_score(b), _parse_branch_from(b) or -1))
     try:
         return int(best_bot.split("_v")[1])
     except (ValueError, IndexError):
@@ -1089,6 +1107,12 @@ def _pick_oscillation_breakout_source(oscillating: set[int], current_v: int) -> 
 
     if not metrics:
         return None
+    active_versions = _active_source_versions()
+    metric_versions = {
+        version for version in (_parse_branch_from(name) for name in metrics)
+        if version is not None
+    }
+    filter_by_active = bool(active_versions and (metric_versions & active_versions))
 
     def _score(data: dict) -> float:
         raw = data.get("selection_score", data.get("leaderboard_score", 0.0))
@@ -1110,6 +1134,8 @@ def _pick_oscillation_breakout_source(oscillating: set[int], current_v: int) -> 
     for name, data in metrics.items():
         version = _parse_branch_from(name)
         if version is None or version in oscillating:
+            continue
+        if filter_by_active and version not in active_versions:
             continue
         confidence = data.get("strength_confidence", "low")
         if confidence == "low":

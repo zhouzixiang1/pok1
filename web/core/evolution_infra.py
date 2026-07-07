@@ -915,17 +915,25 @@ def active_bot_protocol_errors(version: int) -> list[str]:
 
     Historical active-epoch tags are retained for auditability, but the current
     national-native runtime must not schedule old newline/readline TCP entries
-    as rating opponents or evolution sources.
+    or old Botzone position-semantics bots as rating opponents or evolution
+    sources.
     """
 
     if not active_native_contract_filter_enabled():
         return []
     bot_dir = BOTS_DIR / bot_name(version)
+    errors = []
     try:
         from national_native import check_native_contract
-        return list(check_native_contract(bot_dir))
+        errors.extend(check_native_contract(bot_dir))
     except Exception as exc:
-        return [f"native_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}"]
+        errors.append(f"native_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
+    try:
+        from national_position_contract import detect_position_semantics_errors
+        errors.extend(detect_position_semantics_errors(bot_dir))
+    except Exception as exc:
+        errors.append(f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
+    return errors
 
 
 def is_active_bot_protocol_eligible(version: int) -> bool:

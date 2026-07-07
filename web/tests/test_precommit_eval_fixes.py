@@ -140,6 +140,34 @@ class TestP1TimeBasedRefresh:
         result = get_active_bots()
         assert "national_v99" not in result
 
+    def test_get_active_bots_skips_old_position_semantics(self, tmp_path, monkeypatch):
+        """Tagged bots with Botzone-era dealer/SB math are not active parents."""
+        from elo_daemon import get_active_bots
+        import evolution_infra
+
+        bots_dir = tmp_path / "bots"
+        bots_dir.mkdir()
+        bot_dir = bots_dir / "national_v99"
+        bot_dir.mkdir()
+        (bot_dir / ".completed").touch()
+        _write_native_bot_contract(bot_dir)
+        (bot_dir / "state.py").write_text(
+            "def infer_remaining_hands_from_requests(requests):\n"
+            "    return 70\n\n"
+            "def reconstruct_state(req):\n"
+            "    dealer_id = req['dealer_id']\n"
+            "    sb = next_player(dealer_id, 1)\n"
+            "    bb = next_player(dealer_id, 2)\n"
+            "    return {'sb': sb, 'bb': bb}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+
+        result = get_active_bots()
+        assert "national_v99" not in result
+
     def test_get_active_bots_skips_untagged_completed(self, tmp_path, monkeypatch):
         """get_active_bots does NOT trust .completed without a national-bot-vN tag."""
         from elo_daemon import get_active_bots

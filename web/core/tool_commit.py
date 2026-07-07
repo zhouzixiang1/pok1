@@ -58,6 +58,25 @@ class CommitBotInput(TypedDict):
     review_approved: Annotated[bool, "Must be true — confirms run_review() returned approved:true"]
 
 
+def _position_semantics_failed_gate(errors: list[str]) -> dict:
+    return {
+        "passed": False,
+        "all_passed": False,
+        "critical_scenarios_passed": False,
+        "position_semantics_ok": False,
+        "position_semantics_errors": errors[:10],
+        "failed_gates": [
+            f"position_semantics({'; '.join(err[:120] for err in errors[:3])})"
+        ],
+    }
+
+
+def _position_semantics_feedback(errors: list[str]) -> str:
+    return "Quality gates failed: " + "; ".join(
+        f"position_semantics({err})" for err in errors[:6]
+    )
+
+
 def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
     """Validate the gate ledger and code fingerprint for finalizing a bot.
 
@@ -232,6 +251,17 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
                     "gate": "native_contract",
                     "reason": "candidate is not a valid native national TCP bot",
                     "errors": native_contract_errors[:5],
+                })
+            try:
+                from national_position_contract import detect_position_semantics_errors
+                position_errors = detect_position_semantics_errors(bot_dir)
+            except Exception as exc:
+                position_errors = [f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}"]
+            if position_errors:
+                failed_gates.append({
+                    "gate": "position_semantics",
+                    "reason": "candidate violates national heads-up position semantics",
+                    "errors": position_errors[:10],
                 })
 
     return {
@@ -907,6 +937,39 @@ async def run_crossover(args):
         return _json_tool_result({"error": f"Parent A v{parent_a} has no git tag '{bot_tag(parent_a)}'. Cannot use uncommitted code."})
     if not git_has_tag(parent_b):
         return _json_tool_result({"error": f"Parent B v{parent_b} has no git tag '{bot_tag(parent_b)}'. Cannot use uncommitted code."})
+    try:
+        from national_position_contract import detect_position_semantics_errors
+        parent_a_position_errors = detect_position_semantics_errors(parent_a_dir)
+        parent_b_position_errors = detect_position_semantics_errors(parent_b_dir)
+    except Exception as exc:
+        parent_a_position_errors = [f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}"]
+        parent_b_position_errors = []
+    parent_position_errors = {}
+    if parent_a_position_errors:
+        parent_position_errors[bot_name(parent_a)] = parent_a_position_errors[:10]
+    if parent_b_position_errors:
+        parent_position_errors[bot_name(parent_b)] = parent_b_position_errors[:10]
+    if parent_position_errors:
+        log_system_event(
+            "pipeline.crossover_parent_position_contract_failed",
+            "error",
+            f"Crossover refused for v{target_v}: parent position contract violation",
+            {
+                "target_v": target_v,
+                "parent_a": parent_a,
+                "parent_b": parent_b,
+                "position_errors": parent_position_errors,
+            },
+        )
+        return _json_tool_result({
+            "error": "CROSSOVER_PARENT_POSITION_CONTRACT_FAILED",
+            "success": False,
+            "directive": (
+                "Selected crossover parent violates the national heads-up position contract. "
+                "Let prepare_generation select a protocol-eligible active parent."
+            ),
+            "position_errors": parent_position_errors,
+        })
 
     ui = _get_ui()
 
@@ -1011,6 +1074,51 @@ async def run_crossover(args):
             "next_v": target_v,
             "note": "Crossover already generated bot code. Skip run_master and execute_workers; proceed to run_quality_gates.",
         }
+        try:
+            from national_position_contract import detect_position_semantics_errors
+            target_position_errors = detect_position_semantics_errors(get_bot_dir(target_v))
+        except Exception as exc:
+            target_position_errors = [f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}"]
+        if target_position_errors:
+            quality_result = _position_semantics_failed_gate(target_position_errors)
+            feedback = _position_semantics_feedback(target_position_errors)
+            write_pipeline_checkpoint(
+                target_v,
+                parent_a,
+                "quality_failed",
+                master_plan=crossover_plan,
+                gate_results={"quality": quality_result},
+                reviewer_feedback=feedback,
+                parent2_v=parent_b,
+                prepare_scope_files=prepare_scope_files,
+                audit_context={"crossover": {"parent_a": parent_a, "parent_b": parent_b}},
+            )
+            try:
+                log_system_event(
+                    "pipeline.crossover_position_contract_failed",
+                    "error",
+                    f"Crossover v{parent_a}×v{parent_b} → v{target_v} produced position semantics violations",
+                    {
+                        "target_v": target_v,
+                        "parent_a": parent_a,
+                        "parent_b": parent_b,
+                        "errors": target_position_errors[:10],
+                    },
+                )
+            except Exception:
+                pass
+            return _json_tool_result({
+                "success": True,
+                "contract_failed": True,
+                "stage": "quality_failed",
+                "failed_gates": quality_result["failed_gates"],
+                "position_semantics_errors": target_position_errors[:10],
+                "directive": (
+                    "Crossover generated code, but the national position contract failed. "
+                    "The checkpoint is quality_failed; next action is execute_workers for the recorded repair contract."
+                ),
+                "logs": ui.get_output(),
+            })
         write_pipeline_checkpoint(target_v, parent_a, "workers_done",
                                   master_plan=crossover_plan,
                                   parent2_v=parent_b,

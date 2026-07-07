@@ -45,6 +45,7 @@ from pipeline_schema import GateResult, ScoreCard
 from pipeline_state import next_tool_for_checkpoint
 from workflow_profiles import get_workflow_profile
 from worker_boundary import audit_changed_files_against_plan, hash_changed_files
+from national_position_contract import detect_position_semantics_errors
 
 try:
     from candidate_store import append_candidate_event
@@ -190,102 +191,6 @@ def _master_plan_with_crossover_scope(master_plan, ckpt, changed_files):
     plan = dict(master_plan or {})
     plan["repair_scope_files"] = scope
     return plan
-
-_POSITION_SEMANTICS_PATTERNS = {
-    "dealer==bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
-    "dealer == bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
-    "dealer is bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
-    "dealer=bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
-    "sb acts first every street": "SB acts first preflop only; BB acts first postflop",
-    "sb first postflop": "BB acts first postflop",
-    "bb postflop in-position": "SB is in position postflop; BB acts first",
-    "flop_sb_act_first": "decision templates must use BB-first postflop semantics",
-}
-
-_POSITION_SB_FROM_DEALER_NEXT_PLAYER_RE = re.compile(
-    r"\b(?P<var>sb|[a-z_][a-z0-9_]*_sb)\s*=\s*next_player\(\s*"
-    r"(?P<dealer>[a-z_][a-z0-9_]*)\s*,\s*1\s*\)"
-)
-_POSITION_BB_FROM_DEALER_NEXT_PLAYER_RE = re.compile(
-    r"\b(?P<var>bb|[a-z_][a-z0-9_]*_bb)\s*=\s*next_player\(\s*"
-    r"(?P<dealer>[a-z_][a-z0-9_]*)\s*,\s*2\s*\)"
-)
-_PY_DEF_RE = re.compile(r"^(?P<indent>\s*)def\s+(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)\s*\(")
-_POSTFLOP_OOP_NAME_TOKENS = ("postflop", "flop", "turn", "river")
-
-
-def _is_postflop_oop_helper(name: str) -> bool:
-    lowered = name.lower()
-    return "oop" in lowered and any(token in lowered for token in _POSTFLOP_OOP_NAME_TOKENS)
-
-
-def detect_position_semantics_errors(bot_dir: Path) -> list[str]:
-    """Detect old heads-up position assumptions in candidate bot code.
-
-    Authoritative convention: dealer_id is SB, BB is ``1 - dealer_id`` in
-    heads-up, BB acts first on flop/turn/river, and SB is in position postflop.
-    """
-    errors = []
-    for path in sorted(Path(bot_dir).rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except Exception:
-            continue
-        current_postflop_oop_func = ""
-        current_func_indent = -1
-        for lineno, line in enumerate(lines, 1):
-            def_match = _PY_DEF_RE.match(line)
-            if def_match:
-                current_postflop_oop_func = (
-                    def_match.group("name").lower()
-                    if _is_postflop_oop_helper(def_match.group("name")) else ""
-                )
-                current_func_indent = len(def_match.group("indent")) if current_postflop_oop_func else -1
-            elif current_postflop_oop_func and line.strip():
-                line_indent = len(line) - len(line.lstrip())
-                stripped = line.lstrip()
-                if line_indent <= current_func_indent and not stripped.startswith(")"):
-                    current_postflop_oop_func = ""
-                    current_func_indent = -1
-            lowered = line.lower()
-            for pattern, explanation in _POSITION_SEMANTICS_PATTERNS.items():
-                if pattern in lowered:
-                    rel = path.relative_to(bot_dir)
-                    errors.append(f"{rel}:{lineno}: {explanation} ({pattern})")
-            if current_postflop_oop_func and "my_is_sb" in lowered and "do not" not in lowered:
-                rel = path.relative_to(bot_dir)
-                errors.append(
-                    f"{rel}:{lineno}: postflop OOP helper {current_postflop_oop_func} "
-                    "must key on my_is_bb/BB, not my_is_sb/SB"
-                )
-            sb_match = _POSITION_SB_FROM_DEALER_NEXT_PLAYER_RE.search(lowered)
-            if sb_match:
-                dealer_var = sb_match.group("dealer")
-                if "dealer" in dealer_var:
-                    rel = path.relative_to(bot_dir)
-                    if sb_match.group("var") == "sb" and dealer_var == "dealer_id":
-                        errors.append(f"{rel}:{lineno}: SB must be dealer_id, not next_player(dealer_id, 1)")
-                    else:
-                        errors.append(
-                            f"{rel}:{lineno}: {sb_match.group('var')} must be {dealer_var}, "
-                            f"not next_player({dealer_var}, 1)"
-                        )
-            bb_match = _POSITION_BB_FROM_DEALER_NEXT_PLAYER_RE.search(lowered)
-            if bb_match:
-                dealer_var = bb_match.group("dealer")
-                if "dealer" in dealer_var:
-                    rel = path.relative_to(bot_dir)
-                    if bb_match.group("var") == "bb" and dealer_var == "dealer_id":
-                        errors.append(f"{rel}:{lineno}: BB must be 1 - dealer_id, not next_player(dealer_id, 2)")
-                    else:
-                        errors.append(
-                            f"{rel}:{lineno}: {bb_match.group('var')} must be 1 - {dealer_var}, "
-                            f"not next_player({dealer_var}, 2)"
-                        )
-    return errors[:20]
-
 
 def _record_quality_failure(gen, worker_id, role, error, **extra):
     """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl.
