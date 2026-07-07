@@ -353,13 +353,13 @@ async def commit_bot(args):
         from official_certification import build_spec, enqueue_certification
         default_opponent = PROJECT_ROOT / "bots" / "national_v76"
         spec = build_spec(
-            "full",
+            "compliance",
             bot_dir,
             opponent=default_opponent if default_opponent.exists() else None,
         )
-        official_certification_status = enqueue_certification(spec, reason="commit_bot_full")
+        official_certification_status = enqueue_certification(spec, reason="commit_bot_compliance")
     except Exception as e:
-        _log.warning("Official full certification enqueue failed for v%d: %s", v, e)
+        _log.warning("Official compliance certification enqueue failed for v%d: %s", v, e)
 
     # Write reap_signal early so daemon discovers new bot immediately, even if archive/timeout interrupts later
     reap_signal = RESULTS_DIR / ".reap_signal"

@@ -58,16 +58,43 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     from tool_helpers import _read_json
     bot_stats = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json", {})
 
-    # Exclude current bot and bots with zero games (untested — deserve evaluation first)
-    candidates = []
+    # Exclude the current/latest source and the newest few active bots; they are
+    # either being evolved from or still need fresh evaluation.
+    protected_recent = set()
+    if len(active_bots) > MAX_ACTIVE_BOTS + 3:
+        protected_recent = set(sorted(active_bots, key=lambda name: parse_bot_version(name) or -1)[-3:])
+    protected_names = {current_bot, *protected_recent}
+    try:
+        priority_data = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "priority_eval.json", {})
+        if priority_data.get("bot"):
+            protected_names.add(priority_data["bot"])
+    except Exception:
+        pass
+
+    evaluated_candidates = []
+    zero_game_candidates = []
     for b in active_bots:
-        if b == current_bot:
+        if b in protected_names:
             continue
-        if bot_stats.get(b, {}).get("games", 0) == 0:
+        games = int(bot_stats.get(b, {}).get("games", 0) or 0)
+        row = (b, ratings.get(b, Glicko2Player()), games)
+        if games == 0:
+            zero_game_candidates.append(row)
             continue
-        candidates.append((b, ratings.get(b, Glicko2Player())))
+        evaluated_candidates.append(row)
+
+    # Soft overflow: avoid culling untested bots. Hard overflow: old zero-game
+    # bots are safer cull targets than the only evaluated baseline.
+    if len(active_bots) <= MAX_ACTIVE_BOTS + 3:
+        candidates = evaluated_candidates
+    else:
+        candidates = evaluated_candidates + zero_game_candidates
     if not candidates:
-        return {"reaped": False, "reason": "All remaining bots are current or untested"}
+        return {
+            "reaped": False,
+            "reason": "All remaining bots are current, recent, priority, or protected untested",
+            "protected": sorted(protected_names),
+        }
 
     # Protect bots with insufficient evaluation. Previously this also gated on
     # `rd > 100`, but that clause existed only to compensate for the buggy
@@ -78,8 +105,7 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     # correct. Protection is therefore sample-based only: a bot with <600 games
     # has too little data for its rating to be trusted as a reap verdict.
     protected = set()
-    for name, rating in candidates:
-        n_total = bot_stats.get(name, {}).get("games", 0)
+    for name, rating, n_total in candidates:
         if n_total < 600:
             protected.add(name)
     # Apply protection EXCEPT when pool overflow forces reap (avoid unbounded growth)
@@ -93,7 +119,7 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     # Sort by conservative rating (r - 2*rd) as PRIMARY key. Glicko conservative
     # rating is implicitly weighted by opponent strength, far less noisy than
     # per-opponent h2h_avg_wr at low game counts.
-    candidates.sort(key=lambda x: (x[1].r - 2 * x[1].rd,))
+    candidates.sort(key=lambda x: (x[1].r - 2 * x[1].rd, x[2], parse_bot_version(x[0]) or 0))
     weakest = candidates[0]
     culled_name = weakest[0]
     conservative = weakest[1].r - 2 * weakest[1].rd

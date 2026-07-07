@@ -25,6 +25,7 @@ const strengthConfidenceText = (value?: string) => (
 );
 
 const compactBotName = (name: string) => name.replace(/^national_/, "").replace(/^claude_/, "");
+type CertificationMode = "smoke" | "compliance" | "full";
 
 const lifecycleTone = (status?: string) => {
   if (status === "active") return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
@@ -36,6 +37,7 @@ const lifecycleTone = (status?: string) => {
 
 const certificationTone = (status?: string) => {
   if (status === "official-certified") return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
+  if (status === "official-compliance-pass") return "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300";
   if (status === "official-smoke-pass") return "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300";
   if (status === "official-pending") return "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300";
   if (status === "official-failed") return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300";
@@ -182,12 +184,12 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
     }
   };
 
-  const handleCertification = async (mode: "smoke" | "full") => {
+  const handleCertification = async (mode: CertificationMode) => {
     setToolLoading(`cert-${mode}`);
     try {
       const r = await api.enqueueCertification(bot.version, mode);
       setDetail((prev) => prev ? { ...prev, official_certification: r } : prev);
-      onAction(`${bot.name} ${mode === "full" ? "full" : "smoke"} 官方验收已排队: ${r.status}`);
+      onAction(`${bot.name} ${mode} 官方验收已排队: ${r.status}`);
     } catch (e) {
       onAction(`官方验收排队失败: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -363,6 +365,13 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                     className="px-3 py-1.5 text-xs rounded bg-cyan-600 text-white hover:bg-cyan-700 disabled:opacity-50 flex items-center gap-1"
                   >
                     <CheckIcon /> {toolLoading === "cert-smoke" ? "排队中..." : "排队 Smoke"}
+                  </button>
+                  <button
+                    onClick={() => handleCertification("compliance")}
+                    disabled={toolLoading === "cert-compliance"}
+                    className="px-3 py-1.5 text-xs rounded bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 flex items-center gap-1"
+                  >
+                    <CheckIcon /> {toolLoading === "cert-compliance" ? "排队中..." : "排队 Compliance"}
                   </button>
                   <button
                     onClick={() => handleCertification("full")}

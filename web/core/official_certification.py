@@ -33,10 +33,11 @@ DEFAULT_CERT_DIR = RESULTS_DIR / "official_certification"
 HARNESS_PATH = ROOT / "web" / "core" / "official_platform_harness.py"
 SERVICE_PATH = Path(__file__).resolve()
 
-CertificationMode = Literal["smoke", "full"]
+CertificationMode = Literal["smoke", "compliance", "full"]
 
 STATUS_LOCAL_PASS = "local-pass"
 STATUS_SMOKE_PASS = "official-smoke-pass"
+STATUS_COMPLIANCE_PASS = "official-compliance-pass"
 STATUS_PENDING = "official-pending"
 STATUS_CERTIFIED = "official-certified"
 STATUS_FAILED = "official-failed"
@@ -60,6 +61,13 @@ MODE_CONFIG = {
         "target_hands": 10,
         "round_timeout_sec": 180.0,
         "no_progress_timeout_sec": 60.0,
+    },
+    "compliance": {
+        "self_play_rounds": 1,
+        "opponent_rounds": 1,
+        "target_hands": 70,
+        "round_timeout_sec": 900.0,
+        "no_progress_timeout_sec": 75.0,
     },
     "full": {
         "self_play_rounds": 5,
@@ -351,7 +359,7 @@ def write_status(candidate: str | Path, status: str, *, mode: CertificationMode 
 
 def record_local_pass(candidate: str | Path, *, source: str = "quality_gates") -> dict[str, Any]:
     current = read_status(candidate)
-    if current.get("status") in {STATUS_SMOKE_PASS, STATUS_PENDING, STATUS_CERTIFIED, STATUS_FAILED}:
+    if current.get("status") in {STATUS_SMOKE_PASS, STATUS_COMPLIANCE_PASS, STATUS_PENDING, STATUS_CERTIFIED, STATUS_FAILED}:
         return current
     return write_status(candidate, STATUS_LOCAL_PASS, source=source, issues=[])
 
@@ -449,10 +457,13 @@ def enqueue_certification(
     if current.get("cache_key") == key and current.get("status") in {
         STATUS_PENDING,
         STATUS_SMOKE_PASS,
+        STATUS_COMPLIANCE_PASS,
         STATUS_CERTIFIED,
     }:
         return current
-    if current.get("status") == STATUS_CERTIFIED and spec.mode == "smoke":
+    if current.get("status") == STATUS_CERTIFIED and spec.mode in {"smoke", "compliance"}:
+        return current
+    if current.get("status") == STATUS_COMPLIANCE_PASS and spec.mode == "smoke":
         return current
     entry = {
         "cache_key": key,
@@ -480,7 +491,12 @@ def enqueue_certification(
 def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache_hit: bool, cache_key_value: str) -> dict[str, Any]:
     valid = report_valid_for_spec(result, spec)
     if valid:
-        status = STATUS_CERTIFIED if spec.mode == "full" else STATUS_SMOKE_PASS
+        if spec.mode == "full":
+            status = STATUS_CERTIFIED
+        elif spec.mode == "compliance":
+            status = STATUS_COMPLIANCE_PASS
+        else:
+            status = STATUS_SMOKE_PASS
     else:
         status = STATUS_FAILED
     report = result.get("report", {}) if isinstance(result, dict) else {}

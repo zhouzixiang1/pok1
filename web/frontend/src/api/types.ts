@@ -132,6 +132,7 @@ export interface MatchReplayData extends MatchSummary {
 export type OfficialCertificationState =
   | "local-pass"
   | "official-smoke-pass"
+  | "official-compliance-pass"
   | "official-pending"
   | "official-certified"
   | "official-failed";
@@ -140,7 +141,7 @@ export interface OfficialCertification {
   bot: string;
   status: OfficialCertificationState | string;
   status_label?: string;
-  mode?: "smoke" | "full" | null;
+  mode?: "smoke" | "compliance" | "full" | null;
   updated_at?: string | null;
   cache_hit?: boolean;
   queued?: boolean;

@@ -29,7 +29,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    for name in ("smoke", "full"):
+    for name in ("smoke", "compliance", "full"):
         p = sub.add_parser(name, help=f"Run or queue official {name} certification.")
         p.add_argument("candidate", help="Candidate bot directory or script.")
         p.add_argument("--opponent", default="bots/national_v76", help="Opponent bot directory or script.")

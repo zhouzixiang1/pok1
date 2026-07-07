@@ -92,13 +92,18 @@ class TestCertificationRoutes:
         assert status.status_code == 200
         assert status.json()["status"] == "local-pass"
 
-        queued = client.post("/api/certification/9999/enqueue?mode=full")
+        queued = client.post("/api/certification/9999/enqueue")
         assert queued.status_code == 200
         assert queued.json()["status"] == "official-pending"
+        assert queued.json()["mode"] == "compliance"
 
         queue = client.get("/api/certification/queue")
         assert queue.status_code == 200
         assert queue.json()["pending"] == 1
+
+        full = client.post("/api/certification/9999/enqueue?mode=full")
+        assert full.status_code == 200
+        assert full.json()["mode"] == "full"
 
 
 @pytest.mark.requires_active_bot

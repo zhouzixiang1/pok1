@@ -3,6 +3,7 @@ from pathlib import Path
 
 from official_platform_harness import OfficialPlatformConfig
 from official_certification import (
+    STATUS_COMPLIANCE_PASS,
     STATUS_CERTIFIED,
     STATUS_FAILED,
     STATUS_PENDING,
@@ -96,6 +97,18 @@ def test_smoke_receipt_cannot_satisfy_full_certification(tmp_path):
     assert report_valid_for_spec(payload, full) is False
 
 
+def test_compliance_mode_requires_two_full_70_hand_rounds(tmp_path):
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    compliance = build_spec("compliance", candidate, opponent=opponent)
+
+    assert compliance.self_play_rounds == 1
+    assert compliance.opponent_rounds == 1
+    assert compliance.target_hands == 70
+    assert report_valid_for_spec(_report(target_hands=70, rounds=2), compliance) is True
+    assert report_valid_for_spec(_report(target_hands=10, rounds=2), compliance) is False
+
+
 def test_bad_receipts_are_not_valid_for_cache(tmp_path):
     candidate = _bot(tmp_path / "national_v1")
     opponent = _bot(tmp_path / "national_v2")
@@ -143,6 +156,24 @@ def test_full_certification_status_requires_full_report(tmp_path, monkeypatch):
     )
 
     assert result["status"] == STATUS_CERTIFIED
+
+
+def test_compliance_certification_has_distinct_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("compliance", candidate, opponent=opponent)
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=70, rounds=2)),
+        queue_on_busy=False,
+    )
+
+    assert result["status"] == STATUS_COMPLIANCE_PASS
+    assert result["mode"] == "compliance"
 
 
 def test_record_local_pass_does_not_clear_failed_status(tmp_path, monkeypatch):

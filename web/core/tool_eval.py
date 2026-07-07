@@ -148,8 +148,15 @@ def _env_enabled(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _official_gate_enabled(name: str) -> bool:
-    return _env_enabled("POK_OFFICIAL_REQUIRED") or _env_enabled(name)
+def _official_gate_enabled(name: str, *, include_required: bool = True) -> bool:
+    return (include_required and _env_enabled("POK_OFFICIAL_REQUIRED")) or _env_enabled(name)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _official_bot_token(value) -> str:
@@ -276,11 +283,17 @@ async def _run_national_precommit_backend(
 
     official_platform_result = {}
     if native_tcp_mode and _official_gate_enabled("POK_OFFICIAL_PRECOMMIT_GATE") and not blockers:
+        # The official Windows platform is a protocol/compliance oracle here.
+        # Strength and long-run tracking stay on the local native TCP harness.
+        official_self_rounds = max(0, _env_int("POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS", 1))
+        official_opponent_rounds = max(0, _env_int("POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS", 1))
+        official_hands = max(1, min(70, _env_int("POK_OFFICIAL_PRECOMMIT_TARGET_HANDS", 70)))
         official_opponent = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
         if not official_opponent and opponents_with_paths:
             official_opponent = _official_bot_token(opponents_with_paths[0].get("path") or opponents_with_paths[0].get("name"))
         try:
             from official_certification import (
+                STATUS_COMPLIANCE_PASS,
                 STATUS_CERTIFIED,
                 STATUS_FAILED,
                 STATUS_PENDING,
@@ -289,19 +302,33 @@ async def _run_national_precommit_backend(
                 read_status,
             )
             candidate_token = _official_bot_token(candidate_main)
-            _spec = build_spec("full", candidate_token, opponent=official_opponent or None)
+            _spec = build_spec(
+                "compliance",
+                candidate_token,
+                opponent=official_opponent or None,
+                self_play_rounds=official_self_rounds,
+                opponent_rounds=official_opponent_rounds,
+                target_hands=official_hands,
+            )
             current = read_status(candidate_token)
-            if current.get("status") in {STATUS_CERTIFIED, STATUS_FAILED, STATUS_PENDING}:
+            current_status = current.get("status")
+            current_mode = current.get("mode")
+            if (
+                current_status == STATUS_CERTIFIED
+                or current_status == STATUS_COMPLIANCE_PASS
+                or current_status == STATUS_FAILED
+                or (current_status == STATUS_PENDING and current_mode in {"compliance", "full"})
+            ):
                 official_platform_result = current
             else:
-                official_platform_result = enqueue_certification(_spec, reason="precommit_full")
+                official_platform_result = enqueue_certification(_spec, reason="precommit_compliance")
             official_platform_result["blocking"] = False
             national_result["official_platform"] = official_platform_result
         except Exception as exc:
             official_platform_result = {
                 "passed": False,
                 "blocking": False,
-                "issues": [f"official_platform_acceptance_exception: {type(exc).__name__}: {str(exc)[:500]}"],
+                "issues": [f"official_platform_compliance_exception: {type(exc).__name__}: {str(exc)[:500]}"],
             }
             national_result["official_platform"] = official_platform_result
 
@@ -388,8 +415,9 @@ async def _run_national_precommit_backend(
         official_status = str(official_platform_result.get("status") or "")
         official_issues = official_platform_result.get("issues", []) or []
         scorecard.add(GateResult.from_bool(
-            "official_full_certification",
-            official_status == "official-certified" or bool(official_platform_result.get("passed")),
+            "official_platform_compliance",
+            official_status in {"official-compliance-pass", "official-certified"}
+            or bool(official_platform_result.get("passed")),
             metrics={
                 "status": official_status,
                 "mode": official_platform_result.get("mode"),

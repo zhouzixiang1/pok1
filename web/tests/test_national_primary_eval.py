@@ -339,6 +339,123 @@ def test_tool_eval_national_backend_returns_precommit_shape(tmp_path, monkeypatc
     assert recorded["stage"] in {"verified", "precommit_failed"}
 
 
+def test_tool_eval_native_precommit_uses_official_compliance_defaults(tmp_path, monkeypatch):
+    import sys
+    from types import ModuleType
+
+    bot_a = tmp_path / "CallA"
+    bot_b = tmp_path / "CallB"
+    _write_call_bot(bot_a)
+    _write_call_bot(bot_b)
+    profile = get_workflow_profile("national_native")
+    profile.national_precommit_hands = 2
+
+    calls = []
+
+    async def fake_native_precommit(*args, **kwargs):
+        return {
+            "evaluation_protocol": "national_native_tcp",
+            "candidate": "CallA",
+            "opponents": [{"name": "CallB", "path": str(bot_b), "reason": "parent"}],
+            "matchups": [],
+            "total_wins": 1,
+            "total_losses": 0,
+            "total_draws": 0,
+            "paired_bootstrap": {
+                "protocol": "national_native_tcp",
+                "hands_per_match": 2,
+                "matches_per_opponent": 1,
+                "net_chips_samples": 1,
+                "net_chips_mean": 100.0,
+            },
+            "blockers": [],
+            "passed": True,
+        }
+
+    fake_national_native = ModuleType("national_native")
+    fake_national_native.run_native_precommit = fake_native_precommit
+    fake_official_certification = ModuleType("official_certification")
+    fake_official_certification.STATUS_COMPLIANCE_PASS = "official-compliance-pass"
+    fake_official_certification.STATUS_CERTIFIED = "official-certified"
+    fake_official_certification.STATUS_FAILED = "official-failed"
+    fake_official_certification.STATUS_PENDING = "official-pending"
+
+    def fake_build_spec(mode, candidate, *, opponent, self_play_rounds, opponent_rounds, target_hands):
+        calls.append((mode, candidate, opponent, self_play_rounds, opponent_rounds, target_hands))
+        return {
+            "mode": mode,
+            "candidate": candidate,
+            "opponent": opponent,
+            "self_play_rounds": self_play_rounds,
+            "opponent_rounds": opponent_rounds,
+            "target_hands": target_hands,
+        }
+
+    def fake_read_status(_candidate):
+        return {"status": "local-pass", "mode": None, "issues": []}
+
+    def fake_enqueue_certification(spec, *, reason):
+        return {
+            "status": "official-pending",
+            "mode": spec["mode"],
+            "queued": True,
+            "reason": reason,
+            "summary": {
+                "self_play_rounds": spec["self_play_rounds"],
+                "opponent_rounds": spec["opponent_rounds"],
+                "target_hands": spec["target_hands"],
+            },
+            "issues": [],
+        }
+
+    fake_official_certification.build_spec = fake_build_spec
+    fake_official_certification.read_status = fake_read_status
+    fake_official_certification.enqueue_certification = fake_enqueue_certification
+
+    monkeypatch.setenv("POK_OFFICIAL_REQUIRED", "1")
+    monkeypatch.setenv("POK_OFFICIAL_OPPONENT", str(bot_b))
+    monkeypatch.setenv("POK_OFFICIAL_SELF_PLAY_ROUNDS", "5")
+    monkeypatch.setenv("POK_OFFICIAL_OPPONENT_ROUNDS", "3")
+    monkeypatch.delenv("POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS", raising=False)
+    monkeypatch.delenv("POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS", raising=False)
+    monkeypatch.delenv("POK_OFFICIAL_PRECOMMIT_TARGET_HANDS", raising=False)
+    monkeypatch.setitem(sys.modules, "national_native", fake_national_native)
+    monkeypatch.setitem(sys.modules, "official_certification", fake_official_certification)
+    monkeypatch.setattr(tool_eval, "_record_gate", lambda *args, **kwargs: True)
+    monkeypatch.setattr(tool_eval, "append_candidate_event", None)
+
+    wrapped = asyncio.run(tool_eval._run_national_precommit_backend(
+        v=10,
+        source_v=9,
+        requested_n_games=8,
+        candidate_name="CallA",
+        parent_name="CallB",
+        candidate_main=bot_a,
+        code_fingerprint="abc",
+        workflow_profile=profile,
+        candidate_id="CallA_from_9",
+        opponents=[{"name": "CallB", "path": str(bot_b), "reason": "parent"}],
+        all_opponents=[{"name": "CallB", "reason": "parent"}],
+        precommit_attempt=1,
+        initial_blockers=[],
+        started_at=0.0,
+    ))
+    result = json.loads(wrapped["content"][0]["text"])
+
+    assert calls == [("compliance", str(bot_a), str(bot_b), 1, 1, 70)]
+    assert result["passed"] is True
+    assert result["official_platform"]["status"] == "official-pending"
+    assert result["official_platform"]["mode"] == "compliance"
+    assert result["official_platform"]["summary"] == {
+        "self_play_rounds": 1,
+        "opponent_rounds": 1,
+        "target_hands": 70,
+    }
+    gate_names = [gate["name"] for gate in result["scorecard"]["gates"]]
+    assert "official_platform_compliance" in gate_names
+    assert "official_platform_acceptance" not in gate_names
+
+
 def test_tool_eval_national_backend_blocks_without_samples(tmp_path, monkeypatch):
     bot_a = tmp_path / "CallA"
     _write_call_bot(bot_a)

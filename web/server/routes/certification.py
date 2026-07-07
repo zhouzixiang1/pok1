@@ -35,7 +35,7 @@ async def get_certification(version: int):
 
 
 @router.post("/{version}/enqueue")
-async def enqueue(version: int, mode: str = Query("full", pattern="^(smoke|full)$")):
+async def enqueue(version: int, mode: str = Query("compliance", pattern="^(smoke|compliance|full)$")):
     candidate = _bot_dir(version)
     opponent = DEFAULT_OPPONENT if DEFAULT_OPPONENT.exists() else None
     spec = build_spec(mode, candidate, opponent=opponent)

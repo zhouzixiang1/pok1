@@ -110,6 +110,36 @@ def _bind_prepare_log_context(current_v: int, max_committed_v: int) -> int:
     return planned_next_v
 
 
+def _ensure_priority_eval_signal(bot: str, min_games: int) -> None:
+    """Ask the daemon to prioritize the bot that prepare is about to wait for."""
+    try:
+        from evolution_infra import RESULTS_DIR, locked_file
+
+        priority_file = RESULTS_DIR / "priority_eval.json"
+        payload = {
+            "bot": bot,
+            "min_games": max(1, int(min_games)),
+            "since": time.time(),
+            "source": "prepare_eval_wait",
+        }
+        with locked_file(priority_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        log_system_event(
+            "pipeline.eval_wait_priority_set",
+            "info",
+            f"Priority evaluation queued for {bot}",
+            payload,
+        )
+    except Exception as exc:
+        log.warning("Failed to write priority eval signal for %s: %s", bot, exc)
+        log_system_event(
+            "pipeline.eval_wait_priority_failed",
+            "warn",
+            f"Failed to queue priority evaluation for {bot}: {str(exc)[:180]}",
+            {"bot": bot, "min_games": min_games},
+        )
+
+
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
     from evolution_infra import (
@@ -117,6 +147,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         find_max_committed_v, git_dir_is_committed, git_has_tag,
         find_abandoned_version_floor, compute_next_generation_v,
         wait_for_daemon_eval, ensure_publish_ready_for_new_generation,
+        MIN_GAMES_FOR_EVAL,
     )
 
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
@@ -265,6 +296,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         log.warning("Workflow profile eval wait settings unavailable; using defaults")
     if min_games is not None:
         eval_kwargs["min_games"] = min_games
+    _ensure_priority_eval_signal(active_bot_name, eval_kwargs.get("min_games", MIN_GAMES_FOR_EVAL))
     eval_ok = await wait_for_daemon_eval(active_bot_name, **eval_kwargs)
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None

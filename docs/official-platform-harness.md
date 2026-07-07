@@ -1,6 +1,6 @@
 # Official Windows Platform Harness
 
-The official national acceptance oracle is the Windows EXE:
+The official national compliance oracle is the Windows EXE:
 
 ```text
 sever/国赛平台/德州扑克对弈平台限时一分钟2021版/德州扑克对弈平台限时一分钟2021版.exe
@@ -44,10 +44,37 @@ That prefix should contain the fake Chinese font mapping installed by
 `winetricks -q fakechinese`; otherwise screenshots may show broken Chinese UI
 text.
 
-## Manual Acceptance Command
+## Manual Compliance Command
 
-The formal full acceptance suite is 5 complete self-play rounds and 3 complete
-candidate-vs-opponent rounds, 70 hands per round:
+Long-running evolution does not use this EXE for strength tracking. Ratings,
+precommit regression, and multi-generation observation use the local native TCP
+harness. The EXE is reserved for protocol legality evidence: no illegal wire
+actions, no timeouts, no process crashes, and a complete 70-hand run when the
+gate asks for one.
+
+The default automated precommit compliance suite is one complete self-play round
+and one complete candidate-vs-reference round, 70 hands per round:
+
+```bash
+python scripts/official_platform_acceptance.py \
+  --candidate bots/national_v<N> \
+  --opponent /home/zzx/project/pok/ref/national_v70 \
+  --self-play-rounds 1 \
+  --opponent-rounds 1 \
+  --target-hands 70
+```
+
+The queued helper uses the same shape:
+
+```bash
+python scripts/official_certify.py compliance bots/national_v<N> \
+  --opponent /home/zzx/project/pok/ref/national_v70
+```
+
+## Manual Heavy Acceptance
+
+For a one-off heavy check, explicitly run 5 complete self-play rounds and 3
+complete candidate-vs-opponent rounds, 70 hands per round:
 
 ```bash
 python scripts/official_platform_acceptance.py \
@@ -99,21 +126,24 @@ This path is runtime evidence and should remain gitignored.
 ## Gate Integration
 
 The harness is available from `web/core/official_platform_harness.py`. Normal
-unit tests and direct local simulator checks stay fast, but `pokctl.sh` enables
-the official runtime gate defaults for long-running evolution:
+unit tests and local native TCP checks stay fast. `pokctl.sh` enables the
+official runtime compliance defaults for long-running evolution:
 
 ```bash
 export POK_OFFICIAL_REQUIRED=1
 export POK_OFFICIAL_OPPONENT=/home/zzx/project/pok/ref/national_v70
+export POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS=1
+export POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS=1
+export POK_OFFICIAL_PRECOMMIT_TARGET_HANDS=70
 export POK_OFFICIAL_SELF_PLAY_ROUNDS=5
 export POK_OFFICIAL_OPPONENT_ROUNDS=3
 export POK_OFFICIAL_TARGET_HANDS=70
 ```
 
 With `POK_OFFICIAL_REQUIRED=1`, quality gates run the short official smoke and
-precommit runs the full 5+3 official acceptance suite. This avoids running the
-same long synchronous EXE suite twice in one generation. More granular switches
-are available:
+precommit only queues or reads the 1+1 official compliance suite above. The
+full 5+3 suite is opt-in and should not be used as the normal generation
+tracker. More granular switches are available:
 
 ```bash
 export POK_OFFICIAL_SMOKE_GATE=1
@@ -121,9 +151,12 @@ export POK_OFFICIAL_PRECOMMIT_GATE=1
 export POK_OFFICIAL_ACCEPTANCE_GATE=1  # optional: also run the full suite at quality-gate time
 ```
 
-When enabled, precommit appends an `official_platform_acceptance` blocker on
-failure, including the evidence directory, so the bot cannot be committed and
-the repair worker can inspect the exact official-platform logs.
+When enabled, precommit records an `official_platform_compliance` scorecard
+entry with `blocking=false`. It is evidence for protocol legality, not the
+strength or long-run tracking mechanism. The local native TCP precommit remains
+the hard regression gate, while official failures are kept in certification
+status so they can block future parent selection when they indicate real
+protocol violations.
 
 The harness uses a process-wide file lock at `/tmp/pok_official_platform.lock`
 by default. This keeps official EXE suites serial because the 2021 platform uses

@@ -817,7 +817,13 @@ async def run_quality_gates(args):
                     )
                 else:
                     current = read_status(bot_dir)
-                    if current.get("status") in {"official-smoke-pass", "official-certified", "official-pending", STATUS_FAILED}:
+                    if current.get("status") in {
+                        "official-smoke-pass",
+                        "official-compliance-pass",
+                        "official-certified",
+                        "official-pending",
+                        STATUS_FAILED,
+                    }:
                         official_smoke_payload = current
                     else:
                         official_smoke_payload = enqueue_certification(_spec, reason="quality_gate_smoke")

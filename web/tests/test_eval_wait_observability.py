@@ -2,7 +2,31 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import evolution_infra as evolution_infra_abs
 from core import evolution_infra
+from core import generation_scheduler
+
+
+def test_prepare_priority_eval_signal_written(monkeypatch, tmp_path):
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(evolution_infra_abs, "RESULTS_DIR", results_dir)
+
+    events = []
+    monkeypatch.setattr(
+        generation_scheduler,
+        "log_system_event",
+        lambda *args: events.append(args),
+    )
+
+    generation_scheduler._ensure_priority_eval_signal("national_v85", 24)
+
+    payload = json.loads((results_dir / "priority_eval.json").read_text())
+    assert payload["bot"] == "national_v85"
+    assert payload["min_games"] == 24
+    assert payload["source"] == "prepare_eval_wait"
+    assert events[0][0] == "pipeline.eval_wait_priority_set"
 
 
 def test_wait_for_daemon_eval_emits_start_and_ready(monkeypatch, tmp_path):

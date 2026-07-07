@@ -11,6 +11,8 @@ import asyncio
 import ast
 from dataclasses import dataclass
 from datetime import datetime
+import importlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -704,6 +706,17 @@ def _import_sever_modules():
             sys.path.insert(idx, path)
             inserted.append(path)
     try:
+        server_init = SEVER_DIR / "server" / "__init__.py"
+        server_spec = importlib.util.spec_from_file_location(
+            "server",
+            server_init,
+            submodule_search_locations=[str(SEVER_DIR / "server")],
+        )
+        if server_spec is not None and server_spec.loader is not None:
+            server_module = importlib.util.module_from_spec(server_spec)
+            sys.modules["server"] = server_module
+            server_spec.loader.exec_module(server_module)
+        importlib.invalidate_caches()
         from engine.deck import Deck as _Deck  # noqa: E402
         from engine.game import GameEngine as _GameEngine  # noqa: E402
         from engine.thp_recorder import THPRecorder as _THPRecorder  # noqa: E402

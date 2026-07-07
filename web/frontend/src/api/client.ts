@@ -188,7 +188,7 @@ export const api = {
     URL.revokeObjectURL(url);
   },
   certificationStatus: (version: number) => fetchJSON<OfficialCertification>(`${BASE}/certification/${version}`),
-  enqueueCertification: (version: number, mode: "smoke" | "full" = "full") =>
+  enqueueCertification: (version: number, mode: "smoke" | "compliance" | "full" = "compliance") =>
     postJSON<OfficialCertification>(`${BASE}/certification/${version}/enqueue?mode=${mode}`),
 
   // Pipeline

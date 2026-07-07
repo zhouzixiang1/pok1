@@ -86,3 +86,45 @@ def test_quiet_reap_still_emits_structured_bot_event(tmp_path, monkeypatch):
     assert message.startswith("Auto-reaped national_v1")
     assert data["culled"] == "national_v1"
     assert data["quiet"] is True
+
+
+def test_hard_overflow_reaps_old_zero_game_before_strong_evaluated_baseline(tmp_path, monkeypatch):
+    import tool_bot_management as tbm
+
+    root = tmp_path
+    bots_dir = root / "bots"
+    active = [f"national_v{i}" for i in range(1, 36)]
+    for name in active:
+        bot_dir = bots_dir / name
+        bot_dir.mkdir(parents=True)
+        (bot_dir / ".completed").touch()
+
+    results_dir = root / "web" / "core" / "results"
+    results_dir.mkdir(parents=True)
+    (results_dir / "bot_stats.json").write_text(
+        json.dumps({"national_v10": {"games": 1000}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(tbm, "PROJECT_ROOT", root)
+    monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(tbm, "REPLAY_DIR", results_dir / "replays")
+    monkeypatch.setattr(tbm, "MAX_ACTIVE_BOTS", 30)
+    monkeypatch.setattr(tbm, "get_active_bots", lambda: active)
+    monkeypatch.setattr(tbm, "find_latest_active_v", lambda: 35)
+    monkeypatch.setattr(
+        tbm,
+        "load_ratings",
+        lambda: {"national_v10": tbm.Glicko2Player(r=3000, rd=350)},
+    )
+    monkeypatch.setattr(tbm, "load_h2h_avg_winrates", lambda: {})
+    monkeypatch.setattr(tbm, "load_strength_scores", lambda: {})
+    monkeypatch.setattr(tbm, "record_reaped_bot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tbm, "log_system_event", lambda *args, **kwargs: None)
+
+    result = asyncio.run(tbm._do_reap_weakest(quiet=True))
+
+    assert result["reaped"] is True
+    assert result["culled"] == "national_v1"
+    assert (bots_dir / "national_v10" / ".completed").exists()
+    assert not (bots_dir / "national_v1" / ".completed").exists()
