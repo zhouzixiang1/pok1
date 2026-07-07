@@ -382,6 +382,89 @@ def test_main_loop_actionable_handoff_routes_without_backoff(tmp_path, monkeypat
     assert backoff_logs == []
 
 
+def test_main_loop_preserves_info_log_level_across_deterministic_route_chain(tmp_path, monkeypatch):
+    """A normal selected route should keep info severity on the follow-up route."""
+    import orchestrator
+    import evolution_core
+
+    _write_checkpoint(tmp_path, "prepared", timeout_extensions=0)
+    evolution_core.PIPELINE_STATE_FILE.unlink()
+
+    route_calls = []
+
+    class _UI:
+        def __init__(self):
+            self.gen_cost_total = 0.0
+        def log_history(self, *a, **kw): pass
+        def log_io(self, *a, **kw): pass
+        def emit_tool_call(self, *a, **kw): pass
+        def set_header(self, *a, **kw): pass
+        def set_status(self, *a, **kw): pass
+        def update_cost(self, *a, **kw): pass
+        def reset_gen_cost(self, *a, **kw): pass
+
+    class _Ctx:
+        pass
+
+    async def _fake_prepare(shutdown_mgr, ui, min_games=None):
+        _write_checkpoint(tmp_path, "selected", timeout_extensions=0)
+        return _Ctx()
+
+    async def _fake_run_one_cycle(**kw):
+        raise AssertionError("_run_one_cycle should not run before deterministic route chain")
+
+    async def _fake_route(recovery, ui=None, **kwargs):
+        route_calls.append((recovery, kwargs))
+        if len(route_calls) == 1:
+            _write_checkpoint(tmp_path, "workers_done", timeout_extensions=0)
+        return True
+
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", _fake_run_one_cycle)
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", _fake_prepare)
+    monkeypatch.setattr(orchestrator, "_try_deterministic_checkpoint_route", _fake_route)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
+
+    async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
+        return
+
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", _no_watchdog)
+
+    import pipeline_recovery
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda checkpoint: {"active": True, "recoverable": True, "issues": []},
+    )
+
+    import rate_limiter
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(*a, **kw):
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+
+    class _ShutdownAfterSecondRoute:
+        @property
+        def is_shutting_down(self):
+            return len(route_calls) >= 2
+
+    asyncio.new_event_loop().run_until_complete(
+        orchestrator.orchestrator_loop(
+            ui=_UI(), shutdown_mgr=_ShutdownAfterSecondRoute(), no_daemon=True,
+        )
+    )
+
+    assert [call[0]["checkpoint"]["stage"] for call in route_calls] == [
+        "selected",
+        "workers_done",
+    ]
+    assert [call[1]["log_level"] for call in route_calls] == ["info", "info"]
+    assert [call[1]["label"] for call in route_calls] == ["[Pipeline]", "[Pipeline]"]
+
+
 def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monkeypatch):
     """An active checkpoint must resume directly instead of starting Phase 1."""
     import orchestrator
