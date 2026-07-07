@@ -6,6 +6,7 @@ from official_certification import (
     STATUS_COMPLIANCE_PASS,
     STATUS_CERTIFIED,
     STATUS_FAILED,
+    STATUS_INCONCLUSIVE,
     STATUS_PENDING,
     STATUS_SMOKE_PASS,
     build_spec,
@@ -225,7 +226,7 @@ def test_compliance_certification_has_distinct_status(tmp_path, monkeypatch):
     assert result["mode"] == "compliance"
 
 
-def test_failed_status_includes_validation_issues(tmp_path, monkeypatch):
+def test_inconclusive_status_includes_non_violation_validation_issues(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v1")
     opponent = _bot(tmp_path / "national_v2")
@@ -239,9 +240,35 @@ def test_failed_status_includes_validation_issues(tmp_path, monkeypatch):
         queue_on_busy=False,
     )
 
-    assert result["status"] == STATUS_FAILED
+    assert result["status"] == STATUS_INCONCLUSIVE
     assert result["issues"]
     assert any("thp_incomplete_for_full_certification" in issue for issue in result["issues"])
+
+
+def test_protocol_violation_result_uses_failed_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("smoke", candidate, opponent=opponent)
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *_args, **_kwargs: FakeResult(
+            _report(
+                target_hands=10,
+                rounds=2,
+                passed=False,
+                issues=["self_play_1: protocol_raise_format: msg='raise  200'"],
+            )
+        ),
+        queue_on_busy=False,
+    )
+
+    assert result["status"] == STATUS_FAILED
+    assert official_failure_blocks_parent(result)
+    assert official_compliance_verdict(result)["classification"] == "protocol_violation"
 
 
 def test_record_local_pass_does_not_clear_failed_status(tmp_path, monkeypatch):
@@ -259,7 +286,7 @@ def test_record_local_pass_clears_inconclusive_official_failure(tmp_path, monkey
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v1")
 
-    write_status(candidate, STATUS_FAILED, mode="smoke", issues=["self_play_1: port_busy_before_start: 127.0.0.1:10001"])
+    write_status(candidate, STATUS_INCONCLUSIVE, mode="smoke", issues=["self_play_1: port_busy_before_start: 127.0.0.1:10001"])
     result = record_local_pass(candidate)
 
     assert result["status"] == "local-pass"
@@ -272,19 +299,21 @@ def test_only_protocol_official_failures_block_parent_selection():
         "issues": ["self_play_1: protocol_raise_format: msg='raise  200'"],
     }
     infra_failure = {
-        "status": STATUS_FAILED,
+        "status": STATUS_INCONCLUSIVE,
         "issues": ["self_play_1: port_busy_before_start: 127.0.0.1:10001"],
     }
-    empty_failure = {"status": STATUS_FAILED, "issues": []}
+    legacy_infra_failure = {
+        "status": STATUS_FAILED,
+        "issues": ["official_acceptance_suite_exception: FileNotFoundError: wine"],
+    }
+    empty_failure = {"status": STATUS_INCONCLUSIVE, "issues": []}
 
     assert official_failure_blocks_parent(protocol_failure)
     assert official_compliance_verdict(protocol_failure)["classification"] == "protocol_violation"
     assert not official_failure_blocks_parent(infra_failure)
     assert official_compliance_verdict(infra_failure)["classification"] == "inconclusive"
-    assert not official_failure_blocks_parent({
-        "status": STATUS_FAILED,
-        "issues": ["official_acceptance_suite_exception: FileNotFoundError: wine"],
-    })
+    assert not official_failure_blocks_parent(legacy_infra_failure)
+    assert official_compliance_verdict(legacy_infra_failure)["classification"] == "inconclusive"
     assert not official_failure_blocks_parent(empty_failure)
     assert official_compliance_verdict(empty_failure)["inconclusive"] is True
 

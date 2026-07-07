@@ -165,6 +165,14 @@ strength or long-run tracking mechanism. The local native TCP precommit remains
 the hard regression gate, while official failures are kept in certification
 status so they can block future parent selection when they indicate real
 protocol violations.
+
+Official certification status is intentionally three-valued for automation:
+`official-*-pass` means the requested official suite completed, `official-failed`
+means explicit protocol/illegal-action evidence was found, and
+`official-inconclusive` means the official EXE or harness did not provide a
+complete answer, such as no-progress timeout, Wine/window trouble, missing THP
+export, or an occupied port. Inconclusive official evidence is logged and shown,
+but it is not a bot violation and must not replace local native TCP evaluation.
 The daemon queue worker can be disabled with `POK_OFFICIAL_QUEUE_WORKER=0` or
 throttled with `POK_OFFICIAL_QUEUE_INTERVAL_SEC` / `POK_OFFICIAL_QUEUE_LIMIT`.
 

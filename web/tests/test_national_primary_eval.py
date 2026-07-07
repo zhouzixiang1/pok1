@@ -378,6 +378,7 @@ def test_tool_eval_native_precommit_uses_official_compliance_defaults(tmp_path, 
     fake_official_certification.STATUS_COMPLIANCE_PASS = "official-compliance-pass"
     fake_official_certification.STATUS_CERTIFIED = "official-certified"
     fake_official_certification.STATUS_FAILED = "official-failed"
+    fake_official_certification.STATUS_INCONCLUSIVE = "official-inconclusive"
     fake_official_certification.STATUS_PENDING = "official-pending"
 
     def fake_build_spec(mode, candidate, *, opponent, self_play_rounds, opponent_rounds, target_hands):
@@ -408,9 +409,18 @@ def test_tool_eval_native_precommit_uses_official_compliance_defaults(tmp_path, 
             "issues": [],
         }
 
+    def fake_official_compliance_verdict(_status):
+        return {
+            "ok": True,
+            "blocking": False,
+            "inconclusive": False,
+            "classification": "passed_or_pending",
+        }
+
     fake_official_certification.build_spec = fake_build_spec
     fake_official_certification.read_status = fake_read_status
     fake_official_certification.enqueue_certification = fake_enqueue_certification
+    fake_official_certification.official_compliance_verdict = fake_official_compliance_verdict
 
     monkeypatch.setenv("POK_OFFICIAL_REQUIRED", "1")
     monkeypatch.setenv("POK_OFFICIAL_OPPONENT", str(bot_b))
@@ -454,6 +464,12 @@ def test_tool_eval_native_precommit_uses_official_compliance_defaults(tmp_path, 
     gate_names = [gate["name"] for gate in result["scorecard"]["gates"]]
     assert "official_platform_compliance" in gate_names
     assert "official_platform_acceptance" not in gate_names
+    official_gate = next(
+        gate for gate in result["scorecard"]["gates"]
+        if gate["name"] == "official_platform_compliance"
+    )
+    assert official_gate["status"] == "passed"
+    assert official_gate["metrics"]["classification"] == "passed_or_pending"
 
 
 def test_tool_eval_national_backend_blocks_without_samples(tmp_path, monkeypatch):
