@@ -38,9 +38,11 @@ def test_pokctl_defaults_official_smoke_to_queue():
     script = (ROOT / "pokctl.sh").read_text(encoding="utf-8")
 
     assert 'POK_OFFICIAL_SMOKE_GATE:=queue' in script
+    assert 'POK_OFFICIAL_PRECOMMIT_TARGET_HANDS:=10' in script
+    assert 'POK_OFFICIAL_ACCEPTANCE_GATE:=0' in script
 
 
-def test_official_platform_cli_defaults_to_compliance_rounds():
+def test_official_platform_cli_defaults_to_manual_70_hand_rounds():
     from scripts.official_platform_acceptance import parse_args
 
     args = parse_args(["--candidate", "bots/national_v1"])

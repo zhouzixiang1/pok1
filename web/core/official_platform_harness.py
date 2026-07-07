@@ -977,9 +977,10 @@ def run_official_acceptance_sync(
 ) -> NationalAcceptanceResult:
     """Run official EXE compliance rounds.
 
-    The default is the evolution compliance shape: one 70-hand self-play round
-    and one 70-hand candidate-vs-reference round. Heavy 5+3 certification is
-    available only when callers pass those counts explicitly.
+    This low-level runner defaults to normal 70-hand official rounds for manual
+    acceptance use. Automated evolution calls it through official_certification
+    with short smoke/compliance specs so the Windows EXE stays a protocol oracle,
+    not the strength or generation-tracking harness.
     """
     cfg = config or OfficialPlatformConfig()
     if results_dir is not None:

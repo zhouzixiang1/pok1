@@ -137,7 +137,7 @@ export POK_OFFICIAL_REQUIRED=1
 export POK_OFFICIAL_OPPONENT=/home/zzx/project/pok/ref/national_v70
 export POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS=1
 export POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS=1
-export POK_OFFICIAL_PRECOMMIT_TARGET_HANDS=70
+export POK_OFFICIAL_PRECOMMIT_TARGET_HANDS=10
 export POK_OFFICIAL_SELF_PLAY_ROUNDS=1
 export POK_OFFICIAL_OPPONENT_ROUNDS=1
 export POK_OFFICIAL_TARGET_HANDS=70
@@ -146,9 +146,12 @@ export POK_OFFICIAL_TARGET_HANDS=70
 With `POK_OFFICIAL_REQUIRED=1`, quality gates enqueue or read the short
 official smoke by default; the rating daemon processes that queue in the
 background so official EXE ambiguity does not block local native TCP gates.
-Precommit also queues or reads the 1+1 official compliance suite above. The
-full 5+3 suite is opt-in and should not be used as the normal generation
-tracker. More granular switches are available:
+Precommit also queues or reads a short 1+1 official compliance suite. These
+checks exist only to detect explicit protocol/illegal-action evidence from the
+official EXE. Strength measurement, regression comparison, and generation
+tracking stay on the local native TCP harness. The full 5+3, 70-hand suite is
+opt-in and should not be used as the normal generation tracker. More granular
+switches are available:
 
 ```bash
 export POK_OFFICIAL_SMOKE_GATE=queue  # default; use "run" only for manual blocking checks
