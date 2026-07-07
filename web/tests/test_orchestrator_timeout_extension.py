@@ -918,6 +918,63 @@ def test_actionable_recovery_deterministically_calls_execute_workers(monkeypatch
     assert stage in ui.events[0][1]
 
 
+def test_deterministic_route_done_defaults_to_success_without_success_field(monkeypatch):
+    """A no-error deterministic tool result should not emit a warning just because success is omitted."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    fake_prepare = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({"status": "prepared"}),
+                }]
+            }
+        )
+    )
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "prepare_next_gen"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_gates",
+        SimpleNamespace(prepare_next_gen=fake_prepare),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "selected",
+            "next_v": 269,
+            "source_v": 268,
+        },
+    }
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    assert handled is True
+    done = [e for e in events if e[0] == "pipeline.deterministic_route_done"]
+    assert done and done[-1][1] == "success"
+    assert done[-1][3]["success"] is True
+    assert done[-1][3]["reported_success"] is None
+
+
 def test_master_planned_deterministic_route_clears_stale_session(monkeypatch):
     """A saved LLM session at master_planned must not resume into free-form Bash."""
     from types import SimpleNamespace
