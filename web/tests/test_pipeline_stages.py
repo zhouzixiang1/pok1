@@ -2742,6 +2742,36 @@ class TestWorkerFailureCircuitBreaker:
             "opponent.py",
         }
 
+        old_tasks = [
+            {
+                "worker_id": "auto_quality_repair_gate_constants_py",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["constants.py"],
+                "must_change_files": ["constants.py"],
+                "repair_blocker": "quality_gate",
+                "repair_contract": {"blocker": "quality_gate", "file": "constants.py"},
+            },
+            {
+                "worker_id": "auto_quality_repair_gate_opponent_py",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["opponent.py"],
+                "must_change_files": ["opponent.py"],
+                "repair_blocker": "quality_gate",
+                "repair_contract": {"blocker": "quality_gate", "file": "opponent.py"},
+            },
+            {
+                "worker_id": "auto_quality_repair_gate_strategy_py",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "must_change_files": ["strategy.py"],
+                "repair_blocker": "quality_gate",
+                "repair_contract": {"blocker": "quality_gate", "file": "strategy.py"},
+            },
+        ]
+        stale_reason = tool_planning._stale_quality_task_reason(old_tasks, ckpt, feedback)
+        assert "extra stale task" in stale_reason
+        assert "quality_gate:strategy.py" in stale_reason
+
     def test_empty_quality_evidence_does_not_expand_to_changed_files(self):
         import tool_planning
 

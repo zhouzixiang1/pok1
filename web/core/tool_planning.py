@@ -3134,6 +3134,11 @@ def _stale_quality_task_reason(tasks, ckpt, reviewer_feedback=""):
         return ""
     task_signatures = _task_quality_contract_signatures(tasks)
     missing = sorted(current - task_signatures)
+    extra = sorted(task_signatures - current)
+    if extra and reviewer_feedback:
+        return "stale current quality repair contract(s): extra stale task(s): " + ", ".join(
+            f"{blocker}:{filename}" for blocker, filename in extra
+        )
     if not missing:
         stale = []
         for task in tasks or []:
