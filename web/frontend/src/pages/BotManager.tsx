@@ -26,6 +26,14 @@ const strengthConfidenceText = (value?: string) => (
 
 const compactBotName = (name: string) => name.replace(/^national_/, "").replace(/^claude_/, "");
 
+const lifecycleTone = (status?: string) => {
+  if (status === "active") return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
+  if (status === "candidate") return "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300";
+  if (status === "protocol_ineligible") return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300";
+  if (status === "reaped" || status === "graveyard") return "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400";
+  return "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300";
+};
+
 function RatingBadge({ r, rd, h2hWr, games }: { r: number; rd: number; h2hWr?: number; games?: number }) {
   const conf = rd < 50 ? "text-green-600" : rd < 100 ? "text-yellow-600" : "text-orange-500";
   return (
@@ -129,6 +137,9 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
   const fallbackStrength = bot.rating ? Math.max(0, Math.min(1, 0.5 + (bot.rating.conservative - 1500) / 800)) : null;
   const strengthValue = bot.selection_score ?? bot.leaderboard_score ?? fallbackStrength;
   const strength = strengthValue != null ? strengthValue.toFixed(4) : "—";
+  const canRunTools = !bot.graveyard && (!bot.lifecycle_status || bot.lifecycle_status === "active" || bot.lifecycle_status === "candidate");
+  const protocolErrors = bot.protocol_errors ?? [];
+  const statusReasons = bot.status_reasons ?? [];
 
   return (
     <div className={`rounded-xl border ${bot.graveyard ? "border-gray-300 opacity-60" : "border-gray-200 dark:border-border-subtle"} bg-white dark:bg-surface-1 overflow-hidden`}>
@@ -144,7 +155,11 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
             ? <span className="px-1.5 py-0.5 text-[10px] rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 flex items-center gap-0.5"><CheckIcon /> 完成</span>
             : <span className="px-1.5 py-0.5 text-[10px] rounded bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">进行中</span>
           }
-          {bot.graveyard && <span className="px-1.5 py-0.5 text-[10px] rounded bg-gray-100 text-gray-400">已归档</span>}
+          {bot.lifecycle_status && (
+            <span className={`px-1.5 py-0.5 text-[10px] rounded ${lifecycleTone(bot.lifecycle_status)}`}>
+              {bot.status_label ?? bot.lifecycle_status}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-4 text-sm text-gray-500">
           <span className="text-xs text-gray-500">选择分 {strength}</span>
@@ -162,6 +177,26 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
             <>
               {detail.parent && (
                 <p className="text-xs text-gray-500">父代: <span className="font-mono">{detail.parent}</span></p>
+              )}
+              {(statusReasons.length > 0 || protocolErrors.length > 0) && (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                  {statusReasons.length > 0 && (
+                    <p>状态原因: {statusReasons.join("；")}</p>
+                  )}
+                  {protocolErrors.length > 0 && (
+                    <div className="mt-2">
+                      <p className="font-semibold text-red-600 dark:text-red-300">协议检查错误</p>
+                      <ul className="mt-1 space-y-1">
+                        {protocolErrors.slice(0, 6).map((err) => (
+                          <li key={err} className="font-mono text-[11px]">{err}</li>
+                        ))}
+                        {protocolErrors.length > 6 && (
+                          <li className="text-gray-400">还有 {protocolErrors.length - 6} 条</li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+                </div>
               )}
 
               {/* File picker + code viewer */}
@@ -198,7 +233,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
               </div>
 
               {/* Actions */}
-              {!bot.graveyard && (
+              {canRunTools && (
                 <div className="flex gap-2 flex-wrap">
                   <button
                     onClick={handleInlineEval}
@@ -273,14 +308,25 @@ const PlayIcon = ({ className }: { className?: string }) => (
 );
 
 type BotSortMode = "version" | "h2h_wr" | "rating";
+type BotViewMode = "active" | "all" | "protocol_ineligible" | "reaped" | "candidate" | "graveyard";
+
+const viewLabels: Record<BotViewMode, string> = {
+  active: "活跃",
+  all: "全部历史",
+  protocol_ineligible: "协议不合规",
+  reaped: "已淘汰",
+  candidate: "候选",
+  graveyard: "归档",
+};
 
 export default function BotManager() {
-  const { active: rawBots, graveyard: rawGraveyard } = useBots();
+  const { active: rawBots, graveyard: rawGraveyard, history: rawHistory = [], counts } = useBots();
   const h2hData = useH2H();
   const [sortMode, setSortMode] = useState<BotSortMode>("rating");
+  const [viewMode, setViewMode] = useState<BotViewMode>("active");
 
-  const bots = useMemo(() => {
-    const sorted = [...rawBots];
+  const sortBots = useCallback((items: BotSummary[]) => {
+    const sorted = [...items];
     if (sortMode === "h2h_wr") {
       sorted.sort((a, b) => (b.h2h_avg_wr ?? 0) - (a.h2h_avg_wr ?? 0));
     } else if (sortMode === "rating") {
@@ -293,9 +339,18 @@ export default function BotManager() {
       sorted.sort((a, b) => b.version - a.version);
     }
     return sorted;
-  }, [rawBots, sortMode]);
-  const graveyard = [...rawGraveyard].sort((a, b) => b.version - a.version);
-  const [showGraveyard, setShowGraveyard] = useState(false);
+  }, [sortMode]);
+
+  const bots = useMemo(() => sortBots(rawBots), [rawBots, sortBots]);
+  const graveyard = useMemo(() => sortBots(rawGraveyard), [rawGraveyard, sortBots]);
+  const history = useMemo(() => sortBots(rawHistory.length ? rawHistory : rawBots), [rawBots, rawHistory, sortBots]);
+  const visibleBots = useMemo(() => {
+    if (viewMode === "active") return bots;
+    if (viewMode === "graveyard") return graveyard;
+    if (viewMode === "all") return history;
+    return history.filter((bot) => bot.lifecycle_status === viewMode);
+  }, [bots, graveyard, history, viewMode]);
+
   const [message, setMessage] = useState("");
   const [prepForm, setPrepForm] = useState({ source_v: "", next_v: "" });
   const [crossForm, setCrossForm] = useState({ parent_a: "", parent_b: "", target_v: "" });
@@ -306,7 +361,7 @@ export default function BotManager() {
   const updateData = useUpdateData();
   const refresh = useCallback(async () => {
     try {
-      const bots = await api.listBots(true);
+      const bots = await api.listBots(true, true);
       updateData({ bots });
     } catch (e) {
       console.error("[BotManager] bot list refresh failed:", e);
@@ -353,7 +408,7 @@ export default function BotManager() {
     }
   };
 
-  if (bots.length === 0 && graveyard.length === 0) return <div className="p-6"><Skeleton.Card count={3} /></div>;
+  if (bots.length === 0 && graveyard.length === 0 && history.length === 0) return <div className="p-6"><Skeleton.Card count={3} /></div>;
 
   return (
     <>
@@ -477,34 +532,41 @@ export default function BotManager() {
         </div>
       </div>
 
-      {/* Active bots */}
-      <div className="space-y-2 mb-6">
-        <h2 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide">
-          活跃 Bot ({bots.length})
-        </h2>
-        {bots.map((bot) => (
-          <BotCard key={bot.name} bot={bot} h2hData={h2hData} onAction={setMessage} />
-        ))}
-        {bots.length === 0 && <p className="text-sm text-gray-400">暂无活跃 Bot。</p>}
+      <div className="mb-4 rounded-xl border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-3">
+        <div className="flex flex-wrap gap-2">
+          {(["active", "all", "protocol_ineligible", "reaped", "candidate", "graveyard"] as BotViewMode[]).map((mode) => {
+            const count = mode === "active"
+              ? bots.length
+              : mode === "graveyard"
+                ? graveyard.length
+                : mode === "all"
+                  ? history.length
+                  : counts?.[mode] ?? history.filter((bot) => bot.lifecycle_status === mode).length;
+            return (
+              <button
+                key={mode}
+                onClick={() => setViewMode(mode)}
+                className={`px-3 py-1.5 text-xs rounded-md border ${
+                  viewMode === mode
+                    ? "border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-900/30 dark:text-blue-300"
+                    : "border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                }`}
+              >
+                {viewLabels[mode]} <span className="font-mono">{count}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Graveyard */}
-      <div>
-        <button
-          onClick={() => setShowGraveyard(!showGraveyard)}
-          className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide flex items-center gap-1 mb-2"
-        >
-          <span>{showGraveyard ? "▼" : "▶"}</span>
-          已归档 ({graveyard.length})
-        </button>
-        {showGraveyard && (
-          <div className="space-y-2">
-            {graveyard.map((bot) => (
-              <BotCard key={bot.name} bot={bot} h2hData={h2hData} onAction={setMessage} />
-            ))}
-            {graveyard.length === 0 && <p className="text-sm text-gray-400">无已归档 Bot。</p>}
-          </div>
-        )}
+      <div className="space-y-2">
+        <h2 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide">
+          {viewLabels[viewMode]} Bot ({visibleBots.length})
+        </h2>
+        {visibleBots.map((bot) => (
+          <BotCard key={bot.name} bot={bot} h2hData={h2hData} onAction={setMessage} />
+        ))}
+        {visibleBots.length === 0 && <p className="text-sm text-gray-400">当前分类没有 Bot。</p>}
       </div>
     </>
   );

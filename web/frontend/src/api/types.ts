@@ -152,6 +152,14 @@ export interface BotSummary {
   strength_confidence?: string;
   strength_note?: string;
   graveyard?: boolean;
+  active?: boolean;
+  tagged?: boolean;
+  reaped?: boolean;
+  protocol_eligible?: boolean;
+  protocol_errors?: string[];
+  lifecycle_status?: "active" | "candidate" | "reaped" | "protocol_ineligible" | "untagged" | "incomplete" | "graveyard" | "inactive";
+  status_label?: string;
+  status_reasons?: string[];
 }
 
 export interface BotDetail extends BotSummary {
