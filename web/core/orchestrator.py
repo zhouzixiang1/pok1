@@ -1701,11 +1701,18 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None, *, log_level: s
         return False
 
     try:
+        route_succeeded = success is not False
         log_system_event(
             "pipeline.deterministic_route_done",
-            "success" if success else "warn",
+            "success" if route_succeeded else "warn",
             f"Deterministic {next_tool} route completed for v{next_v}",
-            {"next_v": next_v, "source_v": source_v, "stage": stage, "success": success},
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "stage": stage,
+                "success": route_succeeded,
+                "reported_success": success,
+            },
         )
     except Exception:
         pass
