@@ -149,10 +149,15 @@ export const api = {
   daemonStatus: () => fetchJSON<DaemonStatus>(`${BASE}/daemon/status`),
 
   // Bots
-  listBots: (includeGraveyard = false) =>
-    fetchJSON<{ active: BotSummary[]; graveyard: BotSummary[] }>(
-      `${BASE}/bots${includeGraveyard ? "?include_graveyard=true" : ""}`
-    ),
+  listBots: (includeGraveyard = false, includeHistory = false) => {
+    const params = new URLSearchParams();
+    if (includeGraveyard) params.set("include_graveyard", "true");
+    if (includeHistory) params.set("include_history", "true");
+    const suffix = params.toString() ? `?${params}` : "";
+    return fetchJSON<{ active: BotSummary[]; graveyard: BotSummary[]; history?: BotSummary[]; counts?: Record<string, number> }>(
+      `${BASE}/bots${suffix}`
+    );
+  },
   botDetail: (version: number) => fetchJSON<BotDetail>(`${BASE}/bots/${version}`),
   botCode: (version: number, filename: string) =>
     fetchText(`${BASE}/bots/${version}/code/${encodeURIComponent(filename)}`),

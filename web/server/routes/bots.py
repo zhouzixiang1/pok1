@@ -2,6 +2,7 @@
 
 import io
 import re
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -11,8 +12,8 @@ from fastapi.responses import PlainTextResponse, Response
 from server.cache import cached_read
 from server.routes._helpers import build_bot_summary
 from rating_snapshot import build_strength_rows
-from evolution_infra import get_active_bots
-from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version, version_sort_key
+from evolution_infra import active_bot_protocol_errors, get_active_bots
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version, parse_tag_version, version_sort_key
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BOTS_DIR = PROJECT_ROOT / "bots"
@@ -34,46 +35,204 @@ def _load_ratings() -> dict:
         return {}
 
 
-@router.get("")
-async def list_bots(include_graveyard: bool = Query(False)):
-    """List all active bots and optionally graveyard bots."""
-    ratings = _load_ratings()
-    bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
-    h2h_data = cached_read("h2h", H2H_FILE) or {}
-    active = []
-    graveyard = []
-    active_dirs = []
+def _tagged_versions() -> set[int]:
+    try:
+        result = subprocess.run(
+            ["git", "tag", "-l", "national-bot-v*", "--sort=version:refname"],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+            timeout=10,
+        )
+    except Exception:
+        return set()
+    if result.returncode != 0:
+        return set()
+    versions = set()
+    for line in result.stdout.splitlines():
+        version = parse_tag_version(line.strip())
+        if version is not None:
+            versions.add(version)
+    return versions
 
-    active_dirs = [
-        BOTS_DIR / name
-        for name in get_active_bots()
-        if (BOTS_DIR / name).is_dir()
-    ]
-    active_names = [d.name for d in active_dirs]
+
+def _reaped_versions() -> set[int]:
+    path = RESULTS_DIR / "reaped_bots.jsonl"
+    versions = set()
+    if not path.exists():
+        return versions
+    try:
+        for line in path.read_text(errors="replace").splitlines():
+            match = re.search(r'"version"\s*:\s*(\d+)', line)
+            if match:
+                versions.add(int(match.group(1)))
+    except OSError:
+        return versions
+    return versions
+
+
+def _bot_dirs(include_graveyard: bool) -> list[tuple[Path, bool]]:
+    dirs: list[tuple[Path, bool]] = []
+    if BOTS_DIR.exists():
+        for path in BOTS_DIR.iterdir():
+            if path.is_dir() and path.name.startswith(ACTIVE_BOT_PREFIX) and parse_bot_version(path.name):
+                dirs.append((path, False))
+    if include_graveyard:
+        graveyard_dir = BOTS_DIR / "graveyard"
+        if graveyard_dir.exists():
+            for path in graveyard_dir.iterdir():
+                if path.is_dir() and path.name.startswith(ACTIVE_BOT_PREFIX) and parse_bot_version(path.name):
+                    dirs.append((path, True))
+    return sorted(dirs, key=lambda item: version_sort_key(item[0].name))
+
+
+def _status_label(status: str) -> str:
+    return {
+        "active": "活跃",
+        "candidate": "候选",
+        "reaped": "已淘汰",
+        "protocol_ineligible": "协议不合规",
+        "untagged": "未打标签",
+        "incomplete": "未完成",
+        "graveyard": "已归档",
+        "inactive": "历史",
+    }.get(status, status)
+
+
+def _decorate_lifecycle(
+    summary: dict,
+    *,
+    active_names: set[str],
+    tagged_versions: set[int],
+    reaped_versions: set[int],
+    is_graveyard: bool,
+) -> dict:
+    version = summary["version"]
+    name = summary["name"]
+    completed = bool(summary.get("completed"))
+    tagged = version in tagged_versions
+    reaped = version in reaped_versions
+    protocol_errors = [] if is_graveyard else active_bot_protocol_errors(version)
+    reasons: list[str] = []
+
+    if is_graveyard:
+        status = "graveyard"
+        reasons.append("bot source is under bots/graveyard/")
+    elif name in active_names:
+        status = "active"
+    elif not completed and not tagged:
+        status = "candidate"
+        reasons.append("missing .completed sentinel and national-bot tag")
+    elif reaped:
+        status = "reaped"
+        reasons.append("removed from active pool by reap_weakest")
+    elif protocol_errors:
+        status = "protocol_ineligible"
+        reasons.append("fails current national native protocol contract")
+    elif not tagged:
+        status = "untagged"
+        reasons.append("missing national-bot-v<N> tag")
+    elif not completed:
+        status = "incomplete"
+        reasons.append("missing .completed sentinel")
+    else:
+        status = "inactive"
+        reasons.append("not selected into current active pool")
+
+    summary.update({
+        "active": status == "active",
+        "tagged": tagged,
+        "reaped": reaped,
+        "protocol_eligible": not protocol_errors,
+        "protocol_errors": protocol_errors,
+        "lifecycle_status": status,
+        "status_label": _status_label(status),
+        "status_reasons": reasons,
+        "graveyard": is_graveyard,
+    })
+    return summary
+
+
+def build_bot_listing(
+    ratings: dict,
+    bot_stats_data: dict,
+    h2h_data: dict,
+    *,
+    include_graveyard: bool = False,
+    include_history: bool = True,
+) -> dict:
+    active_names = set(get_active_bots())
+    active_dirs = [BOTS_DIR / name for name in active_names if (BOTS_DIR / name).is_dir()]
     strength_rows = {
         row["name"]: row
         for row in build_strength_rows(
             ratings,
             bot_stats_data,
             h2h_data,
-            active_bots=active_names,
+            active_bots=sorted(active_names, key=version_sort_key),
             match_history_path=MATCH_HISTORY_FILE,
         )
     }
-    for d in active_dirs:
-        active.append(build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data, strength_rows))
+    tagged_versions = _tagged_versions()
+    reaped_versions = _reaped_versions()
 
-    # Graveyard bots
-    if include_graveyard:
-        graveyard_dir = BOTS_DIR / "graveyard"
-        if graveyard_dir.exists():
-            for d in sorted(graveyard_dir.iterdir(), key=lambda p: version_sort_key(p.name)):
-                if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX) and parse_bot_version(d.name):
-                    s = build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data)
-                    s["graveyard"] = True
-                    graveyard.append(s)
+    active = []
+    for path in sorted(active_dirs, key=lambda p: version_sort_key(p.name)):
+        summary = build_bot_summary(path, path.name, ratings, bot_stats_data, h2h_data, strength_rows)
+        active.append(_decorate_lifecycle(
+            summary,
+            active_names=active_names,
+            tagged_versions=tagged_versions,
+            reaped_versions=reaped_versions,
+            is_graveyard=False,
+        ))
 
-    return {"active": active, "graveyard": graveyard}
+    graveyard = []
+    history = []
+    for path, is_graveyard in _bot_dirs(include_graveyard):
+        summary = build_bot_summary(path, path.name, ratings, bot_stats_data, h2h_data, strength_rows)
+        summary = _decorate_lifecycle(
+            summary,
+            active_names=active_names,
+            tagged_versions=tagged_versions,
+            reaped_versions=reaped_versions,
+            is_graveyard=is_graveyard,
+        )
+        if is_graveyard:
+            graveyard.append(summary)
+        elif include_history:
+            history.append(summary)
+
+    result = {"active": active, "graveyard": graveyard}
+    if include_history:
+        result["history"] = history
+        result["counts"] = {
+            "active": len(active),
+            "history": len(history),
+            "graveyard": len(graveyard),
+            "candidate": sum(1 for bot in history if bot["lifecycle_status"] == "candidate"),
+            "protocol_ineligible": sum(1 for bot in history if bot["lifecycle_status"] == "protocol_ineligible"),
+            "reaped": sum(1 for bot in history if bot["lifecycle_status"] == "reaped"),
+        }
+    return result
+
+
+@router.get("")
+async def list_bots(
+    include_graveyard: bool = Query(False),
+    include_history: bool = Query(False),
+):
+    """List active bots and optionally historical/inactive bot inventory."""
+    ratings = _load_ratings()
+    bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
+    h2h_data = cached_read("h2h", H2H_FILE) or {}
+    return build_bot_listing(
+        ratings,
+        bot_stats_data,
+        h2h_data,
+        include_graveyard=include_graveyard,
+        include_history=include_history,
+    )
 
 
 def _resolve_bot_dir(version: int) -> Path:

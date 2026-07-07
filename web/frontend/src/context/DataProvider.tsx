@@ -11,7 +11,12 @@ export type DataStore = {
   stats: MatchStats | null;
   daemon: DaemonStatus | null;
   rateLimit: RateLimitStatus | null;
-  bots: { active: BotSummary[]; graveyard: BotSummary[] };
+  bots: {
+    active: BotSummary[];
+    graveyard: BotSummary[];
+    history?: BotSummary[];
+    counts?: Record<string, number>;
+  };
   matches: MatchSummary[];
   matrix: MatchMatrix | null;
   history: HistoryEntry[];

@@ -11,6 +11,7 @@ class TestListBots:
         data = resp.json()
         assert "active" in data
         assert "graveyard" in data
+        assert "history" not in data
         assert isinstance(data["active"], list)
         assert data["graveyard"] == []
 
@@ -24,6 +25,21 @@ class TestListBots:
             assert "version" in bot
             assert "completed" in bot
             assert "files" in bot
+            assert "lifecycle_status" in bot
+
+    def test_with_history(self, client):
+        resp = client.get("/api/bots?include_history=true&include_graveyard=true")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "history" in data
+        assert "counts" in data
+        assert isinstance(data["history"], list)
+        assert isinstance(data["counts"], dict)
+        for bot in data["history"][:5]:
+            assert "lifecycle_status" in bot
+            assert "status_label" in bot
+            assert "status_reasons" in bot
+            assert "protocol_errors" in bot
 
     @pytest.mark.requires_active_bot
     def test_data_stream_bot_snapshot_uses_active_namespace(self):
