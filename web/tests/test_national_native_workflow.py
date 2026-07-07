@@ -1,5 +1,7 @@
 import asyncio
+import importlib.util
 from pathlib import Path
+import sys
 
 from candidate_hygiene import sanitize_candidate_dir
 from national_native import (
@@ -32,6 +34,18 @@ def _write_minimal_strategy_bot(bot_dir: Path) -> None:
         "    return 0\n",
         encoding="utf-8",
     )
+
+
+def _load_native_entry_module(bot_dir: Path, monkeypatch):
+    for module_name in ("main", "state", "strategy", "native_entry_probe"):
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+    monkeypatch.syspath_prepend(str(bot_dir))
+    spec = importlib.util.spec_from_file_location("native_entry_probe", bot_dir / "national_bot.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["native_entry_probe"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_national_native_is_default_profile(monkeypatch):
@@ -121,6 +135,58 @@ def test_native_entry_contract_rejects_sanitizer_exception_pass(tmp_path):
     errors = check_native_contract(bot_dir)
 
     assert any("sanitizer failure" in err for err in errors)
+
+
+def test_native_entry_contract_rejects_increment_raise_semantics(tmp_path):
+    bot_dir = tmp_path / "BotA"
+    bot_dir.mkdir()
+    (bot_dir / "national_bot.py").write_text(
+        "import socket\n\n"
+        "def bad(self, amount, needed, action, sock):\n"
+        "    sock.recv(1)\n"
+        "    committed = min(max(0, amount), self._opponent_chips)\n"
+        "    return f\"raise {needed}\", \"raise\", action\n"
+        "# required wire tokens: raise fold call check allin\n",
+        encoding="utf-8",
+    )
+
+    errors = check_native_contract(bot_dir)
+
+    assert any("raise-to-total" in err for err in errors)
+
+
+def test_native_entry_template_uses_raise_to_total(monkeypatch, tmp_path):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._stage = "preflop"
+    bot._my_stage_bet = 50
+    bot._opponent_stage_bet = 100
+    bot._opponent_chips = 19900
+
+    committed = bot._apply_opponent_action("raise", 200)
+
+    assert committed == 100
+    assert bot._opponent_stage_bet == 200
+    assert bot._opponent_chips == 19800
+
+    bot = module.NativeNationalBot("Probe")
+    bot._stage = "flop"
+    bot._my_stage_bet = 100
+    bot._my_chips = 19900
+    bot._opponent_stage_bet = 200
+    bot._history = [{
+        "round": 1,
+        "player_id": bot._opponent_id,
+        "action_type": "raise",
+        "action": 200,
+        "stage_bet": 200,
+    }]
+
+    assert bot._action_to_tcp(300) == ("raise 401", "raise", 401)
 
 
 def test_candidate_hygiene_removes_completion_and_restores_native_entry(tmp_path):

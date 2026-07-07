@@ -319,14 +319,38 @@ class NativeNationalBot:
             entry["committed"] = committed
         self._history.append(entry)
 
+    def _last_raise_total(self) -> int | None:
+        round_num = self._round_num()
+        for record in reversed(self._history):
+            if record.get("round") != round_num:
+                continue
+            if record.get("action_type") != "raise":
+                continue
+            value = record.get("stage_bet", record.get("action"))
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
+    def _minimum_raise_total(self) -> int:
+        last_raise = self._last_raise_total()
+        if last_raise is not None:
+            minimum = last_raise * 2 + 1
+        elif self._stage == "preflop":
+            minimum = 2 * BIG_BLIND
+        else:
+            minimum = BIG_BLIND
+        return max(minimum, self._my_stage_bet + 1, self._opponent_stage_bet + 1)
+
     def _apply_opponent_action(self, action_type: str, amount: int | None) -> int:
         committed = 0
         if action_type == "call":
             committed = min(max(0, self._my_stage_bet - self._opponent_stage_bet), self._opponent_chips)
         elif action_type == "raise" and amount is not None:
-            # The national platform's wire value is the extra chips added by
-            # the raiser, not the final round total.
-            committed = min(max(0, amount), self._opponent_chips)
+            committed = min(max(0, amount - self._opponent_stage_bet), self._opponent_chips)
         elif action_type == "allin":
             committed = self._opponent_chips
         if committed > 0:
@@ -349,94 +373,41 @@ class NativeNationalBot:
             self._pot += committed
         return committed
 
+    def _raise_action(self, requested_total: int) -> tuple[str, str, int | None]:
+        if self._current_round_has_allin():
+            return self._zero_action()
+        target = max(int(requested_total), self._minimum_raise_total())
+        needed = target - self._my_stage_bet
+        if needed <= 0:
+            return self._zero_action()
+        if needed >= self._my_chips:
+            return "allin", "allin", None
+        return f"raise {target}", "raise", target
+
     def _zero_action(self) -> tuple[str, str, int | None]:
-        if (
-            self._stage != "preflop"
-            and self._my_action_count == 0
-            and self._my_stage_bet == 0
-            and self._opponent_stage_bet > 0
-        ):
-            needed = self._opponent_stage_bet * 2
-            if needed >= self._my_chips:
-                return "allin", "allin", None
-            return f"raise {needed}", "raise", needed
         if self._opponent_stage_bet > self._my_stage_bet:
             return "call", "call", None
-        if (
-            self._stage == "preflop"
-            and not self._is_sb
-            and self._my_action_count == 0
-            and self._opponent_stage_bet == self._my_stage_bet
-        ):
-            return "fold", "fold", None
-        if (
-            self._stage != "preflop"
-            and self._my_action_count == 0
-            and self._opponent_stage_bet == 0
-            and self._my_stage_bet == 0
-            and not self._responding_to_check()
-        ):
-            if self._my_chips <= BIG_BLIND:
-                return "allin", "allin", None
-            return f"raise {BIG_BLIND}", "raise", BIG_BLIND
         if self._responding_to_check():
             return "call", "call", None
         return "check", "check", None
 
     def _action_to_tcp(self, action: int) -> tuple[str, str, int | None]:
         if action == -1:
-            if self._stage != "preflop" and self._opponent_stage_bet > self._my_stage_bet:
-                if self._my_action_count == 0 and self._my_stage_bet == 0:
-                    needed = self._opponent_stage_bet * 2
-                    if needed >= self._my_chips:
-                        return "allin", "allin", None
-                    return f"raise {needed}", "raise", needed
-                return "call", "call", None
-            return "fold", "fold", None
-        if (
-            self._stage == "preflop"
-            and not self._is_sb
-            and self._my_action_count == 0
-            and self._opponent_stage_bet > self._my_stage_bet
-        ):
-            return "call", "call", None
-        if (
-            self._stage == "preflop"
-            and not self._is_sb
-            and self._my_action_count == 0
-            and self._opponent_stage_bet == self._my_stage_bet
-        ):
             return "fold", "fold", None
         if action == -2:
+            if self._current_round_has_allin():
+                return self._zero_action()
             if self._opponent_chips == 0 and self._opponent_stage_bet > self._my_stage_bet:
                 return "call", "call", None
             return "allin", "allin", None
         if action > 0:
-            if (
-                self._stage != "preflop"
-                and self._my_action_count == 0
-                and self._opponent_stage_bet == 0
-                and self._my_stage_bet == 0
-                and not self._responding_to_check()
-            ):
-                if self._my_chips <= BIG_BLIND:
-                    return "allin", "allin", None
-                return f"raise {BIG_BLIND}", "raise", BIG_BLIND
-            needed = action - self._my_stage_bet
-            if needed >= self._my_chips:
-                return "allin", "allin", None
-            if needed <= 0:
+            if self._current_round_has_allin():
                 return self._zero_action()
-            if (
-                self._stage != "preflop"
-                and self._opponent_stage_bet > self._my_stage_bet
-                and self._my_stage_bet > 0
-            ):
+            if action <= self._my_stage_bet:
+                return self._zero_action()
+            if self._opponent_stage_bet > self._my_stage_bet and action <= self._opponent_stage_bet:
                 return "call", "call", None
-            if self._opponent_stage_bet > 0:
-                needed = self._opponent_stage_bet * 2
-                action = self._my_stage_bet + needed
-            return f"raise {needed}", "raise", action
+            return self._raise_action(action)
         return self._zero_action()
 
     def _should_respond(self, action_type: str) -> bool:
@@ -825,6 +796,12 @@ def check_native_contract(bot_dir: str | Path) -> list[str]:
     for token in ("sock.recv", "_split_messages"):
         if token not in text:
             errors.append(f"{NATIVE_ENTRY}: missing official raw TCP splitter token {token!r}")
+    if "wire value is the extra chips added" in text:
+        errors.append(f"{NATIVE_ENTRY}: TCP raise amount is documented as an increment; it must be raise-to-total")
+    if "committed = min(max(0, amount), self._opponent_chips)" in text:
+        errors.append(f"{NATIVE_ENTRY}: opponent raise amount is treated as an increment; it must be raise-to-total")
+    if "return f\"raise {needed}\", \"raise\", action" in text:
+        errors.append(f"{NATIVE_ENTRY}: outgoing raise uses delta-style wire amount; it must send raise-to-total")
     if _strategy_action_has_exception_pass(text):
         errors.append(
             f"{NATIVE_ENTRY}: _strategy_action must not continue with raw action after sanitizer failure"
