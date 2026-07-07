@@ -6,6 +6,8 @@ from official_platform_harness import (
     parse_bot_log,
     run_official_acceptance_sync,
     summarize_round_logs,
+    _collect_new_thp_files,
+    _snapshot_platform_thp_files,
     _target_reached,
 )
 
@@ -154,3 +156,49 @@ def test_target_reached_accepts_official_final_settlement_quirk(tmp_path):
     assert summary["hands_started_min"] == 70
     assert summary["settlements_min"] == 69
     assert _target_reached(summary, 70)
+
+
+def test_collect_new_thp_files_keeps_platform_dir_clean(tmp_path):
+    platform_dir = tmp_path / "platform"
+    artifact_dir = tmp_path / "artifacts"
+    platform_dir.mkdir()
+    old_thp = platform_dir / "THP-old.txt"
+    old_thp.write_text("old", encoding="gb2312")
+    before = _snapshot_platform_thp_files(platform_dir)
+
+    new_thp = platform_dir / "THP-new.txt"
+    new_thp.write_text("new", encoding="gb2312")
+
+    artifacts, issues = _collect_new_thp_files(
+        platform_dir,
+        before=before,
+        artifact_dir=artifact_dir,
+    )
+
+    assert issues == []
+    assert artifacts == [str(artifact_dir / "THP-new.txt")]
+    assert old_thp.exists()
+    assert not new_thp.exists()
+    assert (artifact_dir / "THP-new.txt").read_text(encoding="gb2312") == "new"
+
+
+def test_collect_new_thp_files_scans_platform_root_and_exe_dir(tmp_path):
+    platform_root = tmp_path / "国赛平台"
+    exe_dir = platform_root / "德州扑克对弈平台限时一分钟2021版"
+    artifact_dir = tmp_path / "artifacts"
+    exe_dir.mkdir(parents=True)
+    before = _snapshot_platform_thp_files([exe_dir, platform_root])
+
+    root_thp = platform_root / "THP-root.txt"
+    root_thp.write_text("root", encoding="gb2312")
+
+    artifacts, issues = _collect_new_thp_files(
+        [exe_dir, platform_root],
+        before=before,
+        artifact_dir=artifact_dir,
+    )
+
+    assert issues == []
+    assert artifacts == [str(artifact_dir / "THP-root.txt")]
+    assert not root_thp.exists()
+    assert (artifact_dir / "THP-root.txt").read_text(encoding="gb2312") == "root"

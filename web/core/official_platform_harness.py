@@ -83,6 +83,7 @@ class OfficialPlatformConfig:
     no_progress_timeout_sec: float = 75.0
     round_timeout_sec: float = 900.0
     settlement_grace_sec: float = 8.0
+    artifact_grace_sec: float = 20.0
     ui: PlatformUiProfile = field(default_factory=PlatformUiProfile)
 
     def locale_env(self) -> dict[str, str]:
@@ -390,6 +391,21 @@ def _screenshot(env: dict[str, str], output: Path) -> str | None:
     return str(output) if proc.returncode == 0 and output.exists() else None
 
 
+def _close_window(env: dict[str, str], window_id: str | None) -> None:
+    if not window_id:
+        return
+    _run_quiet(["xdotool", "windowclose", window_id], env=env, timeout=3)
+
+
+def _wait_for_wine_idle(env: dict[str, str], *, timeout_sec: float) -> None:
+    if not shutil.which("wineserver"):
+        return
+    try:
+        _run_quiet(["wineserver", "-w"], env=env, timeout=max(1.0, timeout_sec))
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def _port_listening(host: str, port: int) -> bool:
     if not shutil.which("ss"):
         return False
@@ -477,6 +493,99 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(_jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _platform_thp_dirs(exe_path: Path) -> list[Path]:
+    dirs: list[Path] = []
+    for path in (exe_path.parent, exe_path.parent.parent):
+        resolved = path.resolve()
+        if resolved not in dirs:
+            dirs.append(resolved)
+    return dirs
+
+
+def _coerce_platform_dirs(platform_dirs: Path | list[Path] | tuple[Path, ...]) -> list[Path]:
+    if isinstance(platform_dirs, Path):
+        return [platform_dirs]
+    return [Path(path) for path in platform_dirs]
+
+
+def _snapshot_platform_thp_files(platform_dirs: Path | list[Path] | tuple[Path, ...]) -> dict[str, tuple[int, int]]:
+    snapshot: dict[str, tuple[int, int]] = {}
+    for platform_dir in _coerce_platform_dirs(platform_dirs):
+        for path in platform_dir.glob("THP-*.txt"):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            snapshot[str(path.resolve())] = (stat.st_size, stat.st_mtime_ns)
+    return snapshot
+
+
+def _unique_destination(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 1000):
+        candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"could not allocate unique artifact name for {path}")
+
+
+def _collect_new_thp_files(
+    platform_dirs: Path | list[Path] | tuple[Path, ...],
+    *,
+    before: dict[str, tuple[int, int]],
+    artifact_dir: Path,
+    wait_sec: float = 0.0,
+    stable_sec: float = 0.5,
+) -> tuple[list[str], list[str]]:
+    artifacts: list[str] = []
+    issues: list[str] = []
+    deadline = time.time() + max(0.0, wait_sec)
+    last_signature: tuple[tuple[str, int, int], ...] = ()
+    stable_since: float | None = None
+
+    while True:
+        signature: list[tuple[str, int, int]] = []
+        for platform_dir in _coerce_platform_dirs(platform_dirs):
+            for path in sorted(platform_dir.glob("THP-*.txt")):
+                if not path.is_file():
+                    continue
+                try:
+                    stat = path.stat()
+                    key = str(path.resolve())
+                except OSError:
+                    continue
+                current = (stat.st_size, stat.st_mtime_ns)
+                if before.get(key) != current:
+                    signature.append((str(path), stat.st_size, stat.st_mtime_ns))
+        current_signature = tuple(signature)
+        if current_signature:
+            if current_signature == last_signature:
+                if stable_since is not None and time.time() - stable_since >= stable_sec:
+                    break
+            else:
+                last_signature = current_signature
+                stable_since = time.time()
+        if time.time() >= deadline:
+            break
+        time.sleep(0.2)
+
+    for path_name, _, _ in last_signature:
+        path = Path(path_name)
+        try:
+            if not path.exists():
+                continue
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            destination = _unique_destination(artifact_dir / path.name)
+            shutil.move(str(path), str(destination))
+            artifacts.append(str(destination))
+        except OSError as exc:
+            issues.append(f"thp_collect_error: {path.name}: {type(exc).__name__}: {exc}")
+    return artifacts, issues
+
+
 def run_official_round(
     bot_a: BotLaunchConfig,
     bot_b: BotLaunchConfig,
@@ -524,6 +633,8 @@ def run_official_round(
     wine_proc: subprocess.Popen | None = None
     bot_a_proc: subprocess.Popen | None = None
     bot_b_proc: subprocess.Popen | None = None
+    platform_env: dict[str, str] | None = None
+    window_id: str | None = None
     platform_log = round_dir / "platform.wine.log"
     log_a = round_dir / "botA.log"
     log_b = round_dir / "botB.log"
@@ -532,6 +643,10 @@ def run_official_round(
     bot_b_stdout = round_dir / "botB.stdout.log"
     bot_b_stderr = round_dir / "botB.stderr.log"
     screenshots: list[str] = []
+    platform_thp_dirs = _platform_thp_dirs(cfg.exe_path)
+    thp_snapshot = _snapshot_platform_thp_files(platform_thp_dirs)
+    thp_artifacts: list[str] = []
+    artifact_issues: list[str] = []
 
     try:
         xvfb_log = (round_dir / "xvfb.log").open("wb")
@@ -545,6 +660,7 @@ def run_official_round(
         xvfb_proc._pok_stdout = xvfb_log  # type: ignore[attr-defined]
         time.sleep(0.8)
         env = _env_for_display(cfg, display)
+        platform_env = env
         with platform_log.open("wb") as platform_out:
             wine_proc = _popen(["wine", str(cfg.exe_path)], cwd=cfg.exe_path.parent, env=env, stdout=platform_out, stderr=platform_out)
             window_id = _wait_for_window(env, timeout_sec=cfg.startup_timeout_sec)
@@ -638,9 +754,27 @@ def run_official_round(
         if "log_summary" not in receipt:
             receipt["log_summary"] = summarize_round_logs(log_a, log_b)
     finally:
-        for proc in (bot_a_proc, bot_b_proc, wine_proc, xvfb_proc):
+        for proc in (bot_a_proc, bot_b_proc):
             _terminate_process(proc)
             _close_process_files(proc)
+        if platform_env is not None:
+            _close_window(platform_env, window_id)
+            time.sleep(2.0)
+        _terminate_process(wine_proc)
+        if platform_env is not None:
+            _wait_for_wine_idle(platform_env, timeout_sec=cfg.artifact_grace_sec)
+        _terminate_process(xvfb_proc)
+        for proc in (wine_proc, xvfb_proc):
+            _close_process_files(proc)
+    if "log_summary" not in receipt:
+        receipt["log_summary"] = summarize_round_logs(log_a, log_b)
+    artifact_wait_sec = cfg.artifact_grace_sec if _target_reached(receipt.get("log_summary", {}), target_hands) else 1.0
+    thp_artifacts, artifact_issues = _collect_new_thp_files(
+        platform_thp_dirs,
+        before=thp_snapshot,
+        artifact_dir=round_dir / "thp",
+        wait_sec=artifact_wait_sec,
+    )
 
     receipt["duration_sec"] = round(time.time() - started_at, 2)
     receipt["bot_returncodes"] = {
@@ -659,7 +793,10 @@ def run_official_round(
         "bot_b_stdout": str(bot_b_stdout),
         "bot_b_stderr": str(bot_b_stderr),
         "screenshots": screenshots,
+        "platform_thp_dirs": [str(path) for path in platform_thp_dirs],
+        "thp_files": thp_artifacts,
     }
+    receipt["issues"].extend(artifact_issues)
     receipt["issues"].extend(_read_issue_file(bot_a_stdout))
     receipt["issues"].extend(_read_issue_file(bot_a_stderr))
     receipt["issues"].extend(_read_issue_file(bot_b_stdout))
@@ -704,6 +841,7 @@ def run_official_acceptance_sync(
             no_progress_timeout_sec=cfg.no_progress_timeout_sec,
             round_timeout_sec=cfg.round_timeout_sec,
             settlement_grace_sec=cfg.settlement_grace_sec,
+            artifact_grace_sec=cfg.artifact_grace_sec,
             ui=cfg.ui,
         )
     suite_dir = cfg.results_dir / f"acceptance_{_now_id()}"
