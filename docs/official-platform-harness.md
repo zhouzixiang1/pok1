@@ -65,6 +65,12 @@ explicitly.
 For a quick environment smoke:
 
 ```bash
+python scripts/official_platform_acceptance.py --check-env
+```
+
+For a quick bot/platform smoke:
+
+```bash
 python scripts/official_platform_acceptance.py \
   --candidate /home/zzx/project/pok/ref/national_v70 \
   --self-play-rounds 1 \
@@ -80,6 +86,7 @@ Each run writes:
 - `platform.wine.log`;
 - screenshots under each round's `screenshots/` directory when ImageMagick is
   available.
+- moved official THP records under each full round's `thp/` directory.
 
 The default output root is:
 
@@ -115,7 +122,19 @@ export POK_OFFICIAL_ACCEPTANCE_GATE=1  # optional: also run the full suite at qu
 ```
 
 When enabled, precommit appends an `official_platform_acceptance` blocker on
-failure, so the bot cannot be committed.
+failure, including the evidence directory, so the bot cannot be committed and
+the repair worker can inspect the exact official-platform logs.
+
+The harness uses a process-wide file lock at `/tmp/pok_official_platform.lock`
+by default. This keeps official EXE suites serial because the 2021 platform uses
+a fixed UI workflow and TCP port. The async web pipeline still calls the harness
+through a worker thread, so FastAPI stays responsive while the long suite runs.
+Override the lock only for isolated manual experiments:
+
+```bash
+export POK_OFFICIAL_LOCK_PATH=/tmp/pok_official_platform_custom.lock
+export POK_OFFICIAL_LOCK_TIMEOUT_SEC=900
+```
 
 ## Current Completion Heuristic
 
@@ -123,4 +142,12 @@ The official EXE has been observed to start all 70 hands while sometimes leaving
 only 69 visible `earnChips` dispatches in bot logs after the final hand. The
 harness therefore treats a 70-hand round as complete when both bots have seen at
 least 70 `preflop` messages and at least 69 settlements, with no critical log
-issues and no no-progress timeout.
+issues and no no-progress timeout. Full 70-hand rounds must also produce an
+official THP file with at least 70 `STATE` records; short smoke runs do not
+require THP output.
+
+Every bot `SEND ... msg='...'` line is checked against the exact official wire
+format: `call`, `check`, `fold`, `allin`, or `raise <positive integer>` with
+exactly one space. `bet`, extra spaces, leading/trailing whitespace, and unknown
+actions fail the round even if the platform would otherwise silently treat the
+move as a fold.

@@ -25,7 +25,7 @@ from official_platform_harness import (  # noqa: E402
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--candidate", required=True, help="Candidate bot directory or script.")
+    parser.add_argument("--candidate", help="Candidate bot directory or script.")
     parser.add_argument("--opponent", help="Opponent bot directory or script for non-self-play rounds.")
     parser.add_argument("--self-play-rounds", type=int, default=5, help="Candidate-vs-candidate official rounds.")
     parser.add_argument("--opponent-rounds", type=int, default=3, help="Candidate-vs-opponent official rounds.")
@@ -63,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_env:
         print(json.dumps(env_report, ensure_ascii=False, indent=2))
         return 0 if env_report["ok"] else 1
+    if not args.candidate:
+        print("error: --candidate is required unless --check-env is used", file=sys.stderr)
+        return 2
     if not env_report["ok"]:
         print(json.dumps(env_report, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
