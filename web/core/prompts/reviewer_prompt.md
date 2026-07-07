@@ -15,6 +15,13 @@ Your job is the code quality gate before the strategic Critic review.
   from the repository root; if a command needs a bot-local cwd, use a subshell
   such as `(cd bots/national_v{version} && ...)`. Do not use a bare `cd` that
   affects later commands.
+- This is a read-only gate. Do not create temp files, write redirects, `tee`
+  probe output, `touch`, `mkdir`, `rm`, or mutate git state. Redirect only to
+  `/dev/null` for stderr/stdout noise.
+- For comparisons, use direct read-only commands: `diff -u parent target`,
+  `git diff --no-index -- parent target`, `sed -n 'START,ENDp' file`, `rg`, or
+  `python -c` snippets that open files read-only and print results. Never write
+  snippets to `/tmp` or `web/core/results`.
 - For git history, use only bounded commands. Every `git log` command MUST
   include `--max-count=20` (or smaller) and an explicit revision range or path.
   Never use `--all`, `-S`, `-G`, or unbounded `git log`. If a Bash command is

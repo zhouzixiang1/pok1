@@ -189,6 +189,33 @@ def _extract_int(pattern: str, text: str) -> int | None:
         return None
 
 
+_H2H_KEY_RE = re.compile(r"\bnational_v(\d+)\s+vs\s+national_v(\d+)\b", re.IGNORECASE)
+_WL_RE = re.compile(r"(?<![\w.])(\d+)\s*W\s*(?:[/:\-]|,)?\s*(\d+)\s*L\b", re.IGNORECASE)
+
+
+def _h2h_key_aliases(key: str) -> list[tuple[str, str, str]]:
+    """Return textual aliases and perspective for a snapshot H2H key."""
+    match = _H2H_KEY_RE.search(str(key or ""))
+    if not match:
+        return [(str(key or ""), "", "")]
+    a_v, b_v = match.group(1), match.group(2)
+    aliases = [
+        (f"national_v{a_v} vs national_v{b_v}", a_v, b_v),
+        (f"v{a_v} vs v{b_v}", a_v, b_v),
+        (f"national_v{b_v} vs national_v{a_v}", b_v, a_v),
+        (f"v{b_v} vs v{a_v}", b_v, a_v),
+    ]
+    seen: set[str] = set()
+    deduped: list[tuple[str, str, str]] = []
+    for alias, first, second in aliases:
+        low = alias.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        deduped.append((alias, first, second))
+    return deduped
+
+
 def validate_h2h_citations_against_snapshot(master_plan: Any, next_v: int | str) -> list[str]:
     """Detect labeled H2H count citations that disagree with the generation snapshot."""
     h2h = load_generation_h2h_snapshot(next_v)
@@ -197,28 +224,47 @@ def validate_h2h_citations_against_snapshot(master_plan: Any, next_v: int | str)
     text = _flatten_text(master_plan)
     errors: list[str] = []
     for key, row in h2h.items():
-        if not isinstance(row, dict) or key not in text:
+        if not isinstance(row, dict):
             continue
-        start = 0
-        while True:
-            idx = text.find(key, start)
-            if idx < 0:
-                break
-            window = text[idx:idx + 360]
-            cited = {
-                "games": _extract_int(r"\bgames?\s*[:=]\s*(\d+)", window),
-                "a_wins": _extract_int(r"\ba_wins\s*[:=]\s*(\d+)", window),
-                "b_wins": _extract_int(r"\bb_wins\s*[:=]\s*(\d+)", window),
-            }
-            if cited["games"] is None:
-                cited["games"] = _extract_int(r"(?<![\w.])(\d+)\s*(?:g|games|局)\b", window)
-            for field, value in cited.items():
-                if value is None:
+        seen_spans: set[tuple[int, int]] = set()
+        for alias, first_v, second_v in _h2h_key_aliases(str(key)):
+            if not alias:
+                continue
+            pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])", re.IGNORECASE)
+            for match in pattern.finditer(text):
+                span = match.span()
+                if span in seen_spans:
                     continue
-                actual = int(row.get(field, 0) or 0)
-                if value != actual:
-                    errors.append(
-                        f"{key} cited {field}={value}, snapshot has {field}={actual}"
-                    )
-            start = idx + len(key)
+                seen_spans.add(span)
+                window = text[span[0]:span[0] + 360]
+                cited = {
+                    "games": _extract_int(r"\bgames?\s*[:=]\s*(\d+)", window),
+                    "a_wins": _extract_int(r"\ba_wins\s*[:=]\s*(\d+)", window),
+                    "b_wins": _extract_int(r"\bb_wins\s*[:=]\s*(\d+)", window),
+                }
+                if cited["games"] is None:
+                    cited["games"] = _extract_int(r"(?<![\w.])(\d+)\s*(?:g|games|局)\b", window)
+
+                wl_match = _WL_RE.search(window)
+                if wl_match:
+                    wins = int(wl_match.group(1))
+                    losses = int(wl_match.group(2))
+                    cited["games"] = cited["games"] if cited["games"] is not None else wins + losses
+                    key_match = _H2H_KEY_RE.search(str(key))
+                    key_a = key_match.group(1) if key_match else first_v
+                    if first_v == key_a:
+                        cited["a_wins"] = cited["a_wins"] if cited["a_wins"] is not None else wins
+                        cited["b_wins"] = cited["b_wins"] if cited["b_wins"] is not None else losses
+                    else:
+                        cited["a_wins"] = cited["a_wins"] if cited["a_wins"] is not None else losses
+                        cited["b_wins"] = cited["b_wins"] if cited["b_wins"] is not None else wins
+
+                for field, value in cited.items():
+                    if value is None:
+                        continue
+                    actual = int(row.get(field, 0) or 0)
+                    if value != actual:
+                        errors.append(
+                            f"{alias} cited {field}={value}, snapshot has {field}={actual} (key {key})"
+                        )
     return errors

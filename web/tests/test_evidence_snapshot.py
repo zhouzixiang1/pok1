@@ -110,6 +110,57 @@ def test_h2h_citation_validation_uses_snapshot_not_live(monkeypatch, tmp_path):
     assert "snapshot has b_wins=16" in "; ".join(errors)
 
 
+def test_h2h_citation_validation_rejects_abbreviated_wl_sample(monkeypatch, tmp_path):
+    import evidence_snapshot
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v59 vs national_v73": {
+            "games": 25,
+            "a_wins": 11,
+            "b_wins": 14,
+            "draws": 0,
+            "win_rate": 0.44,
+        }
+    })
+    evidence_snapshot.ensure_generation_h2h_snapshot(74)
+
+    plan = {
+        "analysis": (
+            "Replay evidence ev_abc shows v59 vs v73, 1W/4L, so v73 loses hard "
+            "to v59 and should tune against that nemesis."
+        ),
+    }
+
+    errors = evidence_snapshot.validate_h2h_citations_against_snapshot(plan, 74)
+
+    joined = "; ".join(errors)
+    assert "v59 vs v73 cited games=5" in joined
+    assert "snapshot has games=25 (key national_v59 vs national_v73)" in joined
+    assert "v59 vs v73 cited a_wins=1" in joined
+    assert "v59 vs v73 cited b_wins=4" in joined
+
+
+def test_h2h_citation_validation_accepts_reversed_abbreviated_wl(monkeypatch, tmp_path):
+    import evidence_snapshot
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v59 vs national_v73": {
+            "games": 25,
+            "a_wins": 11,
+            "b_wins": 14,
+            "draws": 0,
+            "win_rate": 0.44,
+        }
+    })
+    evidence_snapshot.ensure_generation_h2h_snapshot(74)
+
+    plan = {
+        "analysis": "Stable snapshot row v73 vs v59: 25g, 14W/11L from v73 perspective.",
+    }
+
+    assert evidence_snapshot.validate_h2h_citations_against_snapshot(plan, 74) == []
+
+
 def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     import agent_master
 

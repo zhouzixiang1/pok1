@@ -835,6 +835,15 @@ def test_subagent_cost_guard_denial_is_recoverable_warning(monkeypatch):
     assert data["next_action"] == "retry_with_bounded_inspection"
 
 
+def test_readonly_guard_denial_suggests_non_mutating_comparison():
+    hint = llm_query._readonly_guard_recovery_hint("write_redirect:/tmp/v73_sfp.txt")
+
+    assert "Do not create temp files" in hint
+    assert "diff -u parent_file target_file" in hint
+    assert "git diff --no-index -- parent target" in hint
+    assert "Redirect only to `/dev/null`" in hint
+
+
 def test_critic_and_reviewer_prompts_require_bounded_git_history():
     prompts_dir = Path(__file__).resolve().parents[1] / "core" / "prompts"
     for name in ("critic_prompt.md", "reviewer_prompt.md"):
@@ -898,6 +907,16 @@ def test_runtime_path_contract_warns_against_tmp_probe_logs(tmp_path):
     assert "`__pycache__`" in contract
     assert "source, parent, opponent, or other bot directories" in contract
     assert "leave them in place" in contract
+
+
+def test_runtime_path_contract_readonly_roles_ban_temp_redirects(tmp_path):
+    contract = llm_query._format_runtime_path_contract(tmp_path, allowed_write_dir=None)
+
+    assert "This LLM role is read-only" in contract
+    assert "Do not use output redirection" in contract
+    assert "`tee`" in contract
+    assert "diff -u A B" in contract
+    assert "Never write comparison snippets to `/tmp`" in contract
 
 
 def test_worker_and_crossover_prompts_ban_tmp_probe_logs_and_parent_cache_cleanup():

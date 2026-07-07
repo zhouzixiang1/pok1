@@ -106,6 +106,34 @@ def test_prompts_require_structured_battle_memory_citations():
     assert "ev_*" in worker_prompt
 
 
+def test_readonly_review_prompts_ban_temp_redirect_probes():
+    for name in ("reviewer_prompt.md", "critic_prompt.md", "master_prompt.md", "master_plan_audit.md"):
+        text = _prompt(name)
+        assert "read-only" in text
+        assert "Do not create temp files" in text
+        assert "write redirects" in text
+        assert "`/dev/null`" in text
+        assert "diff -u" in text or "direct read-only commands" in text
+
+
+def test_master_prompts_prioritize_h2h_snapshot_over_spotlight_samples():
+    master_prompt = _prompt("master_prompt.md")
+    audit_prompt = _prompt("master_plan_audit.md")
+    critic_prompt = _prompt("critic_prompt.md")
+
+    assert "The stable H2H snapshot is authoritative" in master_prompt
+    assert "Replay Spotlight, match_history excerpts" in master_prompt
+    assert "must not override" in master_prompt
+    assert "`games`, `a_wins`, `b_wins`, and `win_rate`" in master_prompt
+
+    assert "Reject plans that use replay spotlight" in audit_prompt
+    assert "short-window samples" in audit_prompt
+    assert "snapshot row key and exact `games`, `a_wins`, `b_wins`, and `win_rate`" in audit_prompt
+
+    assert "Replay spotlight is hand-level evidence only" in critic_prompt
+    assert "prefer H2H for matchup claims" in critic_prompt
+
+
 def test_prompts_require_reachable_embedded_selftests():
     master_prompt = _prompt("master_prompt.md")
     worker_prompt = _prompt("worker_prompt.md")
