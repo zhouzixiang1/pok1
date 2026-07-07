@@ -1613,6 +1613,9 @@ class TestWorkerFailureCircuitBreaker:
         assert tasks[0]["target_files"] == ["postflop.py"]
         assert "old precommit regression repair" not in tasks[0]["worker_prompt"]
         assert "reachability" in tasks[0]["worker_prompt"]
+        assert "_self_test_*" in tasks[0]["worker_prompt"]
+        assert 'if __name__ == "__main__"' in tasks[0]["worker_prompt"]
+        assert "dummy reference" in tasks[0]["worker_prompt"]
 
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "workers_done"

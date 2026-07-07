@@ -106,6 +106,18 @@ def test_prompts_require_structured_battle_memory_citations():
     assert "ev_*" in worker_prompt
 
 
+def test_prompts_require_reachable_embedded_selftests():
+    master_prompt = _prompt("master_prompt.md")
+    worker_prompt = _prompt("worker_prompt.md")
+
+    assert 'if __name__ == "__main__"' in master_prompt
+    assert 'if __name__ == "__main__"' in worker_prompt
+    assert "_self_test_*" in master_prompt
+    assert "_self_test_*" in worker_prompt
+    assert "Never leave a new top-level `_self_test_*`" in worker_prompt
+    assert "standalone `_self_test_*` helpers uncalled" in master_prompt
+
+
 def test_regression_guardian_prompt_matches_current_trigger_contract():
     guardian_prompt = _prompt("regression_guardian.md")
     tool_gates = (ROOT / "web" / "core" / "tool_gates.py").read_text(encoding="utf-8")
