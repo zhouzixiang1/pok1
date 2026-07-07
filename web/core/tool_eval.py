@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 import statistics
 import sys
 import threading
@@ -143,6 +144,21 @@ CS_ALPHA = 0.05
 _CS_R = NET_CHIPS_RANGE
 
 
+def _env_enabled(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _official_gate_enabled(name: str) -> bool:
+    return _env_enabled("POK_OFFICIAL_REQUIRED") or _env_enabled(name)
+
+
+def _official_bot_token(value) -> str:
+    path = Path(value)
+    if path.name in {"main.py", "national_bot.py"}:
+        return str(path.parent)
+    return str(path)
+
+
 async def _run_national_precommit_backend(
     *,
     v: int,
@@ -258,6 +274,41 @@ async def _run_national_precommit_backend(
             "passed": False,
         }
 
+    official_platform_result = {}
+    if native_tcp_mode and _official_gate_enabled("POK_OFFICIAL_PRECOMMIT_GATE") and not blockers:
+        official_self_rounds = int(os.environ.get("POK_OFFICIAL_SELF_PLAY_ROUNDS", "5"))
+        official_opponent_rounds = int(os.environ.get("POK_OFFICIAL_OPPONENT_ROUNDS", "3"))
+        official_hands = int(os.environ.get("POK_OFFICIAL_TARGET_HANDS", "70"))
+        official_opponent = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
+        if not official_opponent and opponents_with_paths:
+            official_opponent = _official_bot_token(opponents_with_paths[0].get("path") or opponents_with_paths[0].get("name"))
+        try:
+            from official_platform_harness import run_official_acceptance
+            _official_result = await run_official_acceptance(
+                _official_bot_token(candidate_main),
+                opponent=official_opponent or None,
+                self_play_rounds=official_self_rounds,
+                opponent_rounds=official_opponent_rounds,
+                target_hands=official_hands,
+            )
+            official_platform_result = _official_result.model_dump()
+            national_result["official_platform"] = official_platform_result
+            if not _official_result.passed:
+                blockers.append({
+                    "reason": "official_platform_acceptance",
+                    "details": "; ".join(_official_result.issues[:5] or ["official platform acceptance failed"]),
+                })
+        except Exception as exc:
+            official_platform_result = {
+                "passed": False,
+                "issues": [f"official_platform_acceptance_exception: {type(exc).__name__}: {str(exc)[:500]}"],
+            }
+            national_result["official_platform"] = official_platform_result
+            blockers.append({
+                "reason": "official_platform_acceptance_exception",
+                "details": official_platform_result["issues"][0],
+            })
+
     total_wins = int(national_result.get("total_wins", 0) or 0)
     total_losses = int(national_result.get("total_losses", 0) or 0)
     total_draws = int(national_result.get("total_draws", 0) or 0)
@@ -313,6 +364,7 @@ async def _run_national_precommit_backend(
         "blockers": blockers,
         "paired_bootstrap": paired_bootstrap_payload,
         "national": national_result,
+        "official_platform": official_platform_result,
         "code_fingerprint": code_fingerprint,
     }
 
@@ -336,6 +388,14 @@ async def _run_national_precommit_backend(
         metrics=paired_bootstrap_payload,
         failures=[str(b)[:500] for b in blockers],
     ))
+    if official_platform_result:
+        scorecard.add(GateResult.from_bool(
+            "official_platform_acceptance",
+            bool(official_platform_result.get("passed")),
+            metrics=official_platform_result.get("summary", {}),
+            failures=official_platform_result.get("issues", [])[:5],
+            artifacts={"report": official_platform_result.get("report", {})},
+        ))
     result["scorecard"] = scorecard.model_dump()
 
     if passed:

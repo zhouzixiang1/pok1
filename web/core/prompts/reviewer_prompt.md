@@ -71,7 +71,7 @@ You check ONLY these five areas:
 
 2. **File size limits** — Core strategy files (strategy.py, postflop.py) must not exceed 2000 lines (MAX_LINES_PER_FILE). Helper .py files must not exceed 1500 lines (MAX_LINES_HELPER). No .py file may exceed the hard cap of 2500 lines (MAX_LINES_HARD_CAP). These values are authoritative in web/core/evolution_infra.py (MAX_LINES_PER_FILE/MAX_LINES_HELPER/MAX_LINES_HARD_CAP); keep this prompt in sync with those constants.
 
-3. **Code correctness** — The bot must compile. `national_bot.py` must connect over TCP and send only line-delimited national actions. If a legacy/local `main.py` exists, it must still output valid `{"response": <int>}` JSON when used for regression. No unavailable imports (stdlib only). No infinite loops.
+3. **Code correctness** — The bot must compile. `national_bot.py` must connect over TCP and send only official raw national actions without relying on newline delimiters; it must split sticky inbound TCP packets before state updates. If a legacy/local `main.py` exists, it must still output valid `{"response": <int>}` JSON when used for regression. No unavailable imports (stdlib only). No infinite loops.
 
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.
 
