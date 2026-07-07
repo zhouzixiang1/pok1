@@ -50,6 +50,7 @@ import logging
 log = logging.getLogger("pok.orchestrator")
 os.environ.setdefault("POK_WORKFLOW_PROFILE", "national_native")
 SHUTDOWN_CANCEL_COST = -99998.0
+ORCH_ACTIONABLE_HANDOFF_COST = -99997.0
 
 # Infra-only blocker reasons used by the timed_out handler to distinguish
 # scheduler/daemon failures from real bot regressions.
@@ -117,6 +118,16 @@ class _OrchActionableStageTimeout(Exception):
     makes recovery effectively unavailable. When the persisted checkpoint has
     already recorded an actionable route for long enough, cancel the stream and
     resume from the checkpoint in a fresh cycle.
+    """
+
+
+class _OrchActionableStageHandoff(Exception):
+    """Internal signal: an MCP tool just reached a deterministic next-tool stage.
+
+    This is normal pipeline control flow, not SDK/LLM infrastructure failure.
+    The current SDK stream is disposable once the checkpoint has recorded the
+    canonical next route; the outer loop should yield immediately and route from
+    the checkpoint without backoff or error telemetry.
     """
 
 
@@ -733,13 +744,13 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             try:
                                 log_system_event(
                                     "pipeline.actionable_stage_handoff",
-                                    "warn",
+                                    "info",
                                     msg,
                                     handoff,
                                 )
                             except Exception:
                                 pass
-                            raise _OrchActionableStageTimeout(msg)
+                            raise _OrchActionableStageHandoff(msg)
                     elif isinstance(message, ResultMessage):
                         if message.total_cost_usd:
                             cost += message.total_cost_usd
@@ -1237,6 +1248,24 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 log.warning("Cancelled — session preserved for resume.")
             lf.write("\n[CANCELLED — session preserved for resume]\n")
             raise
+
+        except _OrchActionableStageHandoff as e:
+            # Normal pipeline handoff: a tool has already persisted a checkpoint
+            # whose route_policy has a deterministic next tool. Stop the current
+            # SDK stream and let the main loop route directly from the checkpoint.
+            for _g in (query_gen, _gen_ref[0]):
+                if _g is not None:
+                    try:
+                        await _g.aclose()
+                    except Exception as _ge:
+                        log.debug("gen.aclose failed during actionable handoff: %s", _ge)
+            _clear_orchestrator_session(reason="actionable_stage_handoff")
+            if ui:
+                ui.log_history(f"[Orchestrator] {e}", "info")
+            else:
+                log.info("%s", e)
+            lf.write(f"\n[ACTIONABLE_HANDOFF] {e}\n")
+            return ORCH_ACTIONABLE_HANDOFF_COST
 
         except Exception as e:
             # aclose 真实 gen：query_gen 在元组解包成功时赋值，但异常路径（含 _CostCapTripped
@@ -2380,6 +2409,42 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
             # do NOT log 'gen complete', do NOT back off. Just resume from the checkpoint
             # next iteration. Must come BEFORE the cost >= 0 success block so the sentinel
             # is never treated as success. Value -99999.0 (distinct from auth clamp).
+            if cost == ORCH_ACTIONABLE_HANDOFF_COST:
+                recovery = _checkpoint_recovery_context(
+                    "actionable_stage_handoff",
+                    ui,
+                    log_level="info",
+                    label="[Pipeline]",
+                )
+                if ui:
+                    ui.reset_gen_cost()
+                if recovery:
+                    if await _try_deterministic_checkpoint_route(
+                        recovery,
+                        ui,
+                        log_level="info",
+                        label="[Pipeline]",
+                    ):
+                        recovery = _checkpoint_recovery_context(
+                            "deterministic_route",
+                            ui,
+                            log_level="info",
+                            label="[Pipeline]",
+                        )
+                        if ui:
+                            ui.reset_gen_cost()
+                        await asyncio.sleep(1)
+                    else:
+                        await asyncio.sleep(0)
+                    continue
+                if ui:
+                    ui.log_history(
+                        "Orchestrator actionable-stage handoff had no active checkpoint; "
+                        "continuing without backoff.",
+                        "warn",
+                    )
+                continue
+
             if cost == -99999.0:
                 if ui:
                     ui.log_history(

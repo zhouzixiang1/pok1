@@ -300,6 +300,88 @@ def test_main_loop_sentinel_minus3_skips_cleanup_and_complete(tmp_path, monkeypa
     assert state["calls"] == 1, f"loop should process one sentinel cycle then stop; got {state['calls']} calls"
 
 
+def test_main_loop_actionable_handoff_routes_without_backoff(tmp_path, monkeypatch):
+    """The normal handoff sentinel should immediately resume deterministic routing."""
+    import orchestrator
+    import evolution_core
+
+    _write_checkpoint(tmp_path, "prepared", timeout_extensions=0)
+    evolution_core.PIPELINE_STATE_FILE.unlink()
+
+    route_calls = []
+    backoff_logs = []
+
+    class _UI:
+        def __init__(self):
+            self.gen_cost_total = 0.0
+        def log_history(self, msg, level="info"):
+            if "backing off" in msg.lower() or "back off" in msg.lower():
+                backoff_logs.append((level, msg))
+        def log_io(self, *a, **kw): pass
+        def emit_tool_call(self, *a, **kw): pass
+        def set_header(self, *a, **kw): pass
+        def set_status(self, *a, **kw): pass
+        def update_cost(self, *a, **kw): pass
+        def reset_gen_cost(self, *a, **kw): pass
+
+    class _Ctx:
+        pass
+
+    async def _fake_prepare(shutdown_mgr, ui, min_games=None):
+        return _Ctx()
+
+    async def _fake_run_one_cycle(**kw):
+        _write_checkpoint(tmp_path, "master_planned", timeout_extensions=0)
+        return orchestrator.ORCH_ACTIONABLE_HANDOFF_COST
+
+    async def _fake_route(recovery, ui=None, **kwargs):
+        route_calls.append((recovery, kwargs))
+        return True
+
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", _fake_run_one_cycle)
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", _fake_prepare)
+    monkeypatch.setattr(orchestrator, "_try_deterministic_checkpoint_route", _fake_route)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
+
+    async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
+        return
+
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", _no_watchdog)
+
+    import pipeline_recovery
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda checkpoint: {"active": True, "recoverable": True, "issues": []},
+    )
+
+    import rate_limiter
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(*a, **kw):
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+
+    class _ShutdownAfterRoute:
+        @property
+        def is_shutting_down(self):
+            return bool(route_calls)
+
+    asyncio.new_event_loop().run_until_complete(
+        orchestrator.orchestrator_loop(
+            ui=_UI(), shutdown_mgr=_ShutdownAfterRoute(), no_daemon=True,
+        )
+    )
+
+    assert len(route_calls) == 1
+    assert route_calls[0][0]["checkpoint"]["stage"] == "master_planned"
+    assert route_calls[0][1]["log_level"] == "info"
+    assert backoff_logs == []
+
+
 def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monkeypatch):
     """An active checkpoint must resume directly instead of starting Phase 1."""
     import orchestrator
@@ -637,12 +719,24 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     import orchestrator
     import evolution_core
 
-    _write_checkpoint(tmp_path, "quality_failed", timeout_extensions=0)
+    _write_checkpoint(tmp_path, "prepared", timeout_extensions=0)
     pipe_file = evolution_core.PIPELINE_STATE_FILE
     events = []
 
     async def _stalls_after_first_message():
         yield AssistantMessage(content=[TextBlock(text="seen")], model="sonnet")
+        evolution_core.write_pipeline_checkpoint(
+            102,
+            100,
+            "quality_failed",
+            master_plan={"strategy": "master", "tasks": []},
+            gate_results={
+                "quality": {
+                    "all_passed": False,
+                    "failed_gates": ["position_semantics(state.py:1)"],
+                }
+            },
+        )
         await asyncio.sleep(999)
         if False:
             yield  # pragma: no cover
@@ -674,10 +768,8 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     assert cost == -0.5
     after = json.loads(pipe_file.read_text())
     assert after.get("stage") == "quality_failed"
-    assert any(
-        e[0] in {"pipeline.actionable_stage_handoff", "pipeline.actionable_stage_timeout"}
-        for e in events
-    )
+    assert any(e[0] == "pipeline.actionable_stage_timeout" for e in events)
+    assert not any(e[0] == "pipeline.actionable_stage_handoff" for e in events)
 
 
 @pytest.mark.parametrize(
@@ -1220,7 +1312,7 @@ def test_reviewed_deterministic_route_passes_saved_plan_to_critic(monkeypatch):
 
 
 def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch):
-    """A gate-produced quality_failed checkpoint should hand off before Bash wandering."""
+    """A gate-produced quality_failed checkpoint should hand off without infra telemetry."""
     from claude_agent_sdk import AssistantMessage, TextBlock
 
     import evolution_core
@@ -1271,7 +1363,11 @@ def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch
         )
     )
 
-    assert cost == -0.5
+    assert cost == orchestrator.ORCH_ACTIONABLE_HANDOFF_COST
     after = json.loads(pipe_file.read_text())
     assert after.get("stage") == "quality_failed"
-    assert any(e[0] == "pipeline.actionable_stage_handoff" for e in events)
+    assert any(
+        e[0] == "pipeline.actionable_stage_handoff" and e[1] == "info"
+        for e in events
+    )
+    assert not any(e[0] == "pipeline.sdk_stream_error" for e in events)
