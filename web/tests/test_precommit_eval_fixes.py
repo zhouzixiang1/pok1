@@ -12,6 +12,31 @@ from pathlib import Path
 import pytest
 
 
+def _write_native_bot_contract(bot_dir: Path) -> None:
+    """Create a minimal native-national bot that passes static active-pool checks."""
+
+    from national_native import ensure_native_entry
+
+    (bot_dir / "main.py").write_text(
+        "def sanitize_action(action, state, my_chips):\n"
+        "    return int(action)\n",
+        encoding="utf-8",
+    )
+    (bot_dir / "state.py").write_text(
+        "def infer_remaining_hands_from_requests(requests):\n"
+        "    return max(0, 70 - len(requests))\n\n"
+        "def reconstruct_state(req):\n"
+        "    return dict(req)\n",
+        encoding="utf-8",
+    )
+    (bot_dir / "strategy.py").write_text(
+        "def get_action(req, requests):\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    ensure_native_entry(bot_dir, overwrite=True)
+
+
 # ── P0: Reap Signal Ordering ─────────────────────────────────────────
 
 class TestP0ReapSignalOrder:
@@ -85,12 +110,34 @@ class TestP1TimeBasedRefresh:
         bot_dir = bots_dir / "national_v99"
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
+        _write_native_bot_contract(bot_dir)
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
 
         result = get_active_bots()
         assert "national_v99" in result
+
+    def test_get_active_bots_skips_legacy_newline_native_contract(self, tmp_path, monkeypatch):
+        """Tagged old newline/readline TCP bots are not active in national_native_v1."""
+        from elo_daemon import get_active_bots
+        import evolution_infra
+
+        bots_dir = tmp_path / "bots"
+        bots_dir.mkdir()
+        bot_dir = bots_dir / "national_v99"
+        bot_dir.mkdir()
+        (bot_dir / ".completed").touch()
+        (bot_dir / "national_bot.py").write_text(
+            "sock.makefile('r')\nreader.readline()\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+
+        result = get_active_bots()
+        assert "national_v99" not in result
 
     def test_get_active_bots_skips_untagged_completed(self, tmp_path, monkeypatch):
         """get_active_bots does NOT trust .completed without a national-bot-vN tag."""
@@ -118,6 +165,7 @@ class TestP1TimeBasedRefresh:
         bots_dir.mkdir()
         bot_dir = bots_dir / "national_v99"
         bot_dir.mkdir()
+        _write_native_bot_contract(bot_dir)
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
@@ -166,7 +214,7 @@ class TestP1TimeBasedRefresh:
         for version in (1, 2):
             bot_dir = bots_dir / f"national_v{version}"
             bot_dir.mkdir()
-            (bot_dir / "main.py").write_text("print('bot')\n", encoding="utf-8")
+            _write_native_bot_contract(bot_dir)
             (bot_dir / ".completed").touch()
         (results_dir / "bot_stats.json").write_text(
             '{"national_v1":{"games":1000},"national_v2":{"games":1000}}\n',
