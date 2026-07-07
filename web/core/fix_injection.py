@@ -13,6 +13,7 @@ classified as not applicable instead of noisy skipped fixes.
 import fcntl
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,8 @@ class Patch:
     replace: str           # replacement text
     guard: str | None = None  # if present in file, skip this patch (idempotency)
     relevance_markers: tuple[str, ...] = ()
+    regex: bool = False
+    replace_all: bool = False
 
 
 @dataclass
@@ -144,6 +147,60 @@ MANDATORY_FIXES: list[Fix] = [
             ),
         ],
     ),
+    Fix(
+        fix_id="BOT-006",
+        description="National heads-up position identity: dealer is SB and non-dealer is BB",
+        patches=[
+            Patch(
+                file_rel="opponent.py",
+                search=(
+                    r"(?m)^(?P<indent>\s*)(?P<var>sb|[a-z_][a-z0-9_]*_sb)\s*=\s*"
+                    r"next_player\(\s*(?P<dealer>(?=[a-z_][a-z0-9_]*dealer|dealer)[a-z_][a-z0-9_]*)\s*,\s*1\s*\)"
+                ),
+                replace=r"\g<indent>\g<var> = \g<dealer>",
+                guard="position_semantics_regex_sb",
+                relevance_markers=("next_player(dealer_id, 1)", "next_player(future_dealer, 1)"),
+                regex=True,
+                replace_all=True,
+            ),
+            Patch(
+                file_rel="opponent.py",
+                search=(
+                    r"(?m)^(?P<indent>\s*)(?P<var>bb|[a-z_][a-z0-9_]*_bb)\s*=\s*"
+                    r"next_player\(\s*(?P<dealer>(?=[a-z_][a-z0-9_]*dealer|dealer)[a-z_][a-z0-9_]*)\s*,\s*2\s*\)"
+                ),
+                replace=r"\g<indent>\g<var> = 1 - \g<dealer>",
+                guard="position_semantics_regex_bb",
+                relevance_markers=("next_player(dealer_id, 2)", "next_player(future_dealer, 2)"),
+                regex=True,
+                replace_all=True,
+            ),
+            Patch(
+                file_rel="state.py",
+                search=(
+                    r"(?m)^(?P<indent>\s*)(?P<var>sb|[a-z_][a-z0-9_]*_sb)\s*=\s*"
+                    r"next_player\(\s*(?P<dealer>(?=[a-z_][a-z0-9_]*dealer|dealer)[a-z_][a-z0-9_]*)\s*,\s*1\s*\)"
+                ),
+                replace=r"\g<indent>\g<var> = \g<dealer>",
+                guard="position_semantics_regex_sb",
+                relevance_markers=("next_player(dealer_id, 1)", "next_player(future_dealer, 1)"),
+                regex=True,
+                replace_all=True,
+            ),
+            Patch(
+                file_rel="state.py",
+                search=(
+                    r"(?m)^(?P<indent>\s*)(?P<var>bb|[a-z_][a-z0-9_]*_bb)\s*=\s*"
+                    r"next_player\(\s*(?P<dealer>(?=[a-z_][a-z0-9_]*dealer|dealer)[a-z_][a-z0-9_]*)\s*,\s*2\s*\)"
+                ),
+                replace=r"\g<indent>\g<var> = 1 - \g<dealer>",
+                guard="position_semantics_regex_bb",
+                relevance_markers=("next_player(dealer_id, 2)", "next_player(future_dealer, 2)"),
+                regex=True,
+                replace_all=True,
+            ),
+        ],
+    ),
 ]
 
 
@@ -221,14 +278,21 @@ def apply_known_fixes(bot_dir: Path) -> tuple[list[str], list[str]]:
 
             content = target.read_text()
 
-            # Guard check: if fixed code already present, skip
-            if patch.guard and patch.guard in content:
+            # Guard check: if fixed code already present, skip. Regex
+            # replace-all patches intentionally rely on search exhaustion
+            # instead of a file-level guard so one fixed occurrence does not
+            # mask another legacy occurrence in the same file.
+            if patch.guard and patch.guard in content and not patch.replace_all:
                 applicable_seen = True
                 skipped_seen = True
                 continue
 
             # Search check: if search string not found, skip
-            if patch.search not in content:
+            search_found = (
+                re.search(patch.search, content) is not None
+                if patch.regex else patch.search in content
+            )
+            if not search_found:
                 if native_layout and not _patch_relevant_to_native_file(content, patch):
                     log.debug(
                         "Fix %s not applicable: %s has no legacy relevance markers",
@@ -245,7 +309,16 @@ def apply_known_fixes(bot_dir: Path) -> tuple[list[str], list[str]]:
                 continue
 
             # Apply patch
-            new_content = content.replace(patch.search, patch.replace, 1)
+            if patch.regex:
+                new_content, replacements = re.subn(
+                    patch.search,
+                    patch.replace,
+                    content,
+                    count=0 if patch.replace_all else 1,
+                )
+            else:
+                replacements = 1
+                new_content = content.replace(patch.search, patch.replace, 1)
             if new_content == content:
                 applicable_seen = True
                 skipped_seen = True
@@ -255,7 +328,7 @@ def apply_known_fixes(bot_dir: Path) -> tuple[list[str], list[str]]:
             _locked_read_write(target, new_content)
             applicable_seen = True
             fix_applied = True
-            log.info("Applied fix %s to %s", fix.fix_id, patch.file_rel)
+            log.info("Applied fix %s to %s (%d replacement%s)", fix.fix_id, patch.file_rel, replacements, "" if replacements == 1 else "s")
 
         if fix_applied:
             applied.append(fix.fix_id)
