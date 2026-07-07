@@ -10,8 +10,10 @@ oracle used when the environment enables the EXE gate.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -55,6 +57,9 @@ CRITICAL_LOG_PATTERNS = (
     "invalid action",
     "protocol error",
 )
+SEND_MSG_RE = re.compile(r"\bSEND\b.*\bmsg='([^']*)'")
+RAISE_ACTION_RE = re.compile(r"^raise [1-9]\d*$")
+THP_HAND_RE = re.compile(r"\bSTATE:\d+:")
 
 
 @dataclass(frozen=True)
@@ -82,8 +87,10 @@ class OfficialPlatformConfig:
     listen_timeout_sec: float = 45.0
     no_progress_timeout_sec: float = 75.0
     round_timeout_sec: float = 900.0
+    lock_timeout_sec: float = field(default_factory=lambda: float(os.environ.get("POK_OFFICIAL_LOCK_TIMEOUT_SEC", "900")))
     settlement_grace_sec: float = 8.0
     artifact_grace_sec: float = 20.0
+    lock_path: Path = field(default_factory=lambda: Path(os.environ.get("POK_OFFICIAL_LOCK_PATH", "/tmp/pok_official_platform.lock")))
     ui: PlatformUiProfile = field(default_factory=PlatformUiProfile)
 
     def locale_env(self) -> dict[str, str]:
@@ -196,6 +203,20 @@ def _line_gap(prev: int | None, current: int | None) -> int:
     return current + 24 * 3600 - prev
 
 
+def _sent_action_issue(message: str) -> str | None:
+    if message in {"call", "check", "fold", "allin"}:
+        return None
+    if RAISE_ACTION_RE.fullmatch(message):
+        return None
+    if message.startswith("bet"):
+        return f"illegal_bet_action: msg={message!r}"
+    if message.strip() != message:
+        return f"protocol_action_whitespace: msg={message!r}"
+    if message.startswith("raise"):
+        return f"protocol_raise_format: msg={message!r}"
+    return f"protocol_action_format: msg={message!r}"
+
+
 def parse_bot_log(path: str | Path, *, tail_lines: int = 30) -> BotLogStats:
     log_path = Path(path)
     stats = BotLogStats(path=str(log_path), exists=log_path.exists())
@@ -225,8 +246,15 @@ def parse_bot_log(path: str | Path, *, tail_lines: int = 30) -> BotLogStats:
             match = re.search(r"earnChips\s+(-?\d+)", line)
             if match:
                 stats.net_chips += int(match.group(1))
-        if line.startswith("[") and " SEND " in line:
+        if line.startswith("[") and " SEND " in line and "name_handshake" not in line:
             stats.sends += 1
+            send_match = SEND_MSG_RE.search(line)
+            if send_match:
+                issue = _sent_action_issue(send_match.group(1))
+                if issue:
+                    stats.issues.append(issue)
+            else:
+                stats.issues.append(f"send_message_missing_msg_field: {line[:300]}")
         for hand_match in re.finditer(r"\bhand=(\d+)\b", line):
             stats.max_hand = max(stats.max_hand, int(hand_match.group(1)))
         decision_match = re.search(r"DECIDE done .* elapsed=([0-9.]+)s", line)
@@ -493,6 +521,51 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(_jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _copy_config(cfg: OfficialPlatformConfig, **overrides: Any) -> OfficialPlatformConfig:
+    values = {
+        "exe_path": cfg.exe_path,
+        "wineprefix": cfg.wineprefix,
+        "results_dir": cfg.results_dir,
+        "host": cfg.host,
+        "port": cfg.port,
+        "startup_timeout_sec": cfg.startup_timeout_sec,
+        "listen_timeout_sec": cfg.listen_timeout_sec,
+        "no_progress_timeout_sec": cfg.no_progress_timeout_sec,
+        "round_timeout_sec": cfg.round_timeout_sec,
+        "lock_timeout_sec": cfg.lock_timeout_sec,
+        "settlement_grace_sec": cfg.settlement_grace_sec,
+        "artifact_grace_sec": cfg.artifact_grace_sec,
+        "lock_path": cfg.lock_path,
+        "ui": cfg.ui,
+    }
+    values.update(overrides)
+    return OfficialPlatformConfig(**values)
+
+
+@contextmanager
+def _official_platform_lock(config: OfficialPlatformConfig):
+    config.lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with config.lock_path.open("w", encoding="utf-8") as lock_fp:
+        deadline = time.time() + max(0.0, config.lock_timeout_sec)
+        while True:
+            try:
+                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_fp.write(f"pid={os.getpid()} acquired_at={datetime.now().isoformat(timespec='seconds')}\n")
+                lock_fp.flush()
+                break
+            except BlockingIOError as exc:
+                if time.time() >= deadline:
+                    raise TimeoutError(
+                        f"official_platform_lock_timeout: {config.lock_path} "
+                        f"after {config.lock_timeout_sec:g}s"
+                    ) from exc
+                time.sleep(0.5)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+
+
 def _platform_thp_dirs(exe_path: Path) -> list[Path]:
     dirs: list[Path] = []
     for path in (exe_path.parent, exe_path.parent.parent):
@@ -584,6 +657,25 @@ def _collect_new_thp_files(
         except OSError as exc:
             issues.append(f"thp_collect_error: {path.name}: {type(exc).__name__}: {exc}")
     return artifacts, issues
+
+
+def _summarize_thp_files(paths: list[str]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for name in paths:
+        path = Path(name)
+        summary: dict[str, Any] = {"path": str(path), "exists": path.exists(), "hand_records": 0, "bytes": 0}
+        if path.exists():
+            try:
+                raw = path.read_bytes()
+                summary["bytes"] = len(raw)
+                text = raw.decode("gb2312", errors="replace")
+                summary["hand_records"] = len(THP_HAND_RE.findall(text))
+            except OSError as exc:
+                summary["issue"] = f"thp_read_error: {type(exc).__name__}: {exc}"
+            except Exception as exc:
+                summary["issue"] = f"thp_parse_error: {type(exc).__name__}: {exc}"
+        summaries.append(summary)
+    return summaries
 
 
 def run_official_round(
@@ -775,6 +867,13 @@ def run_official_round(
         artifact_dir=round_dir / "thp",
         wait_sec=artifact_wait_sec,
     )
+    thp_summaries = _summarize_thp_files(thp_artifacts)
+    if target_hands >= 70:
+        max_thp_hands = max((int(item.get("hand_records", 0) or 0) for item in thp_summaries), default=0)
+        if not thp_artifacts:
+            receipt["issues"].append("thp_missing_for_full_70_hand_round")
+        elif max_thp_hands < target_hands:
+            receipt["issues"].append(f"thp_incomplete_for_full_round: hands={max_thp_hands} target={target_hands}")
 
     receipt["duration_sec"] = round(time.time() - started_at, 2)
     receipt["bot_returncodes"] = {
@@ -795,6 +894,7 @@ def run_official_round(
         "screenshots": screenshots,
         "platform_thp_dirs": [str(path) for path in platform_thp_dirs],
         "thp_files": thp_artifacts,
+        "thp_summaries": thp_summaries,
     }
     receipt["issues"].extend(artifact_issues)
     receipt["issues"].extend(_read_issue_file(bot_a_stdout))
@@ -830,20 +930,7 @@ def run_official_acceptance_sync(
     """Run the official 5+self / 3+opponent acceptance suite."""
     cfg = config or OfficialPlatformConfig()
     if results_dir is not None:
-        cfg = OfficialPlatformConfig(
-            exe_path=cfg.exe_path,
-            wineprefix=cfg.wineprefix,
-            results_dir=Path(results_dir),
-            host=cfg.host,
-            port=cfg.port,
-            startup_timeout_sec=cfg.startup_timeout_sec,
-            listen_timeout_sec=cfg.listen_timeout_sec,
-            no_progress_timeout_sec=cfg.no_progress_timeout_sec,
-            round_timeout_sec=cfg.round_timeout_sec,
-            settlement_grace_sec=cfg.settlement_grace_sec,
-            artifact_grace_sec=cfg.artifact_grace_sec,
-            ui=cfg.ui,
-        )
+        cfg = _copy_config(cfg, results_dir=Path(results_dir))
     suite_dir = cfg.results_dir / f"acceptance_{_now_id()}"
     suite_dir.mkdir(parents=True, exist_ok=True)
     candidate_path = Path(candidate).expanduser().resolve()
@@ -854,39 +941,43 @@ def run_official_acceptance_sync(
     issues: list[str] = []
     rounds: list[dict[str, Any]] = []
 
-    for index in range(1, self_play_rounds + 1):
-        round_dir = suite_dir / f"self_play_{index:02d}"
-        receipt = round_runner(
-            BotLaunchConfig(candidate_path, name="BotA", seat="upper"),
-            BotLaunchConfig(candidate_path, name="BotB", seat="lower"),
-            target_hands=target_hands,
-            round_kind="self_play",
-            round_index=index,
-            config=cfg,
-            out_dir=round_dir,
-        )
-        rounds.append(receipt)
-        if not receipt.get("passed"):
-            issues.extend(f"self_play_{index}: {issue}" for issue in receipt.get("issues", []) or ["failed"])
+    try:
+        with _official_platform_lock(cfg):
+            for index in range(1, self_play_rounds + 1):
+                round_dir = suite_dir / f"self_play_{index:02d}"
+                receipt = round_runner(
+                    BotLaunchConfig(candidate_path, name="BotA", seat="upper"),
+                    BotLaunchConfig(candidate_path, name="BotB", seat="lower"),
+                    target_hands=target_hands,
+                    round_kind="self_play",
+                    round_index=index,
+                    config=cfg,
+                    out_dir=round_dir,
+                )
+                rounds.append(receipt)
+                if not receipt.get("passed"):
+                    issues.extend(f"self_play_{index}: {issue}" for issue in receipt.get("issues", []) or ["failed"])
 
-    if opponent_rounds and opponent_path is None:
-        issues.append("official_acceptance_opponent_missing")
-    for index in range(1, opponent_rounds + 1):
-        if opponent_path is None:
-            break
-        round_dir = suite_dir / f"opponent_{index:02d}"
-        receipt = round_runner(
-            BotLaunchConfig(candidate_path, name="Candidate", seat="upper"),
-            BotLaunchConfig(opponent_path, name="Opponent", seat="lower"),
-            target_hands=target_hands,
-            round_kind="opponent",
-            round_index=index,
-            config=cfg,
-            out_dir=round_dir,
-        )
-        rounds.append(receipt)
-        if not receipt.get("passed"):
-            issues.extend(f"opponent_{index}: {issue}" for issue in receipt.get("issues", []) or ["failed"])
+            if opponent_rounds and opponent_path is None:
+                issues.append("official_acceptance_opponent_missing")
+            for index in range(1, opponent_rounds + 1):
+                if opponent_path is None:
+                    break
+                round_dir = suite_dir / f"opponent_{index:02d}"
+                receipt = round_runner(
+                    BotLaunchConfig(candidate_path, name="Candidate", seat="upper"),
+                    BotLaunchConfig(opponent_path, name="Opponent", seat="lower"),
+                    target_hands=target_hands,
+                    round_kind="opponent",
+                    round_index=index,
+                    config=cfg,
+                    out_dir=round_dir,
+                )
+                rounds.append(receipt)
+                if not receipt.get("passed"):
+                    issues.extend(f"opponent_{index}: {issue}" for issue in receipt.get("issues", []) or ["failed"])
+    except Exception as exc:
+        issues.append(f"official_acceptance_suite_exception: {type(exc).__name__}: {str(exc)[:500]}")
 
     passed_rounds = sum(1 for receipt in rounds if receipt.get("passed"))
     failed_rounds = len(rounds) - passed_rounds

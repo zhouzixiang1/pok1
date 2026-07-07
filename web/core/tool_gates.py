@@ -833,7 +833,11 @@ async def run_quality_gates(args):
                 national_acceptance_payload.setdefault("official_platform", official_payload)
                 if not _official_acceptance.passed:
                     national_acceptance_ok = False
-                    national_acceptance_errors.extend(_official_acceptance.issues[:5] or ["official_platform_acceptance_failed"])
+                    official_errors = _official_acceptance.issues[:5] or ["official_platform_acceptance_failed"]
+                    official_suite_dir = (_official_acceptance.summary or {}).get("suite_dir")
+                    if official_suite_dir:
+                        official_errors.append(f"official_platform_evidence={official_suite_dir}")
+                    national_acceptance_errors.extend(official_errors)
                 log_system_event(
                     "pipeline.official_platform_acceptance_passed" if _official_acceptance.passed else "pipeline.official_platform_acceptance_failed",
                     "success" if _official_acceptance.passed else "error",

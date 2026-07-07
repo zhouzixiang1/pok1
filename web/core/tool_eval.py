@@ -294,9 +294,13 @@ async def _run_national_precommit_backend(
             official_platform_result = _official_result.model_dump()
             national_result["official_platform"] = official_platform_result
             if not _official_result.passed:
+                official_details = "; ".join(_official_result.issues[:5] or ["official platform acceptance failed"])
+                official_suite_dir = (_official_result.summary or {}).get("suite_dir")
+                if official_suite_dir:
+                    official_details = f"{official_details}; evidence={official_suite_dir}"
                 blockers.append({
                     "reason": "official_platform_acceptance",
-                    "details": "; ".join(_official_result.issues[:5] or ["official platform acceptance failed"]),
+                    "details": official_details,
                 })
         except Exception as exc:
             official_platform_result = {

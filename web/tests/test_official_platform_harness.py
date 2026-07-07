@@ -7,7 +7,9 @@ from official_platform_harness import (
     run_official_acceptance_sync,
     summarize_round_logs,
     _collect_new_thp_files,
+    _sent_action_issue,
     _snapshot_platform_thp_files,
+    _summarize_thp_files,
     _target_reached,
 )
 
@@ -52,6 +54,36 @@ def test_parse_bot_log_counts_progress_and_issues(tmp_path):
     assert stats.max_gap_sec == 4
     assert stats.max_decision_sec == 0.25
     assert len(stats.issues) == 1
+
+
+def test_parse_bot_log_rejects_non_official_send_format(tmp_path):
+    log = tmp_path / "bot.log"
+    log.write_text(
+        "\n".join(
+            [
+                "[10:00:01] SEND name=BotA hand=1 stage=preflop msg='raise 200'",
+                "[10:00:02] SEND name=BotA hand=1 stage=preflop msg='raise  200'",
+                "[10:00:03] SEND name=BotA hand=1 stage=preflop msg='bet 200'",
+                "[10:00:04] SEND name=BotA hand=1 stage=preflop msg=' call'",
+                "[10:00:05] SEND name_handshake name='BotA'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    stats = parse_bot_log(log)
+
+    assert stats.sends == 4
+    assert stats.issues == [
+        "protocol_raise_format: msg='raise  200'",
+        "illegal_bet_action: msg='bet 200'",
+        "protocol_action_whitespace: msg=' call'",
+    ]
+
+
+def test_sent_action_issue_accepts_exact_official_wire_actions():
+    for message in ("call", "check", "fold", "allin", "raise 1", "raise 20000"):
+        assert _sent_action_issue(message) is None
 
 
 def test_build_bot_command_uses_native_launch_contract(tmp_path):
@@ -180,6 +212,20 @@ def test_collect_new_thp_files_keeps_platform_dir_clean(tmp_path):
     assert old_thp.exists()
     assert not new_thp.exists()
     assert (artifact_dir / "THP-new.txt").read_text(encoding="gb2312") == "new"
+
+
+def test_summarize_thp_files_counts_state_records(tmp_path):
+    thp = tmp_path / "THP-test.txt"
+    thp.write_text("STATE:1:x:y:z:p;\nSTATE:2:x:y:z:p;\n", encoding="gb2312")
+
+    summaries = _summarize_thp_files([str(thp)])
+
+    assert summaries == [{
+        "path": str(thp),
+        "exists": True,
+        "hand_records": 2,
+        "bytes": thp.stat().st_size,
+    }]
 
 
 def test_collect_new_thp_files_scans_platform_root_and_exe_dir(tmp_path):
