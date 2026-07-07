@@ -448,6 +448,84 @@ def test_main_loop_success_with_active_checkpoint_skips_cleanup_and_resumes(tmp_
     assert all(ctx.next_v == 102 and ctx.source_v == 100 for ctx in run_contexts)
 
 
+def test_main_loop_routes_fresh_selected_checkpoint_without_llm_cycle(monkeypatch):
+    """After Phase 1 writes selected, deterministic preparation should run before LLM."""
+    import orchestrator
+    from generation_scheduler import GenerationContext
+
+    route_calls = []
+    recovery_context_calls = []
+
+    async def _fake_prepare(shutdown_mgr, ui, min_games=None):
+        return GenerationContext(
+            current_v=72,
+            next_v=97,
+            strategy="crossover",
+            source_v=72,
+            crossover_parents=(72, 8),
+        )
+
+    async def _fake_route(recovery, ui, **kwargs):
+        route_calls.append((recovery, kwargs))
+        return True
+
+    def _fake_recovery_context(reason, ui, **kwargs):
+        recovery_context_calls.append((reason, kwargs))
+        if reason == "selected_after_prepare":
+            return {
+                "action": "resume",
+                "checkpoint": {
+                    "stage": "selected",
+                    "next_v": 97,
+                    "source_v": 72,
+                    "parent2_v": 8,
+                },
+            }
+        return None
+
+    async def _run_one_cycle_should_not_run(**_kwargs):
+        raise AssertionError("selected deterministic route should skip _run_one_cycle")
+
+    async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
+        return
+
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", _fake_prepare)
+    monkeypatch.setattr(orchestrator, "_try_deterministic_checkpoint_route", _fake_route)
+    monkeypatch.setattr(orchestrator, "_checkpoint_recovery_context", _fake_recovery_context)
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", _run_one_cycle_should_not_run)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", _no_watchdog)
+    monkeypatch.setattr(orchestrator, "_watchdog_triggered", False)
+
+    import rate_limiter
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(*_args, **_kwargs):
+        await real_sleep(0)
+
+    monkeypatch.setattr(orchestrator.asyncio, "sleep", _fast_sleep)
+
+    class _ShutdownAfterRoute:
+        @property
+        def is_shutting_down(self):
+            return bool(route_calls)
+
+    asyncio.new_event_loop().run_until_complete(
+        orchestrator.orchestrator_loop(
+            ui=_FakeUI(),
+            shutdown_mgr=_ShutdownAfterRoute(),
+            no_daemon=True,
+        )
+    )
+
+    assert len(route_calls) == 1
+    assert route_calls[0][0]["checkpoint"]["stage"] == "selected"
+    assert route_calls[0][1]["log_level"] == "info"
+    assert ("selected_after_prepare", {"log_level": "info", "label": "[Pipeline]"}) in recovery_context_calls
+
+
 def test_main_loop_post_cleanup_timeout_still_marks_cycle_done(monkeypatch):
     """Post-generation housekeeping timeout should not block the next evolution cycle."""
     import orchestrator
