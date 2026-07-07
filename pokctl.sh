@@ -157,11 +157,35 @@ frontend_static_ready() {
     [ -f "web/server/static/index.html" ] && [ -d "web/server/static/assets" ]
 }
 
+default_official_opponent_path() {
+    if [ -d "$ROOT_REAL/ref/national_v70" ]; then
+        echo "$ROOT_REAL/ref/national_v70"
+    elif [ -d "$ROOT_REAL/../ref/national_v70" ]; then
+        readlink -f "$ROOT_REAL/../ref/national_v70"
+    else
+        echo ""
+    fi
+}
+
 configure_evolution_publish_env() {
+    local official_opponent_default
+    official_opponent_default="$(default_official_opponent_path)"
     : "${POK_EVOLUTION_RUNTIME:=1}"
     : "${POK_REQUIRE_EVOLUTION_PUSH:=$POK_EVOLUTION_RUNTIME}"
     : "${EVOLUTION_GIT_PUSH:=$POK_REQUIRE_EVOLUTION_PUSH}"
-    export POK_EVOLUTION_RUNTIME POK_REQUIRE_EVOLUTION_PUSH EVOLUTION_GIT_PUSH
+    : "${POK_OFFICIAL_REQUIRED:=1}"
+    : "${POK_OFFICIAL_SMOKE_GATE:=1}"
+    : "${POK_OFFICIAL_PRECOMMIT_GATE:=1}"
+    : "${POK_OFFICIAL_ACCEPTANCE_GATE:=0}"
+    : "${POK_OFFICIAL_SELF_PLAY_ROUNDS:=5}"
+    : "${POK_OFFICIAL_OPPONENT_ROUNDS:=3}"
+    : "${POK_OFFICIAL_TARGET_HANDS:=70}"
+    : "${POK_OFFICIAL_OPPONENT:=$official_opponent_default}"
+    export \
+        POK_EVOLUTION_RUNTIME POK_REQUIRE_EVOLUTION_PUSH EVOLUTION_GIT_PUSH \
+        POK_OFFICIAL_REQUIRED POK_OFFICIAL_SMOKE_GATE POK_OFFICIAL_PRECOMMIT_GATE \
+        POK_OFFICIAL_ACCEPTANCE_GATE POK_OFFICIAL_SELF_PLAY_ROUNDS \
+        POK_OFFICIAL_OPPONENT_ROUNDS POK_OFFICIAL_TARGET_HANDS POK_OFFICIAL_OPPONENT
 }
 
 kill_orphan() {

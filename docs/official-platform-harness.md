@@ -91,9 +91,9 @@ This path is runtime evidence and should remain gitignored.
 
 ## Gate Integration
 
-The harness is available from `web/core/official_platform_harness.py`. It is off
-by default so normal unit tests and local simulator checks stay fast. Enable it
-for the evolution process with:
+The harness is available from `web/core/official_platform_harness.py`. Normal
+unit tests and direct local simulator checks stay fast, but `pokctl.sh` enables
+the official runtime gate defaults for long-running evolution:
 
 ```bash
 export POK_OFFICIAL_REQUIRED=1
@@ -103,12 +103,15 @@ export POK_OFFICIAL_OPPONENT_ROUNDS=3
 export POK_OFFICIAL_TARGET_HANDS=70
 ```
 
-More granular switches are available:
+With `POK_OFFICIAL_REQUIRED=1`, quality gates run the short official smoke and
+precommit runs the full 5+3 official acceptance suite. This avoids running the
+same long synchronous EXE suite twice in one generation. More granular switches
+are available:
 
 ```bash
 export POK_OFFICIAL_SMOKE_GATE=1
-export POK_OFFICIAL_ACCEPTANCE_GATE=1
 export POK_OFFICIAL_PRECOMMIT_GATE=1
+export POK_OFFICIAL_ACCEPTANCE_GATE=1  # optional: also run the full suite at quality-gate time
 ```
 
 When enabled, precommit appends an `official_platform_acceptance` blocker on
