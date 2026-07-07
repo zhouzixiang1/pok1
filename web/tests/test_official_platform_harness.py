@@ -34,6 +34,12 @@ def test_official_required_does_not_enable_quality_long_acceptance(monkeypatch):
     )
 
 
+def test_pokctl_defaults_official_smoke_to_queue():
+    script = (ROOT / "pokctl.sh").read_text(encoding="utf-8")
+
+    assert 'POK_OFFICIAL_SMOKE_GATE:=queue' in script
+
+
 def test_official_platform_cli_defaults_to_compliance_rounds():
     from scripts.official_platform_acceptance import parse_args
 

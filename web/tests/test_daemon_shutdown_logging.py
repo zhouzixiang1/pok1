@@ -1,5 +1,7 @@
 import logging
+import sys
 from pathlib import Path
+from types import ModuleType
 
 
 def test_pool_break_during_shutdown_is_info_not_error(monkeypatch, caplog):
@@ -52,6 +54,44 @@ def test_daemon_signal_handler_emits_structured_signal_event(monkeypatch):
     assert event[1] == "warn"
     assert event[3]["signal"] == "SIGTERM"
     assert event[3]["shutdown_requested"] is True
+
+
+def test_daemon_official_certification_worker_processes_queue(monkeypatch):
+    import elo_daemon
+
+    calls = []
+    events = []
+    fake_cert = ModuleType("official_certification")
+
+    def fake_process_certification_queue(limit=1):
+        calls.append(limit)
+        elo_daemon.running = False
+        return {
+            "processed": 1,
+            "remaining": 0,
+            "lock_busy": False,
+            "results": [{"candidate": "bot", "status": "official-smoke-pass"}],
+            "errors": [],
+        }
+
+    fake_cert.process_certification_queue = fake_process_certification_queue
+    monkeypatch.setitem(sys.modules, "official_certification", fake_cert)
+    monkeypatch.setattr(elo_daemon, "running", True)
+    monkeypatch.setattr(elo_daemon, "OFFICIAL_CERT_QUEUE_INTERVAL_SEC", 5.0)
+    monkeypatch.setattr(elo_daemon, "OFFICIAL_CERT_QUEUE_LIMIT", 1)
+    monkeypatch.setattr(
+        elo_daemon,
+        "log_system_event",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+
+    thread = elo_daemon.start_official_certification_thread()
+    assert thread is not None
+    thread.join(timeout=2.0)
+
+    assert calls == [1]
+    assert not thread.is_alive()
+    assert any(args[0] == "official_certification.queue_processed" for args, _ in events)
 
 
 def test_daemon_exit_metadata_classifies_signal():

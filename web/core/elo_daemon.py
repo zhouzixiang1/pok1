@@ -121,6 +121,8 @@ running = True
 PICK_MATCH_LOG_INTERVAL_SEC = float(os.environ.get("POK_PICK_MATCH_LOG_INTERVAL_SEC", "30"))
 ACTION_STATS_REFRESH_INTERVAL_SEC = float(os.environ.get("POK_ACTION_STATS_REFRESH_INTERVAL_SEC", "30"))
 _pick_match_log_state: dict[str, object] = {"last_signature": None, "last_ts": 0.0}
+OFFICIAL_CERT_QUEUE_INTERVAL_SEC = float(os.environ.get("POK_OFFICIAL_QUEUE_INTERVAL_SEC", "60"))
+OFFICIAL_CERT_QUEUE_LIMIT = max(1, int(os.environ.get("POK_OFFICIAL_QUEUE_LIMIT", "1")))
 
 
 def _write_heartbeat(scheduler_capable=True):
@@ -146,7 +148,7 @@ def _write_heartbeat(scheduler_capable=True):
         info["last_heartbeat"] = time.time()
         # C3: use a heartbeat-specific temp name to avoid colliding with
         # start_daemon's ".daemon_pid.tmp" when an orphan-cleanup restart races
-        # with a heartbeat write (both used the identical path → torn JSON →
+        # with a heartbeat write (both used the identical path -> torn JSON ->
         # liveness probe false-negative). Also fsync before atomic replace so a
         # crash/power loss can't leave an empty/torn PID file.
         tmp = pid_file.with_suffix(".hb.tmp")
@@ -160,6 +162,66 @@ def _write_heartbeat(scheduler_capable=True):
     except Exception:
         # Heartbeat is advisory; never let it crash the main loop.
         pass
+
+
+def start_official_certification_thread():
+    """Process official EXE certification jobs without blocking quality gates."""
+    if os.environ.get("POK_OFFICIAL_QUEUE_WORKER", "1").strip().lower() in {"0", "false", "off", "no"}:
+        log.info("Official certification queue worker disabled")
+        return None
+
+    interval = max(5.0, OFFICIAL_CERT_QUEUE_INTERVAL_SEC)
+    limit = OFFICIAL_CERT_QUEUE_LIMIT
+
+    def _worker():
+        log.info("Official certification queue worker started (interval=%ss, limit=%s)", interval, limit)
+        while running:
+            try:
+                from official_certification import process_certification_queue
+
+                result = process_certification_queue(limit=limit)
+                if result.get("processed") or result.get("errors"):
+                    log.info(
+                        "Official certification queue processed=%s remaining=%s errors=%s lock_busy=%s",
+                        result.get("processed"),
+                        result.get("remaining"),
+                        result.get("errors") or [],
+                        result.get("lock_busy"),
+                    )
+                    try:
+                        log_system_event(
+                            "official_certification.queue_processed",
+                            "warn" if result.get("errors") else "info",
+                            "Official certification queue processed in daemon background worker",
+                            {
+                                "processed": result.get("processed"),
+                                "remaining": result.get("remaining"),
+                                "lock_busy": result.get("lock_busy"),
+                                "errors": result.get("errors") or [],
+                                "results": result.get("results") or [],
+                            },
+                        )
+                    except Exception:
+                        pass
+            except Exception as exc:
+                log.warning("Official certification queue worker failed: %s", exc)
+                try:
+                    log_system_event(
+                        "official_certification.queue_worker_failed",
+                        "warn",
+                        f"Official certification queue worker failed: {type(exc).__name__}",
+                        {"error": str(exc)[:500]},
+                    )
+                except Exception:
+                    pass
+
+            deadline = time.time() + interval
+            while running and time.time() < deadline:
+                time.sleep(min(1.0, deadline - time.time()))
+
+    thread = threading.Thread(target=_worker, name="official-certification-queue", daemon=True)
+    thread.start()
+    return thread
 
 
 def handle_signal(signum, frame):
@@ -1223,6 +1285,11 @@ def main():
         log.info("Battle experience background thread started")
     except Exception as e:
         log.warning("Battle experience thread failed to start (non-fatal): %s", e)
+
+    try:
+        start_official_certification_thread()
+    except Exception as e:
+        log.warning("Official certification queue worker failed to start (non-fatal): %s", e)
 
     # 预留 worker slot 给 external(precommit) job。root-cause-audit 2026-06-21: daemon
     # 启动即用 internal matches 填满全部 n_workers 槽 → 外部 precommit job 只能在某个

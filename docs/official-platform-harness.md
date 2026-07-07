@@ -143,13 +143,15 @@ export POK_OFFICIAL_OPPONENT_ROUNDS=1
 export POK_OFFICIAL_TARGET_HANDS=70
 ```
 
-With `POK_OFFICIAL_REQUIRED=1`, quality gates run the short official smoke and
-precommit only queues or reads the 1+1 official compliance suite above. The
+With `POK_OFFICIAL_REQUIRED=1`, quality gates enqueue or read the short
+official smoke by default; the rating daemon processes that queue in the
+background so official EXE ambiguity does not block local native TCP gates.
+Precommit also queues or reads the 1+1 official compliance suite above. The
 full 5+3 suite is opt-in and should not be used as the normal generation
 tracker. More granular switches are available:
 
 ```bash
-export POK_OFFICIAL_SMOKE_GATE=1
+export POK_OFFICIAL_SMOKE_GATE=queue  # default; use "run" only for manual blocking checks
 export POK_OFFICIAL_PRECOMMIT_GATE=1
 export POK_OFFICIAL_ACCEPTANCE_GATE=0  # keep official EXE out of strength tracking
 ```
@@ -160,6 +162,8 @@ strength or long-run tracking mechanism. The local native TCP precommit remains
 the hard regression gate, while official failures are kept in certification
 status so they can block future parent selection when they indicate real
 protocol violations.
+The daemon queue worker can be disabled with `POK_OFFICIAL_QUEUE_WORKER=0` or
+throttled with `POK_OFFICIAL_QUEUE_INTERVAL_SEC` / `POK_OFFICIAL_QUEUE_LIMIT`.
 
 The harness uses a process-wide file lock at `/tmp/pok_official_platform.lock`
 by default. This keeps official EXE suites serial because the 2021 platform uses
