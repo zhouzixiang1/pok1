@@ -4314,6 +4314,17 @@ def _precommit_repair_task(filename, ckpt, feedback):
         f"Source parent for diff: bots/national_v{source_v}/\n"
         f"Failed candidate: bots/national_v{next_v}/\n\n"
         f"Exact precommit feedback:\n{feedback}\n\n"
+        "Non-negotiable national position invariant:\n"
+        "- This invariant is protocol correctness, not an EV/matchup lever. Do not change, relax, "
+        "or roll it back to chase a precommit result.\n"
+        "- Heads-up `dealer_id` is the small blind; `bb = 1 - dealer_id`.\n"
+        "- Postflop the BB acts first and is out of position; the SB/dealer is in position.\n"
+        "- Forbidden rollback patterns in the target file include "
+        "`sb = next_player(dealer_id, 1)`, `bb = next_player(dealer_id, 2)`, "
+        "and same-family `*_sb`/`*_bb` assignments derived from a dealer variable via "
+        "`next_player(..., 1/2)`.\n"
+        "- If the source parent or diff contains the old Botzone-era formula, do not copy it; "
+        "preserve the candidate's native national position semantics and BOT-006 repairs.\n\n"
         "Required method:\n"
         f"- Only edit `{filename}`. Other files are intentionally out of scope for this worker.\n"
         f"- First inspect `diff bots/national_v{source_v}/{filename} bots/national_v{next_v}/{filename}` "
@@ -4338,6 +4349,7 @@ def _precommit_repair_task(filename, ckpt, feedback):
             "blocker": "precommit_regression",
             "file": filename,
             "evidence": feedback[:2000],
+            "protected_invariants": ["national_position_semantics"],
         },
     }
 
@@ -4368,6 +4380,13 @@ def _precommit_repair_task_refresh_reason(tasks, ckpt, feedback=""):
         ]).lower()
         if "precommit_repair" not in task_kind and "precommit" not in task_text:
             return "checkpoint task is not a precommit repair"
+        prompt_text = str(task.get("worker_prompt", task.get("instruction", ""))).lower()
+        if (
+            "national position invariant" not in prompt_text
+            or "dealer_id` is the small blind" not in prompt_text
+            or "not an ev/matchup lever" not in prompt_text
+        ):
+            return "precommit repair task is missing national position invariant"
         targets = [
             rel for rel in (
                 _target_rel(target, ckpt.get("next_v"))

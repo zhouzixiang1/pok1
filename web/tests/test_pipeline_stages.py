@@ -3242,6 +3242,11 @@ class TestWorkerFailureCircuitBreaker:
         assert tasks[0]["must_change_files"] == ["strategy.py"]
         assert "aggregate_negative_chip_ev" in tasks[0]["worker_prompt"]
         assert "semantic_regression" in tasks[0]["worker_prompt"]
+        assert "Non-negotiable national position invariant" in tasks[0]["worker_prompt"]
+        assert "`dealer_id` is the small blind" in tasks[0]["worker_prompt"]
+        assert "not an EV/matchup lever" in tasks[0]["worker_prompt"]
+        assert "next_player(dealer_id, 1)" in tasks[0]["worker_prompt"]
+        assert tasks[0]["repair_contract"]["protected_invariants"] == ["national_position_semantics"]
         assert "old quality repair" not in tasks[0]["worker_prompt"]
         assert "in-place precommit regression repair" in mock_exec.call_args.kwargs["reviewer_feedback"]
         assert (next_dir / "strategy.py").read_text() == "def act():\n    return 1\n"
@@ -3251,6 +3256,64 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["master_plan"]["tasks"][0]["worker_id"] == "auto_precommit_repair_strategy_py"
         assert ckpt["master_plan"]["work_item"]["kind"] == "precommit_repair"
         assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
+
+    def test_precommit_repair_refreshes_tasks_missing_position_invariant(self, tmp_path, monkeypatch):
+        """Old file-scoped precommit repair tasks must be regenerated with protocol invariants."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("def act():\n    return 0\n")
+        (next_dir / "strategy.py").write_text("def act():\n    return 1\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="precommit_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["reviewer_feedback"] = "Precommit FAILED vs parent"
+        state["master_plan"] = {
+            "strategy": "single",
+            "tasks": [{
+                "worker_id": "auto_precommit_repair_strategy_py",
+                "role": "Strategic Regression Repair Architect",
+                "target_files": ["strategy.py"],
+                "must_change_files": ["strategy.py"],
+                "worker_prompt": "old file-scoped precommit repair without national position invariant",
+                "task_kind": "precommit_repair",
+                "repair_contract": {"blocker": "precommit_regression", "file": "strategy.py"},
+            }],
+        }
+        state["gate_results"] = {
+            "quality": {"all_passed": True},
+            "precommit_eval": {
+                "passed": False,
+                "blockers": [{"reason": "lost_to_parent", "details": "Native national mean net chips -3000"}],
+            },
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        task = mock_exec.call_args.args[0][0]
+        assert task["worker_id"] == "auto_precommit_repair_strategy_py"
+        assert "Non-negotiable national position invariant" in task["worker_prompt"]
+        assert "not an EV/matchup lever" in task["worker_prompt"]
+        assert task["repair_contract"]["protected_invariants"] == ["national_position_semantics"]
 
     def test_precommit_repair_targets_actual_changed_file(self, tmp_path, monkeypatch):
         """Numeric precommit failures should target the real candidate diff, not broad defaults."""
