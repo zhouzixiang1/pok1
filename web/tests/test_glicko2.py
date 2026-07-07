@@ -16,6 +16,10 @@ class TestGlicko2Player:
         assert p.rd == 350.0
         assert p.sigma == 0.06
 
+    def test_rd_clamped_to_default_ceiling(self):
+        p = Glicko2Player(1500, 599.0, 0.06)
+        assert p.rd == DEFAULT_RD
+
     def test_custom_init(self):
         p = Glicko2Player(r=1600, rd=50, sigma=0.04)
         assert p.r == 1600
@@ -28,6 +32,10 @@ class TestGlicko2Player:
         assert d == {"r": 1550, "rd": 80, "sigma": 0.05}
         p2 = Glicko2Player.from_dict(d)
         assert p2.r == p.r and p2.rd == p.rd and p2.sigma == p.sigma
+
+    def test_from_dict_clamps_historical_bad_rd(self):
+        p = Glicko2Player.from_dict({"r": 1500, "rd": 599.0, "sigma": 0.06})
+        assert p.rd == DEFAULT_RD
 
     def test_from_dict_missing_keys(self):
         p = Glicko2Player.from_dict({})
@@ -112,11 +120,12 @@ class TestUpdateRatingPeriod:
         update_rating_period(p, [(opp, 1.0)])
         assert p.r == orig_r and p.rd == orig_rd
 
-    def test_pathological_update_clamped(self):
-        p = Glicko2Player(1500, 50, 0.06)
-        opponents = [(Glicko2Player(3000, 30, 0.06), 1.0) for _ in range(20)]
-        p2 = update_rating_period(p, opponents)
-        assert abs(p2.r - p.r) <= 200
+    def test_decisive_high_rd_batch_not_rejected(self):
+        p = Glicko2Player(1500, 350, 0.06)
+        opp = Glicko2Player(1500, 350, 0.06)
+        p2 = update_rating_period(p, [(opp, 1.0)] * 5)
+        assert p2.r > 1700
+        assert p2.rd < p.rd
         assert -1000 <= p2.r <= 3000
 
 
@@ -256,6 +265,31 @@ class TestDegenerateCases:
     def test_conservative_rating_default(self):
         p = Glicko2Player()
         assert p.conservative_rating() == 1500 - 2 * 350
+
+
+class TestDaemonRatingIntegration:
+    def test_process_result_updates_glicko_for_decisive_batch(self):
+        from elo_daemon import process_result
+
+        ratings = {
+            "national_v76": Glicko2Player(),
+            "national_v77": Glicko2Player(),
+        }
+        h2h = {}
+        bot_stats = {}
+
+        total = process_result(
+            ("national_v76", "national_v77", 5, 0, 0, 5, None, [100] * 5),
+            ratings,
+            h2h,
+            bot_stats,
+        )
+
+        assert total == 5
+        assert ratings["national_v76"].r > 1700
+        assert ratings["national_v77"].r < 1300
+        assert ratings["national_v76"].rd < DEFAULT_RD
+        assert ratings["national_v77"].rd < DEFAULT_RD
 
 
 class TestCrossoverParents:
