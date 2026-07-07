@@ -172,6 +172,46 @@ class TestP3ASTDeadCode:
         assert len(warnings) == 1
         assert "_new_helper" in warnings[0]
 
+    def test_new_self_test_helper_without_main_call_is_reachability_warning(self, tmp_path):
+        from core.code_verification import detect_new_function_reachability_warnings
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "opponent.py").write_text("def existing():\n    return 1\n")
+        (child / "opponent.py").write_text(
+            "def existing():\n    return 1\n\n"
+            "def _self_test_bb_defense_pressure():\n"
+            "    assert existing() == 1\n"
+        )
+        warnings = detect_new_function_reachability_warnings(
+            source, child, ["opponent.py"]
+        )
+        assert len(warnings) == 1
+        assert "_self_test_bb_defense_pressure" in warnings[0]
+
+    def test_new_self_test_helper_called_from_main_is_reachable(self, tmp_path):
+        from core import code_verification
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "postflop.py").write_text("def existing():\n    return 1\n")
+        (child / "postflop.py").write_text(
+            "def existing():\n"
+            "    return 1\n\n"
+            "def _self_test_live_defaults():\n"
+            "    assert existing() == 1\n\n"
+            "if __name__ == '__main__':\n"
+            "    # self-test\n"
+            "    _self_test_live_defaults()\n"
+        )
+        warnings = code_verification.detect_new_function_reachability_warnings(
+            source, child, ["postflop.py"]
+        )
+        assert warnings == []
+        assert code_verification.run_bot_embedded_self_tests(child) == []
+
     def test_verify_helper_is_exempt_from_reachability_warning(self, tmp_path):
         from core.code_verification import detect_new_function_reachability_warnings
         source = tmp_path / "source"

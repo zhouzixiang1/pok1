@@ -96,6 +96,20 @@ CRITICAL ENFORCEMENT:
 If you accidentally make edits outside your role, remove only your accidental edits before finishing.
 </role_boundaries>
 
+<embedded_selftest_contract>
+If you add a detector, telemetry probe, or validation self-test, it must be
+reachable by the embedded self-test harness:
+- Prefer assertions directly inside an `if __name__ == "__main__":` block in
+  the edited module.
+- If you add a top-level helper such as `_self_test_*`, the `__main__` block
+  must call it and assert its result or captured output.
+- Never leave a new top-level `_self_test_*` or probe helper unreferenced. The
+  reachability gate treats that as dead code and quality will fail.
+- Do not satisfy reachability with dummy calls from runtime decision paths.
+  Self-tests belong under `__main__`; real runtime helpers must be wired into
+  the strategy behavior that consumes their result.
+</embedded_selftest_contract>
+
 <examples>
 **Hyperparameter Tuner** — change constants only:
 ```python

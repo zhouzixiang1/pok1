@@ -3997,11 +3997,24 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "repair_blocker": "national_native_contract",
             "repair_contract": contract,
         }
+    evidence = contract.get('evidence') or 'quality gate failed'
+    reachability_guidance = ""
+    if "reachability" in str(evidence).lower():
+        reachability_guidance = (
+            "\nReachability-specific method:\n"
+            "- If the flagged symbol is a top-level `_self_test_*` or probe helper, "
+            "remove it or move the assertions under `if __name__ == \"__main__\":`.\n"
+            "- If the helper is real runtime logic, wire it into the actual strategy "
+            "dispatch path that consumes its result.\n"
+            "- Do not add a dummy reference, unused import, or unreachable call just "
+            "to silence the gate.\n"
+        )
     prompt = (
         f"{preservation.format(next_v=next_v)}\n\n"
         f"Repair contract: quality_gate\n"
         f"- Target file: `{filename}`\n"
-        f"- Evidence:\n{contract.get('evidence') or 'quality gate failed'}\n\n"
+        f"- Evidence:\n{evidence}\n\n"
+        f"{reachability_guidance}"
         "Required method:\n"
         f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
         "- Fix only the listed gate blocker.\n"
