@@ -50,6 +50,8 @@ class _PersistentBot:
         self._start()
 
     def _start(self):
+        if self.proc is not None:
+            self._terminate_proc_quietly(kill=True)
         with self._stderr_lock:
             self._stderr_buf.clear()
         try:
@@ -87,6 +89,55 @@ class _PersistentBot:
         with self._stderr_lock:
             self._stderr_buf.clear()
 
+    def _close_stdin_quietly(self):
+        proc = self.proc
+        if proc is None:
+            return
+        pipe = getattr(proc, "stdin", None)
+        if pipe is None:
+            return
+        try:
+            proc.stdin = None
+        except Exception:
+            pass
+        try:
+            raw = pipe.detach()
+        except Exception:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+            return
+        try:
+            raw.close()
+        except Exception:
+            pass
+
+    def _terminate_proc_quietly(self, kill=False):
+        proc = self.proc
+        if proc is None:
+            return
+        self._close_stdin_quietly()
+        try:
+            if proc.poll() is None:
+                if kill:
+                    proc.kill()
+                else:
+                    proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5 if kill else 3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+
     def call(self, payload):
         if not self._alive:
             self._start()
@@ -98,6 +149,7 @@ class _PersistentBot:
             self.proc.stdin.flush()
         except Exception:
             self._alive = False
+            self._terminate_proc_quietly(kill=True)
             return -1, "CRASH: stdin write failed", None
 
         result_line = [None]
@@ -115,20 +167,19 @@ class _PersistentBot:
 
         if t.is_alive():
             self._alive = False
-            try:
-                self.proc.kill()
-            except Exception:
-                pass
+            self._terminate_proc_quietly(kill=True)
             return -1, "TIMEOUT", None
 
         self._clear_stderr_snapshot()
 
         if error[0] is not None:
             self._alive = False
+            self._terminate_proc_quietly(kill=True)
             return -1, "CRASH: {}".format(error[0]), None
 
         if not result_line[0]:
             self._alive = False
+            self._terminate_proc_quietly(kill=True)
             return -1, "EOF", None
 
         try:
@@ -138,27 +189,12 @@ class _PersistentBot:
             return action, "OK", bot_data
         except Exception as e:
             self._alive = False
+            self._terminate_proc_quietly(kill=True)
             return -1, "CRASH: {}".format(e), None
 
     def close(self):
         self._alive = False
-        if self.proc:
-            try:
-                self.proc.stdin.close()
-            except Exception:
-                pass
-            try:
-                self.proc.terminate()
-                self.proc.wait(timeout=3)
-            except Exception:
-                try:
-                    self.proc.kill()
-                except Exception:
-                    pass
-                try:
-                    self.proc.wait(timeout=5)
-                except Exception:
-                    pass
+        self._terminate_proc_quietly()
 
 
 def _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
