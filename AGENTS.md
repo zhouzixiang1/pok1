@@ -16,7 +16,7 @@ The old `web/tui.py` Textual TUI no longer exists. Treat `web/main.py` as a web 
 The main goal is to build, evaluate, and evolve heads-up No-Limit Texas Hold'em bots. There are two protocol families:
 
 - Botzone/local protocol: bots are Python subprocesses that read JSON from stdin and write JSON to stdout. This is implemented by `engine/` and kept for legacy regression and archived Botzone-era bots.
-- National competition protocol: AI engines connect to a TCP server and exchange line-delimited strings such as `preflop|SMALLBLIND|<0,3><1,3>`, `raise 200`, `call`, `check`, `fold`, `allin`. This is implemented by `sever/`.
+- National competition protocol: AI engines connect to a TCP server and exchange raw short socket messages such as `preflop|SMALLBLIND|<0,3><1,3>`, `raise 200`, `call`, `check`, `fold`, `allin`. The official Windows platform does not guarantee newline delimiters or TCP message boundaries; native bots must split sticky packets themselves. Local helpers live in `sever/`.
 
 The active evolution epoch is `national_native_v1`. New evolution output must be native national TCP bots under `bots/national_v<N>/` with completion tags `national-bot-v<N>`. Old `claude_v*` directories and `bot-v*` tags are legacy history and must not determine current version numbers, active pool membership, ratings, H2H, experience injection, or precommit pass/fail.
 
@@ -171,6 +171,16 @@ cd sever && python bot_adapter.py --bot ../archive/evolution_epochs/<epoch>/lega
 
 # National protocol regression tests.
 python -m pytest sever/tests -q
+
+# Official Windows platform acceptance under Wine/Xvfb.
+# The formal pass criterion is 70-hand self-play for 5 rounds plus 70-hand
+# candidate-vs-opponent play for 3 rounds, all issue-free.
+python scripts/official_platform_acceptance.py \
+  --candidate bots/national_v<N> \
+  --opponent /home/zzx/project/pok/ref/national_v70 \
+  --self-play-rounds 5 \
+  --opponent-rounds 3 \
+  --target-hands 70
 ```
 
 ### Reinforcement Learning
@@ -263,7 +273,8 @@ Core protocol facts from those documents:
 - A match is 70 hands. Each hand resets both players to 20000 chips.
 - Blinds are 50/100. Small blind acts first preflop; big blind acts first on flop/turn/river.
 - Each decision has a 60 second limit. Timeout is treated as fold.
-- Client actions are line-delimited strings: `raise <amount>`, `fold`, `call`, `check`, `allin`.
+- Client actions are raw socket strings with no trailing newline required or expected by the official EXE: `raise <amount>`, `fold`, `call`, `check`, `allin`.
+- The official EXE uses TCP streams, so inbound data may arrive as sticky packets such as `earnChips -100preflop|...` or `raise 200call`; native bots must split protocol tokens before updating state.
 - `raise <amount>` must use exactly one space between keyword and amount; leading/trailing spaces, tabs, and extra spaces are illegal protocol formats.
 - `bet` must not be sent; the protocol uses `raise` in place of bet.
 - `raise X` means raise to total stage bet `X`, not add `X`.

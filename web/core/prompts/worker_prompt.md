@@ -31,11 +31,15 @@ strategy reuse, but it is not the national_native pass condition.
 Compatibility rules:
 - In legacy JSON internals, `response > 0` is raise-to-total, never raise-by-increment.
 - In native TCP, send `raise <amount>` as raise-to-total and send `allin` for all-in.
-- Do not output `{"response": ...}` from `national_bot.py`; that file speaks TCP lines.
+- Do not output `{"response": ...}` from `national_bot.py`; that file speaks the official raw TCP stream protocol, not Botzone JSON and not newline-delimited text.
 - Strategy prose may say "bet", but wire-level national actions must be
   `raise <amount>`; never output or depend on a `bet` action token.
 - National TCP uses 70 hands, 20000 reset chips, blinds 50/100. SB acts first
   preflop; BB acts first on flop/turn/river; roles alternate every hand.
+- The official Windows platform sends and receives raw short socket messages and
+  does not guarantee newline delimiters or TCP packet boundaries. Do not append
+  `\n` to names or actions for the formal EXE path; maintain a splitter for
+  sticky inbound packets such as `earnChips -100preflop|...` or `raise 200call`.
 - Heads-up identity: `dealer_id` is SB and `bb = 1 - dealer_id`. Postflop BB is
   out of position and acts first; SB/dealer is in position. Do not use old
   formulas such as `sb = next_player(dealer_id, 1)` or
@@ -208,7 +212,7 @@ After editing:
 
 4. **Role boundary check**: Review ALL changes. If you are a Tuner, verify every change is a numeric constant. If you are an Architect, verify you did not change well-tuned constants.
 
-5. **Protocol check**: In legacy/local JSON files, verify stdout still emits `{"response": <int>}` when that entry is used. In `national_execution_mode=native_tcp`, the formal national entry is `national_bot.py`: verify it connects to the TCP server directly, sends only `raise <amount>`, `fold`, `call`, `check`, or `allin`, does not depend on `sever/bot_adapter.py`, and does not output JSON `response` objects as its national communication. Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
+5. **Protocol check**: In legacy/local JSON files, verify stdout still emits `{"response": <int>}` when that entry is used. In `national_execution_mode=native_tcp`, the formal national entry is `national_bot.py`: verify it connects to the TCP server directly, sends only raw `raise <amount>`, `fold`, `call`, `check`, or `allin` strings without trailing newlines, splits sticky inbound packets, does not depend on `sever/bot_adapter.py`, and does not output JSON `response` objects as its national communication. Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 </verification>
 
 <output>

@@ -66,6 +66,14 @@ DYNAMIC_TEST_LLM_TIMEOUT = int(os.environ.get("POK_DYNAMIC_TEST_LLM_TIMEOUT", "2
 DYNAMIC_TEST_HEURISTIC_SUFFICIENT = int(os.environ.get("POK_DYNAMIC_TEST_HEURISTIC_SUFFICIENT", "4"))
 
 
+def _env_enabled(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _official_gate_enabled(name: str) -> bool:
+    return _env_enabled("POK_OFFICIAL_REQUIRED") or _env_enabled(name)
+
+
 async def _run_workflow_smoke_gate(
     *,
     bot_dir: Path,
@@ -111,6 +119,26 @@ async def _run_workflow_smoke_gate(
             "execution_mode": "native_tcp",
             "issues": [f"native_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
         }
+    if report.get("passed") and _official_gate_enabled("POK_OFFICIAL_SMOKE_GATE"):
+        official_hands = int(os.environ.get("POK_OFFICIAL_SMOKE_HANDS", "5"))
+        try:
+            from official_platform_harness import run_official_smoke
+            official_report = await run_official_smoke(
+                bot_dir,
+                target_hands=official_hands,
+            )
+        except Exception as exc:
+            official_report = {
+                "passed": False,
+                "execution_mode": "official_windows_platform",
+                "hands": official_hands,
+                "issues": [f"official_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
+            }
+        report["official_platform_smoke"] = official_report
+        if not official_report.get("passed"):
+            report["passed"] = False
+            report.setdefault("issues", [])
+            report["issues"].extend(official_report.get("issues") or ["official_platform_smoke_failed"])
     errors = list(report.get("issues") or []) if not report.get("passed") else []
     return errors, report
 
@@ -767,6 +795,67 @@ async def run_quality_gates(args):
             national_acceptance_ok = True
             national_acceptance_errors = ["national_acceptance_skipped_due_to_failed_prerequisites"]
             national_acceptance_payload = {"skipped": True, "reason": national_acceptance_errors[0]}
+
+    official_acceptance_enabled = native_tcp_mode and _official_gate_enabled("POK_OFFICIAL_ACCEPTANCE_GATE")
+    if official_acceptance_enabled:
+        try:
+            _official_bot_under_project_bots = bot_dir.resolve().is_relative_to((PROJECT_ROOT / "bots").resolve())
+        except AttributeError:
+            _official_bot_under_project_bots = str(bot_dir.resolve()).startswith(str((PROJECT_ROOT / "bots").resolve()))
+        can_run_official_acceptance = (
+            len(compile_errors) == 0
+            and len(import_errors) == 0
+            and len(protected_contract_errors) == 0
+            and len(native_contract_errors) == 0
+            and len(embedded_selftest_errors) == 0
+            and len(smoke_errors) == 0
+            and (bot_dir / "national_bot.py").exists()
+            and _official_bot_under_project_bots
+        )
+        if can_run_official_acceptance:
+            official_opponent = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
+            official_self_rounds = int(os.environ.get("POK_OFFICIAL_SELF_PLAY_ROUNDS", "5"))
+            official_opponent_rounds = int(os.environ.get("POK_OFFICIAL_OPPONENT_ROUNDS", "3"))
+            official_hands = int(os.environ.get("POK_OFFICIAL_TARGET_HANDS", "70"))
+            try:
+                from official_platform_harness import run_official_acceptance
+                _official_acceptance = await run_official_acceptance(
+                    bot_dir,
+                    opponent=official_opponent or None,
+                    self_play_rounds=official_self_rounds,
+                    opponent_rounds=official_opponent_rounds,
+                    target_hands=official_hands,
+                )
+                official_payload = _official_acceptance.model_dump()
+                national_acceptance_payload.setdefault("official_platform", official_payload)
+                if not _official_acceptance.passed:
+                    national_acceptance_ok = False
+                    national_acceptance_errors.extend(_official_acceptance.issues[:5] or ["official_platform_acceptance_failed"])
+                log_system_event(
+                    "pipeline.official_platform_acceptance_passed" if _official_acceptance.passed else "pipeline.official_platform_acceptance_failed",
+                    "success" if _official_acceptance.passed else "error",
+                    f"Official Windows platform acceptance {'passed' if _official_acceptance.passed else 'failed'} for v{v}",
+                    {
+                        "version": v,
+                        "source_v": source_v,
+                        "self_play_rounds": official_self_rounds,
+                        "opponent_rounds": official_opponent_rounds,
+                        "hands": official_hands,
+                        "opponent": official_opponent,
+                        "issues": _official_acceptance.issues[:5],
+                        "summary": _official_acceptance.summary,
+                    },
+                )
+            except Exception as e:
+                national_acceptance_ok = False
+                err = f"official_platform_acceptance_exception: {type(e).__name__}: {str(e)[:200]}"
+                national_acceptance_errors.append(err)
+                national_acceptance_payload.setdefault("official_platform", {"error": err})
+        else:
+            national_acceptance_payload.setdefault("official_platform", {
+                "skipped": True,
+                "reason": "official_platform_acceptance_skipped_due_to_failed_prerequisites",
+            })
 
     # --- B3: Heuristic Dynamic Regression Tests from Diff ---
     # Deterministic coverage runs first. The LLM generator is now an augmenting
