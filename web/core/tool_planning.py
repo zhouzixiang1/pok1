@@ -3382,6 +3382,39 @@ def _is_precommit_rework_checkpoint(ckpt):
     )
 
 
+def _score_below_threshold(value, threshold=6.0):
+    try:
+        return float(value) < threshold
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_critic_rework_checkpoint(ckpt):
+    """Whether the checkpoint represents a hard Strategy Critic rejection."""
+    if not isinstance(ckpt, dict):
+        return False
+    if ckpt.get("stage") not in {"repair_planned", "rework_running"}:
+        return False
+    if _is_precommit_rework_checkpoint(ckpt):
+        return False
+
+    feedback = str(ckpt.get("reviewer_feedback") or "").lower()
+    if "critic_rejection" in feedback:
+        return True
+
+    critic = (ckpt.get("gate_results") or {}).get("critic") or {}
+    if not isinstance(critic, dict) or not critic:
+        return False
+    status = str(critic.get("status") or "").lower()
+    if status in {"rejected", "failed", "blocked"}:
+        return True
+    if critic.get("approved") is False:
+        return True
+    if critic.get("raw_approved") is False or critic.get("advisory_approved") is False:
+        return True
+    return _score_below_threshold(critic.get("score"))
+
+
 def _precommit_failure_items(ckpt):
     if not isinstance(ckpt, dict):
         return []
@@ -3601,6 +3634,84 @@ def _precommit_repair_target_files(ckpt, feedback):
     return ["strategy.py"]
 
 
+def _critic_feedback_items(ckpt, feedback=""):
+    items = []
+
+    def add(value):
+        if isinstance(value, dict):
+            for key, val in value.items():
+                add(f"{key}: {val}")
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                add(item)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                items.append(text)
+
+    add(feedback)
+    if isinstance(ckpt, dict):
+        critic = (ckpt.get("gate_results") or {}).get("critic") or {}
+        if isinstance(critic, dict):
+            for key in (
+                "feedback",
+                "strategic_assessment",
+                "reasoning",
+                "directive",
+                "blockers",
+                "failures",
+                "issues",
+                "strategic_issues",
+            ):
+                add(critic.get(key))
+
+    deduped = []
+    seen = set()
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
+def _critic_repair_target_files(ckpt, feedback):
+    evidence = _critic_feedback_items(ckpt, feedback)
+    evidence_files = _extract_quality_failure_files(evidence)
+    allow_protocol_files = _precommit_protocol_compliance_failure(evidence, feedback)
+    changed_files = _precommit_changed_python_files(ckpt)
+    changed_repair_files = _precommit_filter_repair_targets(
+        changed_files,
+        allow_protocol_files=allow_protocol_files,
+    )
+    evidence_repair_files = _precommit_filter_repair_targets(
+        evidence_files,
+        allow_protocol_files=allow_protocol_files,
+    )
+    if changed_repair_files and evidence_repair_files:
+        evidence_set = set(evidence_repair_files)
+        intersected = [name for name in changed_repair_files if name in evidence_set]
+        if intersected:
+            return _limit_precommit_repair_targets(intersected)
+    if changed_repair_files:
+        return _limit_precommit_repair_targets(changed_repair_files)
+    if evidence_repair_files:
+        return _limit_precommit_repair_targets(evidence_repair_files)
+
+    try:
+        next_v = ckpt.get("next_v") if isinstance(ckpt, dict) else None
+        bot_dir = get_bot_dir(next_v) if next_v is not None else None
+        if bot_dir:
+            existing = [
+                name for name in _PRECOMMIT_STRATEGY_REPAIR_FILES
+                if (bot_dir / name).exists()
+            ]
+            if existing:
+                return _limit_precommit_repair_targets(existing[:1])
+    except Exception:
+        pass
+    return ["strategy.py"]
+
+
 def _checkpoint_rework_feedback(ckpt):
     if not isinstance(ckpt, dict):
         return ""
@@ -3612,6 +3723,10 @@ def _checkpoint_rework_feedback(ckpt):
         failed = _precommit_failure_items(ckpt)
         if failed:
             return "Precommit failed:\n- " + "\n- ".join(str(item) for item in failed[:20])
+    if _is_critic_rework_checkpoint(ckpt):
+        failed = _critic_feedback_items(ckpt)
+        if failed:
+            return "Critic rejected:\n- " + "\n- ".join(str(item) for item in failed[:20])
     if stage in {"quality_failed", "repair_planned", "rework_running"}:
         failed = _quality_failure_items(ckpt)
         if failed:
@@ -4858,9 +4973,16 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
 
     master_plan = _checkpoint_master_plan(ckpt)
     is_precommit_rework = _is_precommit_rework_checkpoint(ckpt)
-    quality_contracts = [] if is_precommit_rework else _quality_repair_contracts(ckpt, feedback)
+    is_critic_rework = _is_critic_rework_checkpoint(ckpt)
+    quality_contracts = (
+        []
+        if is_precommit_rework or is_critic_rework
+        else _quality_repair_contracts(ckpt, feedback)
+    )
     if is_precommit_rework:
         return _precommit_repair_tasks(ckpt, feedback)
+    elif is_critic_rework:
+        target_files = _critic_repair_target_files(ckpt, feedback)
     elif quality_contracts:
         target_files = [contract["file"] for contract in quality_contracts]
     elif reviewer_feedback:
@@ -4875,7 +4997,24 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
 
     targets = target_files
     is_crossover = bool(ckpt.get("parent2_v")) or master_plan.get("strategy") == "crossover"
-    if is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
+    if is_critic_rework:
+        preservation = (
+            "This is a Strategy Critic hard-gate repair. Preserve the current "
+            "candidate in bots/national_v{next_v}; fix the exact strategic defect "
+            "that caused critic rejection without changing the national TCP entrypoint "
+            "unless the critic evidence names a protocol violation."
+        )
+        method = (
+            "- Read the listed target files and the quoted critic feedback before editing.\n"
+            "- Correct the strategic sign, metric interpretation, or decision path named by the critic; do not add unrelated features.\n"
+            "- Keep the candidate's already-passing national protocol/card mapping behavior intact.\n"
+            "- Make the repair measurable in the code path used by decisions, not only in comments or telemetry.\n"
+            "- Run the smallest relevant compile/import or self-test check before finishing."
+        )
+        worker_id = "auto_critic_repair"
+        role = "Algorithmic Logic Architect"
+        task_kind = "crossover_critic_repair" if is_crossover else "critic_repair"
+    elif is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
         preservation = (
             "This is a crossover quality repair. Preserve the current candidate's "
             "crossover behavior in bots/national_v{next_v}; fix only the blocking "
@@ -4945,6 +5084,13 @@ def _should_reset_before_rework(ckpt, tasks):
         for task in tasks or []
         if isinstance(task, dict)
     }
+    is_critic_repair = (
+        "critic_repair" in work_kind
+        or any("critic_repair" in kind for kind in task_kinds)
+        or _is_critic_rework_checkpoint(ckpt)
+    )
+    if is_critic_repair:
+        return False
     is_quality_repair = (
         stage == "quality_failed"
         or "quality_repair" in work_kind
@@ -5000,6 +5146,7 @@ async def execute_workers(args):
     if not reviewer_feedback and ckpt.get("stage") in rework_stages:
         reviewer_feedback = _checkpoint_rework_feedback(ckpt)
 
+    critic_rework_checkpoint = _is_critic_rework_checkpoint(ckpt)
     replace_checkpoint_tasks = False
 
     def _finish_declared_scope_ledger_only(ledger_files):
@@ -5060,7 +5207,11 @@ async def execute_workers(args):
         )
         quality_stale_reason = (
             _stale_quality_task_reason(checkpoint_tasks, ckpt, reviewer_feedback)
-            if checkpoint_tasks and not _is_precommit_rework_checkpoint(ckpt) else ""
+            if (
+                checkpoint_tasks
+                and not _is_precommit_rework_checkpoint(ckpt)
+                and not critic_rework_checkpoint
+            ) else ""
         )
         if ckpt.get("stage") in rework_stages and (
             not checkpoint_tasks
@@ -5157,6 +5308,7 @@ async def execute_workers(args):
         tasks
         and ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}
         and not _is_precommit_rework_checkpoint(ckpt)
+        and not critic_rework_checkpoint
     ):
         failure_files = _quality_failure_target_files(ckpt, reviewer_feedback)
         task_files = _task_target_filenames(tasks)
@@ -5210,7 +5362,12 @@ async def execute_workers(args):
                 },
             )
 
-    if tasks and ckpt.get("stage") in rework_stages and not _is_precommit_rework_checkpoint(ckpt):
+    if (
+        tasks
+        and ckpt.get("stage") in rework_stages
+        and not _is_precommit_rework_checkpoint(ckpt)
+        and not critic_rework_checkpoint
+    ):
         ordered_tasks = _order_quality_repair_tasks(tasks)
         old_order = [str(task.get("worker_id", idx + 1)) for idx, task in enumerate(tasks)]
         new_order = [str(task.get("worker_id", idx + 1)) for idx, task in enumerate(ordered_tasks)]
@@ -5396,6 +5553,17 @@ async def execute_workers(args):
             and existing_work_item.get("kind")
         ):
             rework_kind = str(existing_work_item.get("kind"))
+        task_kinds = {
+            str(task.get("task_kind") or "")
+            for task in tasks or []
+            if isinstance(task, dict)
+        }
+        if critic_rework_checkpoint or any("critic_repair" in kind for kind in task_kinds):
+            rework_kind = (
+                "crossover_critic_repair"
+                if ckpt.get("parent2_v") is not None or rework_kind.startswith("crossover_")
+                else "critic_repair"
+            )
         is_precommit_rework = rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt)
         if is_precommit_rework:
             prior_rework_count = int(ckpt.get("precommit_rework_count") or 0)
@@ -5446,6 +5614,23 @@ async def execute_workers(args):
                     "pipeline.precommit_repair_in_place",
                     "warn",
                     f"Repairing v{next_v} in place after precommit failure; preserving candidate code",
+                    {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
+                )
+            elif "critic_repair" in rework_kind:
+                event_type = (
+                    "pipeline.crossover_critic_repair_in_place"
+                    if rework_kind.startswith("crossover_") or ckpt.get("parent2_v") is not None
+                    else "pipeline.critic_repair_in_place"
+                )
+                event_message = (
+                    f"Repairing crossover v{next_v} in place after critic rejection; preserving fused candidate code"
+                    if event_type == "pipeline.crossover_critic_repair_in_place"
+                    else f"Repairing v{next_v} in place after critic rejection; preserving generated candidate code"
+                )
+                log_system_event(
+                    event_type,
+                    "warn",
+                    event_message,
                     {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
                 )
             else:
@@ -5552,6 +5737,12 @@ async def execute_workers(args):
                 f"\n\nNOTE: This is an in-place precommit regression repair. The current code in "
                 f"bots/national_v{next_v}/ is the candidate that failed precommit; preserve it except "
                 f"for targeted EV/matchup regression fixes."
+            )
+        elif "critic_repair" in rework_kind:
+            reviewer_feedback += (
+                f"\n\nNOTE: This is an in-place Strategy Critic repair. The current code in "
+                f"bots/national_v{next_v}/ is the candidate that failed the critic hard gate; "
+                "preserve it except for the exact strategic defect described above."
             )
         else:
             if rework_kind.startswith("crossover_") or ckpt.get("parent2_v") is not None:

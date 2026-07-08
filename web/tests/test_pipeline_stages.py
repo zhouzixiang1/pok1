@@ -2851,6 +2851,103 @@ class TestWorkerFailureCircuitBreaker:
 
         assert tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt, feedback) == []
 
+    def test_critic_rework_synthesizes_crossover_task_from_gate_feedback(self, tmp_path, monkeypatch):
+        import tool_planning
+
+        source_dir = tmp_path / "national_v110"
+        next_dir = tmp_path / "national_v115"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (next_dir / "strategy.py").write_text("VALUE = -1\n", encoding="utf-8")
+        (source_dir / "postflop.py").write_text("POST = 1\n", encoding="utf-8")
+        (next_dir / "postflop.py").write_text("POST = 1\n", encoding="utf-8")
+        (source_dir / "national_bot.py").write_text("ENTRY = 'old'\n", encoding="utf-8")
+        (next_dir / "national_bot.py").write_text("ENTRY = 'old'\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            tool_planning,
+            "get_bot_dir",
+            lambda version: {110: source_dir, 115: next_dir}[int(version)],
+        )
+
+        feedback = (
+            "CRITIC_REJECTION score=4.0. Feedback: strategy.py inverted the "
+            "H2H sign and treats losing matchups as winning matchups."
+        )
+        ckpt = {
+            "next_v": 115,
+            "source_v": 110,
+            "parent2_v": 71,
+            "stage": "repair_planned",
+            "reviewer_feedback": feedback,
+            "master_plan": {"strategy": "crossover", "tasks": []},
+            "gate_results": {
+                "quality": {"all_passed": True, "failed_gates": []},
+                "critic": {
+                    "approved": False,
+                    "raw_approved": False,
+                    "advisory_approved": False,
+                    "score": 4.0,
+                    "feedback": "strategy.py uses the wrong sign for prior H2H evidence.",
+                },
+            },
+        }
+
+        tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt)
+
+        assert len(tasks) == 1
+        assert tasks[0]["worker_id"] == "auto_critic_repair"
+        assert tasks[0]["task_kind"] == "crossover_critic_repair"
+        assert tasks[0]["target_files"] == ["strategy.py"]
+        assert tasks[0]["must_change_files"] == ["strategy.py"]
+        assert "Strategy Critic hard-gate repair" in tasks[0]["worker_prompt"]
+        assert "H2H sign" in tasks[0]["worker_prompt"]
+        assert tool_planning._should_reset_before_rework(ckpt, tasks) is False
+
+    def test_critic_rework_without_file_evidence_uses_changed_strategy_files(self, tmp_path, monkeypatch):
+        import tool_planning
+
+        source_dir = tmp_path / "national_v110"
+        next_dir = tmp_path / "national_v115"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for name in ("strategy.py", "postflop.py", "national_bot.py"):
+            (source_dir / name).write_text(f"{name} = 'old'\n", encoding="utf-8")
+            (next_dir / name).write_text(f"{name} = 'new'\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            tool_planning,
+            "get_bot_dir",
+            lambda version: {110: source_dir, 115: next_dir}[int(version)],
+        )
+
+        ckpt = {
+            "next_v": 115,
+            "source_v": 110,
+            "parent2_v": 71,
+            "stage": "repair_planned",
+            "reviewer_feedback": (
+                "CRITIC_REJECTION score=5.0. Feedback: the candidate overfits "
+                "weak historical matchups and misreads the battle experience."
+            ),
+            "master_plan": {"strategy": "crossover", "tasks": []},
+            "gate_results": {
+                "critic": {
+                    "approved": False,
+                    "raw_approved": False,
+                    "advisory_approved": True,
+                    "score": 5.0,
+                },
+            },
+        }
+
+        tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt)
+
+        assert tasks[0]["task_kind"] == "crossover_critic_repair"
+        assert tasks[0]["target_files"] == ["strategy.py", "postflop.py"]
+        assert "national_bot.py" not in tasks[0]["target_files"]
+
     def test_quality_rework_refreshes_outdated_file_size_contract_prompt(self):
         import tool_planning
 
