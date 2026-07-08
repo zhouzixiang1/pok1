@@ -151,7 +151,7 @@ def test_regression_guardian_prompt_matches_current_trigger_contract():
     tool_gates = (ROOT / "web" / "core" / "tool_gates.py").read_text(encoding="utf-8")
 
     assert "currently called only from `run_critic`" in guardian_prompt
-    assert "advisory critic score is below 4" in guardian_prompt
+    assert "hard-gate critic score is below 4" in guardian_prompt
     assert "do not automatically invoke this Guardian" in guardian_prompt
     assert "Precommit eval blocks a commit" not in guardian_prompt
     assert "2+ consecutive generations show rating decline" not in guardian_prompt

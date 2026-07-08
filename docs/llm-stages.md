@@ -535,15 +535,15 @@ else:
 }
 ```
 
-**通过逻辑** (函数 `run_critic` 内): Critic 是策略审计和经验输入，不是最终回归门。Critic 原始输出会折算为 `advisory_approved` 并写入风险日志/经验材料；无论 advisory 结果如何，`approved` 对编排器返回为 `true`，checkpoint 推进到 `critic_checked`，最终是否能提交由 `run_precommit_eval` 的统计/语义 gate 决定。
+**通过逻辑** (函数 `run_critic` 内): Critic 是 precommit 前的策略硬门。只有 `approved=true` 且 `score >= 6` 时，checkpoint 推进到 `critic_checked` 并允许 `run_precommit_eval`。若 Critic 返回 `approved=false` 或 `score < 6`，工具把 checkpoint 写到 `repair_planned`，递增 `generation_attempt`，并把 Critic 反馈写入 `reviewer_feedback` 供 `execute_workers` 原样使用。
 
-**⚠️ 重要**: `force_advance` 仅作为历史兼容字段保留。当前正常路径不靠 critic rejection 触发 worker 重试，也不靠 critic 分数阻塞提交；critic 反馈进入后续经验/提示上下文，precommit 才是最终提交许可。
+**⚠️ 重要**: `force_advance` 仅作为历史兼容字段保留，不再能绕过 Critic 硬门。Precommit 仍是最终统计回归门，但只在 Critic 策略门通过之后运行。
 
 **输出去向**:
 - 返回给 Orchestrator LLM
 - `action: "approve"` → 写入 checkpoint `stage="critic_checked"` + gate `critic`
-- `advisory_approved=false` → 记录风险事件和 critic feedback，作为下一代/后续工具的输入信号
-- `run_precommit_eval` → 真正决定提交、重试 worker、重新规划或放弃
+- `action: "retry_workers"` → 写入 checkpoint `stage="repair_planned"`，`reviewer_feedback` 携带 Critic 原始返工意见
+- `run_precommit_eval` → 在 Critic 通过后决定提交、重试 worker、重新规划或放弃
 
 > **💡 真实示例 (v10)**: Critic 独立评估 Crossover v4×v8 的策略价值，score=6（勉强通过）：
 > ```json
@@ -708,8 +708,8 @@ Review 拒绝:
   └── 注入 reviewer feedback 重试 workers
 
 Critic 低分:
-  └── 不单独触发 worker 重试；继续 run_precommit_eval，
-      critic feedback 进入经验/后续提示
+  └── 作为硬门拒绝；注入 critic reviewer_feedback 重试 workers，
+      不允许 unchanged code 进入 run_precommit_eval
 
 Precommit 失败:
   └── 按 blockers 和 tool directive 重试 workers、回 Master、或 abandon_generation
@@ -1187,7 +1187,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
               │run_critic           │
               │📎 STRATEGY CRITIC  │
               │工具: Bash, Read      │
-              │advisory，precommit最终判断│
+              │硬门；低分回 worker │
               └────────┬────────────┘
                        │
               ┌────────▼────────────┐

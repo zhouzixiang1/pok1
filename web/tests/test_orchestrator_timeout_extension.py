@@ -918,6 +918,58 @@ def test_actionable_recovery_deterministically_calls_execute_workers(monkeypatch
     assert stage in ui.events[0][1]
 
 
+def test_deterministic_execute_workers_passes_checkpoint_feedback(monkeypatch):
+    """Critic/review rework routes must pass exact checkpoint feedback to workers."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({"success": True}),
+                }]
+            }
+        )
+    )
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(orchestrator, "log_system_event", lambda *a, **kw: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "reviewed",
+            "next_v": 268,
+            "source_v": 249,
+            "reviewer_feedback": "CRITIC_REJECTION: fix pfr sign",
+        },
+    }
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    assert handled is True
+    fake_execute.handler.assert_awaited_once_with({
+        "next_v": 268,
+        "source_v": 249,
+        "reviewer_feedback": "CRITIC_REJECTION: fix pfr sign",
+    })
+
+
 def test_deterministic_route_done_defaults_to_success_without_success_field(monkeypatch):
     """A no-error deterministic tool result should not emit a warning just because success is omitted."""
     from types import SimpleNamespace
@@ -1447,7 +1499,7 @@ def test_reviewed_deterministic_route_passes_saved_plan_to_critic(monkeypatch):
         "source_v": 310,
         "plan": master_plan,
         "reviewer_feedback": "approved with notes",
-        "force_advance": True,
+        "force_advance": False,
     })
 
 

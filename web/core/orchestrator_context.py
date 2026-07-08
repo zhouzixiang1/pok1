@@ -415,7 +415,8 @@ def _format_checkpoint_info(checkpoint, lines):
     if gen_attempt > 0:
         lines.append(
             f"INTRA-GEN RETRIES: {gen_attempt} previous critic rejection(s). "
-            f"{'MAX RETRIES REACHED — do NOT retry workers again. Abandon this generation.' if gen_attempt >= 2 else 'You may retry workers at most 1 more time.'}"
+            "Follow the checkpoint route and the latest tool directive exactly; "
+            "do not maintain a private retry counter."
         )
     _inject_master_plan_hint(checkpoint, lines)
     # Precommit retry status — bot code is unchanged across precommit attempts, so
@@ -496,7 +497,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("  execute_workers(tasks, next_v, source_v, reviewer_feedback) — modify bot code in parallel when target_files do not overlap (max 3), otherwise serial")
         lines.append("  run_quality_gates(version, source_v) — full hard gates: code_changed, declared_scope, compile/runtime import, protected contracts, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, reachability")
         lines.append("  run_review(version, source_v, plan) — code quality review (boundaries, size, correctness)")
-        lines.append("  run_critic(version, source_v, plan, reviewer_feedback, force_advance) — advisory strategic assessment; precommit_eval is the final regression gate")
+        lines.append("  run_critic(version, source_v, plan, reviewer_feedback, force_advance) — hard strategic gate; rejected candidates must rework before precommit_eval")
         lines.append("  run_precommit_eval(version, source_v, n_games) — workflow final regression check; national_primary uses adapter-backed national matches, national_native uses native TCP national matches")
         lines.append("  commit_bot(version, source_v, strategy, review_approved=true) — git commit + tag (requires all gates passed)")
         lines.append("  run_archivist(version, source_v) — archive + cleanup after commit")

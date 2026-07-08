@@ -170,7 +170,14 @@ from llm_query import extract_result_error  # noqa: E402
 
 
 _CORRECTIVE_RETRY_STAGES_BY_TOOL = {
-    "execute_workers": {"quality_failed", "precommit_failed", "repair_planned", "rework_running"},
+    "execute_workers": {
+        "quality_failed",
+        "reviewed",
+        "critic_checked",
+        "precommit_failed",
+        "repair_planned",
+        "rework_running",
+    },
     "run_quality_gates": {"workers_done"},
     "run_review": {"quality_passed"},
     "run_critic": {"reviewed"},
@@ -357,6 +364,9 @@ def _deterministic_route_handler_and_args(next_tool, checkpoint, next_v, source_
     """Return the MCP handler and canonical args for a deterministic checkpoint route."""
     if next_tool == "execute_workers":
         args = {"next_v": next_v, "source_v": source_v}
+        reviewer_feedback = _checkpoint_reviewer_feedback(checkpoint)
+        if reviewer_feedback:
+            args["reviewer_feedback"] = reviewer_feedback
         from tool_planning import execute_workers
         return execute_workers.handler, args
     if next_tool == "prepare_next_gen":
@@ -389,7 +399,7 @@ def _deterministic_route_handler_and_args(next_tool, checkpoint, next_v, source_
             "source_v": source_v,
             "plan": _checkpoint_master_plan_arg(checkpoint),
             "reviewer_feedback": _checkpoint_reviewer_feedback(checkpoint),
-            "force_advance": True,
+            "force_advance": False,
         }
         from tool_gates import run_critic
         return run_critic.handler, args

@@ -195,15 +195,23 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
         critic = gate_results.get("critic")
         if not critic:
             missing_gates.append("critic")
-        elif critic.get("approved") is not True:
-            # Critic is advisory; require the tool to have run and recorded the
-            # advisory gate, while preserving force_advanced compatibility.
-            if critic.get("force_advanced") is True:
-                pass
-            else:
+        else:
+            critic_score = critic.get("score", critic.get("advisory_score"))
+            critic_score_ok = True
+            if critic_score is not None:
+                try:
+                    critic_score_ok = float(critic_score) >= 6.0
+                except (TypeError, ValueError):
+                    critic_score_ok = False
+            if (
+                critic.get("approved") is not True
+                or critic.get("raw_approved") is False
+                or critic.get("advisory_approved") is False
+                or not critic_score_ok
+            ):
                 failed_gates.append({
                     "gate": "critic",
-                    "reason": "critic did not approve (critic is advisory; precommit is final judge)",
+                    "reason": "critic hard gate did not approve",
                     "value": critic,
                 })
 

@@ -141,7 +141,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "branch_alias_allowed": True,
     },
     "reviewed": {
-        "allowed_tools": ("run_critic",),
+        "allowed_tools": ("run_critic", "execute_workers"),
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
@@ -149,7 +149,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "branch_alias_allowed": True,
     },
     "critic_checked": {
-        "allowed_tools": ("run_precommit_eval",),
+        "allowed_tools": ("run_precommit_eval", "execute_workers"),
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
@@ -262,6 +262,23 @@ def _quality_gate_matches_active_workflow(gate_results: dict) -> bool:
 def _precommit_gate_matches_active_workflow(gate_results: dict) -> bool:
     precommit = (gate_results or {}).get("precommit_eval") or {}
     return precommit.get("passed") is True and _gate_matches_active_workflow(precommit)
+
+
+def _critic_gate_passed(gate_results: dict) -> bool:
+    critic = (gate_results or {}).get("critic") or {}
+    if not critic:
+        return False
+    if critic.get("approved") is not True:
+        return False
+    if critic.get("raw_approved") is False or critic.get("advisory_approved") is False:
+        return False
+    score = critic.get("score", critic.get("advisory_score"))
+    if score is None:
+        return True
+    try:
+        return float(score) >= 6.0
+    except (TypeError, ValueError):
+        return False
 
 
 def validate_stage_transition(current_stage, proposed_stage):
@@ -389,6 +406,13 @@ def route_policy(checkpoint: dict | None) -> dict:
     elif stage == "selected":
         next_tool = "run_crossover" if parent2_v is not None else "prepare_next_gen"
         intent = "crossover_prepare" if parent2_v is not None else "prepare"
+    elif (
+        stage in {"reviewed", "critic_checked"}
+        and "critic" in gate_results
+        and not _critic_gate_passed(gate_results)
+    ):
+        next_tool = "execute_workers"
+        intent = "critic_rework"
     elif stage == "critic_checked":
         gate = gate_results.get("precommit_eval")
         failure_class = classify_precommit_gate(gate)
@@ -421,7 +445,7 @@ def route_policy(checkpoint: dict | None) -> dict:
         "execute_workers": "Call execute_workers with the checkpoint task plan and exact failure feedback when present.",
         "run_quality_gates": "Call run_quality_gates; it owns compile, national, decision, size, and scope validation.",
         "run_review": "Call run_review. Do not rerun workers unless the reviewer returns a code rejection.",
-        "run_critic": "Call run_critic; critic is advisory and precommit remains final.",
+        "run_critic": "Call run_critic; critic is a hard strategy gate before precommit.",
         "run_precommit_eval": "Call run_precommit_eval unless the precommit gate already recorded a regression.",
         "commit_bot": "Call commit_bot only after all gates are passed.",
         "run_archivist": "Call run_archivist to finish post-commit cleanup.",
@@ -436,6 +460,12 @@ def route_policy(checkpoint: dict | None) -> dict:
         directive = (
             "Precommit failed. Call execute_workers with the exact precommit blockers; "
             "do not retry precommit on unchanged code."
+        )
+    elif intent == "critic_rework":
+        directive = (
+            "Critic rejected this candidate. Call execute_workers with the exact "
+            "critic feedback stored in reviewer_feedback; do not call run_precommit_eval "
+            "or commit_bot on unchanged code."
         )
     elif stage in {"repair_planned", "rework_running"}:
         directive = (
@@ -505,7 +535,10 @@ def generic_abandon_block(checkpoint: dict | None, *,
         block = True
     elif stage == "critic_checked":
         block = True
-        if failure_class in {"regression", "failed_unknown"}:
+        if "critic" in (checkpoint.get("gate_results") or {}) and not _critic_gate_passed(checkpoint.get("gate_results") or {}):
+            next_tool = "execute_workers"
+            explanation = "Critic rejected this code; rework the bot with exact critic feedback"
+        elif failure_class in {"regression", "failed_unknown"}:
             next_tool = "execute_workers"
             explanation = "Precommit already failed for this code; rework the bot with exact precommit feedback"
         else:

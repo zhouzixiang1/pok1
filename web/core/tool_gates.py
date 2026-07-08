@@ -1839,7 +1839,36 @@ async def run_review(args):
 # Critic Stage
 # ──────────────────────────────────────────────
 
-@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. ADVISORY ONLY: precommit is the final regression gate; score does NOT block the pipeline.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
+def _critic_rework_feedback(data: dict, score_num: float, raw_approved) -> str:
+    feedback = str(data.get("feedback", "") or "").strip()
+    assessment = str(data.get("strategic_assessment", "") or "").strip()
+    local_reason = str(data.get("local_optima_reason", "") or "").strip()
+    parts = [
+        f"CRITIC_REJECTION score={score_num:.1f} raw_approved={_critic_bool(raw_approved)}.",
+    ]
+    if feedback:
+        parts.append(f"Feedback: {feedback}")
+    if assessment:
+        parts.append(f"Strategic assessment: {assessment}")
+    if local_reason:
+        parts.append(f"Local optima reason: {local_reason}")
+    parts.append(
+        "Rework the existing candidate to address this strategic rejection before "
+        "running quality/review/critic again. Do not proceed to precommit on the "
+        "unchanged rejected code."
+    )
+    return "\n".join(parts)
+
+
+def _critic_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "approved", "approve"}
+    return bool(value)
+
+
+@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. HARD GATE: approved=false or score<6 blocks precommit and sends the candidate back to workers.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
 async def run_critic(args):
     _t0 = time.time()
     v, source_v = _resolve_version_args(args)
@@ -1849,17 +1878,17 @@ async def run_critic(args):
     source_v = int(source_v)
     plan = args.get("plan", [])
     reviewer_feedback = args.get("reviewer_feedback", "")
-    force_advance = args.get("force_advance", False)
+    force_advance = bool(args.get("force_advance", False))
 
     _set_pipeline_status(f"Critic evaluating v{v}")
 
-    # Idempotency guard: skip if critic already approved
+    # Idempotency guard: skip only when critic already passed.
     _cached = _idempotency_check(
         v, source_v,
         stage_set=("critic_checked", "verified", "archived"),
         gate_name="critic",
-        extra_ok_keys=("force_advanced",),
         directive="Critic ALREADY PASSED. Call run_precommit_eval next.",
+        cache_validator=lambda gate: _critic_gate_ok({"gate_results": {"critic": gate}}),
     )
     if _cached:
         return _cached
@@ -1924,14 +1953,20 @@ async def run_critic(args):
     except (TypeError, ValueError):
         score_num = 0.0
     raw_approved = data.get("approved", score_num >= 6)
-    # Critic is now ADVISORY — final approve/reject is decided by precommit
-    # (Step 2's paired-bootstrap statistical gate). score and feedback still
-    # surface to workers as improvement hints, but do NOT block the pipeline.
-    advisory_approved = bool(raw_approved) and score_num >= 6  # for telemetry/logging
-    approved = True  # advisory: precommit statistical gate (Step 2) is the final judge
-    # In advisory mode approved is always True, so force_advanced follows
-    # force_advance directly (kept for backward-compat with downstream gates).
-    force_advanced = bool(force_advance)
+    approved = _critic_bool(raw_approved) and score_num >= 6
+    advisory_approved = approved  # compatibility field; critic is now binding.
+    # Compatibility telemetry only: this argument no longer bypasses the hard gate.
+    force_advanced = False
+    if force_advance and not approved:
+        try:
+            log_system_event(
+                "pipeline.critic_force_advance_ignored",
+                "warn",
+                f"Ignored force_advance for rejected critic gate on v{v}",
+                {"version": v, "source_v": source_v, "score": score_num},
+            )
+        except Exception:
+            pass
     gate = _gate_payload(
         v,
         source_v,
@@ -1947,33 +1982,28 @@ async def run_critic(args):
         force_advanced=force_advanced,
     )
 
-    # Track intra-gen retry count: increment when critic rejects (retry_workers).
-    # ADVISORY-ONLY: critic no longer blocks, so we never bump current_attempt or
-    # emit retry_workers here. Keep the read for downstream telemetry only.
     current_attempt = (ckpt.get("generation_attempt", 0) or 0) if ckpt else 0
+    next_attempt = current_attempt if approved else current_attempt + 1
+    rework_feedback = _critic_rework_feedback(data, score_num, raw_approved) if not approved else reviewer_feedback
 
     checkpoint_recorded = _record_gate(
         v,
         source_v,
         "critic",
         gate,
-        stage="critic_checked",  # always advance: critic is advisory, precommit is final judge
+        stage="critic_checked" if approved else "repair_planned",
         master_plan=ckpt.get("master_plan") if ckpt else plan,
-        reviewer_feedback=reviewer_feedback,
-        generation_attempt=current_attempt,
+        reviewer_feedback=rework_feedback,
+        generation_attempt=next_attempt,
     )
     guardian_diagnosis = None
-    if not advisory_approved:
-        # Telemetry only: record critic rejection diagnostics so they surface to
-        # the next worker prompt as improvement hints. Does NOT block the pipeline.
+    if not approved:
         _record_quality_failure(v, "critic", "Strategy Critic",
                                 f"Rejected (score={score_num}): {data.get('feedback', '')[:2000]}",
                                 local_optima_warning=data.get("local_optima_warning", False),
                                 local_optima_reason=data.get("local_optima_reason"))
         # Meta-2: Trigger Regression Guardian on very low critic score.
-        # Run synchronously so the diagnosis is visible to the Orchestrator
-        # (merged into the tool result below). This is advisory only — it is
-        # NOT a hard second gate; precommit remains the final judge.
+        # Run synchronously so the diagnosis is visible to the Orchestrator.
         # _run_regression_guardian has a safe_default so it never throws.
         if score_num < 4:
             try:
@@ -1997,28 +2027,23 @@ async def run_critic(args):
     try:
         # LOG GAP FIX (2026-06-30): enrich critic event with feedback/reasoning so
         # the reject rationale is visible in the event stream (not just worker_failures.jsonl).
-        _critic_payload = {"version": v, "score": score_num, "approved": approved,
-                           "advisory_approved": advisory_approved}
-        if not advisory_approved:
+        _critic_payload = {
+            "version": v,
+            "score": score_num,
+            "approved": approved,
+            "advisory_approved": advisory_approved,
+            "generation_attempt": next_attempt,
+        }
+        if not approved:
             _critic_payload["feedback"] = str(data.get("feedback", ""))[:500] if isinstance(data, dict) else ""
             _critic_payload["local_optima_warning"] = data.get("local_optima_warning") if isinstance(data, dict) else None
             _critic_payload["strategic_assessment"] = str(data.get("strategic_assessment", ""))[:300] if isinstance(data, dict) else ""
         log_system_event(
-            "pipeline.critic_passed" if advisory_approved else "pipeline.critic_rejected",
-            "success" if advisory_approved else "warn",
-            f"Critic {'approved' if advisory_approved else 'rejected (advisory)'} v{v} (score={score_num})",
+            "pipeline.critic_passed" if approved else "pipeline.critic_rejected",
+            "success" if approved else "warn",
+            f"Critic {'approved' if approved else 'rejected'} v{v} (score={score_num})",
             _critic_payload,
         )
-        # 4b: when critic rejects but is advisory-only (approved stays True), record
-        # the explicit "reject but proceed" decision so it's not mistaken for a bug.
-        if not advisory_approved and approved:
-            log_system_event(
-                "pipeline.critic_advisory_skip", "info",
-                f"Critic rejected v{v} (score={score_num}) but advisory-only — proceeding "
-                f"to precommit (the final regression gate)",
-                {"version": v, "score": score_num,
-                 "guardian_triggered": score_num < 4},
-            )
     except Exception:
         pass
 
@@ -2073,7 +2098,16 @@ async def run_critic(args):
         "advisory_approved": advisory_approved,
         "citation_penalties": len(critic_citation_errors),
         "logs": ui.get_output(),
-        "action": "approve",  # advisory: orchestrator proceeds to run_precommit_eval (final judge)
+        "action": "approve" if approved else "retry_workers",
+        "directive": (
+            "Critic approved. Call run_precommit_eval next."
+            if approved else
+            "Critic hard gate rejected this candidate. Call execute_workers with "
+            "the returned reviewer_feedback exactly; do not call run_precommit_eval "
+            "or commit_bot on unchanged code."
+        ),
+        "reviewer_feedback": rework_feedback if not approved else reviewer_feedback,
+        "generation_attempt": next_attempt,
         "force_advanced": force_advanced,
         "checkpoint_recorded": checkpoint_recorded,
     }

@@ -311,13 +311,17 @@ class TestRunCriticRegressionGuardianInline:
 
         # Guardian was awaited (synchronous, not fire-and-forget)
         mock_guardian.assert_awaited_once()
-        # Critic is now ADVISORY (Step 5): score does NOT block — precommit battle
-        # is the final judge. advisory_approved reflects the LLM's verdict for telemetry.
-        assert res["approved"] is True
+        # Critic is a hard strategy gate before precommit.
+        assert res["approved"] is False
         assert res["advisory_approved"] is False
         assert res["advisory_score"] == 3.0
         assert res["score"] == 3.0
-        assert res["action"] == "approve"
+        assert res["action"] == "retry_workers"
+        assert "CRITIC_REJECTION" in res["reviewer_feedback"]
+        gate_call = tool_gates._record_gate.call_args
+        assert gate_call.kwargs["stage"] == "repair_planned"
+        assert gate_call.kwargs["generation_attempt"] == 1
+        assert "CRITIC_REJECTION" in gate_call.kwargs["reviewer_feedback"]
         # Diagnosis is visible to the Orchestrator in the result
         assert "regression_guardian" in res
         rg = res["regression_guardian"]
@@ -339,10 +343,10 @@ class TestRunCriticRegressionGuardianInline:
         # Must not raise
         res = self._call(tool_gates, args)
 
-        assert res["approved"] is True
+        assert res["approved"] is False
         assert res["advisory_approved"] is False
         assert res["advisory_score"] == 2.0
-        assert res["action"] == "approve"
+        assert res["action"] == "retry_workers"
         # No diagnosis merged when the guardian threw
         assert "regression_guardian" not in res
 

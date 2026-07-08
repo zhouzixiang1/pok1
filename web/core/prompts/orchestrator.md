@@ -89,9 +89,11 @@ regression, smoke failure, national protocol/acceptance regression, decision tes
 fix verification failure, telemetry-fidelity failure, reachability failure, and
 precommit statistical regression BLOCK the pipeline.
 
-Master plan audit rejection is BLOCKING. Critic score and direction_audit
-`repetition_detected` are advisory signals unless a tool explicitly returns an
-error without a valid plan.
+Master plan audit rejection is BLOCKING. Critic rejection is BLOCKING: a
+candidate with `run_critic approved:false` or `score < 6` must return to
+`execute_workers` with exact critic feedback before precommit. direction_audit
+`repetition_detected` is advisory unless a tool explicitly returns an error
+without a valid plan.
 </advisory_vs_blocking>
 
 <code_change_verification>
@@ -116,7 +118,7 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
    only with exact quality/precommit feedback.
 2. `run_quality_gates` returned `all_passed: true` AND `critical_scenarios_passed: true`
 3. `run_review` returned `approved: true`
-4. `run_critic` was called and returned `approved: true` (critic is ADVISORY — score does NOT block; precommit is the final judge)
+4. `run_critic` was called and returned `approved: true` with score >= 6
 5. `run_precommit_eval` returned `passed: true`
 6. You pass `review_approved=true` to `commit_bot()`
 </gate_requirements>
@@ -126,8 +128,9 @@ After a generation reaches `quality_passed`, `reviewed`, `critic_checked`,
 `precommit_failed`, or `verified`, generic `abandon_generation` is invalid
 unless the latest tool result explicitly returned a hard-limit abandon intent.
 Continue with the next state-machine tool instead:
-`quality_passed -> run_review`, `reviewed -> run_critic`,
-`critic_checked -> run_precommit_eval`, `precommit_failed -> execute_workers`
+`quality_passed -> run_review`, `reviewed -> run_critic` or `execute_workers`
+when critic has already rejected, `critic_checked -> run_precommit_eval` only
+when the critic gate passed, `precommit_failed -> execute_workers`
 with exact precommit feedback, `verified -> commit_bot`. If the tool guard
 refuses abandon, follow its `next_tool`/`directive` exactly.
 </forward_only_guard>
@@ -140,7 +143,7 @@ refuses abandon, follow its `next_tool`/`directive` exactly.
 - Master fails → retry at most 2 times total. If still failing, abandon this generation.
 - Quality gates fail → retry workers with the exact failure message; do NOT call `run_master` from `quality_failed` unless the tool explicitly says to abandon and start fresh.
 - Reviewer rejects → inject feedback, retry workers (counts toward attempts)
-- Critic score is ADVISORY ONLY: it does NOT block and does NOT force retry. Critic feedback + local_optima_warning are injected into the NEXT generation's worker prompt as improvement hints. ALWAYS proceed to run_precommit_eval regardless of critic score — the workflow precommit gate is the sole regression gate. In `national_primary`, that gate runs adapter-backed national 70-hand matches; in `national_native`, it runs native TCP national matches.
+- Critic rejection is a hard strategy gate: if `run_critic` returns `approved:false`, `score < 6`, or `action:"retry_workers"`, inject its exact `reviewer_feedback` into `execute_workers`. Do NOT call `run_precommit_eval` or `commit_bot` on unchanged critic-rejected code. In `national_native`, precommit still runs native TCP national matches, but only after critic approval.
 - Precommit regression fails → inject exact blocker and call `execute_workers`.
   Do NOT retry `run_precommit_eval` on unchanged code, and do NOT abandon before
   the precommit hard limit. Precommit infra-only timeout is different: follow
@@ -164,8 +167,7 @@ refuses abandon, follow its `next_tool`/`directive` exactly.
 - Do not commit a bot that fails quality gates or has critical decision scenario failures
 - Do not skip code review or strategy critic
 - If 3 consecutive generations fail, pause and analyze with `get_h2h()` and `get_match_history()`
-- Do not retry workers because of critic rejection alone. If a later tool directive
-  explicitly sends critic/precommit feedback into `execute_workers`, pass the exact
+- When retrying workers after critic or precommit rejection, pass the exact
   feedback field **verbatim** as `reviewer_feedback` — do NOT paraphrase or summarize.
 - Be concise in reasoning; briefly note each tool result; summarize outcome at end
 </safety_rules>

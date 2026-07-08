@@ -621,13 +621,13 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     )
 
 
-def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None):
+def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None, ratings=None):
     """LOG GAP FIX (2026-06-30): record WHY crossover was chosen + which parents,
     so the parent-selection rationale is auditable (previously only the result was
     logged via pipeline.generation_selected's strategy field)."""
     try:
-        parent_a_metrics = _strength_payload(parents[0])
-        parent_b_metrics = _strength_payload(parents[1])
+        parent_a_metrics = _strength_payload(parents[0], ratings=ratings)
+        parent_b_metrics = _strength_payload(parents[1], ratings=ratings)
         log_system_event(
             "pipeline.crossover_decided", "info",
             f"Crossover decided (trigger={trigger}): v{parents[0]}×v{parents[1]} "
@@ -644,27 +644,50 @@ def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None
         pass
 
 
-def _strength_payload(version):
+def _strength_payload(version, ratings=None):
     name = bot_name(version)
+    payload = {"bot": name}
+    rating = (ratings or {}).get(name) if isinstance(ratings, dict) else None
+    if rating is not None:
+        try:
+            payload["conservative_rating"] = round(float(rating.conservative_rating()), 1)
+        except Exception:
+            pass
+        r = getattr(rating, "r", None)
+        rd = getattr(rating, "rd", None)
+        if r is not None:
+            try:
+                payload["glicko_r"] = round(float(r), 1)
+            except Exception:
+                pass
+        if rd is not None:
+            try:
+                payload["glicko_rd"] = round(float(rd), 1)
+            except Exception:
+                pass
     try:
-        from tool_helpers import load_h2h_avg_winrates_with_coverage, load_strength_scores
-        coverage = load_h2h_avg_winrates_with_coverage().get(name, {})
-        scores = load_strength_scores()
-        return {
-            "bot": name,
-            "leaderboard_score": round(scores.get(name, 0.0), 4),
-            "h2h_avg_wr": round(coverage.get("h2h_avg_wr", 0.0), 4),
-            "h2h_coverage": round(coverage.get("opponent_coverage", 0.0), 4),
-            "h2h_games": coverage.get("h2h_games", 0),
-            "h2h_source": coverage.get("h2h_source", ""),
-            "rank_basis": coverage.get("rank_basis", ""),
-            "strength_confidence": coverage.get("strength_confidence", "low"),
-        }
+        from tool_helpers import _load_h2h_data, compute_h2h_avg_winrate
+        h2h_data = _load_h2h_data()
+        h2h = compute_h2h_avg_winrate(name, h2h_data)
+        if h2h is not None:
+            payload["h2h_avg_wr"] = round(float(h2h), 4)
+        h2h_games = 0
+        opponents = set()
+        for key, value in h2h_data.items():
+            parts = key.split(" vs ")
+            if len(parts) != 2 or name not in parts:
+                continue
+            games = int(value.get("games", 0) or 0)
+            h2h_games += games
+            opponents.update(part for part in parts if part != name)
+        payload["h2h_games"] = h2h_games
+        payload["h2h_opponents"] = len(opponents)
+        return payload
     except Exception:
-        return {"bot": name}
+        return payload
 
 
-def _log_source_selection_decision(trigger, selected_v, current_v, combined=None):
+def _log_source_selection_decision(trigger, selected_v, current_v, combined=None, ratings=None):
     try:
         log_system_event(
             "pipeline.source_selection_decided",
@@ -676,8 +699,8 @@ def _log_source_selection_decision(trigger, selected_v, current_v, combined=None
                 "current_v": current_v,
                 "llm_recommended_source": (combined or {}).get("recommended_source"),
                 "source_rationale": (combined or {}).get("source_rationale"),
-                "selected_metrics": _strength_payload(selected_v),
-                "current_metrics": _strength_payload(current_v),
+                "selected_metrics": _strength_payload(selected_v, ratings=ratings),
+                "current_metrics": _strength_payload(current_v, ratings=ratings),
             },
         )
     except Exception:
@@ -778,7 +801,7 @@ def _decide_strategy(combined, current_v, ratings):
                 "Forcing source_v=%d (unified selection leader) to break the loop.",
                 _source_loop, leader_v,
             )
-            _log_source_selection_decision("source_loop_unified_leader", leader_v, current_v, combined)
+            _log_source_selection_decision("source_loop_unified_leader", leader_v, current_v, combined, ratings)
             return "master", leader_v, ()
 
     # Source-v oscillation detection: if recent gens cycle among a small set
@@ -869,7 +892,7 @@ def _decide_strategy(combined, current_v, ratings):
                 except Exception:
                     pass
                 _log_source_selection_decision(
-                    "source_oscillation_breakout", selected_v, current_v, combined
+                    "source_oscillation_breakout", selected_v, current_v, combined, ratings
                 )
                 return "master", selected_v, ()
         if force_oscillation_crossover and len(osc_ratings) >= 2:
@@ -884,7 +907,8 @@ def _decide_strategy(combined, current_v, ratings):
                     sorted(oscillating),
                 )
                 _log_crossover_decision("oscillation", highest_v, (highest_v, lowest_v),
-                                        osc_ratings.get(highest_v), osc_ratings.get(lowest_v))
+                                        osc_ratings.get(highest_v), osc_ratings.get(lowest_v),
+                                        ratings=ratings)
                 return "crossover", highest_v, (highest_v, lowest_v)
 
     # Priority 1: Stagnation with high/medium confidence → crossover
@@ -893,7 +917,7 @@ def _decide_strategy(combined, current_v, ratings):
     if combined.get("is_stagnant") and combined.get("confidence") != "low":
         parents = _pick_crossover_parents(ratings, current_v, archive=_archive)
         if parents:
-            _log_crossover_decision("stagnation", parents[0], parents)
+            _log_crossover_decision("stagnation", parents[0], parents, ratings=ratings)
             return "crossover", parents[0], parents
 
     # Priority 2: LLM-recommended source (only for non-stagnant systems).
@@ -909,7 +933,7 @@ def _decide_strategy(combined, current_v, ratings):
                     rationale = combined.get("source_rationale", "")
                     log.info("LLM recommended source: v%d (instead of latest v%d). %s",
                              rec_v, current_v, rationale[:200])
-                _log_source_selection_decision("llm_recommended_source", rec_v, current_v, combined)
+                _log_source_selection_decision("llm_recommended_source", rec_v, current_v, combined, ratings)
                 return "master", rec_v, ()
             _log_source_selection_rejected(
                 "llm_recommended_source", rec_v, current_v, "source_not_active", combined
@@ -920,7 +944,7 @@ def _decide_strategy(combined, current_v, ratings):
         branch_v = _parse_branch_from(combined["branch_from"])
         if branch_v is not None and branch_v >= 1:
             if branch_v in _active_source_versions():
-                _log_source_selection_decision("branch_recommendation", branch_v, current_v, combined)
+                _log_source_selection_decision("branch_recommendation", branch_v, current_v, combined, ratings)
                 return "master", branch_v, ()
             _log_source_selection_rejected(
                 "branch_recommendation", branch_v, current_v, "source_not_active", combined
@@ -932,11 +956,11 @@ def _decide_strategy(combined, current_v, ratings):
         if parents:
             log.info("Diversity injection: forcing crossover (%s, %s) to break local optimum",
                      f"v{parents[0]}", f"v{parents[1]}")
-            _log_crossover_decision("diversity", parents[0], parents)
+            _log_crossover_decision("diversity", parents[0], parents, ratings=ratings)
             return "crossover", parents[0], parents
 
     # Fallback: LLM did not recommend a source, use current_v
-    _log_source_selection_decision("latest_fallback", current_v, current_v, combined)
+    _log_source_selection_decision("latest_fallback", current_v, current_v, combined, ratings)
     return "master", current_v, ()
 
 

@@ -4,6 +4,7 @@ from core.pipeline_state import (
     route_policy,
     validate_stage_transition,
 )
+from core.tool_helpers import _critic_gate_ok
 
 
 def test_precommit_failed_is_forward_and_reworkable():
@@ -44,6 +45,53 @@ def test_old_critic_checked_failed_precommit_routes_to_workers():
     assert blocked["blocked"] is True
     assert blocked["next_tool"] == "execute_workers"
     assert blocked["failure_class"] == "regression"
+
+
+def test_rejected_critic_routes_to_workers_before_precommit(monkeypatch):
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+    checkpoint = {
+        "stage": "reviewed",
+        "next_v": 263,
+        "source_v": 244,
+        "gate_results": {
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+                "workflow_profile_id": "national_native",
+                "national_execution_mode": "native_tcp",
+                "national_native_contract_ok": True,
+            },
+            "review": {"approved": True},
+            "critic": {
+                "approved": False,
+                "raw_approved": False,
+                "advisory_approved": False,
+                "score": 4,
+                "feedback": "bad direction",
+            },
+        },
+    }
+
+    route = route_policy(checkpoint)
+    assert route["next_tool"] == "execute_workers"
+    assert route["intent"] == "critic_rework"
+    assert "Critic rejected" in route["directive"]
+
+
+def test_critic_force_advanced_no_longer_bypasses_gate():
+    checkpoint = {
+        "gate_results": {
+            "critic": {
+                "approved": False,
+                "force_advanced": True,
+                "raw_approved": False,
+                "advisory_approved": False,
+                "score": 4,
+            }
+        }
+    }
+
+    assert _critic_gate_ok(checkpoint) is False
 
 
 def test_precommit_failed_blocks_abandon_until_hard_limit():

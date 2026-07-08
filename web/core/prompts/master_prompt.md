@@ -206,7 +206,7 @@ When ALL H2H matchups are within 45-55% win rate (no exploitable weakness visibl
 3. Aggressive parameter exploration: test extreme values (2x or 0.5x of current) to find the true sensitivity curve
 4. Opponent-model-driven changes: add per-opponent-type exploitation logic
 
-**DISCOURAGED at plateaus** (Critic will flag but precommit battle is the final judge):
+**DISCOURAGED at plateaus** (Critic is a hard strategy gate before precommit):
 - Pure small constant adjustments without a structural companion mechanism.
   Do not revisit an EXHAUSTED direction in an initial generation plan. Master
   validation will reject positive worker intent that repeats an exhausted axis.

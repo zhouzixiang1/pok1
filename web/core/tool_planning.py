@@ -5366,9 +5366,9 @@ async def execute_workers(args):
     except Exception as _ce:
         _log.debug("H6 cross-gen circuit breaker check failed (non-fatal): %s", _ce)
 
-    # [fix-13a] require_new_plan guard removed: generation_attempt is never incremented
-    # (all assignments are identity-preserves or run_master resets to 0).
-    # design intent: critic is advisory-only, precommit is final gate.
+    # Critic is a hard strategic gate. generation_attempt can be incremented by a
+    # critic rejection and preserved through this worker rework path; run_master
+    # remains the explicit reset point for a fresh plan.
 
     # When retrying after workers already ran, actually reset code from source first.
     # Previous claim that code was reset was FALSE — now we actually do it.
