@@ -1535,11 +1535,10 @@ async def prepare_next_gen(args):
     workflow_profile = get_workflow_profile()
     native_tcp = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
     from candidate_hygiene import sanitize_candidate_dir
-    # Do NOT overwrite national_bot.py during prepare: the source bot already
-    # has its own (possibly evolved) national_bot.py. Overwriting it with the
-    # template produces a diff that the reviewer flags as scope drift, even
-    # though no worker touched the file. Only create it if missing — the
-    # quality gate's check_native_contract enforces protocol compliance.
+    # Preserve a compliant source national_bot.py, but refresh stale/unsafe
+    # entrypoints during hygiene. Old parents can lack the current official EXE
+    # allin/check guards; letting that launcher inherit into every child makes
+    # protocol failures look like strategy regressions.
     hygiene = sanitize_candidate_dir(
         next_dir,
         require_native_tcp=native_tcp,

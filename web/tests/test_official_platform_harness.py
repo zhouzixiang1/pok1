@@ -81,6 +81,35 @@ def test_parse_bot_log_counts_progress_and_issues(tmp_path):
     assert len(stats.issues) == 1
 
 
+def test_summarize_round_logs_flags_official_silent_timeout_gap(tmp_path):
+    bot_a_log = tmp_path / "botA.log"
+    bot_b_log = tmp_path / "botB.log"
+    bot_a_log.write_text(
+        "\n".join(
+            [
+                "[10:00:00] DISPATCH line='preflop|SMALLBLIND|<0,1><1,2>'",
+                "[10:00:01] DECIDE done action=0 elapsed=0.050s",
+                "[10:00:01] SEND name=BotA hand=1 stage=preflop msg='call'",
+                "[10:01:03] DISPATCH line='earnChips 50'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    bot_b_log.write_text(
+        "\n".join(
+            [
+                "[10:00:00] DISPATCH line='preflop|BIGBLIND|<0,3><1,4>'",
+                "[10:01:03] DISPATCH line='earnChips -50'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    summary = summarize_round_logs(bot_a_log, bot_b_log)
+
+    assert any("official_log_silent_timeout_gap" in issue for issue in summary["issues"])
+
+
 def test_official_issue_file_ignores_benign_unknown_telemetry(tmp_path):
     stderr = tmp_path / "bot.stderr.log"
     stderr.write_text(

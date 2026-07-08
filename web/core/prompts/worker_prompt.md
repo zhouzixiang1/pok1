@@ -40,6 +40,13 @@ Compatibility rules:
   does not guarantee newline delimiters or TCP packet boundaries. Do not append
   `\n` to names or actions for the formal EXE path; maintain a splitter for
   sticky inbound packets such as `earnChips -100preflop|...` or `raise 200call`.
+- The official Windows EXE is timing-sensitive. Preserve the native entry's
+  `POK_OFFICIAL_ACTION_DELAY` setting, default near `0.30` seconds, and send
+  formal wire actions through `_send_wire_action`. Local strength evaluation may
+  override this delay to `0`; generated bots must not delete, bypass, or move
+  the throttle into poker strategy code.
+- Do not add timeout-rescue loops that send unsolicited `call` or `check`.
+  Native bots may only send one legal action for the current pending decision.
 - Heads-up identity: `dealer_id` is SB and `bb = 1 - dealer_id`. Postflop BB is
   out of position and acts first; SB/dealer is in position. Do not use old
   formulas such as `sb = next_player(dealer_id, 1)` or

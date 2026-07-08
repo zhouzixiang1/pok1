@@ -77,6 +77,8 @@ CARD_RE = re.compile(r"<(\d+),(\d+)>")
 TCP_TO_JUDGE_SUIT = {0: 2, 1: 0, 2: 1, 3: 3}
 ACTION_PREFIX_RE = re.compile(r"^(raise|bet)\s+(\d+)")
 EARN_PREFIX_RE = re.compile(r"^earnChips\s+-?\d+")
+DEFAULT_OFFICIAL_ACTION_DELAY_SEC = 0.30
+OFFICIAL_ACTION_DELAY_ENV = "POK_OFFICIAL_ACTION_DELAY"
 
 _LOG_FP = None
 
@@ -99,6 +101,15 @@ def _log(msg: str) -> None:
         _LOG_FP.write(f"[{_time.strftime('%H:%M:%S')}] {msg}\n")
     except Exception:
         pass
+
+
+def _official_action_delay_sec() -> float:
+    raw = os.environ.get(OFFICIAL_ACTION_DELAY_ENV, str(DEFAULT_OFFICIAL_ACTION_DELAY_SEC))
+    try:
+        delay = float(raw)
+    except (TypeError, ValueError):
+        delay = DEFAULT_OFFICIAL_ACTION_DELAY_SEC
+    return max(0.0, min(delay, 2.0))
 
 
 def _tcp_card_to_int(suit: int, rank: int) -> int:
@@ -194,6 +205,8 @@ class NativeNationalBot:
         self.reconstruct_state = reconstruct_state
         self.infer_remaining_hands = infer_remaining_hands_from_requests
         self.sanitize_action = sanitize_action
+        self._official_action_delay_sec = _official_action_delay_sec()
+        self._last_platform_message_at = 0.0
         self._reset_match()
 
     def _reset_match(self) -> None:
@@ -421,6 +434,15 @@ class NativeNationalBot:
             return self._stage != "preflop" and self._my_action_count == 0
         return False
 
+    def _send_wire_action(self, sock: socket.socket, msg: str) -> None:
+        if self._official_action_delay_sec > 0 and self._last_platform_message_at > 0:
+            elapsed = time.perf_counter() - self._last_platform_message_at
+            wait_sec = self._official_action_delay_sec - elapsed
+            if wait_sec > 0:
+                _log(f"OFFICIAL_ACTION_DELAY wait={wait_sec:.3f}s target={self._official_action_delay_sec:.3f}s")
+                time.sleep(wait_sec)
+        sock.sendall(msg.encode("utf-8"))
+
     def _send_decision(self, sock: socket.socket) -> None:
         t0 = time.perf_counter()
         _log(
@@ -439,7 +461,7 @@ class NativeNationalBot:
         _log(f"DECIDE done action={action!r} elapsed={elapsed:.3f}s")
         self._responses.append(int(action))
         msg, action_type, amount = self._action_to_tcp(int(action))
-        sock.sendall(msg.encode("utf-8"))
+        self._send_wire_action(sock, msg)
         _log(
             f"SEND name={self.name} hand={self._hand_num} stage={self._stage} "
             f"act_cnt={self._my_action_count} my_sb={self._my_stage_bet} "
@@ -453,6 +475,7 @@ class NativeNationalBot:
         self._my_action_count += 1
 
     def handle(self, line: str, sock: socket.socket) -> None:
+        self._last_platform_message_at = time.perf_counter()
         if line.startswith("name"):
             sock.sendall(self.name.encode("utf-8"))
             _log(f"SEND name_handshake name={self.name!r}")
@@ -568,7 +591,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 '''
 
 
@@ -796,17 +818,53 @@ def check_native_contract(bot_dir: str | Path) -> list[str]:
     for token in ("sock.recv", "_split_messages"):
         if token not in text:
             errors.append(f"{NATIVE_ENTRY}: missing official raw TCP splitter token {token!r}")
+    official_delay_tokens = ("POK_OFFICIAL_ACTION_DELAY", "_send_wire_action", "DEFAULT_OFFICIAL_ACTION_DELAY_SEC")
+    for token in official_delay_tokens:
+        if token not in text:
+            errors.append(
+                f"{NATIVE_ENTRY}: missing official EXE action throttle token {token!r}; "
+                "native bots must delay action sends for the official Windows platform"
+            )
     if "wire value is the extra chips added" in text:
         errors.append(f"{NATIVE_ENTRY}: TCP raise amount is documented as an increment; it must be raise-to-total")
     if "committed = min(max(0, amount), self._opponent_chips)" in text:
         errors.append(f"{NATIVE_ENTRY}: opponent raise amount is treated as an increment; it must be raise-to-total")
     if "return f\"raise {needed}\", \"raise\", action" in text:
         errors.append(f"{NATIVE_ENTRY}: outgoing raise uses delta-style wire amount; it must send raise-to-total")
+    formal_wrapper = "class NativeNationalBot" in text or "def _action_to_tcp" in text or "def _zero_action" in text
+    if formal_wrapper:
+        action_to_tcp = _function_source(text, "_action_to_tcp")
+        if action_to_tcp is None:
+            errors.append(f"{NATIVE_ENTRY}: missing _action_to_tcp protocol translator")
+        elif "self._current_round_has_allin()" not in action_to_tcp:
+            errors.append(
+                f"{NATIVE_ENTRY}: _action_to_tcp missing current-round allin guard; "
+                "after any allin it must map strategy raises/allins to call/fold/check-safe actions"
+            )
+        zero_action = _function_source(text, "_zero_action")
+        if zero_action is None:
+            errors.append(f"{NATIVE_ENTRY}: missing _zero_action call/check mapper")
+        elif "_responding_to_check()" not in zero_action:
+            errors.append(
+                f"{NATIVE_ENTRY}: _zero_action missing postflop check-response guard; "
+                "second pass after an opponent check must be call, not check"
+            )
     if _strategy_action_has_exception_pass(text):
         errors.append(
             f"{NATIVE_ENTRY}: _strategy_action must not continue with raw action after sanitizer failure"
         )
     return errors
+
+
+def _function_source(text: str, name: str) -> str | None:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(text, node) or ""
+    return None
 
 
 def _strategy_action_has_exception_pass(text: str) -> bool:
@@ -979,6 +1037,7 @@ async def _run_tcp_server_with_processes(
     try:
         for idx, (spec, label) in enumerate(zip((bot_a, bot_b), run_labels)):
             env = os.environ.copy()
+            env["POK_OFFICIAL_ACTION_DELAY"] = os.environ.get("POK_NATIVE_LOCAL_ACTION_DELAY", "0")
             env["PYTHONPATH"] = str(spec.path) + os.pathsep + env.get("PYTHONPATH", "")
             seed = _native_bot_seed(bot_seed_base, idx)
             bot_seeds[label] = seed

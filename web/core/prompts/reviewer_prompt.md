@@ -43,8 +43,10 @@ A legacy JSON return of 0 means call/check (context-dependent). The minimum vali
 New bots are national_native by default. The formal entry is `national_bot.py`:
 it must be a direct TCP client, must not depend on
 `sever/bot_adapter.py`, and must not output `{"response": ...}` as its formal
-national communication. A legacy JSON `main.py` may remain for local regression
-only. Reject code that emits wire-level `bet`, returns/sends
+national communication. It must preserve the official EXE send throttle
+(`POK_OFFICIAL_ACTION_DELAY` default near `0.30s`, actions sent through
+`_send_wire_action`) and must not use unsolicited timeout-rescue sends. A legacy
+JSON `main.py` may remain for local regression only. Reject code that emits wire-level `bet`, returns/sends
 positive raises that consume the entire remaining stack instead of all-in, or
 hard-codes postflop TCP `check-check` as a valid platform action.
 Full national legality checklist from `sever/国赛平台/非法行为说明.docx`:
@@ -76,7 +78,7 @@ You check ONLY these five areas:
    - If the child SHRINKS or MAINTAINS an oversized file (net growth ≤ 0 vs parent) → **Marginal (5-6)**, NOT a Reject on file-size grounds alone (the oversize was inherited, not introduced by this candidate). Still flag it in `risk_areas` so future generations are nudged toward compliance.
    - If the parent is within limits and the child exceeds them → apply the normal Reject/Marginal rules above.
 
-3. **Code correctness** — The bot must compile. `national_bot.py` must connect over TCP and send only official raw national actions without relying on newline delimiters; it must split sticky inbound TCP packets before state updates. If a legacy/local `main.py` exists, it must still output valid `{"response": <int>}` JSON when used for regression. No unavailable imports (stdlib only). No infinite loops.
+3. **Code correctness** — The bot must compile. `national_bot.py` must connect over TCP and send only official raw national actions without relying on newline delimiters; it must split sticky inbound TCP packets before state updates, preserve `POK_OFFICIAL_ACTION_DELAY`/`_send_wire_action`, and never send unsolicited fallback actions without a pending decision. If a legacy/local `main.py` exists, it must still output valid `{"response": <int>}` JSON when used for regression. No unavailable imports (stdlib only). No infinite loops.
 
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.
 

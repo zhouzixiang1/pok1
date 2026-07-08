@@ -274,6 +274,8 @@ Core protocol facts from those documents:
 - Blinds are 50/100. Small blind acts first preflop; big blind acts first on flop/turn/river.
 - Each decision has a 60 second limit. Timeout is treated as fold.
 - Client actions are raw socket strings with no trailing newline required or expected by the official EXE: `raise <amount>`, `fold`, `call`, `check`, `allin`.
+- The official EXE is timing-sensitive. Formal native bots must throttle action sends in the TCP wire layer after platform messages; the current template uses `POK_OFFICIAL_ACTION_DELAY` with a default of `0.30` seconds. Local strength evaluation may set `POK_NATIVE_LOCAL_ACTION_DELAY=0`, but generated/submitted bot entries must keep the default official-safe behavior.
+- Do not copy the official sample's unsolicited timeout-rescue loop into generated bots. A bot may only send an action while the platform is waiting for its current decision; repeated `call`/`check` sends without a pending action are treated as protocol risk.
 - The official EXE uses TCP streams, so inbound data may arrive as sticky packets such as `earnChips -100preflop|...` or `raise 200call`; native bots must split protocol tokens before updating state.
 - `raise <amount>` must use exactly one space between keyword and amount; leading/trailing spaces, tabs, and extra spaces are illegal protocol formats.
 - `bet` must not be sent; the protocol uses `raise` in place of bet.
