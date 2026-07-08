@@ -65,14 +65,23 @@ class AppState:
 
     def update_config(self, **kwargs) -> dict:
         with self._lock:
-            if "daemon_enabled" in kwargs and isinstance(kwargs["daemon_enabled"], bool):
-                self.daemon_enabled = kwargs["daemon_enabled"]
-            if "daemon_workers" in kwargs and isinstance(kwargs["daemon_workers"], int) and not isinstance(kwargs["daemon_workers"], bool):
-                self.daemon_workers = max(1, min(_MAX_SAFE_DAEMON_WORKERS, kwargs["daemon_workers"]))
-            if "daemon_pairs" in kwargs and isinstance(kwargs["daemon_pairs"], int) and not isinstance(kwargs["daemon_pairs"], bool):
-                self.daemon_pairs = max(1, min(20, kwargs["daemon_pairs"]))
+            self._apply_config_locked(kwargs)
             self._save_config()
             return self.get_config()
+
+    def override_runtime_config(self, **kwargs) -> dict:
+        """Apply process-local CLI overrides without changing persisted user config."""
+        with self._lock:
+            self._apply_config_locked(kwargs)
+            return self.get_config()
+
+    def _apply_config_locked(self, updates: dict):
+        if "daemon_enabled" in updates and isinstance(updates["daemon_enabled"], bool):
+            self.daemon_enabled = updates["daemon_enabled"]
+        if "daemon_workers" in updates and isinstance(updates["daemon_workers"], int) and not isinstance(updates["daemon_workers"], bool):
+            self.daemon_workers = max(1, min(_MAX_SAFE_DAEMON_WORKERS, updates["daemon_workers"]))
+        if "daemon_pairs" in updates and isinstance(updates["daemon_pairs"], int) and not isinstance(updates["daemon_pairs"], bool):
+            self.daemon_pairs = max(1, min(20, updates["daemon_pairs"]))
 
     def set_running(self, running: bool):
         with self._lock:

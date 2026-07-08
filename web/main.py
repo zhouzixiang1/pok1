@@ -91,7 +91,7 @@ def main():
     # Pre-populate app_state from CLI args so lifespan reads correct config
     sys.path.insert(0, str(WEB_DIR / "server"))
     from server.state import app_state
-    app_state.update_config(daemon_enabled=not args.no_daemon)
+    app_state.override_runtime_config(daemon_enabled=not args.no_daemon)
 
     # Note: atexit.register(stop_daemon) is handled inside start_daemon() itself
     # (daemon_management.py line ~90) — no need to register again here.

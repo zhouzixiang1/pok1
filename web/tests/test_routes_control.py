@@ -30,6 +30,28 @@ class TestConfig:
         resp = client.put("/api/control/config", json={"daemon_workers": "not_a_number"})
         assert resp.status_code == 422
 
+    def test_runtime_override_does_not_persist_user_config(self, tmp_path):
+        from server.state import AppState
+
+        path = tmp_path / "app_config.json"
+        state = AppState(config_file=path)
+        state.update_config(daemon_enabled=True, daemon_workers=2, daemon_pairs=4)
+
+        runtime = state.override_runtime_config(daemon_enabled=False, daemon_workers=3, daemon_pairs=9)
+
+        assert runtime["daemon_enabled"] is False
+        assert runtime["daemon_workers"] == 3
+        assert runtime["daemon_pairs"] == 9
+        saved = json.loads(path.read_text())
+        assert saved["daemon_enabled"] is True
+        assert saved["daemon_workers"] == 2
+        assert saved["daemon_pairs"] == 4
+
+        reloaded = AppState(config_file=path)
+        assert reloaded.get_config()["daemon_enabled"] is True
+        assert reloaded.get_config()["daemon_workers"] == 2
+        assert reloaded.get_config()["daemon_pairs"] == 4
+
 
 class TestStatus:
     def test_returns_state(self, client):
@@ -181,6 +203,7 @@ class TestStatus:
         from server.state import app_state
 
         app_state.set_running(True)
+        app_state.override_runtime_config(daemon_enabled=True)
         monkeypatch.setattr(
             app_state,
             "task_snapshot",
