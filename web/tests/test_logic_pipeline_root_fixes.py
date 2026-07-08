@@ -1186,10 +1186,24 @@ wc -l bots/claude_v234/strategy.py
         "Path('strategy.py').write_text('x')\n"
         "PY"
     )
+    python_path_var_heredoc_relative_allowed = (
+        "cd bots/claude_v234 && python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        "p = Path('strategy.py')\n"
+        "p.write_text('x')\n"
+        "PY"
+    )
     python_path_heredoc_other_file = (
         "cd bots/claude_v234 && python3 - <<'PY'\n"
         "from pathlib import Path\n"
         "Path('opponent.py').write_text('x')\n"
+        "PY"
+    )
+    python_path_var_heredoc_other_file = (
+        "cd bots/claude_v234 && python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        "p = Path('opponent.py')\n"
+        "p.write_text('x')\n"
         "PY"
     )
     national_new_helper = project_root / "bots" / "national_v114" / "river_thin_value.py"
@@ -1243,11 +1257,19 @@ wc -l bots/claude_v234/strategy.py
         file_scope,
     ) is None
     assert llm_query._subagent_bash_write_scope_violation(
+        python_path_var_heredoc_relative_allowed,
+        file_scope,
+    ) is None
+    assert llm_query._subagent_bash_write_scope_violation(
         python_open_other_file,
         file_scope,
     ).startswith("python_open_write:")
     assert llm_query._subagent_bash_write_scope_violation(
         python_path_heredoc_other_file,
+        file_scope,
+    ).startswith("python_path_write_text:")
+    assert llm_query._subagent_bash_write_scope_violation(
+        python_path_var_heredoc_other_file,
         file_scope,
     ).startswith("python_path_write_text:")
     assert llm_query._subagent_bash_write_scope_violation(

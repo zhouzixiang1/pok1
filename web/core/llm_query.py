@@ -115,6 +115,17 @@ _SUBAGENT_PYTHON_PATH_WRITE_TARGET_RE = re.compile(
     r"(?P<method>write_text|write_bytes|unlink|mkdir|rmdir)\s*\(",
     re.IGNORECASE | re.DOTALL,
 )
+_SUBAGENT_PYTHON_PATH_ASSIGN_RE = re.compile(
+    r"(?m)^\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"(?:Path|pathlib\.Path)\s*\(\s*"
+    r"(?P<quote>['\"])(?P<path>[^'\"]+)(?P=quote)\s*\)",
+    re.IGNORECASE,
+)
+_SUBAGENT_PYTHON_VAR_PATH_WRITE_RE = re.compile(
+    r"(?<![\w.])(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*"
+    r"(?P<method>write_text|write_bytes|unlink|mkdir|rmdir)\s*\(",
+    re.IGNORECASE,
+)
 
 
 def _subagent_git_tag_invocation_is_mutating(args):
@@ -557,12 +568,20 @@ def _cd_target_from_args(args):
 
 
 def _iter_python_write_targets_from_text(text):
+    path_vars = {
+        match.group("name"): match.group("path")
+        for match in _SUBAGENT_PYTHON_PATH_ASSIGN_RE.finditer(str(text))
+    }
     for match in _SUBAGENT_PYTHON_OPEN_WRITE_TARGET_RE.finditer(str(text)):
         mode = (match.group("mode") or "").lower()
         if any(flag in mode for flag in ("w", "a", "x", "+")):
             yield "python_open_write", match.group("path")
     for match in _SUBAGENT_PYTHON_PATH_WRITE_TARGET_RE.finditer(str(text)):
         yield f"python_path_{match.group('method').lower()}", match.group("path")
+    for match in _SUBAGENT_PYTHON_VAR_PATH_WRITE_RE.finditer(str(text)):
+        target = path_vars.get(match.group("name"))
+        if target:
+            yield f"python_path_{match.group('method').lower()}", target
 
 
 def _iter_subagent_segment_write_targets(segment, python_heredoc_body=None):
