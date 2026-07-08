@@ -2772,6 +2772,67 @@ class TestWorkerFailureCircuitBreaker:
         assert "extra stale task" in stale_reason
         assert "quality_gate:strategy.py" in stale_reason
 
+    def test_reviewer_scope_drift_repair_targets_revert_file_not_positive_context(self):
+        import tool_planning
+
+        ckpt = {
+            "next_v": 104,
+            "source_v": 103,
+            "parent2_v": None,
+            "stage": "repair_planned",
+            "master_plan": {
+                "strategy": "master",
+                "tasks": [
+                    {
+                        "worker_id": "1",
+                        "target_files": ["opponent.py"],
+                        "prohibited_files": ["national_bot.py"],
+                    },
+                    {
+                        "worker_id": "2",
+                        "target_files": ["strategy.py"],
+                        "prohibited_files": ["national_bot.py"],
+                    },
+                ],
+            },
+            "gate_results": {"quality": {"all_passed": True, "failed_gates": []}},
+        }
+        feedback = (
+            "opponent.py and strategy.py changes are compliant with their worker roles, "
+            "compile cleanly, and the opponent self-test passes. However, national_bot.py "
+            "was explicitly listed in do_not_touch and in both workers' prohibited_files, "
+            "yet it was heavily refactored: new _last_raise_total/_minimum_raise_total/"
+            "_raise_action helpers, _zero_action simplified, and _action_to_tcp behavior "
+            "changed. This is an unauthorized scope drift and role-boundary violation. "
+            "Revert bots/national_v104/national_bot.py to the v103 version to stay within "
+            "the approved plan."
+        )
+
+        tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt, feedback)
+
+        assert [(task["role"], task["target_files"]) for task in tasks] == [
+            ("Scope Boundary Repair Architect", ["national_bot.py"]),
+        ]
+        assert "Scope-drift repair method" in tasks[0]["worker_prompt"]
+        assert "Revert this target file to the source parent version" in tasks[0]["worker_prompt"]
+        assert tool_planning._quality_failure_target_files(ckpt, feedback) == {
+            "national_bot.py",
+        }
+
+        old_tasks = [
+            {
+                "worker_id": "auto_quality_repair_gate_strategy_py",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "must_change_files": ["strategy.py"],
+                "repair_blocker": "quality_gate",
+                "repair_contract": {"blocker": "quality_gate", "file": "strategy.py"},
+            },
+        ]
+        stale_reason = tool_planning._stale_quality_task_reason(old_tasks, ckpt, feedback)
+        assert "stale current quality repair contract" in stale_reason
+        assert "quality_gate:strategy.py" in stale_reason
+
     def test_empty_quality_evidence_does_not_expand_to_changed_files(self):
         import tool_planning
 

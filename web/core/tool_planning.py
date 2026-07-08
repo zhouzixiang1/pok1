@@ -3990,6 +3990,9 @@ def _split_reviewer_quality_feedback(feedback):
 
 def _primary_feedback_file(item):
     text = str(item or "")
+    scope_files = _scope_drift_feedback_files(text)
+    if scope_files:
+        return scope_files[0]
     patterns = (
         r"(?:in|on|file)\s+([A-Za-z0-9_./-]+\.py)\s*:",
         r"([A-Za-z0-9_./-]+\.py)\s*:",
@@ -4005,6 +4008,66 @@ def _primary_feedback_file(item):
     return files[0] if files else ""
 
 
+_SCOPE_DRIFT_FEEDBACK_MARKERS = (
+    "unauthorized scope",
+    "scope drift",
+    "role-boundary violation",
+    "role boundary violation",
+    "prohibited_files",
+    "prohibited files",
+    "do_not_touch",
+    "do not touch",
+    "outside declared target_files",
+    "outside master plan target_files",
+)
+
+_REVERT_FEEDBACK_MARKERS = ("revert", "restore", "rollback", "roll back")
+
+
+def _has_scope_drift_marker(item):
+    text = str(item or "").lower()
+    return any(marker in text for marker in _SCOPE_DRIFT_FEEDBACK_MARKERS)
+
+
+def _scope_drift_feedback_files(item):
+    """Return the actual files that a reviewer asks to revert/restore.
+
+    Reviewer feedback can begin with positive context like "opponent.py and
+    strategy.py changes are compliant" and only later say "However,
+    national_bot.py was in do_not_touch; revert it". The first file mention is
+    then explicitly not the repair target. Parse scope-drift/revert cues before
+    falling back to generic primary-file extraction.
+    """
+
+    text = str(item or "")
+    lower = text.lower()
+    if not any(marker in lower for marker in _SCOPE_DRIFT_FEEDBACK_MARKERS + _REVERT_FEEDBACK_MARKERS):
+        return []
+
+    candidates = []
+
+    def add(value):
+        rel = Path(str(value)).name
+        if rel and rel.endswith(".py") and rel not in candidates:
+            candidates.append(rel)
+
+    for pattern in (
+        r"\b(?:revert|restore|rollback|roll\s+back)\s+(?:bots/[A-Za-z0-9_./-]+/)?([A-Za-z0-9_./-]+\.py)\b",
+        r"\b([A-Za-z0-9_./-]+\.py)\b[^.\n;]{0,220}\b(?:do_not_touch|do\s+not\s+touch|prohibited_files|prohibited\s+files)\b",
+        r"\b([A-Za-z0-9_./-]+\.py)\b[^.\n;]{0,220}\b(?:unauthorized\s+scope|scope\s+drift|role-boundary\s+violation|role\s+boundary\s+violation)\b",
+    ):
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            add(match.group(1))
+
+    for part in re.split(r"(?i)\b(?:however|but|nevertheless)\b[:,]?\s*", text)[1:]:
+        part_lower = part.lower()
+        if any(marker in part_lower for marker in _SCOPE_DRIFT_FEEDBACK_MARKERS + _REVERT_FEEDBACK_MARKERS):
+            for filename in _extract_quality_failure_files([part]):
+                add(filename)
+
+    return candidates
+
+
 def _feedback_quality_contracts(feedback):
     """Return file-scoped contracts from reviewer feedback.
 
@@ -4015,10 +4078,12 @@ def _feedback_quality_contracts(feedback):
     """
     by_file = {}
     for item in _split_reviewer_quality_feedback(feedback):
-        rel = _primary_feedback_file(item)
-        if not rel:
-            continue
-        by_file.setdefault(rel, []).append(item)
+        scope_files = _scope_drift_feedback_files(item)
+        targets = scope_files or [_primary_feedback_file(item)]
+        for rel in targets:
+            if not rel:
+                continue
+            by_file.setdefault(rel, []).append(item)
 
     contracts = []
     for rel in sorted(by_file):
@@ -4040,6 +4105,8 @@ def _feedback_quality_contracts(feedback):
             )
         ):
             contract["role_hint"] = "tuner"
+        if _scope_drift_feedback_files(evidence) and _has_scope_drift_marker(evidence):
+            contract["role_hint"] = "scope_revert"
         contracts.append(contract)
     return contracts
 
@@ -4277,7 +4344,12 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "repair_contract": contract,
         }
     evidence = contract.get('evidence') or 'quality gate failed'
-    role = "Hyperparameter Tuner" if contract.get("role_hint") == "tuner" else "Algorithmic Logic Architect"
+    if contract.get("role_hint") == "tuner":
+        role = "Hyperparameter Tuner"
+    elif contract.get("role_hint") == "scope_revert":
+        role = "Scope Boundary Repair Architect"
+    else:
+        role = "Algorithmic Logic Architect"
     reachability_guidance = ""
     if "reachability" in str(evidence).lower():
         reachability_guidance = (
@@ -4300,6 +4372,14 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "- Fix the exact reviewer evidence by reverting or retuning the named "
             "numeric constant as a Tuner-owned change, with adjacent rationale if needed.\n"
             "- Do not touch protocol/card mapping or non-constant strategy code.\n"
+        )
+    elif role == "Scope Boundary Repair Architect":
+        role_guidance = (
+            "\nScope-drift repair method:\n"
+            "- The reviewer evidence says this file changed outside the approved worker scope.\n"
+            "- Revert this target file to the source parent version unless the evidence names a smaller exact rollback.\n"
+            "- Do not add strategy thresholds, protocol refactors, helper subsystems, or action-behavior changes.\n"
+            "- Keep the repair limited to restoring the approved scope boundary; other candidate files are intentionally preserved.\n"
         )
     prompt = (
         f"{preservation.format(next_v=next_v)}\n\n"
