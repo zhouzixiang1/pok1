@@ -514,6 +514,76 @@ class TestRunMasterIdempotent:
         assert cleared
         assert "plan" not in result
 
+    def test_run_master_analysis_none_exhausts_budget_and_abandons(self, client, monkeypatch):
+        import evolution_infra
+        import orchestrator_session
+        import tool_bot_management
+        import tool_planning
+
+        checkpoint = {
+            "next_v": 252,
+            "source_v": 251,
+            "stage": "direction_audited",
+            "master_plan": None,
+            "audit_attempt": 1,
+            "direction_audit": {"repetition_detected": False, "llm_failed": False},
+        }
+        abandon_reasons = []
+        cleared = []
+
+        class _UI:
+            def clear_io(self):
+                pass
+
+            def log_history(self, *_args, **_kwargs):
+                pass
+
+            def get_output(self):
+                return ""
+
+        async def _fake_master(*_args, **_kwargs):
+            return None
+
+        async def _fake_abandon(reason):
+            abandon_reasons.append(reason)
+            return {"abandoned": True, "reason": reason}
+
+        def _fake_write(next_v, source_v, stage, **kwargs):
+            checkpoint["next_v"] = next_v
+            checkpoint["source_v"] = source_v
+            checkpoint["stage"] = stage
+            if "audit_attempt" in kwargs:
+                checkpoint["audit_attempt"] = kwargs["audit_attempt"]
+            if kwargs.get("audit_context"):
+                checkpoint.setdefault("audit_context", {}).update(kwargs["audit_context"])
+            return True
+
+        monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_a, **_k: checkpoint)
+        monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
+        monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", _fake_write)
+        monkeypatch.setattr(tool_planning, "_run_master_analysis", _fake_master)
+        monkeypatch.setattr(tool_planning, "_get_ui", lambda: _UI())
+        monkeypatch.setattr(tool_planning, "_build_cross_gen_constraint_block", lambda _v: "")
+        monkeypatch.setattr(tool_planning, "log_system_event", lambda *a, **k: None)
+        monkeypatch.setattr(orchestrator_session, "_clear_orchestrator_session",
+                            lambda: cleared.append(True))
+        monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", _fake_abandon)
+
+        resp = client.post("/api/control/tool/run_master",
+                           json={"args": {"source_v": 251, "next_v": 252}})
+
+        assert resp.status_code == 200
+        result = json.loads(resp.json()["result"])
+        assert result["error"] == "MASTER_ANALYSIS_EXHAUSTED"
+        assert result["fail_count"] == 2
+        assert result["abandoned"] is True
+        assert abandon_reasons == ["master_analysis_failed v252"]
+        assert cleared
+        assert "plan" not in result
+        assert checkpoint["audit_context"]["master_analysis"]["error"].startswith(
+            "Master failed to produce a valid plan"
+        )
+
     def test_run_master_cross_gen_pivot_exhausts_budget_and_abandons(self, client, monkeypatch):
         import audit_agents
         import evolution_infra

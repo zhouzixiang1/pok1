@@ -508,6 +508,73 @@ async def _abandon_master_generation(next_v, source_v, *, error, fail_count, rea
     return _json_tool_result(result)
 
 
+async def _handle_master_analysis_failure(next_v, source_v, ui, *, message,
+                                          reason, payload=None):
+    """Count a Master analysis collapse against the same budget as bad plans.
+
+    `_run_master_analysis` returns None for malformed output after retries and
+    for role-level LLM failures such as total timeouts. Treat both as Master-stage
+    failures so the orchestrator cannot keep re-calling `run_master` forever.
+    """
+    payload = dict(payload or {})
+    audit_context = {
+        "master_analysis": {
+            "error": message,
+            **payload,
+        }
+    }
+    fail_count = _bump_master_fail_count(
+        next_v,
+        source_v,
+        audit_context=audit_context,
+    )
+    if fail_count >= MAX_MASTER_TOTAL_FAILURES:
+        return await _abandon_master_generation(
+            next_v,
+            source_v,
+            error="MASTER_ANALYSIS_EXHAUSTED",
+            fail_count=fail_count,
+            reason=reason,
+            event_type="pipeline.master_analysis_exhausted_abandon",
+            event_message=(
+                f"Master analysis failed {fail_count} times for v{next_v} — "
+                "abandoning invalid generation"
+            ),
+            ui=ui,
+            payload=payload,
+            directive=(
+                "Master analysis failed too many times and this generation was "
+                "abandoned. Start a fresh generation; do not call run_master "
+                "again for the abandoned candidate."
+            ),
+        )
+    try:
+        log_system_event(
+            "pipeline.master_analysis_failed",
+            "warn",
+            f"Master analysis failed for v{next_v} (fail_count={fail_count}): {message}",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "fail_count": fail_count,
+                **payload,
+            },
+        )
+    except Exception:
+        pass
+    return _json_tool_result({
+        "error": "MASTER_ANALYSIS_FAILED",
+        "fail_count": fail_count,
+        "directive": (
+            "Master failed to produce a valid plan. If run_master keeps failing, "
+            "do NOT retry indefinitely; start a fresh generation or fix the "
+            "Master prompt/tooling failure."
+        ),
+        "logs": ui.get_output() if ui else "",
+        **payload,
+    })
+
+
 def _normalize_master_plan_paths(plan, source_v, next_v):
     """Rewrite parent bot paths in a Master plan to the target bot path.
 
@@ -1423,8 +1490,13 @@ async def run_master(args):
     )
 
     if data is None:
-        _nf = _bump_master_fail_count(next_v, source_v)
-        return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "fail_count": _nf, "directive": "If run_master keeps failing, do NOT retry indefinitely — call abandon_generation to restart the generation fresh.", "logs": ui.get_output()})}]}
+        return await _handle_master_analysis_failure(
+            next_v,
+            source_v,
+            ui,
+            message="Master failed to produce a valid plan after retries or LLM failure",
+            reason=f"master_analysis_failed v{next_v}",
+        )
     data = _normalize_and_log_master_plan_paths(data, source_v, next_v)
     _touch_master_checkpoint(next_v, source_v, phase="master_plan_ready")
 
@@ -1559,8 +1631,14 @@ async def run_master(args):
                 research_proposals=research_proposals,
             )
             if data is None:
-                _nf = _bump_master_fail_count(next_v, source_v, value=_audit_attempt)
-                return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "fail_count": _nf, "directive": "If run_master keeps failing, call abandon_generation to restart fresh.", "logs": ui.get_output()})}]}
+                return await _handle_master_analysis_failure(
+                    next_v,
+                    source_v,
+                    ui,
+                    message="Master failed after audit retry",
+                    reason=f"master_analysis_failed_after_audit_retry v{next_v}",
+                    payload={"audit_attempt": _audit_attempt},
+                )
             data = _normalize_and_log_master_plan_paths(data, source_v, next_v)
             _touch_master_checkpoint(
                 next_v,

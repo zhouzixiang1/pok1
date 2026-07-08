@@ -190,11 +190,42 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
 
     for attempt in range(MAX_MASTER_RETRIES):
         ui.clear_io()
-        output, _, _ = await run_claude_query(
-            master_prompt + "\n" + master_ctx, [], ui,
-            f"MASTER (Try {attempt+1})", master_log_file,
-            tools=["Bash", "Read"],
-        )
+        try:
+            output, _, _ = await run_claude_query(
+                master_prompt + "\n" + master_ctx, [], ui,
+                f"MASTER (Try {attempt+1})", master_log_file,
+                tools=["Bash", "Read"],
+            )
+        except Exception as exc:
+            _final_mode = f"LLM_EXCEPTION:{type(exc).__name__}"
+            try:
+                ui.log_history(
+                    f"Master LLM call failed ({type(exc).__name__}): {str(exc)[:240]}",
+                    "error",
+                )
+            except Exception:
+                pass
+            try:
+                from system_log import log_system_event
+                log_system_event(
+                    "pipeline.master_llm_call_failed",
+                    "error",
+                    (
+                        f"Master v{next_v} try {attempt+1} LLM call failed: "
+                        f"{type(exc).__name__}: {str(exc)[:240]}"
+                    ),
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "attempt": attempt + 1,
+                        "failure_mode": _final_mode,
+                        "exception_type": type(exc).__name__,
+                        "error": str(exc)[:500],
+                    },
+                )
+            except Exception:
+                pass
+            return None
         # A2 (v125 retry-storm fix): classify the parse failure so the log
         # distinguishes NO_FENCE (model never emitted JSON) / NO_JSON (empty) /
         # PARSE_ERROR (had JSON but unparseable) — instead of the undifferentiated
