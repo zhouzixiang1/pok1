@@ -446,6 +446,70 @@ def _find_template_for_constant(const_name):
     return TEMPLATE_SCENARIOS[0]
 
 
+def _find_template_by_cover(cover_key):
+    for tpl in TEMPLATE_SCENARIOS:
+        if tpl.get("_covers") == cover_key:
+            return tpl
+    return TEMPLATE_SCENARIOS[0]
+
+
+_PROFILE_DIFF_PATTERNS = [
+    (
+        "sb_open_pressure",
+        ("_sb_open_pressure_profile", "open_threshold", "sb_open", "pfr_delta"),
+        "preflop_sb_open",
+        "Dynamic: SB open pressure / opponent-profile wiring changed",
+        ["fold"],
+    ),
+    (
+        "bb_defense_pressure",
+        ("_bb_defense_pressure_profile", "call_delta", "bb_defense", "fold_to_raise"),
+        "preflop_bb_vs_raise",
+        "Dynamic: BB defense pressure / call-delta wiring changed",
+        ["allin"],
+    ),
+    (
+        "postflop_bluff_pressure",
+        ("bluff_freq_delta", "betsize_polarity", "shove_rate", "opponent_model.get"),
+        "river_facing_bet",
+        "Dynamic: opponent model postflop pressure wiring changed",
+        [],
+    ),
+]
+
+
+def _generate_profile_wiring_scenarios(diff_text, ts):
+    """Generate deterministic scenarios for opponent-model/profile wiring diffs."""
+    lower = diff_text.lower()
+    scenarios = []
+    for slug, needles, cover, description, forbidden in _PROFILE_DIFF_PATTERNS:
+        if not any(needle.lower() in lower for needle in needles):
+            continue
+        tpl = _find_template_by_cover(cover)
+        scenario_input = json.loads(json.dumps(tpl["input"]))
+        scenario_input.setdefault("opponent_model", {})
+        scenario_input["opponent_model"].update({
+            "confidence": 0.75,
+            "pfr": 0.36,
+            "vpip": 0.62,
+            "fold_to_raise": 0.52,
+            "postflop_aggr": 0.58,
+            "shove_rate": 0.14,
+            "betsize_polarity": 0.20,
+        })
+        scenarios.append({
+            "id": f"dyn_profile_{slug}_{int(ts)}",
+            "description": description,
+            "input": scenario_input,
+            "forbidden_actions": list(forbidden),
+            "expected_actions": [],
+            "severity": "advisory",
+            "source_generation": "dynamic_profile_wiring",
+            "created_at": ts,
+        })
+    return scenarios
+
+
 def load_dynamic_scenarios():
     """Load dynamic scenarios from the JSON file if it exists."""
     if not DYNAMIC_SCENARIOS_FILE.exists():
@@ -676,6 +740,15 @@ def generate_scenarios_from_diff(diff_text, source_dir=None, target_dir=None):
             "created_at": ts,
         }
         scenarios.append(scenario)
+
+    # 3. Generate targeted scenarios for opponent-profile and pressure-profile
+    # wiring changes. These diffs used to fall through to the LLM dynamic-test
+    # path, which routinely timed out before producing JSON.
+    existing_ids = {s.get("id") for s in scenarios}
+    for scenario in _generate_profile_wiring_scenarios(diff_text, ts):
+        if scenario.get("id") not in existing_ids:
+            scenarios.append(scenario)
+            existing_ids.add(scenario.get("id"))
 
     # Cap total scenarios generated from a single diff
     return scenarios[:20]

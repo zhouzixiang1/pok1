@@ -261,6 +261,10 @@ HARD RULES (non-negotiable):
 4. The top-level `"tasks"` key is MANDATORY and MUST be a JSON ARRAY, even if it
    has only one task. The parser requires `{... "tasks": [ {...} ] ...}` at the
    top level — a bare task object without the `tasks` wrapper is a parse failure.
+5. `worker_prompt` values must be plain JSON strings. Do not include nested
+   triple-backtick fences, raw multi-line shell scripts, here-documents, or
+   unescaped line-continuation commands inside `worker_prompt`; describe steps as
+   short sentences and put commands in `checks_required` when possible.
 
 Required schema (emit exactly this structure as raw JSON):
 

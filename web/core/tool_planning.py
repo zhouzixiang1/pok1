@@ -1497,7 +1497,150 @@ async def run_master(args):
             message="Master failed to produce a valid plan after retries or LLM failure",
             reason=f"master_analysis_failed v{next_v}",
         )
-    data = _normalize_and_log_master_plan_paths(data, source_v, next_v)
+
+    async def _compile_and_hard_validate_master_plan(plan, *, phase: str):
+        """Normalize, compile, and hard-validate a Master plan before LLM audit."""
+        plan = _normalize_and_log_master_plan_paths(plan, source_v, next_v)
+        try:
+            from plan_compiler import compile_master_plan
+            plan, _compile_meta = compile_master_plan(
+                plan,
+                next_v=next_v,
+                target_dir=get_bot_dir(next_v),
+                project_root=PROJECT_ROOT,
+            )
+            if _compile_meta.get("compiled"):
+                log_system_event(
+                    "pipeline.master_plan_compiled",
+                    "info",
+                    f"Master plan v{next_v}: compiled {len(_compile_meta.get('compiled_tasks', []))} oversized worker prompt(s)",
+                    {"next_v": next_v, "source_v": source_v, "phase": phase, "compiler": _compile_meta},
+                )
+        except Exception as _compile_exc:
+            log_system_event(
+                "pipeline.master_plan_compile_failed",
+                "error",
+                f"Master plan compiler failed for v{next_v}: {_compile_exc}",
+                {"next_v": next_v, "source_v": source_v, "phase": phase, "error": str(_compile_exc)[:500]},
+            )
+
+        _exhausted_kw = _extract_exhausted_keywords()
+        plan_errors, plan_warnings = _validate_master_plan(
+            plan, next_v=next_v, precomputed_exhausted_keywords=_exhausted_kw
+        )
+        if plan_warnings:
+            try:
+                log_system_event(
+                    "pipeline.master_boundary",
+                    "warning",
+                    f"Master plan boundary warnings for v{next_v}: {plan_warnings}",
+                    {"next_v": next_v, "source_v": source_v, "phase": phase, "warnings": plan_warnings},
+                )
+            except Exception:
+                pass
+        if not plan_errors:
+            return plan, None
+
+        _validation_ctx = {
+            "master_validation": {
+                "phase": phase,
+                "errors": plan_errors,
+                "warnings": plan_warnings,
+                "plan_analysis": plan.get("analysis", "")[:1000]
+                if isinstance(plan, dict) else "",
+            }
+        }
+        _nf = _bump_master_fail_count(
+            next_v,
+            source_v,
+            audit_context=_validation_ctx,
+        )
+        _severity = "error" if _nf >= MAX_MASTER_TOTAL_FAILURES else "warn"
+        try:
+            log_system_event(
+                "pipeline.master_validation_failed",
+                _severity,
+                f"Master plan validation failed before audit for v{next_v} "
+                f"(fail_count={_nf}): {'; '.join(plan_errors[:3])}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "phase": phase,
+                    "fail_count": _nf,
+                    "validation_errors": plan_errors,
+                    "validation_warnings": plan_warnings,
+                },
+            )
+        except Exception:
+            pass
+        try:
+            ui.log_history(
+                "Master plan validation failed before audit: " + "; ".join(plan_errors[:5]),
+                "error",
+            )
+        except Exception:
+            pass
+
+        if _nf >= MAX_MASTER_TOTAL_FAILURES:
+            return plan, await _abandon_master_generation(
+                next_v,
+                source_v,
+                error="MASTER_VALIDATION_EXHAUSTED",
+                fail_count=_nf,
+                reason=(
+                    f"master_validation_failed v{next_v}: "
+                    f"{'; '.join(plan_errors[:3])[:300]}"
+                ),
+                event_type="pipeline.master_validation_exhausted_abandon",
+                event_message=(
+                    f"Master plan validation failed {_nf} times for v{next_v} — "
+                    "abandoning invalid generation"
+                ),
+                ui=ui,
+                payload={
+                    "validation_errors": plan_errors,
+                    "validation_warnings": plan_warnings,
+                },
+                directive=(
+                    "Master plan validation failed too many times and this "
+                    "generation was abandoned. Start a fresh generation; do "
+                    "not execute workers from the invalid plan."
+                ),
+            )
+
+        return plan, _json_tool_result({
+            "error": "MASTER_VALIDATION_FAILED",
+            "fail_count": _nf,
+            "validation_errors": plan_errors,
+            "validation_warnings": plan_warnings,
+            "invalid_plan_preview": {
+                "analysis": str(plan.get("analysis", ""))[:1000]
+                if isinstance(plan, dict) else "",
+                "tasks": [
+                    {
+                        "worker_id": task.get("worker_id"),
+                        "role": task.get("role"),
+                        "target_files": task.get("target_files", []),
+                        "worker_prompt_chars": len(str(task.get("worker_prompt", ""))),
+                    }
+                    for task in (plan.get("tasks", []) if isinstance(plan, dict) else [])[:3]
+                    if isinstance(task, dict)
+                ],
+            },
+            "directive": (
+                "The Master plan failed hard validation before LLM audit. "
+                "Do NOT execute workers from this plan. If retrying Master, "
+                "the next plan must explicitly fix these validation_errors; "
+                "after repeated failures the generation will be abandoned."
+            ),
+            "logs": ui.get_output(),
+        })
+
+    data, _early_validation_result = await _compile_and_hard_validate_master_plan(
+        data, phase="master_plan_ready"
+    )
+    if _early_validation_result is not None:
+        return _early_validation_result
     _touch_master_checkpoint(next_v, source_v, phase="master_plan_ready")
 
     # --- P0-1: Post-Master Plan Verification Audit ---
@@ -1639,7 +1782,11 @@ async def run_master(args):
                     reason=f"master_analysis_failed_after_audit_retry v{next_v}",
                     payload={"audit_attempt": _audit_attempt},
                 )
-            data = _normalize_and_log_master_plan_paths(data, source_v, next_v)
+            data, _early_validation_result = await _compile_and_hard_validate_master_plan(
+                data, phase="master_retry_plan_ready"
+            )
+            if _early_validation_result is not None:
+                return _early_validation_result
             _touch_master_checkpoint(
                 next_v,
                 source_v,
@@ -1763,133 +1910,6 @@ async def run_master(args):
                         ),
                         "logs": ui.get_output(),
                     })}]}
-
-    # Pre-compute exhausted keywords once (used by _validate_master_plan and potentially others)
-    try:
-        from plan_compiler import compile_master_plan
-        data, _compile_meta = compile_master_plan(
-            data,
-            next_v=next_v,
-            target_dir=get_bot_dir(next_v),
-            project_root=PROJECT_ROOT,
-        )
-        if _compile_meta.get("compiled"):
-            log_system_event(
-                "pipeline.master_plan_compiled",
-                "info",
-                f"Master plan v{next_v}: compiled {len(_compile_meta.get('compiled_tasks', []))} oversized worker prompt(s)",
-                {"next_v": next_v, "source_v": source_v, "compiler": _compile_meta},
-            )
-    except Exception as _compile_exc:
-        log_system_event(
-            "pipeline.master_plan_compile_failed",
-            "error",
-            f"Master plan compiler failed for v{next_v}: {_compile_exc}",
-            {"next_v": next_v, "source_v": source_v, "error": str(_compile_exc)[:500]},
-        )
-
-    _exhausted_kw = _extract_exhausted_keywords()
-    plan_errors, plan_warnings = _validate_master_plan(data, next_v=next_v, precomputed_exhausted_keywords=_exhausted_kw)
-    if plan_warnings:
-        try:
-            log_system_event("pipeline.master_boundary", "warning",
-                             f"Master plan boundary warnings for v{next_v}: {plan_warnings}",
-                             {"next_v": next_v, "warnings": plan_warnings})
-        except Exception:
-            pass
-    if plan_errors:
-        _validation_ctx = {
-            "master_validation": {
-                "errors": plan_errors,
-                "warnings": plan_warnings,
-                "plan_analysis": data.get("analysis", "")[:1000]
-                if isinstance(data, dict) else "",
-            }
-        }
-        _nf = _bump_master_fail_count(
-            next_v,
-            source_v,
-            audit_context=_validation_ctx,
-        )
-        _severity = "error" if _nf >= MAX_MASTER_TOTAL_FAILURES else "warn"
-        try:
-            log_system_event(
-                "pipeline.master_validation_failed",
-                _severity,
-                f"Master plan validation failed for v{next_v} "
-                f"(fail_count={_nf}): {'; '.join(plan_errors[:3])}",
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "fail_count": _nf,
-                    "validation_errors": plan_errors,
-                    "validation_warnings": plan_warnings,
-                },
-            )
-        except Exception:
-            pass
-        try:
-            ui.log_history(
-                "Master plan validation failed: " + "; ".join(plan_errors[:5]),
-                "error",
-            )
-        except Exception:
-            pass
-
-        if _nf >= MAX_MASTER_TOTAL_FAILURES:
-            return await _abandon_master_generation(
-                next_v,
-                source_v,
-                error="MASTER_VALIDATION_EXHAUSTED",
-                fail_count=_nf,
-                reason=(
-                    f"master_validation_failed v{next_v}: "
-                    f"{'; '.join(plan_errors[:3])[:300]}"
-                ),
-                event_type="pipeline.master_validation_exhausted_abandon",
-                event_message=(
-                    f"Master plan validation failed {_nf} times for v{next_v} — "
-                    "abandoning invalid generation"
-                ),
-                ui=ui,
-                payload={
-                    "validation_errors": plan_errors,
-                    "validation_warnings": plan_warnings,
-                },
-                directive=(
-                    "Master plan validation failed too many times and this "
-                    "generation was abandoned. Start a fresh generation; do "
-                    "not execute workers from the invalid plan."
-                ),
-            )
-
-        return _json_tool_result({
-            "error": "MASTER_VALIDATION_FAILED",
-            "fail_count": _nf,
-            "validation_errors": plan_errors,
-            "validation_warnings": plan_warnings,
-            "invalid_plan_preview": {
-                "analysis": str(data.get("analysis", ""))[:1000]
-                if isinstance(data, dict) else "",
-                "tasks": [
-                    {
-                        "worker_id": task.get("worker_id"),
-                        "role": task.get("role"),
-                        "target_files": task.get("target_files", []),
-                        "worker_prompt_chars": len(str(task.get("worker_prompt", ""))),
-                    }
-                    for task in (data.get("tasks", []) if isinstance(data, dict) else [])[:3]
-                    if isinstance(task, dict)
-                ],
-            },
-            "directive": (
-                "The Master plan passed schema/audit but failed hard validation. "
-                "Do NOT execute workers from this plan. If retrying Master, "
-                "the next plan must explicitly fix these validation_errors; "
-                "after repeated failures the generation will be abandoned."
-            ),
-            "logs": ui.get_output(),
-        })
 
     # Persist master plan to checkpoint so it survives crashes between master and workers
     _ckpt = _matching_checkpoint(next_v, source_v)

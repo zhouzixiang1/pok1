@@ -161,6 +161,46 @@ def test_h2h_citation_validation_accepts_reversed_abbreviated_wl(monkeypatch, tm
     assert evidence_snapshot.validate_h2h_citations_against_snapshot(plan, 74) == []
 
 
+def test_h2h_prompt_summary_uses_stable_source_perspective(monkeypatch, tmp_path):
+    import evidence_snapshot
+
+    live = _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v120 vs national_v98": {
+            "games": 30,
+            "a_wins": 9,
+            "b_wins": 21,
+            "draws": 0,
+            "win_rate": 0.30,
+        },
+        "national_v31 vs national_v120": {
+            "games": 5,
+            "a_wins": 4,
+            "b_wins": 1,
+            "draws": 0,
+            "win_rate": 0.80,
+        },
+    })
+    evidence_snapshot.ensure_generation_h2h_snapshot(121)
+    live.write_text(json.dumps({
+        "national_v120 vs national_v98": {
+            "games": 100,
+            "a_wins": 90,
+            "b_wins": 10,
+            "draws": 0,
+            "win_rate": 0.90,
+        }
+    }), encoding="utf-8")
+
+    summary = evidence_snapshot.build_h2h_prompt_summary(121, source_v=120)
+
+    assert "national_v120 vs national_v98: games=30, a_wins=9, b_wins=21" in summary
+    assert "class=confirmed_weakness" in summary
+    assert "source_wr=0.3000" in summary
+    assert "national_v31 vs national_v120: games=5" in summary
+    assert "class=sparse" in summary
+    assert "games=100" not in summary
+
+
 def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     import agent_master
 

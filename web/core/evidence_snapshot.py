@@ -143,7 +143,128 @@ def load_generation_h2h_snapshot(next_v: int | str) -> dict[str, Any]:
         return {}
 
 
-def h2h_snapshot_contract_text(next_v: int | str, *, include_json: bool = False, max_chars: int = 60_000) -> str:
+def _row_versions(key: str) -> tuple[str | None, str | None]:
+    match = _H2H_KEY_RE.search(str(key or ""))
+    if not match:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def _row_win_rate(row: dict[str, Any]) -> float | None:
+    try:
+        if row.get("win_rate") is not None:
+            return float(row.get("win_rate"))
+        games = int(row.get("games", 0) or 0)
+        if games <= 0:
+            return None
+        return float(row.get("a_wins", 0) or 0) / games
+    except Exception:
+        return None
+
+
+def build_h2h_prompt_summary(
+    next_v: int | str,
+    *,
+    source_v: int | str | None = None,
+    max_rows: int = 24,
+    confirmed_games: int = 10,
+) -> str:
+    """Return a compact, citation-safe H2H summary for prompts.
+
+    The full snapshot remains the source of truth. This summary gives Master and
+    audit roles the exact row keys/counts they need most often without forcing a
+    long live-file read or encouraging sparse-sample overclaims.
+    """
+    h2h = load_generation_h2h_snapshot(next_v)
+    if not h2h:
+        return "Compact H2H summary unavailable; stable snapshot has no rows."
+
+    source = str(source_v) if source_v is not None else None
+    rows: list[dict[str, Any]] = []
+    for key, row in h2h.items():
+        if not isinstance(row, dict):
+            continue
+        a_v, b_v = _row_versions(str(key))
+        games = int(row.get("games", 0) or 0)
+        a_wins = int(row.get("a_wins", 0) or 0)
+        b_wins = int(row.get("b_wins", 0) or 0)
+        wr_a = _row_win_rate(row)
+        if wr_a is None:
+            continue
+        perspective = None
+        source_wr = None
+        source_wins = None
+        source_losses = None
+        if source and a_v == source:
+            perspective = f"v{source}"
+            source_wr = wr_a
+            source_wins = a_wins
+            source_losses = b_wins
+        elif source and b_v == source:
+            perspective = f"v{source}"
+            source_wr = 1.0 - wr_a
+            source_wins = b_wins
+            source_losses = a_wins
+
+        sample_class = "sparse"
+        if games >= confirmed_games:
+            if source_wr is not None and source_wr < 0.40:
+                sample_class = "confirmed_weakness"
+            elif source_wr is not None and source_wr > 0.60:
+                sample_class = "confirmed_strength"
+            else:
+                sample_class = "adequate_context"
+
+        rows.append({
+            "key": str(key),
+            "games": games,
+            "a_wins": a_wins,
+            "b_wins": b_wins,
+            "win_rate": wr_a,
+            "source_match": perspective is not None,
+            "source_wr": source_wr,
+            "source_wins": source_wins,
+            "source_losses": source_losses,
+            "sample_class": sample_class,
+        })
+
+    if source:
+        rows.sort(key=lambda r: (
+            not r["source_match"],
+            r["sample_class"] not in {"confirmed_weakness", "confirmed_strength"},
+            -r["games"],
+        ))
+    else:
+        rows.sort(key=lambda r: -r["games"])
+    rows = rows[:max_rows]
+
+    lines = [
+        "Compact source-focused H2H summary from the stable snapshot:",
+        f"- Adequate/confirmed matchup claims require games >= {confirmed_games}; otherwise label sparse/advisory.",
+        "- Quote row key, games, a_wins, b_wins, and win_rate exactly when citing a matchup.",
+    ]
+    for r in rows:
+        base = (
+            f"- {r['key']}: games={r['games']}, a_wins={r['a_wins']}, "
+            f"b_wins={r['b_wins']}, win_rate={r['win_rate']:.4f}, "
+            f"class={r['sample_class']}"
+        )
+        if r["source_match"]:
+            base += (
+                f", source_wr={r['source_wr']:.4f}, "
+                f"source_record={r['source_wins']}W/{r['source_losses']}L"
+            )
+        lines.append(base)
+    return "\n".join(lines)
+
+
+def h2h_snapshot_contract_text(
+    next_v: int | str,
+    *,
+    source_v: int | str | None = None,
+    include_json: bool = False,
+    max_chars: int = 60_000,
+) -> str:
     """Return prompt text that binds Master/Audit to the stable H2H snapshot."""
     snapshot = ensure_generation_h2h_snapshot(next_v)
     if not snapshot.get("available"):
@@ -160,6 +281,10 @@ def h2h_snapshot_contract_text(next_v: int | str, *, include_json: bool = False,
         "- For verbatim H2H counts in Master plans and MasterPlanAudit, use this snapshot only.",
         "- Do not reject a plan because the live `web/core/results/head_to_head.json` changed after this snapshot was created.",
     ]
+    try:
+        lines.extend(["", build_h2h_prompt_summary(next_v, source_v=source_v)])
+    except Exception:
+        pass
     if include_json:
         try:
             text = Path(snapshot["h2h_path"]).read_text(encoding="utf-8")

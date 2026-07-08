@@ -381,6 +381,7 @@ def test_quality_gate_skips_dynamic_llm_when_heuristics_sufficient(monkeypatch, 
     monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
     monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
     monkeypatch.setattr(tool_gates, "DYNAMIC_TEST_HEURISTIC_SUFFICIENT", 1)
+    monkeypatch.setattr(tool_gates, "DYNAMIC_TEST_LLM_ENABLED", True)
 
     scenario = {
         "id": "dyn_branch_unit",
@@ -438,6 +439,78 @@ def test_quality_gate_skips_dynamic_llm_when_heuristics_sufficient(monkeypatch, 
     assert [e["event_type"] for e in ledger_events] == ["quality_started", "quality_finished"]
     assert ledger_events[-1]["stage"] == "quality_passed"
     assert ledger_events[-1]["scorecard"].name == "quality"
+
+
+def test_quality_gate_skips_dynamic_llm_when_disabled(monkeypatch, tmp_path):
+    import evolution_infra
+    import tool_gates
+    import decision_tester
+
+    source = tmp_path / "claude_v18"
+    child = tmp_path / "claude_v19"
+    source.mkdir()
+    child.mkdir()
+    (source / "strategy.py").write_text("def act():\n    return 0\n")
+    (child / "strategy.py").write_text("def act():\n    return 1\n")
+
+    evolution_infra.write_pipeline_checkpoint(19, 18, "workers_done")
+
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["strategy.py"])
+    monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda **_kwargs: [])
+    monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
+    monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
+    monkeypatch.setattr(tool_gates, "DYNAMIC_TEST_LLM_ENABLED", False)
+
+    scenario = {
+        "id": "dyn_profile_unit",
+        "description": "profile coverage",
+        "severity": "advisory",
+        "input": {"requests": [], "responses": []},
+        "forbidden_actions": [],
+    }
+    monkeypatch.setattr(decision_tester, "SCENARIOS_FILE", tmp_path / "dynamic_disabled.json")
+    (tmp_path / "dynamic_disabled.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(decision_tester, "generate_scenarios_from_diff", lambda *_a, **_k: [scenario])
+    monkeypatch.setattr(decision_tester, "load_dynamic_scenarios", lambda: [])
+    monkeypatch.setattr(decision_tester, "save_dynamic_scenarios", lambda _rows: None)
+
+    import audit_agents
+
+    async def _should_not_generate(*_a, **_k):
+        raise AssertionError("LLM dynamic test generation is disabled by default")
+
+    monkeypatch.setattr(audit_agents, "_generate_dynamic_tests", _should_not_generate)
+
+    captured = {}
+
+    def _decision(_bot_dir, *, extra_scenarios=None):
+        captured["extra_scenarios"] = extra_scenarios
+        return {
+            "pass_rate": 1.0,
+            "passed": 1,
+            "total": 1,
+            "critical_passed": 1,
+            "critical_total": 1,
+            "critical_failures": [],
+            "failures": [],
+            "scenarios": [],
+        }
+
+    monkeypatch.setattr(tool_gates, "run_decision_test_details", _decision)
+    monkeypatch.setattr(tool_gates, "append_candidate_event", lambda *_a, **_k: None)
+
+    result = asyncio.run(tool_gates.run_quality_gates.handler({"version": 19, "source_v": 18}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["all_passed"] is True
+    assert data["dynamic_test_generation"]["llm_enabled"] is False
+    assert data["dynamic_test_generation"]["llm_status"] == "skipped_disabled"
+    assert data["dynamic_test_generation"]["combined_count"] == 1
+    assert captured["extra_scenarios"] == [scenario]
 
 
 def test_quality_gate_records_placement_shadow_review_scorecard(monkeypatch, tmp_path):
@@ -689,6 +762,67 @@ def test_run_master_normalizes_parent_paths_before_audit(monkeypatch):
         assert "bots/national_v232/strategy.py" in text
         assert "bots/national_v224/strategy.py" not in text
     assert captured_audit["next_v"] == 232
+
+
+def test_run_master_hard_validates_before_master_audit(monkeypatch):
+    import audit_agents
+    import evolution_infra
+    import replay_spotlight
+    import tool_planning
+
+    async def _fake_master(*_args, **_kwargs):
+        return {
+            "analysis": "targeted plan",
+            "targeted_failure": "one leak",
+            "expected_behavior_change": "one changed decision",
+            "do_not_touch": ["opponent.py"],
+            "measurement_plan": "compare target to parent",
+            "branch_from": 199,
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "worker_prompt": "Change strategy.py in the target bot.",
+            }],
+        }
+
+    async def _audit_should_not_run(*_args, **_kwargs):
+        raise AssertionError("LLM master plan audit should not run after hard validation failure")
+
+    checkpoint = {
+        "next_v": 233,
+        "source_v": 224,
+        "stage": "direction_audited",
+        "audit_attempt": 0,
+        "direction_audit": {"repetition_detected": False, "llm_failed": False},
+    }
+
+    class _UI:
+        def clear_io(self):
+            pass
+
+        def log_history(self, *_args, **_kwargs):
+            pass
+
+        def get_output(self):
+            return ""
+
+    monkeypatch.setattr(tool_planning, "_run_master_analysis", _fake_master)
+    monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_a, **_k: checkpoint)
+    monkeypatch.setattr(tool_planning, "_get_ui", lambda: _UI())
+    monkeypatch.setattr(tool_planning, "_build_cross_gen_constraint_block", lambda _v: "")
+    monkeypatch.setattr(tool_planning, "_extract_exhausted_keywords", lambda: [])
+    monkeypatch.setattr(tool_planning, "_bump_master_fail_count", lambda *_a, **_k: 1)
+    monkeypatch.setattr(tool_planning, "log_system_event", lambda *a, **k: None)
+    monkeypatch.setattr(replay_spotlight, "find_critical_hands", lambda **_k: "")
+    monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(audit_agents, "_run_master_plan_audit", _audit_should_not_run)
+
+    result = asyncio.run(tool_planning.run_master.handler({"next_v": 233, "source_v": 224}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["error"] == "MASTER_VALIDATION_FAILED"
+    assert "branch_from" in "; ".join(data["validation_errors"])
 
 
 def test_master_checkpoint_heartbeat_touches_active_stage(monkeypatch):

@@ -65,6 +65,9 @@ except Exception:  # pragma: no cover - import fallback for unusual test paths
 DECISION_TEST_SPRT_ENABLED = False
 DYNAMIC_TEST_LLM_TIMEOUT = int(os.environ.get("POK_DYNAMIC_TEST_LLM_TIMEOUT", "25"))
 DYNAMIC_TEST_HEURISTIC_SUFFICIENT = int(os.environ.get("POK_DYNAMIC_TEST_HEURISTIC_SUFFICIENT", "4"))
+DYNAMIC_TEST_LLM_ENABLED = os.environ.get("POK_DYNAMIC_TEST_LLM_ENABLED", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 def _env_enabled(name: str, default: str = "0") -> bool:
@@ -824,6 +827,7 @@ async def run_quality_gates(args):
         "llm_count": 0,
         "llm_status": "not_run",
         "llm_timeout_sec": DYNAMIC_TEST_LLM_TIMEOUT,
+        "llm_enabled": DYNAMIC_TEST_LLM_ENABLED,
     }
     heuristic_scenarios = []
     existing_ids = []
@@ -885,7 +889,17 @@ async def run_quality_gates(args):
     if source_v is not None and changed_files_list:
         try:
             from audit_agents import _generate_dynamic_tests
-            if len(heuristic_scenarios) >= DYNAMIC_TEST_HEURISTIC_SUFFICIENT:
+            if not DYNAMIC_TEST_LLM_ENABLED:
+                dynamic_test_meta["llm_status"] = "skipped_disabled"
+                log_system_event(
+                    "pipeline.dynamic_test_gen_skipped",
+                    "info",
+                    f"v{v}: skipped LLM dynamic test generation; "
+                    "POK_DYNAMIC_TEST_LLM_ENABLED is off",
+                    {"version": v, "source_v": source_v,
+                     "heuristic_count": len(heuristic_scenarios)},
+                )
+            elif len(heuristic_scenarios) >= DYNAMIC_TEST_HEURISTIC_SUFFICIENT:
                 dynamic_test_meta["llm_status"] = "skipped_heuristic_sufficient"
                 log_system_event(
                     "pipeline.dynamic_test_gen_skipped",

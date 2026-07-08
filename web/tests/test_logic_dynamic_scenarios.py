@@ -228,6 +228,26 @@ class TestGenerateScenariosFromDiff:
         scenarios = generate_scenarios_from_diff(diff)
         assert len(scenarios) <= 20
 
+    def test_generates_from_opponent_profile_wiring(self):
+        from decision_tester import generate_scenarios_from_diff
+        diff = """--- a/opponent.py
++++ b/opponent.py
++def _sb_open_pressure_profile(model):
++    pfr_delta = model.get("pfr", 0.28) - 0.28
++    open_threshold += pfr_delta * 0.05
++def _bb_defense_pressure_profile(model):
++    call_delta = model.get("fold_to_raise", 0.44) - 0.44
++    return {"call_delta": call_delta}
+"""
+        scenarios = generate_scenarios_from_diff(diff)
+        ids = [s["id"] for s in scenarios]
+        assert any(i.startswith("dyn_profile_sb_open_pressure_") for i in ids)
+        assert any(i.startswith("dyn_profile_bb_defense_pressure_") for i in ids)
+        for scenario in scenarios:
+            if scenario["id"].startswith("dyn_profile_"):
+                assert scenario["source_generation"] == "dynamic_profile_wiring"
+                assert "opponent_model" in scenario["input"]
+
 
 # ── load/save/merge dynamic scenarios ─────────────────────────────────────────
 

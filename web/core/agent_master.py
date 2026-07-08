@@ -136,7 +136,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         from evidence_snapshot import ensure_generation_h2h_snapshot, h2h_snapshot_contract_text
         h2h_snapshot = ensure_generation_h2h_snapshot(next_v)
         h2h_data_file = h2h_snapshot.get("h2h_relpath", "web/core/results/head_to_head.json")
-        h2h_snapshot_contract = h2h_snapshot_contract_text(next_v)
+        h2h_snapshot_contract = h2h_snapshot_contract_text(next_v, source_v=source_v)
     except Exception:
         h2h_data_file = "web/core/results/head_to_head.json"
         h2h_snapshot_contract = (

@@ -114,7 +114,9 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
             target_v = master_plan.get("next_v") or master_plan.get("target_v") or "unknown"
         try:
             from evidence_snapshot import h2h_snapshot_contract_text
-            h2h_snapshot_contract = h2h_snapshot_contract_text(target_v, include_json=True)
+            h2h_snapshot_contract = h2h_snapshot_contract_text(
+                target_v, source_v=source_v, include_json=True
+            )
         except Exception:
             h2h_snapshot_contract = (
                 "Stable H2H snapshot unavailable. Do not compare plan citations "
