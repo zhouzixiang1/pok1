@@ -244,6 +244,7 @@ class TestStatus:
         from server.state import app_state
 
         app_state.set_running(True)
+        app_state.override_runtime_config(daemon_enabled=True)
         monkeypatch.setattr(
             app_state,
             "task_snapshot",
