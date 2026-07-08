@@ -2028,6 +2028,59 @@ def test_write_pipeline_checkpoint_persists_repo_baseline(tmp_path, monkeypatch)
     assert state["repo_baseline"]["captured_stage"] == "prepared"
 
 
+def test_write_pipeline_checkpoint_refreshes_baseline_after_planning_handoff(tmp_path, monkeypatch):
+    import evolution_infra
+    import repo_state
+
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", tmp_path / "pipeline_state.json")
+    snapshots = iter([
+        {
+            "branch": "main...origin/main",
+            "head": "old123",
+            "entry_count": 1,
+            "dirty_count": 0,
+            "untracked_count": 1,
+            "entries": ["?? bots/national_v300/"],
+            "truncated": False,
+        },
+        {
+            "branch": "main...origin/main",
+            "head": "mid456",
+            "entry_count": 1,
+            "dirty_count": 0,
+            "untracked_count": 1,
+            "entries": ["?? bots/national_v300/"],
+            "truncated": False,
+        },
+        {
+            "branch": "main...origin/main",
+            "head": "new789",
+            "entry_count": 1,
+            "dirty_count": 0,
+            "untracked_count": 1,
+            "entries": ["?? bots/national_v300/"],
+            "truncated": False,
+        },
+    ])
+    monkeypatch.setattr(repo_state, "git_worktree_snapshot", lambda: next(snapshots))
+
+    assert evolution_infra.write_pipeline_checkpoint(300, 299, "prepared") is True
+    assert evolution_infra.write_pipeline_checkpoint(300, 299, "direction_audited") is True
+    state = evolution_infra.read_pipeline_checkpoint()
+    assert state["repo_baseline"]["head"] == "mid456"
+    assert state["repo_baseline"]["captured_stage"] == "direction_audited"
+
+    assert evolution_infra.write_pipeline_checkpoint(
+        300,
+        299,
+        "master_planned",
+        master_plan={"tasks": [{"worker_id": "w1", "target_files": ["strategy.py"]}]},
+    ) is True
+    state = evolution_infra.read_pipeline_checkpoint()
+    assert state["repo_baseline"]["head"] == "new789"
+    assert state["repo_baseline"]["captured_stage"] == "master_planned"
+
+
 def test_write_pipeline_checkpoint_refreshes_baseline_on_rework(tmp_path, monkeypatch):
     import evolution_infra
     import repo_state
@@ -2503,6 +2556,49 @@ def test_checkpoint_recovery_diagnostics_allows_master_planned_head_mismatch(tmp
     assert "repo_baseline_head_mismatch_initial_workers_resume" in diag["warnings"]
     assert diag["repo"]["baseline_head_mismatch_allowed"] is True
     assert diag["target"]["exists"] is True
+
+
+def test_checkpoint_recovery_allows_master_planned_contract_head_mismatch(
+    tmp_path,
+    monkeypatch,
+):
+    import evaluation_contract
+    import pipeline_recovery
+
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: ["web/core/prompts/worker_prompt.md"],
+    )
+    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 257,
+        "source_v": 197,
+        "stage": "master_planned",
+        "repo_baseline": {
+            "branch": "main",
+            "head": "old123",
+            "captured_stage": "selected",
+            "evaluation_contract": {"version": 2, "hash": "old"},
+        },
+        "master_plan": {"tasks": [{"worker_id": "w1", "target_files": ["strategy.py"]}]},
+    }
+    snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["active"] is True
+    assert diag["recoverable"] is True
+    assert "repo_baseline_head_mismatch" not in diag["issues"]
+    assert "repo_baseline_head_mismatch_initial_workers_resume" in diag["warnings"]
+    assert diag["repo"]["baseline_evaluation_contract_unchanged"] is False
+    assert "web/core/prompts/worker_prompt.md" in diag["repo"]["baseline_head_contract_paths"]
+    assert diag["repo"]["head_drift_requires_contract_unchanged"] is False
+    assert diag["repo"]["baseline_head_mismatch_allowed"] is True
 
 
 def test_checkpoint_recovery_diagnostics_allows_selected_head_mismatch_without_target(tmp_path):

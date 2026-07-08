@@ -370,6 +370,10 @@ _REPO_BASELINE_VALIDATION_GATES = {
     "precommit_failed": "precommit_eval",
     "verified": "precommit_eval",
 }
+_REPO_BASELINE_PLANNING_STAGES = frozenset({
+    "direction_audited",
+    "master_planned",
+})
 
 
 def _prune_gate_results_for_stage(stage, gate_results):
@@ -395,7 +399,13 @@ def _stage_refreshes_repo_baseline(old_stage, new_stage, gate_results=None) -> b
     after infrastructure changes. Once that gate finishes, the persisted
     baseline must move forward to the HEAD that actually ran the validation;
     otherwise later recovery health checks keep comparing against stale code.
+
+    Pre-worker planning stages also refresh the baseline on stage advance. They
+    do not validate candidate strength, but they do bind the next deterministic
+    handoff to prompts, guard policy, and route logic from the current HEAD.
     """
+    if old_stage != new_stage and new_stage in _REPO_BASELINE_PLANNING_STAGES:
+        return True
     if new_stage not in _REPO_BASELINE_VALIDATION_STAGES:
         return False
     if old_stage != new_stage:

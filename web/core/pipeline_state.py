@@ -108,7 +108,12 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "initial_workers",
         "warning_suffix": "initial_workers",
         "requires_target": True,
-        "requires_contract_unchanged": True,
+        # The persisted master_plan already contains the exact worker prompts
+        # for the first mutating step. If HEAD changed before or during planning,
+        # execute_workers can still run from that saved plan; downstream quality
+        # and precommit gates validate the resulting candidate on the current
+        # codebase before it can be committed.
+        "requires_contract_unchanged": False,
         "branch_alias_allowed": True,
     },
     "workers_done": {
