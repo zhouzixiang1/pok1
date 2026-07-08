@@ -233,6 +233,61 @@ def test_candidate_hygiene_overwrites_legacy_native_entry_for_new_candidate(tmp_
     assert ".readline(" not in text
 
 
+def test_native_entry_contract_rejects_missing_round_allin_guard(tmp_path):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    (bot_dir / "national_bot.py").write_text(
+        "import socket\n\n"
+        "def _split_messages(buffer):\n"
+        "    return [], buffer\n\n"
+        "def probe(sock):\n"
+        "    sock.recv(1)\n\n"
+        "class NativeNationalBot:\n"
+        "    def _responding_to_check(self):\n"
+        "        return False\n"
+        "    def _zero_action(self):\n"
+        "        if self._responding_to_check():\n"
+        "            return 'call', 'call', None\n"
+        "        return 'check', 'check', None\n"
+        "    def _action_to_tcp(self, action):\n"
+        "        if action == -1:\n"
+        "            return 'fold', 'fold', None\n"
+        "        if action == -2:\n"
+        "            return 'allin', 'allin', None\n"
+        "        if action > 0:\n"
+        "            return f'raise {action}', 'raise', action\n"
+        "        return self._zero_action()\n",
+        encoding="utf-8",
+    )
+
+    errors = check_native_contract(bot_dir)
+
+    assert any("current-round allin guard" in err for err in errors)
+
+
+def test_candidate_hygiene_refreshes_stale_native_entry_without_explicit_overwrite(tmp_path):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    entry = bot_dir / "national_bot.py"
+    stale = entry.read_text(encoding="utf-8").replace(
+        "            if self._current_round_has_allin():\n"
+        "                return self._zero_action()\n",
+        "",
+    )
+    entry.write_text(stale, encoding="utf-8")
+    assert any("current-round allin guard" in err for err in check_native_contract(bot_dir))
+
+    result = sanitize_candidate_dir(bot_dir, require_native_tcp=True)
+
+    text = entry.read_text(encoding="utf-8")
+    assert result["native_entry"] == "national_bot.py"
+    assert result["native_entry_refreshed"] is True
+    assert any("current-round allin guard" in err for err in result["native_entry_contract_errors"])
+    assert check_native_contract(bot_dir) == []
+    assert "if self._current_round_has_allin():" in text
+
+
 def test_quality_gate_ok_rejects_adapter_cache_under_native_profile(monkeypatch):
     monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
 

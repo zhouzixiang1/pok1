@@ -802,11 +802,40 @@ def check_native_contract(bot_dir: str | Path) -> list[str]:
         errors.append(f"{NATIVE_ENTRY}: opponent raise amount is treated as an increment; it must be raise-to-total")
     if "return f\"raise {needed}\", \"raise\", action" in text:
         errors.append(f"{NATIVE_ENTRY}: outgoing raise uses delta-style wire amount; it must send raise-to-total")
+    formal_wrapper = "class NativeNationalBot" in text or "def _action_to_tcp" in text or "def _zero_action" in text
+    if formal_wrapper:
+        action_to_tcp = _function_source(text, "_action_to_tcp")
+        if action_to_tcp is None:
+            errors.append(f"{NATIVE_ENTRY}: missing _action_to_tcp protocol translator")
+        elif "self._current_round_has_allin()" not in action_to_tcp:
+            errors.append(
+                f"{NATIVE_ENTRY}: _action_to_tcp missing current-round allin guard; "
+                "after any allin it must map strategy raises/allins to call/fold/check-safe actions"
+            )
+        zero_action = _function_source(text, "_zero_action")
+        if zero_action is None:
+            errors.append(f"{NATIVE_ENTRY}: missing _zero_action call/check mapper")
+        elif "_responding_to_check()" not in zero_action:
+            errors.append(
+                f"{NATIVE_ENTRY}: _zero_action missing postflop check-response guard; "
+                "second pass after an opponent check must be call, not check"
+            )
     if _strategy_action_has_exception_pass(text):
         errors.append(
             f"{NATIVE_ENTRY}: _strategy_action must not continue with raw action after sanitizer failure"
         )
     return errors
+
+
+def _function_source(text: str, name: str) -> str | None:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(text, node) or ""
+    return None
 
 
 def _strategy_action_has_exception_pass(text: str) -> bool:
