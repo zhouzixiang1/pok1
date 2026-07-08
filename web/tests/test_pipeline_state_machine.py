@@ -179,6 +179,18 @@ def test_route_policy_for_explicit_rework_stage():
     assert "Rework" in route["directive"]
 
 
+def test_route_policy_exposes_literature_probe_as_allowed_pre_master_tool():
+    route = route_policy({
+        "stage": "direction_audited",
+        "next_v": 300,
+        "source_v": 299,
+    })
+
+    assert route["next_tool"] == "run_master"
+    assert "run_master" in route["allowed_tools"]
+    assert "run_literature_probe" in route["allowed_tools"]
+
+
 def test_verified_native_precommit_routes_to_commit_without_quality_contract_flag(monkeypatch):
     monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
 

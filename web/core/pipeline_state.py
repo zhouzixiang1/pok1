@@ -489,13 +489,20 @@ def route_policy(checkpoint: dict | None) -> dict:
             "revalidate under the active workflow."
         )
 
+    allowed_tools = []
+    if next_tool:
+        allowed_tools.append(next_tool)
+    for tool_name in sorted(head_drift_allowed_tools(stage)):
+        if tool_name not in allowed_tools:
+            allowed_tools.append(tool_name)
+
     return {
         "stage": stage,
         "next_v": next_v,
         "source_v": source_v,
         "parent2_v": parent2_v,
         "next_tool": next_tool,
-        "allowed_tools": [next_tool] if next_tool else [],
+        "allowed_tools": allowed_tools,
         "intent": intent,
         "failure_class": failure_class,
         "directive": directive,

@@ -19,10 +19,24 @@ from repo_state import get_last_snapshot, git_worktree_snapshot, is_generated_bo
 from evolution_scope import (
     classify_status_entries,
 )
-from pipeline_state import head_drift_allowed_tools, head_drift_resume_policy
+from pipeline_state import head_drift_allowed_tools, head_drift_resume_policy, route_policy
 
 _BOT_DIR_RE = re.compile(rf"^\?\? bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)/$")
 _HEAD_CHANGE_ALLOWED_TOOLS = {"run_archivist"}
+_PIPELINE_ROUTE_TOOLS = {
+    "prepare_next_gen",
+    "run_crossover",
+    "run_direction_audit",
+    "run_literature_probe",
+    "run_master",
+    "execute_workers",
+    "run_quality_gates",
+    "run_review",
+    "run_critic",
+    "run_precommit_eval",
+    "commit_bot",
+    "run_archivist",
+}
 
 
 def _json_tool_result(data: dict[str, Any]) -> dict[str, Any]:
@@ -66,6 +80,107 @@ def _source_version(args: dict[str, Any]) -> int | None:
     if checkpoint and isinstance(checkpoint.get("source_v"), int):
         return int(checkpoint["source_v"])
     return None
+
+
+def _same_int(left: Any, right: Any) -> bool:
+    try:
+        return int(left) == int(right)
+    except (TypeError, ValueError):
+        return False
+
+
+def _pipeline_route_guard(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    candidate_v: int | None,
+    source_v: int | None,
+) -> tuple[bool, dict[str, Any]]:
+    """Block LLM/tool-call stage skips before the expensive tool body runs."""
+    if tool_name not in _PIPELINE_ROUTE_TOOLS:
+        return True, {}
+    checkpoint = read_pipeline_checkpoint()
+    if not isinstance(checkpoint, dict) or not checkpoint.get("stage"):
+        return True, {}
+
+    ckpt_next = checkpoint.get("next_v")
+    ckpt_source = checkpoint.get("source_v")
+    route = route_policy(checkpoint)
+    allowed_tools = [str(t) for t in (route.get("allowed_tools") or []) if t]
+
+    if ckpt_next is not None and candidate_v is not None and not _same_int(ckpt_next, candidate_v):
+        payload = {
+            "error": "pipeline_route_guard_blocked",
+            "blocked": True,
+            "reason": "active_generation_mismatch",
+            "tool": tool_name,
+            "requested_v": candidate_v,
+            "active_v": ckpt_next,
+            "active_source_v": ckpt_source,
+            "checkpoint_stage": checkpoint.get("stage"),
+            "next_tool": route.get("next_tool"),
+            "allowed_tools": allowed_tools,
+            "route": route,
+            "directive": (
+                "A different generation is active. Use the active checkpoint "
+                "version/source, or abandon the active generation before "
+                "starting another one."
+            ),
+        }
+        _log_guard_event(
+            "pipeline.route_guard_blocked",
+            "error",
+            f"Blocked {tool_name}: requested v{candidate_v} but active checkpoint is v{ckpt_next}",
+            payload,
+        )
+        return False, payload
+
+    if ckpt_source is not None and source_v is not None and not _same_int(ckpt_source, source_v):
+        payload = {
+            "error": "pipeline_route_guard_blocked",
+            "blocked": True,
+            "reason": "active_source_mismatch",
+            "tool": tool_name,
+            "requested_source_v": source_v,
+            "active_v": ckpt_next,
+            "active_source_v": ckpt_source,
+            "checkpoint_stage": checkpoint.get("stage"),
+            "next_tool": route.get("next_tool"),
+            "allowed_tools": allowed_tools,
+            "route": route,
+            "directive": "Use the source version recorded in the active checkpoint.",
+        }
+        _log_guard_event(
+            "pipeline.route_guard_blocked",
+            "error",
+            f"Blocked {tool_name}: requested source v{source_v} but active checkpoint source is v{ckpt_source}",
+            payload,
+        )
+        return False, payload
+
+    if tool_name in allowed_tools:
+        return True, {}
+
+    payload = {
+        "error": "pipeline_route_guard_blocked",
+        "blocked": True,
+        "reason": "wrong_pipeline_stage",
+        "tool": tool_name,
+        "checkpoint_stage": checkpoint.get("stage"),
+        "active_v": ckpt_next,
+        "active_source_v": ckpt_source,
+        "next_tool": route.get("next_tool"),
+        "allowed_tools": allowed_tools,
+        "route": route,
+        "directive": route.get("directive") or "Call the pipeline tool required by the active checkpoint stage.",
+    }
+    _log_guard_event(
+        "pipeline.route_guard_blocked",
+        "error",
+        f"Blocked {tool_name} at stage {checkpoint.get('stage')}; next tool is {route.get('next_tool')}",
+        payload,
+    )
+    return False, payload
 
 
 def _entry_allowed(line: str, candidate_v: int | None) -> bool:
@@ -574,6 +689,15 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         }
         _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked unexpected worktree entries", payload)
         return False, payload
+
+    route_ok, route_payload = _pipeline_route_guard(
+        tool_name=tool_name,
+        args=args,
+        candidate_v=candidate_v,
+        source_v=source_v,
+    )
+    if not route_ok:
+        return False, route_payload
 
     ignored = _ignored_entries(snapshot, candidate_v)
     return True, {

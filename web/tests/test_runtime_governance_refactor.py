@@ -744,6 +744,90 @@ def test_runtime_guard_allows_current_candidate_dir(monkeypatch):
     assert payload["guard"] == "ok"
 
 
+def test_runtime_guard_blocks_master_before_direction_audit(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {
+            "ok": True,
+            "branch": "main...origin/main",
+            "head": "abc123",
+            "entries": ["?? bots/national_v300/"],
+        },
+        {
+            "ok": True,
+            "branch": "main...origin/main",
+            "head": "abc123",
+            "entries": ["?? bots/national_v300/"],
+        },
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "prepared",
+        "repo_baseline": {
+            "head": "abc123",
+            "branch": "main...origin/main",
+            "captured_stage": "prepared",
+        },
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_master",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["error"] == "pipeline_route_guard_blocked"
+    assert payload["reason"] == "wrong_pipeline_stage"
+    assert payload["checkpoint_stage"] == "prepared"
+    assert payload["next_tool"] == "run_direction_audit"
+    assert payload["allowed_tools"] == ["run_direction_audit"]
+
+
+def test_runtime_guard_allows_pre_master_literature_probe(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {
+            "ok": True,
+            "branch": "main...origin/main",
+            "head": "abc123",
+            "entries": ["?? bots/national_v300/"],
+        },
+        {
+            "ok": True,
+            "branch": "main...origin/main",
+            "head": "abc123",
+            "entries": ["?? bots/national_v300/"],
+        },
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "repo_baseline": {
+            "head": "abc123",
+            "branch": "main...origin/main",
+            "captured_stage": "direction_audited",
+        },
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_literature_probe",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["guard"] == "ok"
+
+
 def test_runtime_guard_cleanup_tools_infer_authoritative_next_v(monkeypatch):
     import tool_runtime_guard
 
