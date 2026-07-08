@@ -36,21 +36,59 @@ const lifecycleTone = (status?: string) => {
 };
 
 const certificationTone = (status?: string) => {
+  if (status === "local-pass") return "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300";
   if (status === "official-certified") return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
   if (status === "official-compliance-pass") return "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300";
   if (status === "official-smoke-pass") return "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300";
   if (status === "official-pending") return "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300";
+  if (status === "official-inconclusive") return "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300";
   if (status === "official-failed") return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300";
+  if (status === "official-unavailable") return "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-300";
   return "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300";
 };
 
 const certificationText = (status?: string) => (
-  status === "official-certified" ? "官方认证"
-    : status === "official-smoke-pass" ? "Smoke 通过"
-      : status === "official-pending" ? "官方排队"
-        : status === "official-failed" ? "官方失败"
-          : "本地通过"
+  status === "local-pass" ? "仅本地通过"
+    : status === "official-certified" ? "官方认证"
+      : status === "official-compliance-pass" ? "官方合规通过"
+        : status === "official-smoke-pass" ? "官方 Smoke 通过"
+          : status === "official-pending" ? "官方排队"
+            : status === "official-inconclusive" ? "官方无结论"
+              : status === "official-failed" ? "官方失败"
+                : status === "official-uncertified" ? "未认证"
+                  : status === "official-unavailable" ? "认证不可用"
+                    : "认证未知"
 );
+
+const certificationPanelTone = (status?: string) => {
+  if (status === "official-failed" || status === "official-unavailable") {
+    return "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300";
+  }
+  if (status === "official-inconclusive") {
+    return "border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-300";
+  }
+  if (status === "official-pending") {
+    return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300";
+  }
+  if (status === "official-compliance-pass" || status === "official-smoke-pass" || status === "official-certified") {
+    return "border-teal-200 bg-teal-50 text-teal-700 dark:border-teal-800 dark:bg-teal-900/20 dark:text-teal-300";
+  }
+  return "border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300";
+};
+
+const certificationVerdictText = (classification?: unknown) => {
+  if (classification === "protocol_violation") return "协议违规";
+  if (classification === "inconclusive") return "官方无结论";
+  if (classification === "uncertified") return "未认证";
+  if (classification === "local_pass") return "仅本地";
+  if (classification === "passed_or_pending") return "通过/排队";
+  return typeof classification === "string" && classification ? classification : undefined;
+};
+
+const summaryNumber = (summary: Record<string, unknown>, key: string) => {
+  const value = summary[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+};
 
 const asRecord = (value: unknown): Record<string, unknown> | null => (
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -208,6 +246,13 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
   const certification = detail?.official_certification ?? bot.official_certification;
   const certIssues = certification?.issues ?? [];
   const certSummary = certification?.summary ?? {};
+  const certVerdict = asRecord(certification?.compliance_verdict);
+  const certClassification = certificationVerdictText(certVerdict?.classification);
+  const certBlocking = typeof certVerdict?.blocking === "boolean" ? certVerdict.blocking : undefined;
+  const certTargetHands = summaryNumber(certSummary, "target_hands");
+  const certRoundsRun = summaryNumber(certSummary, "rounds_run");
+  const certPassedRounds = summaryNumber(certSummary, "passed_rounds");
+  const certFailedRounds = summaryNumber(certSummary, "failed_rounds");
   const certSuiteDir = typeof certSummary.suite_dir === "string" ? certSummary.suite_dir : undefined;
   const certEvidence = certificationEvidence(certification);
 
@@ -274,7 +319,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                 </div>
               )}
               {certification && (
-                <div className={`rounded-lg border p-3 text-xs ${certification.status === "official-failed" ? "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300" : "border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300"}`}>
+                <div className={`rounded-lg border p-3 text-xs ${certificationPanelTone(certification.status)}`}>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={`px-1.5 py-0.5 rounded ${certificationTone(certification.status)}`}>
                       {certificationText(certification.status)}
@@ -283,6 +328,15 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                     {certification.updated_at && <span>更新时间: <span className="font-mono">{certification.updated_at}</span></span>}
                     {certification.cache_hit && <span className="text-emerald-600 dark:text-emerald-300">cache hit</span>}
                     {certEvidence.handRecords != null && <span>THP 手牌: <span className="font-mono">{certEvidence.handRecords}</span></span>}
+                    {certClassification && <span>分类: <span className="font-mono">{certClassification}</span></span>}
+                    {certBlocking != null && <span>阻塞: <span className="font-mono">{certBlocking ? "是" : "否"}</span></span>}
+                    {certTargetHands != null && <span>目标手数: <span className="font-mono">{certTargetHands}</span></span>}
+                    {certRoundsRun != null && (
+                      <span>轮次: <span className="font-mono">{certPassedRounds ?? "?"}/{certRoundsRun}</span></span>
+                    )}
+                    {certFailedRounds != null && certFailedRounds > 0 && (
+                      <span>失败轮: <span className="font-mono">{certFailedRounds}</span></span>
+                    )}
                   </div>
                   {certSuiteDir && (
                     <p className="mt-2 break-all">证据目录: <span className="font-mono">{certSuiteDir}</span></p>

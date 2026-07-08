@@ -90,7 +90,7 @@ class TestCertificationRoutes:
 
         status = client.get("/api/certification/9999")
         assert status.status_code == 200
-        assert status.json()["status"] == "local-pass"
+        assert status.json()["status"] == "official-uncertified"
 
         queued = client.post("/api/certification/9999/enqueue")
         assert queued.status_code == 200

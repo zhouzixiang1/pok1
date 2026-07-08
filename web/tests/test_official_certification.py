@@ -9,6 +9,7 @@ from official_certification import (
     STATUS_INCONCLUSIVE,
     STATUS_PENDING,
     STATUS_SMOKE_PASS,
+    STATUS_UNCERTIFIED,
     build_spec,
     cache_key,
     enqueue_certification,
@@ -20,6 +21,7 @@ from official_certification import (
     report_validation_issues,
     report_valid_for_spec,
     run_certification,
+    read_status,
     write_status,
 )
 
@@ -295,15 +297,40 @@ def test_record_local_pass_does_not_clear_failed_status(tmp_path, monkeypatch):
     assert result["issues"] == ["protocol_raise_format"]
 
 
-def test_record_local_pass_clears_inconclusive_official_failure(tmp_path, monkeypatch):
+def test_read_status_without_file_is_uncertified(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+
+    result = read_status(candidate)
+    verdict = official_compliance_verdict(result)
+
+    assert result["status"] == STATUS_UNCERTIFIED
+    assert result["updated_at"] is None
+    assert verdict["classification"] == "uncertified"
+    assert verdict["blocking"] is False
+
+
+def test_record_local_pass_writes_local_status_for_uncertified(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+
+    result = record_local_pass(candidate)
+    verdict = official_compliance_verdict(result)
+
+    assert result["status"] == "local-pass"
+    assert result["issues"] == []
+    assert verdict["classification"] == "local_pass"
+
+
+def test_record_local_pass_preserves_inconclusive_official_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v1")
 
     write_status(candidate, STATUS_INCONCLUSIVE, mode="smoke", issues=["self_play_1: port_busy_before_start: 127.0.0.1:10001"])
     result = record_local_pass(candidate)
 
-    assert result["status"] == "local-pass"
-    assert result["issues"] == []
+    assert result["status"] == STATUS_INCONCLUSIVE
+    assert result["issues"] == ["self_play_1: port_busy_before_start: 127.0.0.1:10001"]
 
 
 def test_only_protocol_official_failures_block_parent_selection():

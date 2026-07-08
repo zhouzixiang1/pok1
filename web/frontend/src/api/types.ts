@@ -135,11 +135,14 @@ export type OfficialCertificationState =
   | "official-compliance-pass"
   | "official-pending"
   | "official-certified"
-  | "official-failed";
+  | "official-inconclusive"
+  | "official-failed"
+  | "official-uncertified"
+  | "official-unavailable";
 
 export interface OfficialCertification {
   bot: string;
-  status: OfficialCertificationState | string;
+  status: OfficialCertificationState;
   status_label?: string;
   mode?: "smoke" | "compliance" | "full" | null;
   updated_at?: string | null;
@@ -149,6 +152,7 @@ export interface OfficialCertification {
   reason?: string;
   issues?: string[];
   summary?: Record<string, unknown>;
+  compliance_verdict?: Record<string, unknown>;
   result?: Record<string, unknown>;
   certification_root?: string;
 }

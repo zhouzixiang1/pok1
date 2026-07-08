@@ -43,6 +43,7 @@ STATUS_PENDING = "official-pending"
 STATUS_CERTIFIED = "official-certified"
 STATUS_INCONCLUSIVE = "official-inconclusive"
 STATUS_FAILED = "official-failed"
+STATUS_UNCERTIFIED = "official-uncertified"
 
 PARENT_BLOCKING_FAILURE_MARKERS = (
     "protocol_",
@@ -402,8 +403,8 @@ def read_status(candidate: str | Path) -> dict[str, Any]:
         return payload
     return {
         "bot": label,
-        "status": STATUS_LOCAL_PASS,
-        "status_label": "local-pass",
+        "status": STATUS_UNCERTIFIED,
+        "status_label": STATUS_UNCERTIFIED,
         "updated_at": None,
         "mode": None,
         "cache_hit": False,
@@ -428,7 +429,13 @@ def write_status(candidate: str | Path, status: str, *, mode: CertificationMode 
 
 def record_local_pass(candidate: str | Path, *, source: str = "quality_gates") -> dict[str, Any]:
     current = read_status(candidate)
-    if current.get("status") in {STATUS_SMOKE_PASS, STATUS_COMPLIANCE_PASS, STATUS_PENDING, STATUS_CERTIFIED}:
+    if current.get("status") in {
+        STATUS_SMOKE_PASS,
+        STATUS_COMPLIANCE_PASS,
+        STATUS_PENDING,
+        STATUS_CERTIFIED,
+        STATUS_INCONCLUSIVE,
+    }:
         return current
     if current.get("status") == STATUS_FAILED and official_failure_blocks_parent(current):
         return current
@@ -457,6 +464,25 @@ def official_compliance_verdict(status: dict[str, Any]) -> dict[str, Any]:
     """
     status_value = str(status.get("status") or "")
     issues = _official_issue_strings(status)
+    if status_value == STATUS_UNCERTIFIED:
+        return {
+            "ok": True,
+            "blocking": False,
+            "classification": "uncertified",
+            "inconclusive": True,
+            "violation": False,
+            "issues": issues,
+            "inconclusive_issues": issues,
+        }
+    if status_value == STATUS_LOCAL_PASS:
+        return {
+            "ok": True,
+            "blocking": False,
+            "classification": "local_pass",
+            "inconclusive": False,
+            "violation": False,
+            "issues": issues,
+        }
     if status_value == STATUS_INCONCLUSIVE:
         return {
             "ok": True,
@@ -763,5 +789,6 @@ def process_certification_queue(
 
 def status_payload(candidate: str | Path) -> dict[str, Any]:
     payload = read_status(candidate)
+    payload["compliance_verdict"] = official_compliance_verdict(payload)
     payload["certification_root"] = str(certification_root())
     return payload

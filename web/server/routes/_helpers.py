@@ -104,9 +104,9 @@ def build_bot_summary(
     except Exception:
         summary["official_certification"] = {
             "bot": bot_name,
-            "status": "local-pass",
-            "status_label": "local-pass",
-            "issues": [],
+            "status": "official-unavailable",
+            "status_label": "official-unavailable",
+            "issues": ["certification_status_unavailable"],
         }
     for key in (
         "leaderboard_score", "rank_basis", "strength_confidence", "h2h_coverage",
