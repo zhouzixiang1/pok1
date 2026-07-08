@@ -21,12 +21,16 @@ class BoundaryAuditResult:
     passed: bool
     changed_files: list[str] = field(default_factory=list)
     allowed_files: list[str] = field(default_factory=list)
+    ignored_changed_files: list[str] = field(default_factory=list)
+    violation_files: list[str] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
 
     def to_gate_metrics(self) -> dict[str, Any]:
         return {
             "changed_files": self.changed_files,
             "allowed_files": self.allowed_files,
+            "ignored_changed_files": self.ignored_changed_files,
+            "violation_files": self.violation_files,
             "violation_count": len(self.violations),
         }
 
@@ -118,19 +122,32 @@ def audit_worker_boundary(
     before_snapshot: dict[str, bytes],
     *,
     next_v: int | None = None,
+    ignored_changed_files: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> BoundaryAuditResult:
     changed = diff_snapshot(root, before_snapshot)
     allowed = allowed_files_for_task(task, next_v)
     allowed_set = set(allowed)
+    ignored_set = {
+        rel for rel in (
+            _normalize_rel(item, next_v) for item in (ignored_changed_files or [])
+        )
+        if rel
+    }
+    ignored = sorted(rel for rel in changed if rel in ignored_set)
+    violation_files = sorted(
+        rel for rel in changed
+        if rel not in allowed_set and rel not in ignored_set
+    )
     violations = [
         f"{rel}: changed outside declared target_files/files_allowed"
-        for rel in changed
-        if rel not in allowed_set
+        for rel in violation_files
     ]
     return BoundaryAuditResult(
         passed=not violations,
         changed_files=changed,
         allowed_files=allowed,
+        ignored_changed_files=ignored,
+        violation_files=violation_files,
         violations=violations,
     )
 

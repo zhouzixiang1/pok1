@@ -32,6 +32,38 @@ def test_worker_boundary_rejects_undeclared_file_change(tmp_path):
     assert (bot / "postflop.py").read_text(encoding="utf-8") == "B = 1\n"
 
 
+def test_worker_boundary_ignores_parallel_sibling_changes(tmp_path):
+    bot = tmp_path / "bot"
+    bot.mkdir()
+    (bot / "constants.py").write_text("A = 1\n", encoding="utf-8")
+    (bot / "opponent.py").write_text("B = 1\n", encoding="utf-8")
+    (bot / "strategy.py").write_text("C = 1\n", encoding="utf-8")
+
+    before = snapshot_python_files(bot)
+    (bot / "constants.py").write_text("A = 2\n", encoding="utf-8")
+    (bot / "opponent.py").write_text("B = 2\n", encoding="utf-8")
+    (bot / "strategy.py").write_text("C = 2\n", encoding="utf-8")
+
+    result = audit_worker_boundary(
+        bot,
+        {
+            "role": "Hyperparameter Tuner",
+            "target_files": ["constants.py"],
+            "files_allowed": ["opponent.py", "strategy.py"],
+        },
+        before,
+        next_v=250,
+        ignored_changed_files=["opponent.py", "strategy.py"],
+    )
+
+    assert result.passed
+    assert result.allowed_files == ["constants.py"]
+    assert result.changed_files == ["constants.py", "opponent.py", "strategy.py"]
+    assert result.ignored_changed_files == ["opponent.py", "strategy.py"]
+    assert result.violation_files == []
+    assert result.violations == []
+
+
 def test_candidate_scope_audit_uses_master_plan_targets():
     result = audit_changed_files_against_plan(
         ["strategy.py", "postflop.py"],

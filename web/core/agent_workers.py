@@ -660,12 +660,18 @@ def _preserve_timed_out_worker_if_blocker_cleared(
         return ""
 
     boundary_task = dict(task)
-    if boundary_allowed_files:
+    if boundary_allowed_files and not parallel_mode:
         boundary_task["files_allowed"] = list({
             *(boundary_task.get("files_allowed", []) or []),
             *boundary_allowed_files,
         })
-    boundary = audit_worker_boundary(next_dir, boundary_task, boundary_snapshot, next_v=next_v)
+    boundary = audit_worker_boundary(
+        next_dir,
+        boundary_task,
+        boundary_snapshot,
+        next_v=next_v,
+        ignored_changed_files=boundary_allowed_files if parallel_mode else None,
+    )
     if not boundary.passed:
         log.info(
             "Not preserving timed-out worker %s due boundary violations: %s",
@@ -874,7 +880,14 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             )
             # Clear undeclared NEW files the timed-out worker may have created.
             _unlink_undeclared_new_files(next_dir, _pre_run_py_files)
-            restore_python_files(next_dir, _boundary_snapshot, diff_snapshot(next_dir, _boundary_snapshot))
+            changed_after_timeout = diff_snapshot(next_dir, _boundary_snapshot)
+            if parallel_mode and boundary_allowed_files:
+                sibling_scope = set(boundary_allowed_files)
+                changed_after_timeout = [
+                    rel for rel in changed_after_timeout
+                    if rel not in sibling_scope
+                ]
+            restore_python_files(next_dir, _boundary_snapshot, changed_after_timeout)
             base_worker_prompt += (
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
                 "Implement only the single most impactful change — do NOT try to do everything at once."
@@ -918,16 +931,22 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 continue
 
         boundary_task = dict(task)
-        if boundary_allowed_files:
+        if boundary_allowed_files and not parallel_mode:
             boundary_task["files_allowed"] = list({
                 *(boundary_task.get("files_allowed", []) or []),
                 *boundary_allowed_files,
             })
-        boundary = audit_worker_boundary(next_dir, boundary_task, _boundary_snapshot, next_v=next_v)
+        boundary = audit_worker_boundary(
+            next_dir,
+            boundary_task,
+            _boundary_snapshot,
+            next_v=next_v,
+            ignored_changed_files=boundary_allowed_files if parallel_mode else None,
+        )
         if not boundary.passed:
             _last_reason = "; ".join(boundary.violations[:3])
             _last_failure_type = "boundary_violation"
-            restore_python_files(next_dir, _boundary_snapshot, boundary.changed_files)
+            restore_python_files(next_dir, _boundary_snapshot, boundary.violation_files)
             base_worker_prompt += (
                 "\n\nCRITICAL BOUNDARY VIOLATION: You changed files outside your declared "
                 "target_files/files_allowed. Only edit these files: "
@@ -946,6 +965,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                         "role": role,
                         "changed_files": boundary.changed_files[:20],
                         "allowed_files": boundary.allowed_files[:20],
+                        "ignored_changed_files": boundary.ignored_changed_files[:20],
+                        "violation_files": boundary.violation_files[:20],
                         "violations": boundary.violations[:10],
                     },
                 )
