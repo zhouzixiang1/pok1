@@ -340,13 +340,14 @@ class OfficialWireReplay:
             self._add_issue(format_issue, seat, message, event)
             return
         if seat.expected_since is None:
-            self._add_warning(
+            self._add_issue(
                 "unsolicited_client_action",
                 seat,
                 message,
                 event,
                 reason="bot sent an action while replay had no pending platform request",
             )
+            return
         if seat.expected_since is not None and t - seat.expected_since >= self.response_timeout_sec:
             self._add_issue(
                 "bot_response_timeout",

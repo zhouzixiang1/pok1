@@ -25,7 +25,7 @@ import textwrap
 from typing import Any
 
 from eval_stats import paired_bootstrap_ci
-from bot_namespace import ACTIVE_BOT_PREFIX, active_bot_glob, bot_name, parse_bot_version, version_sort_key
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, parse_bot_version, version_sort_key
 from pipeline_schema import NationalAcceptanceResult
 
 
@@ -925,10 +925,13 @@ def resolve_bot(token: str | Path) -> tuple[str, Path]:
 
 
 def _completed_active_bots() -> list[tuple[str, Path]]:
+    from evolution_infra import get_active_bots
+
     specs: list[tuple[str, Path]] = []
-    for path in (ROOT / "bots").glob(active_bot_glob()):
-        if path.is_dir() and (path / "main.py").exists() and (path / ".completed").exists():
-            specs.append((path.name, path.resolve()))
+    for name in get_active_bots():
+        path = ROOT / "bots" / name
+        if path.is_dir() and (path / "main.py").exists():
+            specs.append((name, path.resolve()))
     return sorted(specs, key=lambda item: version_sort_key(item[0]), reverse=True)
 
 

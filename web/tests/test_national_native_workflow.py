@@ -5,9 +5,12 @@ from pathlib import Path
 import sys
 
 from candidate_hygiene import sanitize_candidate_dir
+import evolution_infra
+import national_native
 from national_native import (
     check_native_contract,
     ensure_native_entry,
+    _completed_active_bots,
     run_native_tcp_smoke,
     run_native_tcp_pair,
 )
@@ -67,6 +70,22 @@ def test_web_launcher_defaults_to_national_native():
     launcher = Path(__file__).resolve().parents[1] / "main.py"
 
     assert 'setdefault("POK_WORKFLOW_PROFILE", "national_native")' in launcher.read_text(encoding="utf-8")
+
+
+def test_completed_active_bots_uses_authoritative_active_pool(monkeypatch, tmp_path):
+    bots_dir = tmp_path / "bots"
+    active = bots_dir / "national_v110"
+    stale_completed = bots_dir / "national_v88"
+    active.mkdir(parents=True)
+    stale_completed.mkdir(parents=True)
+    (active / "main.py").write_text("# active\n", encoding="utf-8")
+    (stale_completed / "main.py").write_text("# stale\n", encoding="utf-8")
+    (stale_completed / ".completed").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(national_native, "ROOT", tmp_path)
+    monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: ["national_v110"])
+
+    assert _completed_active_bots() == [("national_v110", active.resolve())]
 
 
 def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_path):
