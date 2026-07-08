@@ -31,6 +31,8 @@ CARD_RE = re.compile(r"<(\d+),(\d+)>")
 TCP_TO_JUDGE_SUIT = {0: 2, 1: 0, 2: 1, 3: 3}
 ACTION_PREFIX_RE = re.compile(r"^(raise|bet)\s+(\d+)")
 EARN_PREFIX_RE = re.compile(r"^earnChips\s+-?\d+")
+DEFAULT_OFFICIAL_ACTION_DELAY_SEC = 0.30
+OFFICIAL_ACTION_DELAY_ENV = "POK_OFFICIAL_ACTION_DELAY"
 
 _LOG_FP = None
 
@@ -53,6 +55,15 @@ def _log(msg: str) -> None:
         _LOG_FP.write(f"[{_time.strftime('%H:%M:%S')}] {msg}\n")
     except Exception:
         pass
+
+
+def _official_action_delay_sec() -> float:
+    raw = os.environ.get(OFFICIAL_ACTION_DELAY_ENV, str(DEFAULT_OFFICIAL_ACTION_DELAY_SEC))
+    try:
+        delay = float(raw)
+    except (TypeError, ValueError):
+        delay = DEFAULT_OFFICIAL_ACTION_DELAY_SEC
+    return max(0.0, min(delay, 2.0))
 
 
 def _tcp_card_to_int(suit: int, rank: int) -> int:
@@ -148,6 +159,8 @@ class NativeNationalBot:
         self.reconstruct_state = reconstruct_state
         self.infer_remaining_hands = infer_remaining_hands_from_requests
         self.sanitize_action = sanitize_action
+        self._official_action_delay_sec = _official_action_delay_sec()
+        self._last_platform_message_at = 0.0
         self._reset_match()
 
     def _reset_match(self) -> None:
@@ -375,6 +388,15 @@ class NativeNationalBot:
             return self._stage != "preflop" and self._my_action_count == 0
         return False
 
+    def _send_wire_action(self, sock: socket.socket, msg: str) -> None:
+        if self._official_action_delay_sec > 0 and self._last_platform_message_at > 0:
+            elapsed = time.perf_counter() - self._last_platform_message_at
+            wait_sec = self._official_action_delay_sec - elapsed
+            if wait_sec > 0:
+                _log(f"OFFICIAL_ACTION_DELAY wait={wait_sec:.3f}s target={self._official_action_delay_sec:.3f}s")
+                time.sleep(wait_sec)
+        sock.sendall(msg.encode("utf-8"))
+
     def _send_decision(self, sock: socket.socket) -> None:
         t0 = time.perf_counter()
         _log(
@@ -393,7 +415,7 @@ class NativeNationalBot:
         _log(f"DECIDE done action={action!r} elapsed={elapsed:.3f}s")
         self._responses.append(int(action))
         msg, action_type, amount = self._action_to_tcp(int(action))
-        sock.sendall(msg.encode("utf-8"))
+        self._send_wire_action(sock, msg)
         _log(
             f"SEND name={self.name} hand={self._hand_num} stage={self._stage} "
             f"act_cnt={self._my_action_count} my_sb={self._my_stage_bet} "
@@ -407,6 +429,7 @@ class NativeNationalBot:
         self._my_action_count += 1
 
     def handle(self, line: str, sock: socket.socket) -> None:
+        self._last_platform_message_at = time.perf_counter()
         if line.startswith("name"):
             sock.sendall(self.name.encode("utf-8"))
             _log(f"SEND name_handshake name={self.name!r}")
@@ -522,4 +545,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

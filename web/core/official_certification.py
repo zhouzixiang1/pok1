@@ -54,6 +54,8 @@ PARENT_BLOCKING_FAILURE_MARKERS = (
     "protocol_raise_format",
     "protocol_action_format",
     "protocol_action_whitespace",
+    "platform_silent_timeout_gap",
+    "official_log_silent_timeout_gap",
 )
 
 COMPLIANCE_INCONCLUSIVE_FAILURE_MARKERS = (

@@ -124,6 +124,13 @@ official EXE's 60 second timeout path.
   reported as `platform_silent_timeout_gap` instead of being hidden behind a
   final `passed=true` settlement.
 - Updated `web/tests/test_official_wire_probe.py` to lock this behavior.
+- Updated the native national bot template so generated `national_bot.py`
+  entries keep an official-platform send throttle by default. Local native
+  strength evaluation explicitly disables the delay through environment when it
+  does not use the Windows EXE.
+- Updated the official EXE harness/certification path so log-level 60 second
+  silent gaps are reported as `official_log_silent_timeout_gap` and block parent
+  selection.
 
 ## Engineering Requirements Going Forward
 
@@ -133,6 +140,12 @@ official EXE's 60 second timeout path.
   strategy code.
 - The official EXE harness should fail a round that contains
   `platform_silent_timeout_gap`, even if the EXE later emits `earnChips`.
+- The native entry contract should reject generated entries that remove
+  `POK_OFFICIAL_ACTION_DELAY`, `_send_wire_action`, or the default official
+  delay constant.
+- Generated bots must not use unsolicited timeout-rescue loops. They should send
+  exactly one legal action for the current pending decision; probe/harness code
+  should surface 60 second silence instead of masking it with fallback sends.
 - Local strength evaluation can still use the local national TCP server, but
   official acceptance must include the real EXE because the timing race is not
   represented by the local server.

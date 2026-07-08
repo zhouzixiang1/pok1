@@ -82,6 +82,8 @@ def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_pat
     assert '"response"' not in text
     assert "sock.recv" in text
     assert "_split_messages" in text
+    assert "POK_OFFICIAL_ACTION_DELAY" in text
+    assert "_send_wire_action" in text
     assert "makefile(" not in text
     assert ".readline(" not in text
     assert "msg + \"\\n\"" not in text
@@ -188,6 +190,32 @@ def test_native_entry_template_uses_raise_to_total(monkeypatch, tmp_path):
     }]
 
     assert bot._action_to_tcp(300) == ("raise 401", "raise", 401)
+
+
+def test_native_entry_template_throttles_official_action_send(monkeypatch, tmp_path):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    sleeps: list[float] = []
+
+    class FakeSock:
+        sent: list[bytes] = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0.30")
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._last_platform_message_at = module.time.perf_counter()
+    sock = FakeSock()
+
+    bot._send_wire_action(sock, "call")
+
+    assert sock.sent == [b"call"]
+    assert sleeps and 0 < sleeps[0] <= 0.30
 
 
 def test_candidate_hygiene_removes_completion_and_restores_native_entry(tmp_path):
@@ -629,7 +657,12 @@ def test_national_protocol_gate_uses_platform_shard_for_native(monkeypatch):
     assert str(calls[-1][0][3]).endswith("sever/tests/test_national_alignment.py")
 
 
-def _raw_probe_native_source(*, startup: str = "", on_small_blind: str = "sock.sendall(b'fold')", delay_sec: float = 0.0) -> str:
+def _raw_probe_native_source(
+    *,
+    startup: str = "",
+    on_small_blind: str = "_send_wire_action(sock, 'fold', last_platform_message_at)",
+    delay_sec: float = 0.0,
+) -> str:
     return (
         "import argparse\n"
         "import os\n"
@@ -641,6 +674,24 @@ def _raw_probe_native_source(*, startup: str = "", on_small_blind: str = "sock.s
         "CARD_RE = re.compile(r'<(\\d+),(\\d+)>')\n"
         "ACTION_RE = re.compile(r'^(raise|bet)\\s+(\\d+)')\n"
         "EARN_RE = re.compile(r'^earnChips\\s+-?\\d+')\n\n"
+        "DEFAULT_OFFICIAL_ACTION_DELAY_SEC = 0.30\n"
+        "OFFICIAL_ACTION_DELAY_ENV = 'POK_OFFICIAL_ACTION_DELAY'\n\n"
+        "def _official_action_delay_sec():\n"
+        "    raw = os.environ.get(OFFICIAL_ACTION_DELAY_ENV, str(DEFAULT_OFFICIAL_ACTION_DELAY_SEC))\n"
+        "    try:\n"
+        "        delay = float(raw)\n"
+        "    except (TypeError, ValueError):\n"
+        "        delay = DEFAULT_OFFICIAL_ACTION_DELAY_SEC\n"
+        "    return max(0.0, min(delay, 2.0))\n\n"
+        "def _send_wire_action(sock, msg, last_platform_message_at=0.0):\n"
+        "    delay = _official_action_delay_sec()\n"
+        "    if delay > 0 and last_platform_message_at > 0:\n"
+        "        wait_sec = delay - (time.perf_counter() - last_platform_message_at)\n"
+        "        if wait_sec > 0:\n"
+        "            time.sleep(wait_sec)\n"
+        "    if isinstance(msg, str):\n"
+        "        msg = msg.encode('utf-8')\n"
+        "    sock.sendall(msg)\n\n"
         "def _take_card_message(buffer, prefix, count):\n"
         "    if not buffer.startswith(prefix):\n"
         "        return None, buffer\n"
@@ -698,6 +749,7 @@ def _raw_probe_native_source(*, startup: str = "", on_small_blind: str = "sock.s
         "            data = sock.recv(4096)\n"
         "            if not data:\n"
         "                return 0\n"
+        "            last_platform_message_at = time.perf_counter()\n"
         "            buffer += data.decode('utf-8', 'replace')\n"
         "            messages, buffer = _split_messages(buffer)\n"
         "            for line in messages:\n"
@@ -731,7 +783,7 @@ def _write_trace_probe_native_bot(bot_dir: Path) -> None:
             on_small_blind=(
                 "print('POK_TRACE_DECISION ' + json.dumps({'type': 'decision', 'hand': 1, 'final_action': -1}), "
                 "file=sys.stderr, flush=True) if os.environ.get('POK_TRACE_DECISIONS') == '1' else None; "
-                "sock.sendall(b'fold')"
+                "_send_wire_action(sock, 'fold', last_platform_message_at)"
             ),
         ),
         encoding="utf-8",

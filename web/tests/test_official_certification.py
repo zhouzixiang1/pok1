@@ -146,6 +146,19 @@ def test_bad_receipts_are_not_valid_for_cache(tmp_path):
     assert report_valid_for_spec(_report(target_hands=70, rounds=8, thp_hands=69), spec) is False
 
 
+def test_official_silent_timeout_gap_blocks_parent_selection():
+    status = {
+        "status": STATUS_FAILED,
+        "issues": ["opponent_1: official_log_silent_timeout_gap: bot_a max_gap_sec=62 max_decision_sec=0.050"],
+    }
+
+    verdict = official_compliance_verdict(status)
+
+    assert verdict["blocking"] is True
+    assert verdict["classification"] == "protocol_violation"
+    assert official_failure_blocks_parent(status) is True
+
+
 def test_short_smoke_can_use_log_progress_when_thp_is_absent(tmp_path):
     candidate = _bot(tmp_path / "national_v1")
     opponent = _bot(tmp_path / "national_v2")

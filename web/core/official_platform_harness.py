@@ -274,12 +274,19 @@ def parse_bot_log(path: str | Path, *, tail_lines: int = 30) -> BotLogStats:
 def summarize_round_logs(log_a: Path, log_b: Path) -> dict[str, Any]:
     stats_a = parse_bot_log(log_a)
     stats_b = parse_bot_log(log_b)
+    issues = stats_a.issues + stats_b.issues
+    for label, stats in (("bot_a", stats_a), ("bot_b", stats_b)):
+        if stats.max_gap_sec >= 55 and stats.max_decision_sec < 55:
+            issues.append(
+                f"official_log_silent_timeout_gap: {label} max_gap_sec={stats.max_gap_sec} "
+                f"max_decision_sec={stats.max_decision_sec:.3f}"
+            )
     return {
         "bot_a": _jsonable(stats_a),
         "bot_b": _jsonable(stats_b),
         "hands_started_min": min(stats_a.preflop, stats_b.preflop),
         "settlements_min": min(stats_a.earnchips, stats_b.earnchips),
-        "issues": stats_a.issues + stats_b.issues,
+        "issues": issues,
         "progress_key": (stats_a.progress_key(), stats_b.progress_key()),
     }
 
@@ -314,6 +321,7 @@ def _env_for_display(config: OfficialPlatformConfig, display: str) -> dict[str, 
     env = os.environ.copy()
     env.update(config.locale_env())
     env["DISPLAY"] = display
+    env["POK_OFFICIAL_ACTION_DELAY"] = os.environ.get("POK_OFFICIAL_ACTION_DELAY", "0.30")
     return env
 
 
@@ -944,6 +952,7 @@ def run_official_round(
         "thp_files": thp_artifacts,
         "thp_summaries": thp_summaries,
     }
+    receipt["issues"].extend((receipt.get("log_summary") or {}).get("issues") or [])
     receipt["issues"].extend(artifact_issues)
     receipt["issues"].extend(_read_issue_file(bot_a_stdout))
     receipt["issues"].extend(_read_issue_file(bot_a_stderr))

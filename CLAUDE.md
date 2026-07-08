@@ -14,7 +14,7 @@ A Texas Hold'em poker AI bot framework that started as a Botzone evolution proje
 There are two protocol families:
 
 - Botzone/local protocol: bots are Python subprocesses that read JSON from stdin and write JSON to stdout. This is implemented by `engine/` and remains useful for legacy regression and old bots.
-- National competition protocol: AI engines connect to a TCP server and exchange line-delimited strings such as `preflop|SMALLBLIND|<0,3><1,3>`, `raise 200`, `call`, `check`, `fold`, `allin`. This is implemented by `sever/`. New evolved bots are expected to be national-native and expose a direct TCP entrypoint; `sever/bot_adapter.py` is a legacy bridge/regression path, not the formal shape for new submissions.
+- National competition protocol: AI engines connect to a TCP server and exchange raw short socket messages such as `preflop|SMALLBLIND|<0,3><1,3>`, `raise 200`, `call`, `check`, `fold`, `allin`. The official Windows EXE does not guarantee newline delimiters or TCP message boundaries, and it is timing-sensitive; native bots must split sticky packets and keep the official action-send throttle in the TCP wire layer. This is implemented by `sever/`. New evolved bots are expected to be national-native and expose a direct TCP entrypoint; `sever/bot_adapter.py` is a legacy bridge/regression path, not the formal shape for new submissions.
 
 The evolution pipeline lives under `web/core/`. It uses LLM agents, Glicko-2 ratings, mirror battles, quality gates, precommit regression evaluation, and accumulated strategy lessons to generate new bot versions.
 
@@ -340,9 +340,11 @@ python -m pytest sever/tests -q
 **Structure:** `engine/game.py` (stateful GameEngine), `engine/validator.py` (13-rule validation), `engine/evaluator.py` (hand comparison), `engine/deck.py` (Card class, `<suit,rank>`), `server/tcp_server.py` (async TCP), `server/protocol.py` (message encode/decode), `bot_adapter.py` (bridges `engine/judge.py` bots to TCP server), `web/app.py` (FastAPI + SSE dashboard).
 
 **Protocol differences from `engine/`:**
-- Line-delimited text over TCP (not subprocess JSON)
+- Raw short TCP messages (not subprocess JSON and not guaranteed line-delimited by the official EXE)
 - Card format: `<suit,rank>` tuples where `suit ∈ {0=♠,1=♥,2=♦,3=♣}`, `rank ∈ {0=2..12=A}`
 - Actions: exact text strings (`"call"`, `"check"`, `"fold"`, `"allin"`, `"raise 200"`). `raise` uses exactly one space before the amount; `bet` is always illegal.
+- Official EXE timing: generated `national_bot.py` entries must keep `POK_OFFICIAL_ACTION_DELAY` and send through `_send_wire_action` with a default around `0.30s`. Local strength evaluation may disable this delay with environment, but submitted/formal entries must default to official-safe timing.
+- Do not copy timeout-rescue fallback loops that send unsolicited `call` or `check`; a bot may only send an action while the platform is waiting for its current decision.
 - Stateful `GameEngine` object (not stateless `judge()` function)
 - Strict action validation via 13-rule validator (illegal = auto-fold)
 - 70 hands per match, 20000 starting chips, blinds 50/100, 60s decision timeout
