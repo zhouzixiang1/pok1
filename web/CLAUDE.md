@@ -9,7 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Long-running evolution on this machine should run from:
 #   /home/zzx/project/pok/.evolution_pok
 python web/main.py                           # Orchestrator mode on port 8000
-python web/main.py --no-daemon               # No background evaluation
+python web/main.py --no-daemon               # Orchestrator without the rating daemon
+python web/main.py --view-only               # Dashboard/API only; evolution stays stopped
 python web/main.py --dev                     # Enable uvicorn auto-reload
 python web/main.py --no-build                # Skip frontend build
 python web/main.py --port 3000               # Custom port

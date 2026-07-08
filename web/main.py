@@ -3,7 +3,8 @@
 Usage:
     python web/main.py                      # Orchestrator mode on port 8000
     python web/main.py --port 3000          # Custom port
-    python web/main.py --no-daemon          # No background daemon
+    python web/main.py --no-daemon          # Run orchestrator without background rating daemon
+    python web/main.py --view-only          # Serve dashboard/API without starting evolution
     python web/main.py --no-build           # Skip frontend build
     python web/main.py --dev                # Enable auto-reload
 """
@@ -62,12 +63,17 @@ def main():
     parser = argparse.ArgumentParser(description="Unified Evolution Web App")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--no-daemon", action="store_true")
+    parser.add_argument("--no-daemon", action="store_true", help="Run orchestrator without the background rating daemon")
+    parser.add_argument("--view-only", action="store_true", help="Serve dashboard/API without starting the orchestrator or daemon")
     parser.add_argument("--no-build", action="store_true", help="Skip frontend build on startup")
     parser.add_argument("--dev", action="store_true", help="Enable auto-reload")
     args = parser.parse_args()
 
     import uvicorn
+
+    if args.view_only:
+        os.environ["POK_WEB_VIEW_ONLY"] = "1"
+        args.no_daemon = True
 
     if args.no_daemon:
         os.environ["DAEMON_DISABLED"] = "1"

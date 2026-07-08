@@ -12,7 +12,7 @@
 python web/main.py
         │
         ▼
-  CLI 参数解析 (--port [PORT env], --host, --no-daemon, --dev, --no-build)
+  CLI 参数解析 (--port [PORT env], --host, --no-daemon, --view-only, --dev, --no-build)
   前端构建 (npm run build → web/server/static/)
   app_state 配置 (daemon_enabled, daemon_workers, daemon_pairs)
         │

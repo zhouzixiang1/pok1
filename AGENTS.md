@@ -123,7 +123,8 @@ python engine/anchor_runner.py archive/evolution_epochs/<epoch>/legacy_bots/bot5
 # Full web app on :8000. Builds frontend unless --no-build is passed.
 python web/main.py
 python web/main.py --port 3000
-python web/main.py --no-daemon
+python web/main.py --no-daemon      # Orchestrator without the rating daemon
+python web/main.py --view-only      # Dashboard/API only; evolution stays stopped
 python web/main.py --no-build
 python web/main.py --dev
 

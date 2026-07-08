@@ -1,5 +1,6 @@
 """Tests for /api/control/* endpoints."""
 
+import asyncio
 import json
 import sys
 from types import SimpleNamespace
@@ -126,6 +127,30 @@ class TestStatus:
         assert data["next_v"] == 256
         assert data["generation_count"] == 254
         assert data["active_generation"] is None
+
+    def test_view_only_lifespan_does_not_start_orchestrator(self, monkeypatch):
+        import server.app as app_module
+        from server.state import app_state
+
+        events = []
+
+        class TrapOrchestrator:
+            def __getattr__(self, name):
+                raise AssertionError(f"view-only mode imported orchestrator.{name}")
+
+        app_state.stop_running()
+        monkeypatch.setenv("POK_WEB_VIEW_ONLY", "1")
+        monkeypatch.setitem(sys.modules, "orchestrator", TrapOrchestrator())
+        monkeypatch.setattr(app_module.web_ui, "log_history", lambda *args: events.append(args))
+
+        async def run_lifespan():
+            async with app_module.lifespan(app_module.app):
+                assert app_state.to_dict()["running"] is False
+                assert app_state.task_snapshot()["present"] is False
+
+        asyncio.run(run_lifespan())
+
+        assert any("view-only mode" in event[0] for event in events)
 
     def test_health_reports_stopped_state(self, client, monkeypatch):
         import server.routes.control as control

@@ -1,6 +1,7 @@
 """Unified FastAPI backend — imports from web/core modules."""
 
 import asyncio
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):
 
     config = app_state.get_config()
     daemon_enabled = config["daemon_enabled"]
+    view_only = os.environ.get("POK_WEB_VIEW_ONLY") == "1"
 
     # Let uvicorn own signal handling — its handle_exit sets should_exit,
     # which triggers sse-starlette shutdown → lifespan shutdown below.
@@ -46,6 +48,12 @@ async def lifespan(app: FastAPI):
         set_shutdown_manager(shutdown_mgr)
     except Exception:
         pass
+
+    if view_only:
+        web_ui.log_history("Dashboard started in view-only mode; evolution loop is not running.", "info")
+        yield
+        web_ui.log_history("Dashboard stopped.", "info")
+        return
 
     if not app_state.try_set_running(True):
         web_ui.log_history("Orchestrator already running", "warn")
