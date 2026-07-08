@@ -181,6 +181,29 @@ def _strip_heredoc_bodies(command):
     return "\n".join(output)
 
 
+def _iter_shell_heredoc_bodies(command):
+    """Yield heredoc bodies in shell evaluation order.
+
+    The shell splitter intentionally strips bodies so quoted Python snippets do
+    not look like shell syntax. Python workers often create a new assigned file
+    via ``python3 - <<'PY'`` though, so the write-scope guard still needs to
+    inspect those bodies for concrete Python file targets.
+    """
+    lines = str(command).splitlines()
+    index = 0
+    while index < len(lines):
+        delimiters = _shell_heredoc_delimiters(lines[index])
+        index += 1
+        for delimiter in delimiters:
+            body = []
+            while index < len(lines) and lines[index].strip() != delimiter:
+                body.append(lines[index])
+                index += 1
+            if index < len(lines) and lines[index].strip() == delimiter:
+                index += 1
+            yield "\n".join(body)
+
+
 def _shell_heredoc_delimiters(line):
     delimiters = []
     quote = None
@@ -533,7 +556,16 @@ def _cd_target_from_args(args):
     return None
 
 
-def _iter_subagent_segment_write_targets(segment):
+def _iter_python_write_targets_from_text(text):
+    for match in _SUBAGENT_PYTHON_OPEN_WRITE_TARGET_RE.finditer(str(text)):
+        mode = (match.group("mode") or "").lower()
+        if any(flag in mode for flag in ("w", "a", "x", "+")):
+            yield "python_open_write", match.group("path")
+    for match in _SUBAGENT_PYTHON_PATH_WRITE_TARGET_RE.finditer(str(text)):
+        yield f"python_path_{match.group('method').lower()}", match.group("path")
+
+
+def _iter_subagent_segment_write_targets(segment, python_heredoc_body=None):
     for target in _iter_shell_write_redirect_targets(segment):
         target = target.strip("'\"")
         if target.startswith("&") or target.lower() in _SAFE_REDIRECT_TARGETS:
@@ -547,12 +579,9 @@ def _iter_subagent_segment_write_targets(segment):
     args = words[1:]
 
     if cmd.startswith("python"):
-        for match in _SUBAGENT_PYTHON_OPEN_WRITE_TARGET_RE.finditer(str(segment)):
-            mode = (match.group("mode") or "").lower()
-            if any(flag in mode for flag in ("w", "a", "x", "+")):
-                yield "python_open_write", match.group("path")
-        for match in _SUBAGENT_PYTHON_PATH_WRITE_TARGET_RE.finditer(str(segment)):
-            yield f"python_path_{match.group('method').lower()}", match.group("path")
+        yield from _iter_python_write_targets_from_text(segment)
+        if python_heredoc_body:
+            yield from _iter_python_write_targets_from_text(python_heredoc_body)
         return
 
     if cmd in {"mkdir", "touch", "rm", "rmdir"}:
@@ -621,13 +650,20 @@ def _iter_subagent_bash_write_events(command):
     relative and must not be silently treated as bot-local writes.
     """
     current_dir = str(_project_root_for_guard())
+    heredoc_bodies = iter(_iter_shell_heredoc_bodies(command))
     for segment in _split_shell_simple_commands(command):
         words = _simple_command_words(segment)
         if not words:
             continue
         cmd = _command_name(words[0])
         args = words[1:]
-        for detector, target in _iter_subagent_segment_write_targets(segment):
+        python_heredoc_body = None
+        if cmd.startswith("python") and _shell_heredoc_delimiters(segment):
+            python_heredoc_body = next(heredoc_bodies, "")
+        for detector, target in _iter_subagent_segment_write_targets(
+            segment,
+            python_heredoc_body=python_heredoc_body,
+        ):
             yield detector, target, current_dir
         if cmd == "cd":
             target = _cd_target_from_args(args)

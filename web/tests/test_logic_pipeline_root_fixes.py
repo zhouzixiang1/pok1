@@ -1174,6 +1174,34 @@ wc -l bots/claude_v234/strategy.py
         f"python3 -c \"with open('{project_root / 'bots' / 'claude_v234' / 'opponent.py'}', 'w') as f: "
         "f.write('x')\""
     )
+    python_path_heredoc_allowed = (
+        f"python3 - <<'PY'\n"
+        f"from pathlib import Path\n"
+        f"Path('{scoped_strategy}').write_text('x')\n"
+        f"PY"
+    )
+    python_path_heredoc_relative_allowed = (
+        "cd bots/claude_v234 && python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        "Path('strategy.py').write_text('x')\n"
+        "PY"
+    )
+    python_path_heredoc_other_file = (
+        "cd bots/claude_v234 && python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        "Path('opponent.py').write_text('x')\n"
+        "PY"
+    )
+    national_new_helper = project_root / "bots" / "national_v114" / "river_thin_value.py"
+    national_strategy = project_root / "bots" / "national_v114" / "strategy.py"
+    national_file_scope = {"files": [str(national_new_helper), str(national_strategy)]}
+    python_path_heredoc_multi_target_allowed = (
+        "python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        "Path('bots/national_v114/river_thin_value.py').write_text('helper')\n"
+        "Path('bots/national_v114/strategy.py').write_text('strategy')\n"
+        "PY"
+    )
     assert llm_query._subagent_is_outside_allowed(
         str(scoped_strategy),
         file_scope,
@@ -1207,9 +1235,25 @@ wc -l bots/claude_v234/strategy.py
         file_scope,
     ) is None
     assert llm_query._subagent_bash_write_scope_violation(
+        python_path_heredoc_allowed,
+        file_scope,
+    ) is None
+    assert llm_query._subagent_bash_write_scope_violation(
+        python_path_heredoc_relative_allowed,
+        file_scope,
+    ) is None
+    assert llm_query._subagent_bash_write_scope_violation(
         python_open_other_file,
         file_scope,
     ).startswith("python_open_write:")
+    assert llm_query._subagent_bash_write_scope_violation(
+        python_path_heredoc_other_file,
+        file_scope,
+    ).startswith("python_path_write_text:")
+    assert llm_query._subagent_bash_write_scope_violation(
+        python_path_heredoc_multi_target_allowed,
+        national_file_scope,
+    ) is None
     assert llm_query._subagent_bash_write_scope_violation(
         "echo x > bots/claude_v234/notes.txt",
         file_scope,

@@ -68,7 +68,7 @@ Compatibility rules:
 </national_tcp_compatibility>
 
 ## MANDATORY ACTIONS — ALL THREE ARE REQUIRED
-1. You **MUST** use the Edit tool to modify at least one of your target_files. Reading/analyzing alone is NOT completion — it is a FAILURE.
+1. You **MUST** modify at least one of your target_files. Reading/analyzing alone is NOT completion — it is a FAILURE. Use the Edit tool for existing files. If the Master explicitly assigned a new target file that does not exist, create only that declared file with a scoped Python command such as `python3 - <<'PY' ... Path('bots/national_v{version}/new_file.py').write_text(...) ... PY`, then use Edit for any existing target file edits.
 2. After EACH edit, use Read to verify the change was applied correctly.
 3. Before finishing, run `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/` to confirm your changes exist. If NO .py files differ, you have FAILED — go back and make actual edits.
 </instructions>
@@ -77,6 +77,7 @@ Compatibility rules:
 - **Read** to read source files
 - **Bash** to run compile checks, smoke tests, git commands
 - **Edit** to modify source files
+- There is no Write tool in this worker harness. Do not wait for or invoke Write.
 - Do not use webReader, web-search, file:// URLs, or GitHub URLs
 </tools>
 
