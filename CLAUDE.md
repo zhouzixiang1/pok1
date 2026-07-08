@@ -138,8 +138,8 @@ Credentials via `BOTZONE_EMAIL` / `BOTZONE_PASSWORD` env vars.
 ### Utilities
 
 ```bash
-python merge_bot.py bots/national_v49/           # Merge multi-file bot into single file
-python merge_bot.py --all                        # Batch merge all bot directories
+python archive/cleanup_20260708/root_experiments/merge_bot.py bots/national_v49/  # Archived legacy merge helper
+python archive/cleanup_20260708/root_experiments/merge_bot.py --all               # Archived legacy batch merge
 ```
 
 ### TCP Competition Server (`sever/`)
@@ -599,7 +599,7 @@ DanLM-inspired DMC self-play training framework. Wraps `engine/judge.py` as a Gy
 | `scripts/ref_strategy_labels.py` | Offline strategy analysis / labeling |
 | `scripts/reset_evolution.py` | Reset evolution to baseline (keeps v1-v6) |
 | `scripts/test_claude_cli.py` | Claude CLI testing utility |
-| `merge_bot.py` | Merge multi-file bot into single file (`merge_bot.py --all` for batch) |
+| `archive/cleanup_20260708/root_experiments/merge_bot.py` | Archived legacy multi-file bot merge helper |
 | `pokctl.sh` | Web service management (start/stop/status/restart/logs) |
 
 ### Documentation

@@ -316,7 +316,7 @@
 | **6.1** | `sever/bot_adapter.py` | M | 全面验证扩展（在阶段 1 任务 1.9 最小加注验证基础上）：13 条规则 100% 客户端预检 + suit 映射转换验证 + 超时安全网 |
 | **6.2** | `sever/tests/` | M | TCP 服务器完整 70 手对局测试，验证所有边界情况 |
 | **6.3** | `scripts/botzone_upload_match.py` | S | 上传 Botzone，参与排名赛 |
-| **6.4** | `merge_bot.py` | S | 合并最终 bot 为单文件，验证 subprocess 协议 |
+| **6.4** | `archive/cleanup_20260708/root_experiments/merge_bot.py` | S | 旧合并工具已归档；如需复查旧 subprocess 单文件形态再使用 |
 | **6.5** | `bots/claude_v{N}/constants.py` | S | 基于 Botzone 实战数据微调参数 |
 
 **完成标准**：

@@ -177,7 +177,7 @@ python -m pytest sever/tests -q
 # generation observation, and precommit regression use local native TCP gates.
 python scripts/official_platform_acceptance.py \
   --candidate bots/national_v<N> \
-  --opponent /home/zzx/project/pok/ref/national_v70 \
+  --opponent /home/zzx/project/pok/bots/national_v70 \
   --self-play-rounds 1 \
   --opponent-rounds 1 \
   --target-hands 70

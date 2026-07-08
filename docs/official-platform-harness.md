@@ -60,7 +60,7 @@ and one complete candidate-vs-reference round, 70 hands per round:
 ```bash
 python scripts/official_platform_acceptance.py \
   --candidate bots/national_v<N> \
-  --opponent /home/zzx/project/pok/ref/national_v70 \
+  --opponent /home/zzx/project/pok/bots/national_v70 \
   --self-play-rounds 1 \
   --opponent-rounds 1 \
   --target-hands 70
@@ -70,7 +70,7 @@ The queued helper uses the same shape:
 
 ```bash
 python scripts/official_certify.py compliance bots/national_v<N> \
-  --opponent /home/zzx/project/pok/ref/national_v70
+  --opponent /home/zzx/project/pok/bots/national_v70
 ```
 
 ## Manual Heavy Compliance Recheck
@@ -82,7 +82,7 @@ not the normal evolution tracking loop:
 ```bash
 python scripts/official_platform_acceptance.py \
   --candidate bots/national_v<N> \
-  --opponent /home/zzx/project/pok/ref/national_v70 \
+  --opponent /home/zzx/project/pok/bots/national_v70 \
   --self-play-rounds 5 \
   --opponent-rounds 3 \
   --target-hands 70
@@ -102,7 +102,7 @@ For a quick bot/platform smoke:
 
 ```bash
 python scripts/official_platform_acceptance.py \
-  --candidate /home/zzx/project/pok/ref/national_v70 \
+  --candidate /home/zzx/project/pok/bots/national_v70 \
   --self-play-rounds 1 \
   --opponent-rounds 0 \
   --target-hands 5
@@ -134,7 +134,7 @@ official runtime compliance defaults for long-running evolution:
 
 ```bash
 export POK_OFFICIAL_REQUIRED=1
-export POK_OFFICIAL_OPPONENT=/home/zzx/project/pok/ref/national_v70
+export POK_OFFICIAL_OPPONENT=/home/zzx/project/pok/bots/national_v70
 export POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS=1
 export POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS=1
 export POK_OFFICIAL_PRECOMMIT_TARGET_HANDS=10

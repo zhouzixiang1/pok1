@@ -34,6 +34,10 @@ bots/graveyard/
 # Claude Code worktrees
 .claude/worktrees/
 
+# Codex task worktrees. These are separate Git worktrees and must be managed
+# with git worktree remove/prune, not staged from the operator checkout.
+.codex_worktrees/
+
 # Nested evolution runtime clone. This is a separate checkout used only for the
 # autonomous evolution process; sync it through git/origin, never by staging it
 # from the outer checkout.

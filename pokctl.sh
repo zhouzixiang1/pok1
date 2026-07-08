@@ -158,10 +158,16 @@ frontend_static_ready() {
 }
 
 default_official_opponent_path() {
-    if [ -d "$ROOT_REAL/ref/national_v70" ]; then
-        echo "$ROOT_REAL/ref/national_v70"
-    elif [ -d "$ROOT_REAL/../ref/national_v70" ]; then
-        readlink -f "$ROOT_REAL/../ref/national_v70"
+    if [ -d "$ROOT_REAL/bots/national_v70" ]; then
+        echo "$ROOT_REAL/bots/national_v70"
+    elif [ -d "$ROOT_REAL/bots/national_v76" ]; then
+        echo "$ROOT_REAL/bots/national_v76"
+    elif [ -d "$ROOT_REAL/archive/cleanup_20260708/reference_snapshots/national_v70" ]; then
+        echo "$ROOT_REAL/archive/cleanup_20260708/reference_snapshots/national_v70"
+    elif [ -d "$ROOT_REAL/../bots/national_v70" ]; then
+        readlink -f "$ROOT_REAL/../bots/national_v70"
+    elif [ -d "$ROOT_REAL/../bots/national_v76" ]; then
+        readlink -f "$ROOT_REAL/../bots/national_v76"
     else
         echo ""
     fi

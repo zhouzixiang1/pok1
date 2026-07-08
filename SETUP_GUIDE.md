@@ -160,7 +160,7 @@ python -m pytest tests/ -v
 | 天梯赛 | `python engine/ladder.py -n 20 -v` |
 | 前端开发 | `cd web/frontend && npm run dev` |
 | 后端测试 | `cd web && python -m pytest tests/ -v` |
-| 合并 bot 文件 | `python merge_bot.py bots/claude_v5/` |
+| 合并 bot 文件（旧工具） | `python archive/cleanup_20260708/root_experiments/merge_bot.py bots/claude_v5/` |
 | 重置进化 | `python scripts/reset_evolution.py` |
 
 ## 目录结构
@@ -176,6 +176,6 @@ pok/
 │   ├── server/          # FastAPI 路由
 │   └── frontend/        # React 前端
 ├── scripts/             # 工具脚本（Botzone、重置等）
-├── merge_bot.py         # 多文件 bot 合并为单文件
+├── archive/cleanup_20260708/root_experiments/merge_bot.py  # 旧多文件 bot 合并工具
 └── CLAUDE.md            # Claude Code 项目指令
 ```
