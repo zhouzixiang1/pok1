@@ -78,6 +78,18 @@ def test_replay_distinguishes_platform_silent_settlement_gap_from_bot_timeout():
     assert summary["pending_expected_actions"] == []
 
 
+def test_replay_warns_on_client_action_without_pending_request():
+    summary = replay_events([
+        _event(0, "A", "server_to_bot", ["preflop|SMALLBLIND|<0,1><1,2>"]),
+        _event(1, "A", "bot_to_server", ["call"]),
+        _event(2, "A", "bot_to_server", ["call"]),
+    ])
+
+    assert summary["issues"] == []
+    assert summary["warnings"][0]["kind"] == "unsolicited_client_action"
+    assert summary["warnings"][0]["message"] == "call"
+
+
 def test_replay_reports_real_pending_bot_response_timeout():
     replay = OfficialWireReplay()
     replay.consume_event(_event(0, "A", "server_to_bot", ["flop|<0,1><1,2><2,3>"]))

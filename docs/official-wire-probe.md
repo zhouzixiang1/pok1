@@ -41,6 +41,9 @@ Interpretation:
   betting round already had an all-in. It must call or fold.
 - `pending_bot_response_timeout`: the replay believed it was the bot's turn and
   no action arrived within the configured timeout.
+- `unsolicited_client_action`: the bot sent an action while the replay had no
+  pending platform request. This is useful for diagnosing fallback timers that
+  send extra `call`/`check` during official EXE silence.
 - A large `max_platform_silent_gap_sec` with no `pending_expected_actions` is
   platform silence, not bot no-response evidence.
 
