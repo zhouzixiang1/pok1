@@ -218,6 +218,7 @@ class OfficialWireReplay:
         self.events_seen = 0
         self.max_platform_silent_gap_sec = 0.0
         self._last_event_t: float | None = None
+        self._last_event_brief: dict[str, Any] | None = None
 
     def _seat(self, label: str) -> SeatReplay:
         if label not in self.seats:
@@ -229,8 +230,36 @@ class OfficialWireReplay:
         raw_t = event.get("t")
         t = time.time() if raw_t is None else float(raw_t)
         if self._last_event_t is not None:
-            self.max_platform_silent_gap_sec = max(self.max_platform_silent_gap_sec, t - self._last_event_t)
+            gap = t - self._last_event_t
+            self.max_platform_silent_gap_sec = max(self.max_platform_silent_gap_sec, gap)
+            if gap >= self.response_timeout_sec:
+                self.issues.append({
+                    "kind": "platform_silent_timeout_gap",
+                    "conn": str(event.get("conn") or "?"),
+                    "hand": None,
+                    "stage": None,
+                    "message": "",
+                    "dt": event.get("dt"),
+                    "waited_sec": round(gap, 3),
+                    "previous_event": self._last_event_brief,
+                    "next_event": _event_brief(event),
+                    "reason": "official EXE produced no wire traffic for approximately one decision timeout",
+                })
+            elif gap >= self.response_warn_sec:
+                self.warnings.append({
+                    "kind": "platform_silent_slow_gap",
+                    "conn": str(event.get("conn") or "?"),
+                    "hand": None,
+                    "stage": None,
+                    "message": "",
+                    "dt": event.get("dt"),
+                    "waited_sec": round(gap, 3),
+                    "previous_event": self._last_event_brief,
+                    "next_event": _event_brief(event),
+                    "reason": "official EXE produced no wire traffic for an unusually long interval",
+                })
         self._last_event_t = t
+        self._last_event_brief = _event_brief(event)
         label = str(event.get("conn") or "?")
         direction = str(event.get("direction") or "")
         for message in event.get("messages") or []:
@@ -493,6 +522,15 @@ def _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         result.append(item)
     return result
+
+
+def _event_brief(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "dt": event.get("dt"),
+        "conn": event.get("conn"),
+        "direction": event.get("direction"),
+        "messages": list(event.get("messages") or []),
+    }
 
 
 class WireEventRecorder:

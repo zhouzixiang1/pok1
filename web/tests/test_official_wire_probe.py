@@ -65,7 +65,7 @@ def test_replay_flags_allin_after_opponent_allin_as_illegal():
     assert "after an allin" in summary["issues"][0]["reason"]
 
 
-def test_replay_distinguishes_platform_silent_settlement_gap_from_bot_timeout():
+def test_replay_flags_platform_silent_settlement_gap_without_pending_bot_timeout():
     summary = replay_events([
         _event(0, "A", "server_to_bot", ["river|<0,1>"]),
         _event(1, "A", "bot_to_server", ["raise 100"]),
@@ -73,7 +73,8 @@ def test_replay_distinguishes_platform_silent_settlement_gap_from_bot_timeout():
         _event(64, "A", "server_to_bot", ["earnChips 200"]),
     ])
 
-    assert summary["issues"] == []
+    assert summary["issues"][0]["kind"] == "platform_silent_timeout_gap"
+    assert summary["issues"][0]["waited_sec"] >= 62
     assert summary["max_platform_silent_gap_sec"] >= 62
     assert summary["pending_expected_actions"] == []
 
