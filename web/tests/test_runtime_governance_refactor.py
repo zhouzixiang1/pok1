@@ -393,6 +393,75 @@ def test_near_cap_core_file_cannot_grow(tmp_path):
     assert oversized == [("strategy.py", 2493, 2486)]
 
 
+def test_oversized_source_does_not_inflate_child_limit(tmp_path):
+    """Regression: source > base_limit must NOT relax the child limit beyond source_lines.
+
+    Previously _get_adaptive_limit computed max(2000, source*1.15), so a 2147-line
+    source gave the child a 2469-line limit, letting the snowball grow every
+    generation. Now the limit for an oversized source is exactly source_lines.
+    """
+    import code_verification
+
+    source = tmp_path / "source"
+    child = tmp_path / "child"
+    source.mkdir()
+    child.mkdir()
+    (source / "strategy.py").write_text("x = 1\n" * 2147, encoding="utf-8")
+    (child / "strategy.py").write_text("x = 1\n" * 2178, encoding="utf-8")
+
+    _total, oversized = code_verification.check_code_size(child, source_dir=source)
+
+    # limit must be 2147 (source_lines), NOT 2469 (source*1.15)
+    assert oversized == [("strategy.py", 2178, 2147)]
+
+
+def test_oversized_source_allows_child_to_match_or_shrink(tmp_path):
+    """A child matching or shrinking an oversized source must pass the size gate.
+
+    This lets descendants of an inherited-oversize parent (e.g. v103 strategy.py
+    at 2147 lines) survive the gate while still being nudged toward compliance,
+    rather than immediately blocking every future generation.
+    """
+    import code_verification
+
+    source = tmp_path / "source"
+    child = tmp_path / "child"
+    source.mkdir()
+    child.mkdir()
+    (source / "strategy.py").write_text("x = 1\n" * 2147, encoding="utf-8")
+
+    # Exactly match source
+    (child / "strategy.py").write_text("x = 1\n" * 2147, encoding="utf-8")
+    _total, oversized = code_verification.check_code_size(child, source_dir=source)
+    assert oversized == []
+
+    # Shrink below source
+    (child / "strategy.py").write_text("x = 1\n" * 2100, encoding="utf-8")
+    _total, oversized = code_verification.check_code_size(child, source_dir=source)
+    assert oversized == []
+
+
+def test_compliant_source_keeps_growth_budget(tmp_path):
+    """source <= base_limit still gets the 15% LINE_GROWTH_BUDGET."""
+    import code_verification
+
+    source = tmp_path / "source"
+    child = tmp_path / "child"
+    source.mkdir()
+    child.mkdir()
+    (source / "strategy.py").write_text("x = 1\n" * 1900, encoding="utf-8")
+    # 2050 < max(2000, 1900*1.15=2185) -> within budget
+    (child / "strategy.py").write_text("x = 1\n" * 2050, encoding="utf-8")
+
+    _total, oversized = code_verification.check_code_size(child, source_dir=source)
+    assert oversized == []
+
+    # 2200 > 2185 -> over budget
+    (child / "strategy.py").write_text("x = 1\n" * 2200, encoding="utf-8")
+    _total, oversized = code_verification.check_code_size(child, source_dir=source)
+    assert oversized == [("strategy.py", 2200, 2185)]
+
+
 def test_exhausted_positive_text_ignores_prohibitions():
     import tool_planning
 

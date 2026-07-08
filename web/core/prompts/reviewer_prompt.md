@@ -71,6 +71,11 @@ You check ONLY these five areas:
 
 2. **File size limits** — Core strategy files (strategy.py, postflop.py) must not exceed 2000 lines (MAX_LINES_PER_FILE). Helper .py files must not exceed 1500 lines (MAX_LINES_HELPER). No .py file may exceed the hard cap of 2500 lines (MAX_LINES_HARD_CAP). These values are authoritative in web/core/evolution_infra.py (MAX_LINES_PER_FILE/MAX_LINES_HELPER/MAX_LINES_HARD_CAP); keep this prompt in sync with those constants.
 
+   **Inherited-oversize handling**: The quality gate's adaptive limit lets a child match (but not grow beyond) an already-oversized parent. When judging file size, first check whether the PARENT already exceeds the base limit (`wc -l bots/national_v{parent_version}/FILE`):
+   - If the child GROWS an already-oversized file beyond the parent's line count → **Reject** (file_size violation).
+   - If the child SHRINKS or MAINTAINS an oversized file (net growth ≤ 0 vs parent) → **Marginal (5-6)**, NOT a Reject on file-size grounds alone (the oversize was inherited, not introduced by this candidate). Still flag it in `risk_areas` so future generations are nudged toward compliance.
+   - If the parent is within limits and the child exceeds them → apply the normal Reject/Marginal rules above.
+
 3. **Code correctness** — The bot must compile. `national_bot.py` must connect over TCP and send only official raw national actions without relying on newline delimiters; it must split sticky inbound TCP packets before state updates. If a legacy/local `main.py` exists, it must still output valid `{"response": <int>}` JSON when used for regression. No unavailable imports (stdlib only). No infinite loops.
 
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.

@@ -15,7 +15,6 @@ from evolution_infra import (
     get_bot_dir,
 )
 
-NEAR_HARD_CAP_RATIO = 0.96
 EMBEDDED_SELFTEST_MODULES = ("strategy.py", "postflop.py", "opponent.py")
 
 
@@ -89,10 +88,17 @@ def run_bot_embedded_self_tests(bot_dir, timeout: float = 20.0):
 def _get_adaptive_limit(filename, base_limit, source_dir=None):
     """Compute adaptive line limit for a file.
 
-    If source_dir is provided and the source file exists, allow growth from
-    the source file's size. The limit is:
-        max(base_limit, source_lines * (1 + LINE_GROWTH_BUDGET))
-    capped at MAX_LINES_HARD_CAP.
+    Hard-limit first: base_limit is never relaxed BEYOND the source file's own
+    size. This prevents a non-compliant ancestor from inflating the limit across
+    generations (the "snowball" bug where source>base_limit widened the limit to
+    source*1.15, letting every descendant grow another 15%).
+
+    - source_dir is None or source file missing -> base_limit.
+    - source_lines <= base_limit -> allow growth budget:
+        max(base_limit, source_lines * (1 + LINE_GROWTH_BUDGET)), capped at HARD_CAP.
+    - source_lines > base_limit -> limit = min(source_lines, HARD_CAP): a child may
+        match the source size (so an inherited-oversize parent does not immediately
+        block every descendant) but cannot grow past it.
 
     Without source_dir, returns base_limit (backward compatible).
     """
@@ -104,10 +110,13 @@ def _get_adaptive_limit(filename, base_limit, source_dir=None):
         return base_limit
 
     source_lines = _count_file_lines(source_path)
-    if filename in CORE_STRATEGY_FILES and source_lines >= int(MAX_LINES_HARD_CAP * NEAR_HARD_CAP_RATIO):
-        return min(source_lines, MAX_LINES_HARD_CAP)
-    adaptive = max(base_limit, int(source_lines * (1 + LINE_GROWTH_BUDGET)))
-    return min(adaptive, MAX_LINES_HARD_CAP)
+    if source_lines <= base_limit:
+        adaptive = max(base_limit, int(source_lines * (1 + LINE_GROWTH_BUDGET)))
+        return min(adaptive, MAX_LINES_HARD_CAP)
+    # Source already exceeds base_limit: do NOT relax further. The child may
+    # match the source size (so descendants of an inherited-oversize parent are
+    # not all immediately blocked) but must not grow beyond it.
+    return min(source_lines, MAX_LINES_HARD_CAP)
 
 
 def _detect_dead_code_ast(directory, target_files=None):
