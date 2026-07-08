@@ -903,10 +903,11 @@ def test_runtime_path_contract_warns_against_tmp_probe_logs(tmp_path):
     assert "/var/tmp" in contract
     assert "2>&1 | grep" in contract
     assert "Cleanup is also a write" in contract
-    assert "Only delete files inside the declared write scope" in contract
+    assert "Only mutate files inside the declared write scope" in contract
     assert "`__pycache__`" in contract
     assert "source, parent, opponent, or other bot directories" in contract
     assert "leave them in place" in contract
+    assert "diff --exclude=__pycache__" in contract
 
 
 def test_runtime_path_contract_readonly_roles_ban_temp_redirects(tmp_path):
@@ -927,10 +928,26 @@ def test_worker_and_crossover_prompts_ban_tmp_probe_logs_and_parent_cache_cleanu
         assert "`/var/tmp`" in text
         assert "2>&1 | grep" in text
         assert "Cleanup is also mutation" in text
-        assert "You may only delete files under" in text
+        assert "Do not perform cache cleanup from Bash" in text
         assert "`__pycache__`" in text
         assert "leave them in place" in text
         assert "the harness ignores those caches" in text
+        assert "rm -rf\n__pycache__" not in text
+        assert "rm -rf __pycache__" not in text
+
+
+def test_generation_prompts_explain_oversized_parent_line_limit():
+    prompt_dir = Path(__file__).resolve().parents[1] / "core" / "prompts"
+
+    worker = (prompt_dir / "worker_prompt.md").read_text(encoding="utf-8")
+    assert "LINE-COUNT GATE CONTRACT" in worker
+    assert "If the parent/source file already exceeds its base" in worker
+    assert "15% growth budget does not apply to already-oversized" in worker
+    assert "exact limit shown in the repair contract is authoritative" in worker
+
+    crossover = (prompt_dir / "crossover_prompt.md").read_text(encoding="utf-8")
+    assert "If Parent A/source is already over the base limit" in crossover
+    assert "15% growth budget does\n    not apply to already-oversized parents" in crossover
 
 
 def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, tmp_path):

@@ -7,19 +7,20 @@ national entry is `national_bot.py`, which must connect to the TCP server and
 send national wire actions directly.
 Bash starts in the repository root, but the Bash tool working directory may
 persist across calls after a `cd`. Never use a bare `cd` that changes later
-commands. For bot-local cleanup or probes that use relative write targets such
-as `__pycache__`, use a subshell such as `(cd bots/national_v{version} && rm -rf
-__pycache__)`, or use explicit `bots/national_v{version}/...` paths. Never
-mutate bare relative paths from the repo root.
-Cleanup is also mutation. You may only delete files under
-`bots/national_v{version}/`; never delete `__pycache__`, `.pytest_cache`, logs,
-or temporary files in parent, source, opponent, or any other bot directory. If
-probes create caches outside `bots/national_v{version}/`, leave them in place;
-the harness ignores those caches.
+commands. For bot-local probes, use a subshell such as
+`(cd bots/national_v{version} && python -B -c '...')`, or use explicit
+`bots/national_v{version}/...` paths. Never mutate bare relative paths from the
+repo root.
+Cleanup is also mutation. Obey the narrowest active write scope from the
+Runtime Path Contract and your `target_files`; file-scoped workers may mutate
+only those assigned files. Do not perform cache cleanup from Bash. Never delete
+`__pycache__`, `.pytest_cache`, logs, or temporary files in the target, parent,
+source, opponent, or any other bot directory. If probes create caches, leave them in place; the harness ignores those caches.
 Do not redirect probe output, stderr captures, or temporary logs to `/tmp` or
 `/var/tmp`. Prefer inline pipes such as `2>&1 | grep ...`; if a probe truly
-needs a file, write it under `bots/national_v{version}/` and delete it in the
-same command before finishing.
+needs a file, write it inside your declared write scope and delete that probe
+file in the same command before finishing. Do not create probe files when your
+declared write scope contains only source files.
 
 <national_tcp_compatibility>
 The active workflow targets the national 70-hand platform as the final gate.
@@ -208,6 +209,19 @@ After editing:
    when it directly removes the gate-flagged stale text and py_compile plus the
    later quality gates pass. Do not add unrelated executable changes just to
    satisfy the normal substantive-change rule.
+
+1a. **LINE-COUNT GATE CONTRACT**:
+   Before adding sizable code, run `wc -l` on the target file and the matching
+   parent/source file. Core strategy files (`strategy.py`, `postflop.py`) have
+   a 2000-line base limit; helper Python files have a 1500-line base limit; the
+   hard cap is 2500 lines. If the parent/source file already exceeds its base
+   limit, the child may match or shrink that parent line count but MUST NOT grow
+   beyond it; the 15% growth budget does not apply to already-oversized
+   parents. If the parent/source is within the base limit, the adaptive growth
+   budget may apply but the hard cap still applies. For a `file_size`, LOC, or
+   size-recovery repair, the exact limit shown in the repair contract is authoritative:
+   verify the final line count with `wc -l` before finishing and
+   do not finish above that limit.
 
 2. **Verify changes**: Use `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/` to list changed files, then `diff` each changed file. Ensure no unintended modifications outside `target_files`.
 

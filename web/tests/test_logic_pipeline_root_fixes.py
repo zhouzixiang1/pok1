@@ -1285,15 +1285,30 @@ def test_subagent_write_guard_uses_structured_scope_for_decisions():
                 "file_path": "file:" + str(project_root / "bots" / "claude_v266" / "strategy.py")
             },
         }, "tool-use-4", {})
-        return allowed, denied, edit_allowed, edit_file_uri_allowed
+        file_scope_hooks = llm_query._make_subagent_write_guard({
+            "files": [str(project_root / "bots" / "claude_v266" / "strategy.py")]
+        })
+        file_scope_handler = file_scope_hooks["PreToolUse"][0].hooks[0]
+        denied_cache_cleanup = await file_scope_handler({
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "rm -rf bots/claude_v266/__pycache__ && diff -rq bots/claude_v265 bots/claude_v266"
+            },
+        }, "tool-use-5", {})
+        return allowed, denied, edit_allowed, edit_file_uri_allowed, denied_cache_cleanup
 
-    allowed, denied, edit_allowed, edit_file_uri_allowed = asyncio.run(_run())
+    allowed, denied, edit_allowed, edit_file_uri_allowed, denied_cache_cleanup = asyncio.run(_run())
     assert allowed == {}
     assert edit_allowed == {}
     assert edit_file_uri_allowed == {}
     decision = denied["hookSpecificOutput"]
     assert decision["permissionDecision"] == "deny"
     assert "bots/claude_v267" in decision["permissionDecisionReason"]
+    cache_decision = denied_cache_cleanup["hookSpecificOutput"]
+    assert cache_decision["permissionDecision"] == "deny"
+    assert "Do not delete `__pycache__`" in cache_decision["permissionDecisionReason"]
+    assert "diff --exclude=__pycache__" in cache_decision["permissionDecisionReason"]
+    assert "only delete caches inside" not in cache_decision["permissionDecisionReason"]
 
 
 def test_commit_bot_blocks_missing_code_fingerprints(tmp_path, monkeypatch):

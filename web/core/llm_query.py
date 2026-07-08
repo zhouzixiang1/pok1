@@ -1070,14 +1070,15 @@ def _make_subagent_write_guard(allowed_write_dir):
                 if write_scope_violation:
                     blocked = ("Bash mutation targets a path outside the allowed bot dir "
                                + _allowed_label + " (" + write_scope_violation + "). "
-                               "Sub-agents may only edit their assigned target bot "
-                               "directory. Do not use /tmp or /var/tmp for probe "
+                               "Sub-agents may only mutate the assigned write "
+                               "scope. Do not use /tmp or /var/tmp for probe "
                                "logs; use inline pipes such as `2>&1 | grep ...` "
-                               "or a temporary file inside the assigned target "
-                               "that is removed in the same command. If this is "
-                               "cache cleanup, only delete caches inside the assigned "
-                               "target bot directory; leave source, parent, opponent, "
-                               "and other bot caches in place. Command: "
+                               "or inspect source files directly. Do not delete "
+                               "`__pycache__`, `.pytest_cache`, or generated caches "
+                               "from sub-agent Bash; the harness ignores those "
+                               "artifacts. If verification output is noisy, use "
+                               "read-only filters such as `diff --exclude=__pycache__` "
+                               "or `git diff -- <assigned files>`. Command: "
                                + str(cmd)[:100])
             elif tool_name in ("Edit", "Write", "NotebookEdit"):
                 fp = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
@@ -1242,14 +1243,15 @@ def _format_runtime_path_contract(project_root, allowed_write_dir=None):
                 + "."
             )
             lines.append(
-                "- Cleanup is also a write. Only delete files inside the declared write scope; "
-                "do not delete `__pycache__`, `.pytest_cache`, logs, or temporary files in "
-                "source, parent, opponent, or other bot directories."
+                "- Cleanup is also a write. Only mutate files inside the declared write "
+                "scope. Do not delete `__pycache__`, `.pytest_cache`, generated caches, "
+                "logs, or temporary files in the target, source, parent, opponent, or "
+                "other bot directories."
             )
             lines.append(
-                "- If probes or imports create caches outside the declared write scope, leave "
-                "them in place. The harness ignores those caches; their owning checkout/process "
-                "is responsible for cleanup."
+                "- If probes or imports create caches, leave them in place. The harness "
+                "ignores those caches; use read-only filters such as "
+                "`diff --exclude=__pycache__` or inspect assigned source files directly."
             )
     else:
         lines.extend([
