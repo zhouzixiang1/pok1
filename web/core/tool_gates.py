@@ -1535,10 +1535,15 @@ async def prepare_next_gen(args):
     workflow_profile = get_workflow_profile()
     native_tcp = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
     from candidate_hygiene import sanitize_candidate_dir
+    # Do NOT overwrite national_bot.py during prepare: the source bot already
+    # has its own (possibly evolved) national_bot.py. Overwriting it with the
+    # template produces a diff that the reviewer flags as scope drift, even
+    # though no worker touched the file. Only create it if missing — the
+    # quality gate's check_native_contract enforces protocol compliance.
     hygiene = sanitize_candidate_dir(
         next_dir,
         require_native_tcp=native_tcp,
-        overwrite_native_entry=native_tcp,
+        overwrite_native_entry=False,
     )
     prepare_scope_files = [
         p for p in _py_files_changed_between(source_dir, next_dir) if 'backup' not in p
