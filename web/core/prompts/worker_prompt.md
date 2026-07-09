@@ -85,6 +85,10 @@ turn that into resilient architecture rather than slow decisions:
   stdout and never to unsolicited socket sends. If official EXE feedback is
   cited in the task, fix the cited protocol/state-machine/logging issue before
   changing strategy strength.
+- If a `# Runtime Contract` block is present in your task, it is mandatory.
+  Implement the stated budget/fallback/precompute/memory boundary in code and
+  include a check that directly verifies the contract. Do not treat it as
+  background rationale.
 </national_runtime_architecture>
 
 ## MANDATORY ACTIONS — ALL THREE ARE REQUIRED

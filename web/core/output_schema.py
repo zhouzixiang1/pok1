@@ -6,6 +6,41 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from skill_library import valid_skill_layers
 
 
+RUNTIME_CONTRACT_REQUIRED_LAYERS = frozenset({
+    "runtime_architecture",
+    "precompute",
+    "match_memory",
+    "opponent_model",
+    "native_tcp",
+})
+
+
+def runtime_contract_required_layers() -> set[str]:
+    return set(RUNTIME_CONTRACT_REQUIRED_LAYERS)
+
+
+class RuntimeContract(BaseModel):
+    """Structured plan contract for national-native runtime architecture work."""
+
+    decision_budget_ms: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=59_000,
+        description="Worst-case per-action work budget before fallback; must stay under the official 60s limit.",
+    )
+    fallback_action: str = Field(default="", description="Legal pending-action fallback if bounded work cannot finish.")
+    decision_path_bound: str = Field(default="", description="Concrete bound for loops/search/history scans in the decision path.")
+    precompute_artifacts: list[str] = Field(default_factory=list, max_length=8)
+    state_lifecycle: str = Field(default="", description="How match memory resets on connection and persists across 70 hands.")
+    official_feedback_refs: list[str] = Field(default_factory=list, max_length=8)
+    forbidden_runtime_work: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("fallback_action", "decision_path_bound", "state_lifecycle")
+    @classmethod
+    def _trim_text(cls, value: str) -> str:
+        return (value or "").strip()
+
+
 class WorkerTask(BaseModel):
     worker_id: int = Field(ge=1, le=3)
     role: str = Field(description="Algorithmic Logic Architect, Hyperparameter Tuner, or Opponent Modeler")
@@ -19,6 +54,10 @@ class WorkerTask(BaseModel):
     checks_required: list[str] = Field(default_factory=list)
     merge_policy: str = "disjoint_target_files"
     worker_prompt: str = Field(min_length=20, description="Detailed instructions for this worker")
+    runtime_contract: Optional[RuntimeContract] = Field(
+        default=None,
+        description="Required for runtime/precompute/match-memory/native TCP tasks.",
+    )
 
     @field_validator("skill_layer")
     @classmethod
@@ -29,6 +68,36 @@ class WorkerTask(BaseModel):
                 f"Unknown skill_layer {value!r}; expected one of {sorted(valid_skill_layers())}"
             )
         return layer
+
+    @model_validator(mode="after")
+    def _runtime_contract_matches_layer(self):
+        if self.skill_layer not in RUNTIME_CONTRACT_REQUIRED_LAYERS:
+            return self
+
+        contract = self.runtime_contract
+        if contract is None:
+            raise ValueError(
+                f"runtime_contract is required when skill_layer={self.skill_layer!r}"
+            )
+
+        missing: list[str] = []
+        if self.skill_layer in {"runtime_architecture", "native_tcp"}:
+            if contract.decision_budget_ms is None:
+                missing.append("decision_budget_ms")
+            if not contract.fallback_action:
+                missing.append("fallback_action")
+            if not contract.decision_path_bound:
+                missing.append("decision_path_bound")
+        if self.skill_layer == "precompute" and not contract.precompute_artifacts:
+            missing.append("precompute_artifacts")
+        if self.skill_layer in {"match_memory", "opponent_model"} and not contract.state_lifecycle:
+            missing.append("state_lifecycle")
+        if missing:
+            raise ValueError(
+                f"runtime_contract for skill_layer={self.skill_layer!r} is missing "
+                f"{', '.join(missing)}"
+            )
+        return self
 
 
 class MasterPlan(BaseModel):

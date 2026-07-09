@@ -894,6 +894,8 @@ def _validate_master_plan(
         prompt = task.get("worker_prompt", "")
         if len(prompt) > 12000:
             errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 12000 chars)")
+        layer = str(task.get("skill_layer", "") or "").strip()
+        errors.extend(_runtime_contract_errors(task, i, layer))
         role = str(task.get("role", ""))
         if normalize_worker_role(role) == "tuner":
             # Tuners MUST only modify constants.py — error if target_files or
@@ -1010,6 +1012,75 @@ def _validate_master_plan(
         pass  # never let the gate itself crash the pipeline
 
     return errors, warnings
+
+
+def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
+    """Return hard Master-plan errors for runtime-architecture task contracts."""
+    try:
+        from output_schema import runtime_contract_required_layers
+        required_layers = runtime_contract_required_layers()
+    except Exception:
+        required_layers = {
+            "runtime_architecture",
+            "precompute",
+            "match_memory",
+            "opponent_model",
+            "native_tcp",
+        }
+    if layer not in required_layers:
+        return []
+
+    contract = task.get("runtime_contract")
+    if not isinstance(contract, dict):
+        return [
+            f"Task {index}: runtime_contract is required for skill_layer={layer!r}. "
+            "Declare decision_budget_ms/fallback_action, precompute_artifacts, "
+            "state_lifecycle, and official_feedback_refs as applicable, and mirror "
+            "the concrete work into worker_prompt."
+        ]
+
+    missing: list[str] = []
+    if layer in {"runtime_architecture", "native_tcp"}:
+        budget = contract.get("decision_budget_ms")
+        try:
+            budget_int = int(budget)
+        except (TypeError, ValueError):
+            budget_int = 0
+        if budget_int <= 0 or budget_int >= 60_000:
+            missing.append("decision_budget_ms(<60000)")
+        if not str(contract.get("fallback_action") or "").strip():
+            missing.append("fallback_action")
+        if not str(contract.get("decision_path_bound") or "").strip():
+            missing.append("decision_path_bound")
+    if layer == "precompute" and not contract.get("precompute_artifacts"):
+        missing.append("precompute_artifacts")
+    if layer in {"match_memory", "opponent_model"} and not str(contract.get("state_lifecycle") or "").strip():
+        missing.append("state_lifecycle")
+    if missing:
+        return [
+            f"Task {index}: runtime_contract for skill_layer={layer!r} is missing "
+            f"{', '.join(missing)}"
+        ]
+
+    prompt = str(task.get("worker_prompt", task.get("instruction", ""))).lower()
+    contract_terms = []
+    if contract.get("decision_budget_ms") is not None:
+        contract_terms.append("budget")
+    if contract.get("fallback_action"):
+        contract_terms.append("fallback")
+    if contract.get("precompute_artifacts"):
+        contract_terms.append("precompute")
+    if contract.get("state_lifecycle"):
+        contract_terms.append("memory")
+    if contract.get("official_feedback_refs"):
+        contract_terms.append("official")
+    if contract_terms and not any(term in prompt for term in contract_terms):
+        return [
+            f"Task {index}: runtime_contract is declared but worker_prompt does not "
+            "mention budget/fallback/precompute/memory/official feedback execution. "
+            "Mirror the contract into the worker instructions so it reaches the worker."
+        ]
+    return []
 
 
 @tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str, "direction_audit": str, "research_proposals": str})

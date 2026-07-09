@@ -125,3 +125,48 @@ def get_action(req, requests, runtime_ctx=None):
     feedback = national_runtime_feedback_summary(bot, source_label="national_v3")
     assert "No advisory runtime-architecture gaps" in feedback
     assert "Already present" in feedback
+
+
+def test_capability_contract_flags_decision_path_runtime_risks(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v4",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def __init__(self):
+        self._requests = []
+        self._history = []
+        self._showdowns = []
+    def _send_wire_action(self, action):
+        pass
+    def handle(self, msg):
+        if msg.startswith('earnChips') or msg.startswith('oppo_hands'):
+            self._history.append(msg)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        strategy="""
+import time
+MAX_DECISION_SAMPLES = 64
+def get_action(req, requests):
+    start = time.monotonic()
+    debug = open('decision.log', 'a')
+    total = 0
+    for item in requests:
+        total += 1
+    lookup = {i: i for i in range(100)}
+    return lookup.get(total, 0)
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    warning_names = {item["name"] for item in result["advisory_warnings"]}
+
+    assert "decision_path_no_external_io" in warning_names
+    assert "decision_path_no_full_history_scan" in warning_names
+    assert "decision_path_no_large_runtime_tables" in warning_names
+    assert result["decision_path_risks"]["external_io"]
+    assert result["decision_path_risks"]["history_scans"]
+    assert result["decision_path_risks"]["large_runtime_tables"]

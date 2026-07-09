@@ -90,8 +90,43 @@ def _is_file_scoped_precommit_repair_task(task):
     return len(targets) == 1
 
 
+def _runtime_contract_block(task):
+    contract = task.get("runtime_contract")
+    if not isinstance(contract, dict) or not contract:
+        return ""
+    lines = ["# Runtime Contract"]
+    budget = contract.get("decision_budget_ms")
+    if budget is not None:
+        lines.append(f"- Decision budget: finish bounded work within {budget} ms before fallback.")
+    fallback = str(contract.get("fallback_action") or "").strip()
+    if fallback:
+        lines.append(f"- Fallback action: {fallback}.")
+    bound = str(contract.get("decision_path_bound") or "").strip()
+    if bound:
+        lines.append(f"- Decision path bound: {bound}.")
+    artifacts = contract.get("precompute_artifacts") or []
+    if artifacts:
+        lines.append("- Precompute artifacts: " + ", ".join(str(item) for item in artifacts[:8]) + ".")
+    lifecycle = str(contract.get("state_lifecycle") or "").strip()
+    if lifecycle:
+        lines.append(f"- Match-state lifecycle: {lifecycle}.")
+    refs = contract.get("official_feedback_refs") or []
+    if refs:
+        lines.append("- Official feedback refs: " + ", ".join(str(item) for item in refs[:8]) + ".")
+    forbidden = contract.get("forbidden_runtime_work") or []
+    if forbidden:
+        lines.append("- Forbidden runtime work: " + ", ".join(str(item) for item in forbidden[:8]) + ".")
+    lines.append(
+        "Mirror these points in the code change and checks; do not treat this block as optional context."
+    )
+    return "\n".join(lines)
+
+
 def _compose_worker_task_prompt(task, reviewer_feedback):
     base_prompt = task.get("worker_prompt", task.get("instruction", ""))
+    contract_block = _runtime_contract_block(task)
+    if contract_block:
+        base_prompt = base_prompt + "\n\n" + contract_block
     if not reviewer_feedback:
         return base_prompt
     if _is_file_scoped_quality_repair_task(task) or _is_file_scoped_precommit_repair_task(task):

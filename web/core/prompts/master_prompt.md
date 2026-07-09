@@ -132,6 +132,31 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 
 Every worker task must declare exactly one primary `skill_layer` so the change can be traced through decision tests, national acceptance, and the candidate ledger. Use the offline skill-library vocabulary injected in the workflow profile; useful layers include `preflop_range`, `texture`, `spr`, `blocker`, `line_template`, `opponent_model`, `action_sanitizer`, `protocol`, `adapter`, `native_tcp`, and `telemetry`.
 
+Runtime-contract task layers: if a task's `skill_layer` is one of
+`runtime_architecture`, `precompute`, `match_memory`, `opponent_model`, or
+`native_tcp`, the task MUST include a `runtime_contract` object and the same
+contract must be mirrored into `worker_prompt` as concrete work. This is a
+hard planning gate, not optional prose.
+
+`runtime_contract` fields:
+- `decision_budget_ms`: per-action bound before fallback; required for
+  `runtime_architecture` and `native_tcp`, and must be below 60000.
+- `fallback_action`: legal pending-action fallback such as "use existing
+  sanitizer to emit check/call/fold"; required for `runtime_architecture` and
+  `native_tcp`.
+- `decision_path_bound`: exact loop/search/history bound, e.g.
+  "no full-history scan; at most 64 samples"; required for
+  `runtime_architecture` and `native_tcp`.
+- `precompute_artifacts`: lookup/cache/table names built outside the decision
+  path; required for `precompute`.
+- `state_lifecycle`: how match memory persists across 70 hands and resets on a
+  new TCP connection; required for `match_memory` and `opponent_model`.
+- `official_feedback_refs`: official evidence or LLM analysis ids being fixed;
+  empty only when the task is not reacting to official EXE feedback.
+- `forbidden_runtime_work`: file/network/subprocess I/O, full-history scans,
+  unbounded Monte Carlo/search, large table build in `get_action`, or
+  unsolicited socket sends that this task must not introduce.
+
 If the injected Line budget section marks `strategy.py` or `postflop.py` as `near_hard_cap`, that file must not grow. Plan cohesive helper-module migration or LOC recovery first, and set `expected_diff_shape` to show which logic moves out or is deleted. A plan that only adds logic to a near-cap core file will fail the size gate.
 </worker_guidance>
 
@@ -301,6 +326,15 @@ Required schema (emit exactly this structure as raw JSON):
       "checks_required": ["decision_tests", "national_acceptance", "stderr_telemetry_nonzero"],
       "merge_policy": "disjoint_target_files",
       "difficulty": "medium",
+      "runtime_contract": {
+        "decision_budget_ms": 250,
+        "fallback_action": "fall back through the existing legal action sanitizer",
+        "decision_path_bound": "no file/network I/O; no full-history scan; at most one bounded lookup pass",
+        "precompute_artifacts": [],
+        "state_lifecycle": "",
+        "official_feedback_refs": [],
+        "forbidden_runtime_work": ["file_io_in_decision", "network_io_in_decision", "unbounded_history_scan"]
+      },
       "worker_prompt": "Detailed instructions for this worker..."
     }
   ]

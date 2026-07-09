@@ -1,3 +1,5 @@
+import pytest
+
 from decision_tester import audit_action_grounding
 from skill_library import describe_skill_layers, scenario_skill_metadata, valid_skill_layers
 
@@ -22,15 +24,39 @@ def test_national_native_runtime_layers_are_schema_valid():
     profile = get_workflow_profile("national_native")
     for layer in ("runtime_architecture", "precompute", "match_memory"):
         assert layer in profile.focus_skill_layers
+        runtime_contract = {
+            "decision_budget_ms": 250,
+            "fallback_action": "use existing legal fallback",
+            "decision_path_bound": "no full-history scan; max 64 samples",
+            "precompute_artifacts": ["preflop_bucket_table"],
+            "state_lifecycle": "reset on new TCP connection and persist across 70 hands",
+            "official_feedback_refs": [],
+            "forbidden_runtime_work": ["file_io_in_decision"],
+        }
         task = WorkerTask(
             worker_id=1,
             role="Algorithmic Logic Architect",
             target_files=["national_bot.py"],
             skill_layer=layer,
             worker_prompt="Implement a focused national runtime architecture change with checks.",
+            runtime_contract=runtime_contract,
         )
         assert task.skill_layer == layer
         assert layer in profile_summary(profile)
+
+
+def test_runtime_layers_require_structured_runtime_contract():
+    from pydantic import ValidationError
+    from output_schema import WorkerTask
+
+    with pytest.raises(ValidationError):
+        WorkerTask(
+            worker_id=1,
+            role="Algorithmic Logic Architect",
+            target_files=["national_bot.py"],
+            skill_layer="runtime_architecture",
+            worker_prompt="Implement a focused national runtime architecture change with checks.",
+        )
 
 
 def test_scenario_skill_metadata_reports_missing_fields():

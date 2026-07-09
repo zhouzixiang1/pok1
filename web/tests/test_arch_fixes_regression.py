@@ -234,6 +234,37 @@ def test_validate_master_plan_rejects_tuner_non_constants_target():
     assert any("non-constants" in e and "strategy_helpers.py" in e for e in errors), errors
 
 
+def test_validate_master_plan_rejects_runtime_layer_without_contract():
+    plan = {"tasks": [_valid_task(skill_layer="runtime_architecture")]}
+    errors, _ = _validate_master_plan(plan, next_v=106)
+    assert any("runtime_contract is required" in e for e in errors), errors
+
+
+def test_validate_master_plan_accepts_runtime_layer_with_contract_in_prompt():
+    plan = {
+        "tasks": [
+            _valid_task(
+                skill_layer="runtime_architecture",
+                worker_prompt=(
+                    "Add a bounded decision budget and fallback path. "
+                    "Do not add file IO or full-history scans."
+                ),
+                runtime_contract={
+                    "decision_budget_ms": 250,
+                    "fallback_action": "use existing legal action sanitizer",
+                    "decision_path_bound": "no full-history scan; at most one bounded lookup",
+                    "precompute_artifacts": [],
+                    "state_lifecycle": "",
+                    "official_feedback_refs": [],
+                    "forbidden_runtime_work": ["file_io_in_decision"],
+                },
+            )
+        ]
+    }
+    errors, _ = _validate_master_plan(plan, next_v=106)
+    assert not any("runtime_contract" in e for e in errors), errors
+
+
 def _valid_plan(tasks):
     return {
         "analysis": "stagnation detected; pivot to value extraction",
