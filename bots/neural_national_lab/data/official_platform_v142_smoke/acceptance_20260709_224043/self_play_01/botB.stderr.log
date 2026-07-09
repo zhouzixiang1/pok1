@@ -1,0 +1,464 @@
+POT_FRAC flop=0.550(0) turn=0.650(0) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=0 postflop_shoves=0 postflop_aggr=0 cv=0.000
+SB_OPEN_PRESSURE open_d=+0.0100 pfr=0.280 ftr=0.440 vpip=0.580 conf=0.00 reason=standard_arm
+SB_OPEN_SIZE base_bb=2.50 opp_bb_delta=-0.00 fold_signal=+0.00 ftr=0.440 conf=0.00
+POT_FRAC flop=0.550(0) turn=0.650(0) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=0 postflop_shoves=0 postflop_aggr=0 cv=0.000
+POT_FRAC flop=0.550(0) turn=0.650(0) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=0 postflop_shoves=0 postflop_aggr=0 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.550(0) turn=0.650(0) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=0 postflop_shoves=0 postflop_aggr=0 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.550(0) turn=0.650(0) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=0 postflop_shoves=0 postflop_aggr=0 cv=0.000
+SB_OPEN_PRESSURE open_d=+0.0100 pfr=0.424 ftr=0.440 vpip=0.664 conf=0.00 reason=standard_arm
+SB_OPEN_SIZE base_bb=2.50 opp_bb_delta=-0.00 fold_signal=+0.00 ftr=0.440 conf=0.00
+POT_FRAC flop=0.550(0) turn=0.650(0) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=0 postflop_shoves=0 postflop_aggr=0 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.550(0) turn=0.650(0) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=0 postflop_shoves=0 postflop_aggr=0 cv=0.000
+BB_DEFENSE_PRESSURE call_d=+0.0200 bluff_freq_d=-0.0300 iso_d=+0.0150 pfr=0.353 ftr=0.440 vpip=0.720 conf=0.00 reason=standard_arm
+POT_FRAC flop=0.550(0) turn=0.650(0) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=0 postflop_shoves=0 postflop_aggr=0 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.550(0) turn=0.650(0) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=0 postflop_shoves=0 postflop_aggr=0 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.550(0) turn=0.621(1) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=1 postflop_shoves=0 postflop_aggr=1 cv=0.000
+POLARITY_MARGIN final_milli=+66 polarity_delta_milli=+0 shove_delta_milli=-0 street_pol=+0.000 shove_rate=0.071 opp_conf=0.03 size_bucket=medium round=2
+POT_FRAC flop=0.550(0) turn=0.621(1) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=1 postflop_shoves=0 postflop_aggr=1 cv=0.000
+SB_OPEN_PRESSURE open_d=+0.0107 pfr=0.353 ftr=0.440 vpip=0.720 conf=0.03 reason=standard_arm
+SB_OPEN_SIZE base_bb=2.50 opp_bb_delta=-0.00 fold_signal=+0.00 ftr=0.440 conf=0.03
+POT_FRAC flop=0.550(0) turn=0.621(1) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=1 postflop_shoves=0 postflop_aggr=1 cv=0.000
+POT_FRAC flop=0.550(0) turn=0.621(1) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=1 postflop_shoves=0 postflop_aggr=1 cv=0.000
+BB_DEFENSE bucket=standard raise_bb=2.6 call_d=+0.000 v3b_d=+0.000 bluff_freq_d=+0.000
+BB_DEFENSE_PRESSURE call_d=+0.0234 bluff_freq_d=-0.0300 iso_d=+0.0150 pfr=0.515 ftr=0.440 vpip=0.790 conf=0.09 reason=deviation_fired
+POT_FRAC flop=0.550(0) turn=0.621(1) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=1 postflop_shoves=0 postflop_aggr=1 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.550(0) turn=0.621(1) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.071 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=1 postflop_shoves=0 postflop_aggr=1 cv=0.000
+POT_FRAC flop=0.550(0) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.064 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=2 postflop_shoves=0 postflop_aggr=2 cv=0.000
+POLARITY_MARGIN final_milli=+48 polarity_delta_milli=-0 shove_delta_milli=-0 street_pol=+0.000 shove_rate=0.064 opp_conf=0.11 size_bucket=small round=2
+POT_FRAC flop=0.550(0) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.064 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=2 postflop_shoves=0 postflop_aggr=2 cv=0.000
+SB_OPEN_PRESSURE open_d=+0.0157 pfr=0.515 ftr=0.440 vpip=0.790 conf=0.11 reason=deviation_fired
+SB_OPEN_SIZE base_bb=2.50 opp_bb_delta=-0.00 fold_signal=+0.00 ftr=0.440 conf=0.11
+POT_FRAC flop=0.550(0) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.064 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=2 postflop_shoves=0 postflop_aggr=2 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.550(0) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.064 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=2 postflop_shoves=0 postflop_aggr=2 cv=0.000
+BB_DEFENSE_PRESSURE call_d=+0.0299 bluff_freq_d=-0.0380 iso_d=+0.0180 pfr=0.458 ftr=0.352 vpip=0.813 conf=0.17 reason=deviation_fired
+POT_FRAC flop=0.550(0) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.064 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=2 postflop_shoves=0 postflop_aggr=2 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+POLARITY_MARGIN final_milli=+26 polarity_delta_milli=+0 shove_delta_milli=-0 street_pol=+0.000 shove_rate=0.058 opp_conf=0.20 size_bucket=medium round=1
+BET_SIZE_ADAPT delta_milli=+0 deviation=+0.000 current_bb=1.4 avg_bb=1.4 conf=0.20 round=1
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+SB_OPEN_PRESSURE open_d=+0.0235 pfr=0.458 ftr=0.352 vpip=0.813 conf=0.20 reason=deviation_fired
+SB_OPEN_SIZE base_bb=2.55 opp_bb_delta=+0.05 fold_signal=-0.44 ftr=0.352 conf=0.20
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+BB_DEFENSE_PRESSURE call_d=+0.0366 bluff_freq_d=-0.0501 iso_d=+0.0225 pfr=0.412 ftr=0.293 vpip=0.832 conf=0.26 reason=deviation_fired
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+SB_OPEN_PRESSURE open_d=+0.0289 pfr=0.412 ftr=0.293 vpip=0.832 conf=0.26 reason=deviation_fired
+SB_OPEN_SIZE base_bb=2.61 opp_bb_delta=+0.11 fold_signal=-0.73 ftr=0.293 conf=0.26
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+BB_DEFENSE bucket=standard raise_bb=2.6 call_d=+0.000 v3b_d=+0.000 bluff_freq_d=+0.000
+BB_DEFENSE_PRESSURE call_d=+0.0420 bluff_freq_d=-0.0551 iso_d=+0.0244 pfr=0.465 ftr=0.251 vpip=0.847 conf=0.31 reason=deviation_fired
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.575(1) turn=0.550(2) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.064 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.575(1) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=-0.276 shove_rate=0.053 flop_shove=0.071 turn_shove=0.058 river_shove=0.071 flop_pol=+0.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=4 postflop_shoves=0 postflop_aggr=4 cv=0.134
+POLARITY_MARGIN final_milli=+141 polarity_delta_milli=+5 shove_delta_milli=-0 street_pol=-1.000 shove_rate=0.053 opp_conf=0.34 size_bucket=small round=2
+BET_SIZE_ADAPT delta_milli=+0 deviation=+0.000 current_bb=1.0 avg_bb=1.0 conf=0.34 round=2
+POT_FRAC flop=0.575(1) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=-0.276 shove_rate=0.053 flop_shove=0.071 turn_shove=0.058 river_shove=0.071 flop_pol=+0.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=4 postflop_shoves=0 postflop_aggr=4 cv=0.134
+SB_OPEN_PRESSURE open_d=+0.0374 pfr=0.465 ftr=0.251 vpip=0.847 conf=0.34 reason=deviation_fired
+SB_OPEN_SIZE base_bb=2.69 opp_bb_delta=+0.19 fold_signal=-0.94 ftr=0.251 conf=0.34
+POT_FRAC flop=0.575(1) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=-0.276 shove_rate=0.053 flop_shove=0.071 turn_shove=0.058 river_shove=0.071 flop_pol=+0.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=4 postflop_shoves=0 postflop_aggr=4 cv=0.134
+POT_FRAC flop=0.561(2) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.523 shove_rate=0.049 flop_shove=0.064 turn_shove=0.058 river_shove=0.071 flop_pol=+0.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=5 postflop_shoves=0 postflop_aggr=5 cv=0.551
+POLARITY_MARGIN final_milli=+65 polarity_delta_milli=+0 shove_delta_milli=-1 street_pol=+0.000 shove_rate=0.049 opp_conf=0.40 size_bucket=medium round=1
+BET_SIZE_ADAPT delta_milli=+8 deviation=+0.399 current_bb=3.1 avg_bb=2.2 conf=0.40 round=1
+POT_FRAC flop=0.561(2) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.523 shove_rate=0.049 flop_shove=0.064 turn_shove=0.058 river_shove=0.071 flop_pol=+0.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=5 postflop_shoves=0 postflop_aggr=5 cv=0.551
+BB_DEFENSE bucket=standard raise_bb=2.7 call_d=+0.000 v3b_d=+0.000 bluff_freq_d=+0.000
+BB_DEFENSE_PRESSURE call_d=+0.0500 bluff_freq_d=-0.0643 iso_d=+0.0279 pfr=0.548 ftr=0.251 vpip=0.871 conf=0.43 reason=deviation_fired
+POT_FRAC flop=0.561(2) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.523 shove_rate=0.049 flop_shove=0.064 turn_shove=0.058 river_shove=0.071 flop_pol=+0.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=5 postflop_shoves=0 postflop_aggr=5 cv=0.551
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.561(2) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.523 shove_rate=0.049 flop_shove=0.064 turn_shove=0.058 river_shove=0.071 flop_pol=+0.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=5 postflop_shoves=0 postflop_aggr=5 cv=0.551
+SB_OPEN_PRESSURE open_d=+0.0443 pfr=0.548 ftr=0.251 vpip=0.871 conf=0.43 reason=deviation_fired
+SB_OPEN_SIZE base_bb=2.74 opp_bb_delta=+0.24 fold_signal=-0.94 ftr=0.251 conf=0.43
+POT_FRAC flop=0.561(2) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.523 shove_rate=0.049 flop_shove=0.064 turn_shove=0.058 river_shove=0.071 flop_pol=+0.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=5 postflop_shoves=0 postflop_aggr=5 cv=0.551
+POT_FRAC flop=0.561(2) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.523 shove_rate=0.049 flop_shove=0.064 turn_shove=0.058 river_shove=0.071 flop_pol=+0.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=5 postflop_shoves=0 postflop_aggr=5 cv=0.551
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.616(3) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.750 shove_rate=0.046 flop_shove=0.058 turn_shove=0.058 river_shove=0.071 flop_pol=+1.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=6 postflop_shoves=0 postflop_aggr=6 cv=0.949
+POLARITY_MARGIN final_milli=+40 polarity_delta_milli=+3 shove_delta_milli=-1 street_pol=+1.000 shove_rate=0.046 opp_conf=0.51 size_bucket=medium round=1
+BET_SIZE_ADAPT delta_milli=+13 deviation=+0.884 current_bb=7.6 avg_bb=4.0 conf=0.51 round=1
+POT_FRAC flop=0.616(3) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.750 shove_rate=0.046 flop_shove=0.058 turn_shove=0.058 river_shove=0.071 flop_pol=+1.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=6 postflop_shoves=0 postflop_aggr=6 cv=0.949
+BB_DEFENSE_PRESSURE call_d=+0.0580 bluff_freq_d=-0.0734 iso_d=+0.0313 pfr=0.541 ftr=0.220 vpip=0.888 conf=0.54 reason=deviation_fired
+POT_FRAC flop=0.616(3) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.750 shove_rate=0.046 flop_shove=0.058 turn_shove=0.058 river_shove=0.071 flop_pol=+1.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=6 postflop_shoves=0 postflop_aggr=6 cv=0.949
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.616(3) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.750 shove_rate=0.046 flop_shove=0.058 turn_shove=0.058 river_shove=0.071 flop_pol=+1.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=6 postflop_shoves=0 postflop_aggr=6 cv=0.949
+SB_OPEN_PRESSURE open_d=+0.0534 pfr=0.541 ftr=0.220 vpip=0.888 conf=0.54 reason=deviation_fired
+SB_OPEN_SIZE base_bb=2.83 opp_bb_delta=+0.33 fold_signal=-1.00 ftr=0.220 conf=0.54
+POT_FRAC flop=0.616(3) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.750 shove_rate=0.046 flop_shove=0.058 turn_shove=0.058 river_shove=0.071 flop_pol=+1.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=6 postflop_shoves=0 postflop_aggr=6 cv=0.949
+POT_FRAC flop=0.616(3) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.750 shove_rate=0.046 flop_shove=0.058 turn_shove=0.058 river_shove=0.071 flop_pol=+1.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=6 postflop_shoves=0 postflop_aggr=6 cv=0.949
+SB_OPEN_PRESSURE open_d=+0.0557 pfr=0.570 ftr=0.220 vpip=0.895 conf=0.57 reason=deviation_fired
+SB_OPEN_SIZE base_bb=2.84 opp_bb_delta=+0.34 fold_signal=-1.00 ftr=0.220 conf=0.57
+POT_FRAC flop=0.616(3) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.750 shove_rate=0.046 flop_shove=0.058 turn_shove=0.058 river_shove=0.071 flop_pol=+1.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=6 postflop_shoves=0 postflop_aggr=6 cv=0.949
+BB_DEFENSE bucket=standard raise_bb=2.8 call_d=+0.000 v3b_d=+0.000 bluff_freq_d=+0.000
+BB_DEFENSE_PRESSURE call_d=+0.0620 bluff_freq_d=-0.0780 iso_d=+0.0330 pfr=0.595 ftr=0.220 vpip=0.901 conf=0.60 reason=deviation_fired
+POT_FRAC flop=0.616(3) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.750 shove_rate=0.046 flop_shove=0.058 turn_shove=0.058 river_shove=0.071 flop_pol=+1.000 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=6 postflop_shoves=0 postflop_aggr=6 cv=0.949
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.614(4) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.875 shove_rate=0.043 flop_shove=0.053 turn_shove=0.058 river_shove=0.071 flop_pol=+0.787 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=7 postflop_shoves=0 postflop_aggr=7 cv=0.835
+POLARITY_MARGIN final_milli=+28 polarity_delta_milli=+3 shove_delta_milli=-1 street_pol=+0.787 shove_rate=0.043 opp_conf=0.63 size_bucket=medium round=1
+BET_SIZE_ADAPT delta_milli=+10 deviation=+0.306 current_bb=5.8 avg_bb=4.5 conf=0.63 round=1
+POT_FRAC flop=0.614(4) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.875 shove_rate=0.043 flop_shove=0.053 turn_shove=0.058 river_shove=0.071 flop_pol=+0.787 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=7 postflop_shoves=0 postflop_aggr=7 cv=0.835
+SB_OPEN_PRESSURE open_d=+0.0603 pfr=0.595 ftr=0.196 vpip=0.901 conf=0.63 reason=deviation_fired
+SB_OPEN_SIZE base_bb=2.88 opp_bb_delta=+0.38 fold_signal=-1.00 ftr=0.196 conf=0.63
+POT_FRAC flop=0.614(4) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+0.875 shove_rate=0.043 flop_shove=0.053 turn_shove=0.058 river_shove=0.071 flop_pol=+0.787 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=7 postflop_shoves=0 postflop_aggr=7 cv=0.835
+POT_FRAC flop=0.570(5) turn=0.499(3) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.040 flop_shove=0.049 turn_shove=0.058 river_shove=0.071 flop_pol=+0.786 turn_pol=-1.000 river_pol=+0.000 postflop_raise_samples=8 postflop_shoves=0 postflop_aggr=8 cv=0.783
+POLARITY_MARGIN final_milli=+32 polarity_delta_milli=-8 shove_delta_milli=-1 street_pol=+0.786 shove_rate=0.040 opp_conf=0.69 size_bucket=small round=1
+BET_SIZE_ADAPT delta_milli=-10 deviation=-0.295 current_bb=2.9 avg_bb=4.2 conf=0.69 round=1
+BB_FLOP_CR fired=0 reason=none conf=0.69 ftr=0.176 wet=0.09 ms=0.23 ds=0.00
+OPP_TIGHT_RAISE_SUPPRESS fired=0 pfr=0.618 conf=0.69 ms=0.23 ds=0.00 round=1 tier=none
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+POLARITY_MARGIN final_milli=+73 polarity_delta_milli=-10 shove_delta_milli=-1 street_pol=+1.000 shove_rate=0.038 opp_conf=0.71 size_bucket=small round=2
+BET_SIZE_ADAPT delta_milli=+18 deviation=+1.231 current_bb=3.8 avg_bb=1.7 conf=0.71 round=2
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+BB_DEFENSE_PRESSURE call_d=+0.0720 bluff_freq_d=-0.0894 iso_d=+0.0373 pfr=0.585 ftr=0.176 vpip=0.912 conf=0.74 reason=deviation_fired
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+RIVER_THIN_VALUE reason=skip_not_river_to0
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0694 pfr=0.585 ftr=0.176 vpip=0.912 conf=0.74 reason=deviation_fired
+SB_OPEN_SIZE base_bb=2.95 opp_bb_delta=+0.45 fold_signal=-1.00 ftr=0.176 conf=0.74
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+BB_DEFENSE bucket=large raise_bb=3.5 call_d=+0.030 v3b_d=+0.010 bluff_freq_d=-0.080
+BB_DEFENSE_PRESSURE call_d=+0.0740 bluff_freq_d=-0.0917 iso_d=+0.0381 pfr=0.606 ftr=0.176 vpip=0.916 conf=0.77 reason=deviation_fired
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+BB_DEFENSE bucket=xl raise_bb=26.5 call_d=+0.060 v3b_d=+0.020 bluff_freq_d=-0.200
+BB_DEFENSE_PRESSURE call_d=+0.0760 bluff_freq_d=-0.0940 iso_d=+0.0390 pfr=0.606 ftr=0.160 vpip=0.916 conf=0.80 reason=deviation_fired
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+PREFLOP_JAM_DEFENSE decision=0 win_rate=0.411 pot_odds=0.341 slack=0.01 allin_rate=0.010 conf=0.83 reason=standard_jam
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
+FOLD_TO_JAM_ADAPT delta=0 reason=neutral ftj=0.450 samples=0 jam_conf=0.00
+POT_FRAC flop=0.570(5) turn=0.460(4) river=0.750(0)
+OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0
+FOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0
+BETSIZE_POLARITY polarity=+1.000 shove_rate=0.038 flop_shove=0.049 turn_shove=0.053 river_shove=0.071 flop_pol=+0.786 turn_pol=+1.000 river_pol=+0.000 postflop_raise_samples=9 postflop_shoves=0 postflop_aggr=9 cv=0.721
+SB_OPEN_PRESSURE open_d=+0.0763 pfr=0.606 ftr=0.147 vpip=0.916 conf=0.83 reason=deviation_fired
+SB_OPEN_SIZE base_bb=3.00 opp_bb_delta=+0.50 fold_signal=-1.00 ftr=0.147 conf=0.83
