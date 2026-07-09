@@ -1,4 +1,5 @@
 import fcntl
+import json
 from pathlib import Path
 
 from official_platform_harness import OfficialPlatformConfig
@@ -241,6 +242,64 @@ def test_compliance_certification_has_distinct_status(tmp_path, monkeypatch):
     assert result["mode"] == "compliance"
 
 
+def test_run_certification_writes_official_evidence_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("smoke", candidate, opponent=opponent)
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=10, rounds=2)),
+        queue_on_busy=False,
+    )
+
+    evidence_path = Path(result["official_evidence_path"])
+    assert evidence_path.exists()
+    assert result["official_evidence_summary"]["classification"] == "pass"
+    assert result["official_evidence_summary"]["blocking"] is False
+    assert result["official_evidence_summary"]["strength_evaluation"] == "not_applicable"
+
+
+def test_run_certification_optional_llm_analysis_is_advisory(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    monkeypatch.setenv("POK_OFFICIAL_LLM_ANALYSIS", "1")
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("smoke", candidate, opponent=opponent)
+
+    def fake_llm_analysis(evidence, *, output_path=None, **_kwargs):
+        payload = {
+            "compliance_verdict": "pass",
+            "failure_class": "none",
+            "blocking": False,
+            "confidence": 0.51,
+            "strength_evaluation": "not_applicable",
+        }
+        if output_path:
+            Path(output_path).write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    import official_llm_analysis
+
+    monkeypatch.setattr(official_llm_analysis, "run_official_llm_analysis_sync", fake_llm_analysis)
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=10, rounds=2)),
+        queue_on_busy=False,
+    )
+
+    assert result["status"] == STATUS_SMOKE_PASS
+    assert Path(result["official_llm_analysis_path"]).exists()
+    assert result["official_llm_analysis_summary"]["compliance_verdict"] == "pass"
+    assert result["official_llm_analysis_summary"]["strength_evaluation"] == "not_applicable"
+
+
 def test_inconclusive_status_includes_non_violation_validation_issues(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v1")
@@ -258,6 +317,8 @@ def test_inconclusive_status_includes_non_violation_validation_issues(tmp_path, 
     assert result["status"] == STATUS_INCONCLUSIVE
     assert result["issues"]
     assert any("thp_incomplete_for_full_certification" in issue for issue in result["issues"])
+    assert result["official_evidence_summary"]["classification"] == "inconclusive"
+    assert result["official_evidence_summary"]["inconclusive"] is True
 
 
 def test_protocol_violation_result_uses_failed_status(tmp_path, monkeypatch):

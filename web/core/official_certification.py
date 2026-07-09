@@ -26,6 +26,7 @@ from official_platform_harness import (
     _copy_config,
     run_official_acceptance_sync,
 )
+from official_evidence import build_official_evidence_bundle
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -652,10 +653,27 @@ def enqueue_certification(
     )
 
 
+def _evidence_path_for_result(spec: CertificationSpec, summary: dict[str, Any], cache_key_value: str) -> Path:
+    suite_dir = summary.get("suite_dir") if isinstance(summary, dict) else None
+    if suite_dir:
+        suite_path = Path(str(suite_dir))
+        if suite_path.exists():
+            return suite_path / "official_evidence.json"
+    safe_key = cache_key_value[:12] if cache_key_value else "uncached"
+    return certification_root() / "evidence" / spec.mode / f"{_safe_label(spec.candidate)}-{safe_key}.json"
+
+
+def _official_llm_analysis_enabled() -> bool:
+    return os.environ.get("POK_OFFICIAL_LLM_ANALYSIS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache_hit: bool, cache_key_value: str) -> dict[str, Any]:
     validation_issues = report_validation_issues(result, spec)
     valid = not validation_issues
-    issues = list(result.get("issues") or validation_issues)
+    raw_result_issues = result.get("issues") or []
+    if not isinstance(raw_result_issues, list):
+        raw_result_issues = [raw_result_issues]
+    issues = list(dict.fromkeys([str(issue) for issue in raw_result_issues + validation_issues]))
     if valid:
         if spec.mode == "full":
             status = STATUS_CERTIFIED
@@ -669,6 +687,44 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
         status = STATUS_INCONCLUSIVE
     report = result.get("report", {}) if isinstance(result, dict) else {}
     summary = report.get("summary", {}) if isinstance(report, dict) else {}
+    evidence_extra: dict[str, Any] = {}
+    try:
+        evidence_path = _evidence_path_for_result(spec, summary, cache_key_value)
+        evidence_result = dict(result)
+        evidence_result["issues"] = issues
+        evidence = build_official_evidence_bundle(evidence_result, output_path=evidence_path)
+        deterministic = evidence.get("deterministic", {})
+        evidence_extra = {
+            "official_evidence_path": str(evidence_path),
+            "official_evidence_summary": {
+                "schema_version": evidence.get("schema_version"),
+                "classification": deterministic.get("classification"),
+                "blocking": deterministic.get("blocking"),
+                "inconclusive": deterministic.get("inconclusive"),
+                "violation": deterministic.get("violation"),
+                "issue_count": len(deterministic.get("issues") or []),
+                "rounds_run": deterministic.get("rounds_run"),
+                "target_hands": deterministic.get("target_hands"),
+                "strength_evaluation": "not_applicable",
+            },
+        }
+        if _official_llm_analysis_enabled():
+            from official_llm_analysis import run_official_llm_analysis_sync
+
+            analysis_path = evidence_path.with_name("llm_official_analysis.json")
+            analysis = run_official_llm_analysis_sync(evidence, output_path=analysis_path)
+            evidence_extra["official_llm_analysis_path"] = str(analysis_path)
+            evidence_extra["official_llm_analysis_summary"] = {
+                "compliance_verdict": analysis.get("compliance_verdict"),
+                "failure_class": analysis.get("failure_class"),
+                "blocking": analysis.get("blocking"),
+                "confidence": analysis.get("confidence"),
+                "strength_evaluation": "not_applicable",
+            }
+    except Exception as exc:
+        evidence_extra = {
+            "official_evidence_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+        }
     return write_status(
         spec.candidate,
         status,
@@ -678,6 +734,7 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
         summary=summary,
         issues=issues,
         result=result,
+        **evidence_extra,
     )
 
 
