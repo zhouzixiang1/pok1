@@ -128,7 +128,25 @@ class _OrchActionableStageHandoff(Exception):
     The current SDK stream is disposable once the checkpoint has recorded the
     canonical next route; the outer loop should yield immediately and route from
     the checkpoint without backoff or error telemetry.
-    """
+"""
+
+
+class _OrchStreamStallTimeout(Exception):
+    """Internal signal: orchestrator main-agent stream stalled mid-conversation.
+
+    The deepseek-v4-pro endpoint behind cc-switch intermittently stalls after
+    producing some output (a tool_use whose tool_result never returns, or the
+    model simply stops streaming). The sub-role path (run_claude_query) handles
+    this with the stall_timeout layer (Fix C). The orchestrator main agent,
+    however, polls via _await_next_stream_message and only aborts on an
+    "actionable stage" — which requires a checkpoint. Early in a cycle (e.g.
+    before any tool runs, or between MCP handoffs) there is NO checkpoint, so a
+    stalled main-agent stream would otherwise wait the full CYCLE_TIMEOUT
+    (5400s = 90min) before any recovery. Treat a long mid-stream silence as
+    infra, cancel the stream, and let the outer loop retry the cycle (checkpoint
+    is preserved where one exists).
+"""
+
 
 
 # Module-level flag set by the watchdog coroutine when it detects a stuck pipeline.
@@ -138,6 +156,14 @@ _watchdog_triggered = False
 ORCH_FIRST_ACTIVITY_TIMEOUT = int(os.environ.get("POK_ORCH_FIRST_ACTIVITY_TIMEOUT", "600"))
 ORCH_STREAM_POLL_INTERVAL = float(os.environ.get("POK_ORCH_STREAM_POLL_INTERVAL", "15"))
 ORCH_ACTIONABLE_STAGE_TIMEOUT = float(os.environ.get("POK_ORCH_ACTIONABLE_STAGE_TIMEOUT", "300"))
+# D (2026-07-09): generic mid-stream stall ceiling for the orchestrator main
+# agent. Unlike _detect_actionable_stage_stall (which needs a checkpoint), this
+# fires on pure wall-clock silence between stream messages regardless of
+# checkpoint state, so a stalled main-agent stream does not wait the full
+# CYCLE_TIMEOUT (5400s). 300s is well above legit inter-message gaps (the model
+# streams thinking_tokens every few seconds) but far below 5400s. Disabled when
+# <= 0 (then only actionable-stage + CYCLE_TIMEOUT bound the wait).
+ORCH_STREAM_STALL_TIMEOUT = float(os.environ.get("POK_ORCH_STREAM_STALL_TIMEOUT", "300"))
 POST_GENERATION_CLEANUP_TIMEOUT = int(os.environ.get("POK_POST_GENERATION_CLEANUP_TIMEOUT", "900"))
 RUNTIME_BRANCH_GUARD_INTERVAL = float(os.environ.get("POK_RUNTIME_BRANCH_GUARD_INTERVAL", "5"))
 
@@ -467,9 +493,17 @@ def _detect_actionable_stage_handoff():
     return stall
 
 
-async def _await_next_stream_message(stream_iter):
-    """Wait for the next orchestrator stream message with checkpoint-aware polling."""
+async def _await_next_stream_message(stream_iter, last_message_at=None, *, stream_started_at=None):
+    """Wait for the next orchestrator stream message with checkpoint-aware polling.
+
+    D (2026-07-09): also enforce a generic mid-stream stall ceiling
+    (ORCH_STREAM_STALL_TIMEOUT) on wall-clock silence between messages,
+    independent of checkpoint state, so a stalled main-agent stream cannot
+    wait the full CYCLE_TIMEOUT (5400s) when no checkpoint/actionable-stage
+    guard applies.
+    """
     pending = asyncio.create_task(stream_iter.__anext__())
+    _silence_origin = last_message_at if last_message_at is not None else (stream_started_at or time.time())
     try:
         while True:
             try:
@@ -478,6 +512,34 @@ async def _await_next_stream_message(stream_iter):
                     timeout=max(0.1, ORCH_STREAM_POLL_INTERVAL),
                 )
             except asyncio.TimeoutError:
+                # D: generic stall ceiling — fires with or without a checkpoint.
+                if ORCH_STREAM_STALL_TIMEOUT > 0:
+                    silent_for = time.time() - _silence_origin
+                    if silent_for >= ORCH_STREAM_STALL_TIMEOUT:
+                        msg = (
+                            f"Orchestrator main-agent stream stalled: no stream "
+                            f"message for {silent_for:.0f}s (ceiling "
+                            f"{ORCH_STREAM_STALL_TIMEOUT:.0f}s). Treating as "
+                            f"infrastructure stall; cycle will retry."
+                        )
+                        try:
+                            log_system_event(
+                                "pipeline.orchestrator_stream_stall_timeout",
+                                "warn",
+                                msg,
+                                {
+                                    "silent_for_sec": round(silent_for, 1),
+                                    "stall_timeout": ORCH_STREAM_STALL_TIMEOUT,
+                                },
+                            )
+                        except Exception:
+                            pass
+                        pending.cancel()
+                        try:
+                            await pending
+                        except BaseException:
+                            pass
+                        raise _OrchStreamStallTimeout(msg)
                 stall = _detect_actionable_stage_stall()
                 if not stall:
                     continue
@@ -625,6 +687,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 _stream_iter = gen.__aiter__()
                 _first_activity_seen = False
                 _stream_started_at = time.time()
+                _last_message_at = _stream_started_at  # D: for stall ceiling
                 while True:
                     try:
                         if not _first_activity_seen:
@@ -633,6 +696,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 timeout=ORCH_FIRST_ACTIVITY_TIMEOUT,
                             )
                             _first_activity_seen = True
+                            _last_message_at = time.time()
                             _first_latency = time.time() - _stream_started_at
                             if _first_latency >= 60:
                                 try:
@@ -645,7 +709,12 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 except Exception:
                                     pass
                         else:
-                            message = await _await_next_stream_message(_stream_iter)
+                            message = await _await_next_stream_message(
+                                _stream_iter,
+                                last_message_at=_last_message_at,
+                                stream_started_at=_stream_started_at,
+                            )
+                            _last_message_at = time.time()
                     except StopAsyncIteration:
                         break
                     except asyncio.TimeoutError as e:
@@ -1301,7 +1370,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             is_infra = (
                 not is_shutdown_cancel
                 and (
-                    isinstance(e, (_CostCapTripped, _OrchFirstActivityTimeout, _OrchActionableStageTimeout))
+                    isinstance(e, (_CostCapTripped, _OrchFirstActivityTimeout, _OrchActionableStageTimeout, _OrchStreamStallTimeout))
                     or _is_cycle_infra_error(e)
                 )
             )

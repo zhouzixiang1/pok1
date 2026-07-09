@@ -855,6 +855,65 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     assert not any(e[0] == "pipeline.actionable_stage_handoff" for e in events)
 
 
+def test_stream_stall_timeout_aborts_without_checkpoint(tmp_path, monkeypatch):
+    """D (2026-07-09): a stalled main-agent stream must abort via the generic
+    stall ceiling even when there is NO checkpoint / actionable stage.
+
+    Previously the orchestrator only aborted on an actionable-stage stall
+    (requires a checkpoint). Early in a cycle — before any tool runs — there is
+    no checkpoint, so a stalled stream waited the full CYCLE_TIMEOUT (5400s).
+    The generic ORCH_STREAM_STALL_TIMEOUT ceiling must fire on pure wall-clock
+    silence so the cycle can retry instead of hanging for 90 minutes.
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    import orchestrator
+    import evolution_core
+
+    # NO checkpoint written — simulates early-cycle stall before any tool.
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+    if pipe_file.exists():
+        pipe_file.unlink()
+    events = []
+
+    async def _stalls_after_first_message():
+        # one substantive message, then silence forever (the stall signature)
+        yield AssistantMessage(content=[TextBlock(text="seen")], model="sonnet")
+        await asyncio.sleep(999)
+        if False:
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _stalls_after_first_message())
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_STALL_TIMEOUT", 0.05)
+    # Disable the actionable-stage path so only the generic ceiling can fire.
+    monkeypatch.setattr(orchestrator, "ORCH_ACTIONABLE_STAGE_TIMEOUT", 0)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    ui = _FakeUI()
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=ui,
+            log_file=tmp_path / "orch_log.txt",
+            one_gen=False,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    # Treated as infra (short backoff), not a hard business failure.
+    assert cost == -0.5
+    assert any(e[0] == "pipeline.orchestrator_stream_stall_timeout" for e in events)
+
+
 @pytest.mark.parametrize(
     "stage",
     ["master_planned", "quality_failed", "repair_planned", "rework_running", "precommit_failed"],
