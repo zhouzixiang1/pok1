@@ -130,6 +130,14 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     except Exception as exc:
         official_feedback = f"Official EXE compliance feedback unavailable: {type(exc).__name__}: {str(exc)[:200]}"
     try:
+        from national_capability_contract import national_runtime_feedback_summary
+        runtime_feedback = _trim_to_budget(
+            national_runtime_feedback_summary(get_bot_dir(source_v), source_label=bot_name(source_v)),
+            4_000,
+        )
+    except Exception as exc:
+        runtime_feedback = f"National runtime architecture feedback unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+    try:
         from workflow_profiles import get_workflow_profile, profile_summary
         workflow_profile = get_workflow_profile()
         workflow_profile_text = profile_summary(workflow_profile)
@@ -174,6 +182,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "exploitability_weaknesses": exploitability_trimmed,
         "research_proposals": research_trimmed,
         "official_feedback": official_feedback,
+        "runtime_feedback": runtime_feedback,
         "h2h_data_file": h2h_data_file,
         "h2h_snapshot_contract": h2h_snapshot_contract,
     })
@@ -191,6 +200,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"\n{workflow_profile_text}\n"
         f"\n{frontier_trimmed}\n"
         f"\nOfficial EXE Compliance Feedback:\n{official_feedback}\n"
+        f"\nNational Runtime Architecture Feedback:\n{runtime_feedback}\n"
         f"\n{line_budget_text}\n"
     )
     master_log_file = get_logs_dir(next_v) / "master_io.txt"

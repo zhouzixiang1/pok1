@@ -114,6 +114,8 @@ def test_prompts_require_national_runtime_architecture_contracts():
     assert "Decision-time budget" in master_prompt
     assert "Official EXE Compliance Feedback" in master_prompt
     assert "{official_feedback}" in master_prompt
+    assert "National Runtime Architecture Feedback" in master_prompt
+    assert "{runtime_feedback}" in master_prompt
     assert "bounded module/startup precomputation" in worker_prompt
     assert "persistent for a 70-hand match" in worker_prompt
     assert "Runtime architecture check" in reviewer_prompt

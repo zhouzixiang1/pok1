@@ -995,6 +995,21 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
         evidence_result["issues"] = issues
         evidence = build_official_evidence_bundle(evidence_result, output_path=evidence_path)
         deterministic = evidence.get("deterministic", {})
+        evidence_issues = [
+            str(issue)
+            for issue in (deterministic.get("issues") or [])
+            if str(issue)
+        ]
+        if evidence_issues:
+            issues = list(dict.fromkeys([*issues, *evidence_issues]))
+        if deterministic.get("blocking"):
+            status = STATUS_FAILED
+        elif deterministic.get("inconclusive") and status in {
+            STATUS_CERTIFIED,
+            STATUS_COMPLIANCE_PASS,
+            STATUS_SMOKE_PASS,
+        }:
+            status = STATUS_INCONCLUSIVE
         evidence_extra = {
             "official_evidence_path": str(evidence_path),
             "official_evidence_summary": {
@@ -1033,8 +1048,11 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
                 2000,
             )
     except Exception as exc:
+        issue = f"official_evidence_error: {type(exc).__name__}: {str(exc)[:300]}"
+        issues = list(dict.fromkeys([*issues, issue]))
+        status = STATUS_INCONCLUSIVE
         evidence_extra = {
-            "official_evidence_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            "official_evidence_error": issue,
         }
     return write_status(
         spec.candidate,

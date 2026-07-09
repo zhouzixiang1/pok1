@@ -188,6 +188,9 @@ return None
 ## Official EXE Compliance Feedback (compliance-only, not strength)
 {official_feedback}
 
+## National Runtime Architecture Feedback (planning signal, not legality)
+{runtime_feedback}
+
 ## Bot Action Statistics
 {bot_action_stats}
 

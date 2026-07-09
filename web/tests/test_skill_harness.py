@@ -8,8 +8,29 @@ def test_skill_library_describes_known_layers():
     assert "spr" in layers
     assert "bb_vs_limp" in layers
     assert "bb_vs_open" in layers
+    assert "runtime_architecture" in layers
+    assert "precompute" in layers
+    assert "match_memory" in layers
     text = describe_skill_layers(["protocol"])
     assert "Botzone JSON contract" in text
+
+
+def test_national_native_runtime_layers_are_schema_valid():
+    from output_schema import WorkerTask
+    from workflow_profiles import get_workflow_profile, profile_summary
+
+    profile = get_workflow_profile("national_native")
+    for layer in ("runtime_architecture", "precompute", "match_memory"):
+        assert layer in profile.focus_skill_layers
+        task = WorkerTask(
+            worker_id=1,
+            role="Algorithmic Logic Architect",
+            target_files=["national_bot.py"],
+            skill_layer=layer,
+            worker_prompt="Implement a focused national runtime architecture change with checks.",
+        )
+        assert task.skill_layer == layer
+        assert layer in profile_summary(profile)
 
 
 def test_scenario_skill_metadata_reports_missing_fields():

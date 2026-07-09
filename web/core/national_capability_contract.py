@@ -120,3 +120,52 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         "advisory_warnings": advisory_warnings,
         "checks": checks,
     }
+
+
+def national_runtime_feedback_summary(
+    bot_dir: str | Path,
+    *,
+    source_label: str = "source bot",
+    max_chars: int = 4000,
+) -> str:
+    """Return bounded architecture feedback for Master planning prompts.
+
+    This summary is not a protocol verdict.  It is a planning signal that tells
+    Master where the current native bot is failing to use the official
+    60-second action window well: bounded work, precomputed lookup paths,
+    persistent match memory, and clean decision diagnostics.
+    """
+    result = evaluate_national_capabilities(bot_dir)
+    required = result.get("required_failures") or []
+    advisory = result.get("advisory_warnings") or []
+    checks = result.get("checks") or []
+    lines = [
+        f"National runtime architecture feedback for {source_label}:",
+        "This is a planning signal only; official EXE compliance and native TCP gates remain authoritative for legality.",
+    ]
+    if required:
+        lines.append("Required runtime contract failures:")
+        for item in required[:4]:
+            lines.append(
+                f"- {item.get('name')}: {item.get('guidance')} "
+                f"(evidence: {item.get('evidence')})"
+            )
+    if advisory:
+        lines.append("Architecture improvement opportunities:")
+        for item in advisory[:6]:
+            lines.append(
+                f"- {item.get('name')}: {item.get('guidance')} "
+                f"(evidence: {item.get('evidence')})"
+            )
+    else:
+        lines.append("No advisory runtime-architecture gaps detected by the static contract.")
+    passed = [item for item in checks if item.get("passed")]
+    if passed:
+        lines.append(
+            "Already present: "
+            + ", ".join(str(item.get("name")) for item in passed[:8])
+        )
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[: max_chars - 3].rstrip() + "..."
+    return text

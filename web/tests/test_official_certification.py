@@ -107,6 +107,70 @@ def _smoke_report_without_thp(*, target_hands: int = 10, rounds: int = 2):
     }
 
 
+def _write_jsonl(path: Path, rows):
+    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+
+
+def _smoke_report_with_wire_replay_blocker(tmp_path: Path):
+    suite = tmp_path / "suite"
+    bad_round = suite / "self_play_01"
+    good_round = suite / "opponent_01"
+    bad_round.mkdir(parents=True)
+    good_round.mkdir(parents=True)
+    wire_events = bad_round / "wire_events.jsonl"
+    _write_jsonl(
+        wire_events,
+        [
+            {
+                "t": 1.0,
+                "dt": 0.1,
+                "conn": "A",
+                "direction": "server_to_bot",
+                "messages": ["preflop|SMALLBLIND|<0,3><1,4>"],
+            },
+            {
+                "t": 1.1,
+                "dt": 0.2,
+                "conn": "A",
+                "direction": "bot_to_server",
+                "messages": ["check"],
+            },
+        ],
+    )
+    receipts = [
+        {
+            "round_id": "self_play_01",
+            "round_kind": "self_play",
+            "passed": True,
+            "issues": [],
+            "target_hands": 10,
+            "log_summary": {"hands_started_min": 10, "settlements_min": 10, "issues": []},
+            "artifacts": {
+                "round_dir": str(bad_round),
+                "wire_events": str(wire_events),
+                "thp_summaries": [],
+            },
+        },
+        {
+            "round_id": "opponent_01",
+            "round_kind": "opponent",
+            "passed": True,
+            "issues": [],
+            "target_hands": 10,
+            "log_summary": {"hands_started_min": 10, "settlements_min": 10, "issues": []},
+            "artifacts": {"round_dir": str(good_round), "thp_summaries": []},
+        },
+    ]
+    return {
+        "passed": True,
+        "issues": [],
+        "report": {
+            "summary": {"suite_dir": str(suite), "rounds_run": 2},
+            "rounds": receipts,
+        },
+    }
+
+
 def test_cache_key_changes_when_inputs_change(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v1")
@@ -306,6 +370,51 @@ def test_run_certification_writes_official_evidence_summary(tmp_path, monkeypatc
     assert result["official_evidence_summary"]["classification"] == "pass"
     assert result["official_evidence_summary"]["blocking"] is False
     assert result["official_evidence_summary"]["strength_evaluation"] == "not_applicable"
+
+
+def test_run_certification_evidence_blocking_overrides_raw_pass(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("smoke", candidate, opponent=opponent)
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *_args, **_kwargs: FakeResult(_smoke_report_with_wire_replay_blocker(tmp_path)),
+        queue_on_busy=False,
+    )
+
+    assert result["status"] == STATUS_FAILED
+    assert result["official_evidence_summary"]["blocking"] is True
+    assert result["official_evidence_summary"]["classification"] == "protocol"
+    assert any("wire_replay: illegal_check" in issue for issue in result["issues"])
+    assert official_failure_blocks_parent(result)
+
+
+def test_run_certification_evidence_error_is_inconclusive_not_certified(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("full", candidate, opponent=opponent)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("evidence disk failure")
+
+    monkeypatch.setattr("official_certification.build_official_evidence_bundle", boom)
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=70, rounds=8)),
+        queue_on_busy=False,
+    )
+
+    assert result["status"] == STATUS_INCONCLUSIVE
+    assert official_full_certified(result) is False
+    assert any("official_evidence_error" in issue for issue in result["issues"])
 
 
 def test_run_certification_optional_llm_analysis_is_advisory(tmp_path, monkeypatch):

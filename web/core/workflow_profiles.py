@@ -47,7 +47,15 @@ _PROFILES = {
         eval_wait_min_games=24,
         eval_wait_rd_threshold=110.0,
         eval_wait_rd_min_games=12,
-        focus_skill_layers=["protocol", "native_tcp", "action_sanitizer", "opponent_model"],
+        focus_skill_layers=[
+            "protocol",
+            "native_tcp",
+            "action_sanitizer",
+            "runtime_architecture",
+            "precompute",
+            "match_memory",
+            "opponent_model",
+        ],
     ),
     "national_strict": WorkflowProfile(
         profile_id="national_strict",

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from national_capability_contract import evaluate_national_capabilities
+from national_capability_contract import evaluate_national_capabilities, national_runtime_feedback_summary
 
 
 def _write_bot(root: Path, *, national_bot: str, opponent: str = "", strategy: str = "") -> Path:
@@ -51,6 +51,12 @@ def get_action(req, requests):
     assert result["ok"] is True
     assert result["required_failures"] == []
     assert "incremental_opponent_model" in warning_names
+
+    feedback = national_runtime_feedback_summary(bot, source_label="national_v1")
+    assert "National runtime architecture feedback for national_v1" in feedback
+    assert "Architecture improvement opportunities" in feedback
+    assert "incremental_opponent_model" in feedback
+    assert "planning signal only" in feedback
 
 
 def test_capability_contract_blocks_stdout_pollution_and_missing_throttle(tmp_path):
@@ -115,3 +121,7 @@ def get_action(req, requests, runtime_ctx=None):
     assert result["ok"] is True
     assert checks["precompute_lookup_path"] is True
     assert checks["incremental_opponent_model"] is True
+
+    feedback = national_runtime_feedback_summary(bot, source_label="national_v3")
+    assert "No advisory runtime-architecture gaps" in feedback
+    assert "Already present" in feedback
