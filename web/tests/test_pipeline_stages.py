@@ -2905,6 +2905,158 @@ class TestWorkerFailureCircuitBreaker:
         assert "H2H sign" in tasks[0]["worker_prompt"]
         assert tool_planning._should_reset_before_rework(ckpt, tasks) is False
 
+    def test_review_rework_targets_primary_blocker_not_secondary_notes(self, tmp_path, monkeypatch):
+        import tool_planning
+
+        source_dir = tmp_path / "national_v123"
+        next_dir = tmp_path / "national_v125"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for name in ("strategy.py", "simulation.py", "constants.py"):
+            (source_dir / name).write_text(f"{name} = 'old'\n", encoding="utf-8")
+            (next_dir / name).write_text(f"{name} = 'new'\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            tool_planning,
+            "get_bot_dir",
+            lambda version: {123: source_dir, 125: next_dir}[int(version)],
+        )
+
+        feedback = (
+            "Review rejected: simulation.py restored polarized_jam_equity(), but "
+            "strategy.py no longer imports or calls it. Choose one complete path: "
+            "restore both the simulation.py helper and strategy.py wiring, or remove "
+            "the orphaned helper entirely.\n\n"
+            "Also notes constants.py PASSIVE_THIN_VALUE_MAX_RATIO 0.40->0.48 is "
+            "ungrounded, but this is not the main blocker."
+        )
+        ckpt = {
+            "next_v": 125,
+            "source_v": 123,
+            "parent2_v": 120,
+            "stage": "repair_planned",
+            "reviewer_feedback": feedback,
+            "master_plan": {"strategy": "crossover", "tasks": []},
+            "gate_results": {
+                "quality": {"all_passed": True, "failed_gates": []},
+                "critic": {"approved": False, "score": 4.0},
+                "review": {"approved": False, "feedback": feedback},
+            },
+        }
+        old_tasks = [{
+            "worker_id": "auto_quality_repair_gate_constants_py",
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["constants.py"],
+            "must_change_files": ["constants.py"],
+            "worker_prompt": "old quality repair task for constants.py",
+            "task_kind": "quality_repair",
+            "repair_blocker": "quality_gate",
+            "repair_contract": {"blocker": "quality_gate", "file": "constants.py"},
+        }]
+
+        assert tool_planning._is_review_rework_checkpoint(ckpt) is True
+        assert tool_planning._is_critic_rework_checkpoint(ckpt) is False
+        assert tool_planning._review_repair_target_files(ckpt, feedback) == [
+            "simulation.py",
+            "strategy.py",
+        ]
+        refresh_reason = tool_planning._review_repair_task_refresh_reason(old_tasks, ckpt, feedback)
+        assert refresh_reason in {
+            "checkpoint task is not a review repair",
+            "review repair targets are stale",
+        }
+
+        tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt)
+
+        assert len(tasks) == 1
+        assert tasks[0]["worker_id"] == "auto_review_repair"
+        assert tasks[0]["task_kind"] == "crossover_review_repair"
+        assert tasks[0]["target_files"] == ["simulation.py", "strategy.py"]
+        assert tasks[0]["must_change_files"] == ["simulation.py", "strategy.py"]
+        assert "constants.py" not in tasks[0]["target_files"]
+        assert "Lead Code Reviewer hard-gate repair" in tasks[0]["worker_prompt"]
+        assert "Choose one complete path" in tasks[0]["worker_prompt"]
+        assert tool_planning._should_reset_before_rework(ckpt, tasks) is False
+
+    def test_execute_workers_refreshes_stale_review_rework_tasks(self, tmp_path, monkeypatch):
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v123"
+        next_dir = tmp_path / "claude_v125"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for name in ("strategy.py", "simulation.py", "constants.py"):
+            (source_dir / name).write_text(f"{name} = 'old'\n", encoding="utf-8")
+            (next_dir / name).write_text(f"{name} = 'new'\n", encoding="utf-8")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="repair_planned")
+        feedback = (
+            "Review rejected: simulation.py restored polarized_jam_equity(), but "
+            "strategy.py no longer imports or calls it. Choose one complete path.\n\n"
+            "Also notes constants.py PASSIVE_THIN_VALUE_MAX_RATIO is ungrounded, "
+            "but this is not the main blocker."
+        )
+        state = json.loads(ckpt_file.read_text())
+        state.update({"next_v": 125, "source_v": 123, "parent2_v": 120})
+        state["reviewer_feedback"] = feedback
+        state["master_plan"] = {
+            "strategy": "crossover",
+            "tasks": [{
+                "worker_id": "auto_quality_repair_gate_constants_py",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["constants.py"],
+                "must_change_files": ["constants.py"],
+                "worker_prompt": "old quality repair task for constants.py",
+                "task_kind": "quality_repair",
+                "repair_blocker": "quality_gate",
+                "repair_contract": {"blocker": "quality_gate", "file": "constants.py"},
+            }],
+            "work_item": {"kind": "crossover_quality_repair", "source_stage": "quality_failed"},
+        }
+        state["gate_results"] = {
+            "quality": {"all_passed": True, "failed_gates": []},
+            "critic": {"approved": False, "score": 4.0},
+            "review": {"approved": False, "feedback": feedback},
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        def _reset_must_not_run(*_args, **_kwargs):
+            raise AssertionError("review repair should be in-place")
+
+        monkeypatch.setattr(tool_planning, "_incremental_reset_next_dir", _reset_must_not_run)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 125, "source_v": 123})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        tasks = mock_exec.call_args.args[0]
+        assert len(tasks) == 1
+        assert tasks[0]["worker_id"] == "auto_review_repair"
+        assert tasks[0]["task_kind"] == "crossover_review_repair"
+        assert tasks[0]["target_files"] == ["simulation.py", "strategy.py"]
+        assert "constants.py" not in tasks[0]["target_files"]
+        assert mock_exec.call_args.kwargs["force_sequential"] is False
+        assert "in-place Lead Code Reviewer repair" in mock_exec.call_args.kwargs["reviewer_feedback"]
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["master_plan"]["tasks"][0]["worker_id"] == "auto_review_repair"
+        assert ckpt["master_plan"]["work_item"]["kind"] == "crossover_review_repair"
+        assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
+
     def test_critic_rework_without_file_evidence_uses_changed_strategy_files(self, tmp_path, monkeypatch):
         import tool_planning
 

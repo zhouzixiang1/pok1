@@ -3431,6 +3431,8 @@ def _is_critic_rework_checkpoint(ckpt):
         return False
     if _is_precommit_rework_checkpoint(ckpt):
         return False
+    if _is_review_rework_checkpoint(ckpt):
+        return False
 
     feedback = str(ckpt.get("reviewer_feedback") or "").lower()
     if "critic_rejection" in feedback:
@@ -3447,6 +3449,31 @@ def _is_critic_rework_checkpoint(ckpt):
     if critic.get("raw_approved") is False or critic.get("advisory_approved") is False:
         return True
     return _score_below_threshold(critic.get("score"))
+
+
+def _is_review_rework_checkpoint(ckpt):
+    """Whether the checkpoint represents a Lead Code Reviewer rejection.
+
+    A candidate can have an old rejected critic gate in ``gate_results`` and
+    later fail review after an in-place repair. The latest review rejection must
+    own the next repair contract; otherwise stale critic/quality tasks can be
+    reused against the wrong blocker.
+    """
+    if not isinstance(ckpt, dict):
+        return False
+    if ckpt.get("stage") not in {"repair_planned", "rework_running"}:
+        return False
+    if _is_precommit_rework_checkpoint(ckpt):
+        return False
+    review = (ckpt.get("gate_results") or {}).get("review") or {}
+    if not isinstance(review, dict) or not review:
+        return False
+    if review.get("approved") is False:
+        return True
+    status = str(review.get("status") or "").lower()
+    if status in {"rejected", "failed", "blocked"}:
+        return True
+    return False
 
 
 def _precommit_failure_items(ckpt):
@@ -3708,6 +3735,45 @@ def _critic_feedback_items(ckpt, feedback=""):
     return deduped
 
 
+def _review_feedback_items(ckpt, feedback=""):
+    items = []
+
+    def add(value):
+        if isinstance(value, dict):
+            for key, val in value.items():
+                add(f"{key}: {val}")
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                add(item)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                items.append(text)
+
+    add(feedback)
+    if isinstance(ckpt, dict):
+        review = (ckpt.get("gate_results") or {}).get("review") or {}
+        if isinstance(review, dict):
+            for key in (
+                "feedback",
+                "reasoning",
+                "directive",
+                "blockers",
+                "failures",
+                "issues",
+                "code_quality_issues",
+            ):
+                add(review.get(key))
+
+    deduped = []
+    seen = set()
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
 def _critic_repair_target_files(ckpt, feedback):
     evidence = _critic_feedback_items(ckpt, feedback)
     evidence_files = _extract_quality_failure_files(evidence)
@@ -3746,6 +3812,65 @@ def _critic_repair_target_files(ckpt, feedback):
     return ["strategy.py"]
 
 
+def _review_primary_feedback_text(feedback):
+    """Trim reviewer feedback down to the blocking issue, excluding side notes."""
+    text = str(feedback or "").strip()
+    if not text:
+        return ""
+    text = re.split(r"(?i)\n\s*NOTE:\s+This is\b", text, maxsplit=1)[0].strip()
+    text = re.split(r"(?i)\bNote on\s+[A-Za-z0-9_./-]+\.py\s*:", text, maxsplit=1)[0].strip()
+    text = re.split(r"(?i)\bAlso notes?\b", text, maxsplit=1)[0].strip()
+    text = re.split(r"(?i)\bOther checks\s*:", text, maxsplit=1)[0].strip()
+    return text
+
+
+def _review_repair_target_files(ckpt, feedback):
+    primary = _review_primary_feedback_text(feedback)
+    evidence_files = _extract_quality_failure_files([primary]) if primary else []
+    allow_protocol_files = _precommit_protocol_compliance_failure([primary], feedback)
+    evidence_repair_files = _precommit_filter_repair_targets(
+        evidence_files,
+        allow_protocol_files=allow_protocol_files,
+    )
+    if evidence_repair_files:
+        return _limit_precommit_repair_targets(evidence_repair_files)
+
+    changed_files = _precommit_changed_python_files(ckpt)
+    changed_repair_files = _precommit_filter_repair_targets(
+        changed_files,
+        allow_protocol_files=allow_protocol_files,
+    )
+    if changed_repair_files:
+        return _limit_precommit_repair_targets(changed_repair_files)
+    return ["strategy.py"]
+
+
+def _review_repair_task_refresh_reason(tasks, ckpt, feedback=""):
+    if not _is_review_rework_checkpoint(ckpt):
+        return ""
+    if not tasks:
+        return "missing review repair task(s)"
+    expected = set(_review_repair_target_files(ckpt, feedback))
+    task_files = set(_task_target_filenames(tasks))
+    task_kinds = {
+        str(task.get("task_kind") or "").lower()
+        for task in tasks or []
+        if isinstance(task, dict)
+    }
+    task_text = " ".join(
+        str(task.get("worker_id", "")) + " " + str(task.get("worker_prompt", ""))[:500]
+        for task in tasks or []
+        if isinstance(task, dict)
+    ).lower()
+    if not any("review_repair" in kind for kind in task_kinds) and "code reviewer" not in task_text:
+        return "checkpoint task is not a review repair"
+    if expected and task_files != expected:
+        return "review repair targets are stale"
+    if "quality_repair" in task_text or any("quality_repair" in kind for kind in task_kinds):
+        return "review repair task still uses quality repair contract"
+    return ""
+
+
 def _checkpoint_rework_feedback(ckpt):
     if not isinstance(ckpt, dict):
         return ""
@@ -3757,6 +3882,10 @@ def _checkpoint_rework_feedback(ckpt):
         failed = _precommit_failure_items(ckpt)
         if failed:
             return "Precommit failed:\n- " + "\n- ".join(str(item) for item in failed[:20])
+    if _is_review_rework_checkpoint(ckpt):
+        failed = _review_feedback_items(ckpt)
+        if failed:
+            return "Reviewer rejected:\n- " + "\n- ".join(str(item) for item in failed[:20])
     if _is_critic_rework_checkpoint(ckpt):
         failed = _critic_feedback_items(ckpt)
         if failed:
@@ -5007,14 +5136,17 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
 
     master_plan = _checkpoint_master_plan(ckpt)
     is_precommit_rework = _is_precommit_rework_checkpoint(ckpt)
+    is_review_rework = _is_review_rework_checkpoint(ckpt)
     is_critic_rework = _is_critic_rework_checkpoint(ckpt)
     quality_contracts = (
         []
-        if is_precommit_rework or is_critic_rework
+        if is_precommit_rework or is_review_rework or is_critic_rework
         else _quality_repair_contracts(ckpt, feedback)
     )
     if is_precommit_rework:
         return _precommit_repair_tasks(ckpt, feedback)
+    elif is_review_rework:
+        target_files = _review_repair_target_files(ckpt, feedback)
     elif is_critic_rework:
         target_files = _critic_repair_target_files(ckpt, feedback)
     elif quality_contracts:
@@ -5031,7 +5163,24 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
 
     targets = target_files
     is_crossover = bool(ckpt.get("parent2_v")) or master_plan.get("strategy") == "crossover"
-    if is_critic_rework:
+    if is_review_rework:
+        preservation = (
+            "This is a Lead Code Reviewer hard-gate repair. Preserve the current "
+            "candidate in bots/national_v{next_v}; fix the exact code-quality "
+            "blocker named by the reviewer. Do not chase secondary notes unless "
+            "they are required to resolve the primary blocker."
+        )
+        method = (
+            "- Read all listed target files and the quoted reviewer feedback before editing.\n"
+            "- Resolve the primary rejected state coherently. If the feedback offers mutually exclusive paths, choose ONE complete path.\n"
+            "- Do not leave defined-but-unwired helpers, misleading comments/docstrings, unused imports, or half-restored systems.\n"
+            "- Keep the candidate's already-passing national protocol/card mapping behavior intact.\n"
+            "- Run the smallest relevant compile/import or self-test check before finishing."
+        )
+        worker_id = "auto_review_repair"
+        role = "Algorithmic Logic Architect"
+        task_kind = "crossover_review_repair" if is_crossover else "review_repair"
+    elif is_critic_rework:
         preservation = (
             "This is a Strategy Critic hard-gate repair. Preserve the current "
             "candidate in bots/national_v{next_v}; fix the exact strategic defect "
@@ -5118,6 +5267,13 @@ def _should_reset_before_rework(ckpt, tasks):
         for task in tasks or []
         if isinstance(task, dict)
     }
+    is_review_repair = (
+        "review_repair" in work_kind
+        or any("review_repair" in kind for kind in task_kinds)
+        or _is_review_rework_checkpoint(ckpt)
+    )
+    if is_review_repair:
+        return False
     is_critic_repair = (
         "critic_repair" in work_kind
         or any("critic_repair" in kind for kind in task_kinds)
@@ -5180,6 +5336,7 @@ async def execute_workers(args):
     if not reviewer_feedback and ckpt.get("stage") in rework_stages:
         reviewer_feedback = _checkpoint_rework_feedback(ckpt)
 
+    review_rework_checkpoint = _is_review_rework_checkpoint(ckpt)
     critic_rework_checkpoint = _is_critic_rework_checkpoint(ckpt)
     replace_checkpoint_tasks = False
 
@@ -5239,11 +5396,16 @@ async def execute_workers(args):
             _precommit_repair_task_refresh_reason(checkpoint_tasks, ckpt, reviewer_feedback)
             if checkpoint_tasks and _is_precommit_rework_checkpoint(ckpt) else ""
         )
+        review_stale_reason = (
+            _review_repair_task_refresh_reason(checkpoint_tasks, ckpt, reviewer_feedback)
+            if checkpoint_tasks and review_rework_checkpoint else ""
+        )
         quality_stale_reason = (
             _stale_quality_task_reason(checkpoint_tasks, ckpt, reviewer_feedback)
             if (
                 checkpoint_tasks
                 and not _is_precommit_rework_checkpoint(ckpt)
+                and not review_rework_checkpoint
                 and not critic_rework_checkpoint
             ) else ""
         )
@@ -5251,6 +5413,7 @@ async def execute_workers(args):
             not checkpoint_tasks
             or quality_stale_reason
             or precommit_stale_reason
+            or review_stale_reason
         ):
             tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback)
             if tasks:
@@ -5262,6 +5425,10 @@ async def execute_workers(args):
                 if checkpoint_tasks and _is_precommit_rework_checkpoint(ckpt):
                     event_message = (
                         f"Refreshed precommit repair task(s) for v{next_v}: {precommit_stale_reason}"
+                    )
+                elif checkpoint_tasks and review_stale_reason:
+                    event_message = (
+                        f"Refreshed review repair task(s) for v{next_v}: {review_stale_reason}"
                     )
                 elif quality_stale_reason:
                     event_message = (
@@ -5282,7 +5449,11 @@ async def execute_workers(args):
                         "parent2_v": ckpt.get("parent2_v"),
                         "old_target_files": sorted(_task_target_filenames(checkpoint_tasks)),
                         "new_target_files": sorted(_task_target_filenames(tasks)),
-                        "refresh_reason": precommit_stale_reason or quality_stale_reason,
+                        "refresh_reason": (
+                            precommit_stale_reason
+                            or review_stale_reason
+                            or quality_stale_reason
+                        ),
                         "num_tasks": len(tasks),
                         "task_kind": tasks[0].get("task_kind") if tasks else None,
                     },
@@ -5342,6 +5513,7 @@ async def execute_workers(args):
         tasks
         and ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}
         and not _is_precommit_rework_checkpoint(ckpt)
+        and not review_rework_checkpoint
         and not critic_rework_checkpoint
     ):
         failure_files = _quality_failure_target_files(ckpt, reviewer_feedback)
@@ -5396,10 +5568,36 @@ async def execute_workers(args):
                 },
             )
 
+    if tasks and review_rework_checkpoint:
+        review_stale_reason = _review_repair_task_refresh_reason(tasks, ckpt, reviewer_feedback)
+    else:
+        review_stale_reason = ""
+    if tasks and review_rework_checkpoint and review_stale_reason:
+        refreshed_tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback)
+        if refreshed_tasks:
+            old_files = sorted(_task_target_filenames(tasks))
+            tasks = refreshed_tasks
+            replace_checkpoint_tasks = True
+            log_system_event(
+                "pipeline.workers_tasks_refreshed",
+                "warn",
+                f"Refreshed review repair task(s) for v{next_v}; {review_stale_reason}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "old_target_files": old_files,
+                    "new_target_files": sorted(_task_target_filenames(refreshed_tasks)),
+                    "num_tasks": len(refreshed_tasks),
+                    "task_kind": refreshed_tasks[0].get("task_kind") if refreshed_tasks else None,
+                    "refresh_reason": review_stale_reason,
+                },
+            )
+
     if (
         tasks
         and ckpt.get("stage") in rework_stages
         and not _is_precommit_rework_checkpoint(ckpt)
+        and not review_rework_checkpoint
         and not critic_rework_checkpoint
     ):
         ordered_tasks = _order_quality_repair_tasks(tasks)
@@ -5592,7 +5790,13 @@ async def execute_workers(args):
             for task in tasks or []
             if isinstance(task, dict)
         }
-        if critic_rework_checkpoint or any("critic_repair" in kind for kind in task_kinds):
+        if review_rework_checkpoint or any("review_repair" in kind for kind in task_kinds):
+            rework_kind = (
+                "crossover_review_repair"
+                if ckpt.get("parent2_v") is not None or rework_kind.startswith("crossover_")
+                else "review_repair"
+            )
+        elif critic_rework_checkpoint or any("critic_repair" in kind for kind in task_kinds):
             rework_kind = (
                 "crossover_critic_repair"
                 if ckpt.get("parent2_v") is not None or rework_kind.startswith("crossover_")
@@ -5648,6 +5852,23 @@ async def execute_workers(args):
                     "pipeline.precommit_repair_in_place",
                     "warn",
                     f"Repairing v{next_v} in place after precommit failure; preserving candidate code",
+                    {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
+                )
+            elif "review_repair" in rework_kind:
+                event_type = (
+                    "pipeline.crossover_review_repair_in_place"
+                    if rework_kind.startswith("crossover_") or ckpt.get("parent2_v") is not None
+                    else "pipeline.review_repair_in_place"
+                )
+                event_message = (
+                    f"Repairing crossover v{next_v} in place after reviewer rejection; preserving fused candidate code"
+                    if event_type == "pipeline.crossover_review_repair_in_place"
+                    else f"Repairing v{next_v} in place after reviewer rejection; preserving generated candidate code"
+                )
+                log_system_event(
+                    event_type,
+                    "warn",
+                    event_message,
                     {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
                 )
             elif "critic_repair" in rework_kind:
@@ -5771,6 +5992,12 @@ async def execute_workers(args):
                 f"\n\nNOTE: This is an in-place precommit regression repair. The current code in "
                 f"bots/national_v{next_v}/ is the candidate that failed precommit; preserve it except "
                 f"for targeted EV/matchup regression fixes."
+            )
+        elif "review_repair" in rework_kind:
+            reviewer_feedback += (
+                f"\n\nNOTE: This is an in-place Lead Code Reviewer repair. The current code in "
+                f"bots/national_v{next_v}/ is the candidate that failed the reviewer hard gate; "
+                "preserve it except for the exact code-quality blocker described above."
             )
         elif "critic_repair" in rework_kind:
             reviewer_feedback += (
