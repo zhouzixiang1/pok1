@@ -3416,6 +3416,20 @@ def _is_precommit_rework_checkpoint(ckpt):
     )
 
 
+def _is_official_rework_checkpoint(ckpt):
+    if not isinstance(ckpt, dict):
+        return False
+    if ckpt.get("stage") == "official_failed":
+        return True
+    work_item = _checkpoint_work_item(ckpt)
+    route = work_item.get("route") if isinstance(work_item.get("route"), dict) else {}
+    return (
+        work_item.get("kind") == "official_repair"
+        or work_item.get("source_stage") == "official_failed"
+        or route.get("intent") == "official_rework"
+    )
+
+
 def _score_below_threshold(value, threshold=6.0):
     try:
         return float(value) < threshold
@@ -3430,6 +3444,8 @@ def _is_critic_rework_checkpoint(ckpt):
     if ckpt.get("stage") not in {"repair_planned", "rework_running"}:
         return False
     if _is_precommit_rework_checkpoint(ckpt):
+        return False
+    if _is_official_rework_checkpoint(ckpt):
         return False
     if _is_review_rework_checkpoint(ckpt):
         return False
@@ -3464,6 +3480,8 @@ def _is_review_rework_checkpoint(ckpt):
     if ckpt.get("stage") not in {"repair_planned", "rework_running"}:
         return False
     if _is_precommit_rework_checkpoint(ckpt):
+        return False
+    if _is_official_rework_checkpoint(ckpt):
         return False
     review = (ckpt.get("gate_results") or {}).get("review") or {}
     if not isinstance(review, dict) or not review:
@@ -3695,6 +3713,151 @@ def _precommit_repair_target_files(ckpt, feedback):
     return ["strategy.py"]
 
 
+def _official_failure_items(ckpt, feedback=""):
+    items = []
+
+    def add(value):
+        if isinstance(value, dict):
+            for key, val in value.items():
+                add(f"{key}: {val}")
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                add(item)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                items.append(text)
+
+    add(feedback)
+    if isinstance(ckpt, dict):
+        official = (ckpt.get("gate_results") or {}).get("official_full") or {}
+        if isinstance(official, dict):
+            add(official.get("issues"))
+            add(official.get("official_evidence_summary"))
+            status = official.get("status") if isinstance(official.get("status"), dict) else {}
+            add(status.get("official_llm_repair_guidance"))
+            add(status.get("official_llm_prompt_feedback"))
+            add(status.get("official_llm_analysis_summary"))
+            add(official.get("verdict"))
+    deduped = []
+    seen = set()
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
+def _official_failure_is_protocol(items, feedback=""):
+    text = "\n".join([*(str(item) for item in items or []), str(feedback or "")]).lower()
+    return any(marker in text for marker in (
+        "protocol",
+        "illegal",
+        "invalid action",
+        "unknown action",
+        "wire",
+        "raise format",
+        "stdout",
+        "botzone",
+        "json response",
+        "sticky",
+        "connectionrefused",
+        "brokenpipe",
+    ))
+
+
+def _official_repair_target_files(ckpt, feedback):
+    items = _official_failure_items(ckpt, feedback)
+    evidence_files = _extract_quality_failure_files(items)
+    if _official_failure_is_protocol(items, feedback):
+        protocol_targets = [
+            rel for rel in _precommit_filter_repair_targets(
+                evidence_files or ["national_bot.py"],
+                allow_protocol_files=True,
+            )
+            if rel in _PRECOMMIT_PROTOCOL_REPAIR_FILES or rel == "national_bot.py"
+        ]
+        return _limit_precommit_repair_targets(protocol_targets or ["national_bot.py"])
+
+    changed_files = _precommit_changed_python_files(ckpt)
+    strategy_candidates = [
+        rel for rel in _precommit_filter_repair_targets(changed_files, allow_protocol_files=False)
+        if rel in _PRECOMMIT_STRATEGY_REPAIR_FILES
+    ]
+    evidence_strategy = [
+        rel for rel in _precommit_filter_repair_targets(evidence_files, allow_protocol_files=False)
+        if rel in _PRECOMMIT_STRATEGY_REPAIR_FILES
+    ]
+    if strategy_candidates and evidence_strategy:
+        evidence_set = set(evidence_strategy)
+        intersected = [name for name in strategy_candidates if name in evidence_set]
+        if intersected:
+            return _limit_precommit_repair_targets(intersected)
+    if strategy_candidates:
+        return _limit_precommit_repair_targets(strategy_candidates)
+    if evidence_strategy:
+        return _limit_precommit_repair_targets(evidence_strategy)
+    try:
+        next_v = ckpt.get("next_v") if isinstance(ckpt, dict) else None
+        bot_dir = get_bot_dir(next_v) if next_v is not None else None
+        if bot_dir:
+            existing = [
+                name for name in _PRECOMMIT_STRATEGY_REPAIR_FILES
+                if (bot_dir / name).exists()
+            ]
+            if existing:
+                return _limit_precommit_repair_targets(existing[:2])
+    except Exception:
+        pass
+    return ["strategy.py"]
+
+
+def _official_repair_tasks(ckpt, feedback):
+    items = _official_failure_items(ckpt, feedback)
+    targets = _official_repair_target_files(ckpt, feedback)
+    protocol_repair = _official_failure_is_protocol(items, feedback)
+    evidence = "\n".join(str(item) for item in items[:30]) or str(feedback or "official full certification failed")
+    next_v = ckpt.get("next_v") if isinstance(ckpt, dict) else "?"
+    source_v = ckpt.get("source_v") if isinstance(ckpt, dict) else "?"
+    method = (
+        "- This is an official EXE full-certification repair, not a strength-rating tweak.\n"
+        "- Read the official_evidence_path and summarized round issues before editing.\n"
+        "- Fix only the bot-side reason the official 70-hand full gate could not complete.\n"
+        "- Do not loosen local validators, suppress official evidence, or mark certification passed manually.\n"
+        "- Keep the native TCP entrypoint direct; do not depend on bot_adapter."
+    )
+    if protocol_repair:
+        method += (
+            "\n- Protocol-focused: repair action serialization, pending-action gating, sticky-packet parsing, stdout cleanliness, or connection handling in the named entrypoint."
+            "\n- Every send must be exactly `fold`, `call`, `check`, `allin`, or `raise <amount>`."
+        )
+        role = "Protocol Integration Architect"
+    else:
+        method += (
+            "\n- Decision/state-focused: repair catastrophic seat asymmetry, full-match bankruptcy, all-in/runout state, or obvious state-machine misreads exposed by official 70-hand logs."
+            "\n- Use the official logs to identify why the match ended before 70 hands; do not optimize for EXE win/loss."
+        )
+        role = "Algorithmic Logic Architect"
+    prompt = (
+        f"Repair official EXE full-certification blocker for bots/national_v{next_v} from source v{source_v}.\n\n"
+        f"Official evidence:\n{evidence[:5000]}\n\n"
+        f"Required method:\n{method}\n\n"
+        "Verification expectation:\n"
+        "- Run the smallest compile/import check for edited files.\n"
+        "- If you edit protocol code, preserve `POK_OFFICIAL_ACTION_DELAY` and detailed `--log` communication tracing.\n"
+        "- End with the concrete official failure class you addressed."
+    )
+    return [{
+        "worker_id": "auto_official_full_repair",
+        "role": role,
+        "target_files": targets,
+        "must_change_files": targets,
+        "worker_prompt": prompt,
+        "task_kind": "official_repair",
+        "repair_blocker": "official_full",
+    }]
+
+
 def _critic_feedback_items(ckpt, feedback=""):
     items = []
 
@@ -3882,6 +4045,10 @@ def _checkpoint_rework_feedback(ckpt):
         failed = _precommit_failure_items(ckpt)
         if failed:
             return "Precommit failed:\n- " + "\n- ".join(str(item) for item in failed[:20])
+    if _is_official_rework_checkpoint(ckpt):
+        failed = _official_failure_items(ckpt)
+        if failed:
+            return "Official EXE full certification failed:\n- " + "\n- ".join(str(item) for item in failed[:20])
     if _is_review_rework_checkpoint(ckpt):
         failed = _review_feedback_items(ckpt)
         if failed:
@@ -5137,7 +5304,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     if not isinstance(ckpt, dict):
         return []
     stage = ckpt.get("stage")
-    if stage not in {"quality_failed", "repair_planned", "rework_running", "precommit_failed"}:
+    if stage not in {"quality_failed", "repair_planned", "rework_running", "precommit_failed", "official_failed"}:
         return []
 
     feedback = str(reviewer_feedback or _checkpoint_rework_feedback(ckpt) or "").strip()
@@ -5146,15 +5313,18 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
 
     master_plan = _checkpoint_master_plan(ckpt)
     is_precommit_rework = _is_precommit_rework_checkpoint(ckpt)
+    is_official_rework = _is_official_rework_checkpoint(ckpt)
     is_review_rework = _is_review_rework_checkpoint(ckpt)
     is_critic_rework = _is_critic_rework_checkpoint(ckpt)
     quality_contracts = (
         []
-        if is_precommit_rework or is_review_rework or is_critic_rework
+        if is_precommit_rework or is_official_rework or is_review_rework or is_critic_rework
         else _quality_repair_contracts(ckpt, feedback)
     )
     if is_precommit_rework:
         return _precommit_repair_tasks(ckpt, feedback)
+    elif is_official_rework:
+        return _official_repair_tasks(ckpt, feedback)
     elif is_review_rework:
         target_files = _review_repair_target_files(ckpt, feedback)
     elif is_critic_rework:
@@ -5267,7 +5437,7 @@ def _should_reset_before_rework(ckpt, tasks):
     if _is_precommit_rework_checkpoint(ckpt):
         return False
     stage = ckpt.get("stage")
-    if stage not in {"quality_failed", "repair_planned", "rework_running"}:
+    if stage not in {"quality_failed", "repair_planned", "rework_running", "official_failed"}:
         return True
     master_plan = ckpt.get("master_plan") if isinstance(ckpt.get("master_plan"), dict) else {}
     work_item = master_plan.get("work_item") if isinstance(master_plan.get("work_item"), dict) else {}
@@ -5277,6 +5447,13 @@ def _should_reset_before_rework(ckpt, tasks):
         for task in tasks or []
         if isinstance(task, dict)
     }
+    is_official_repair = (
+        "official_repair" in work_kind
+        or any("official_repair" in kind for kind in task_kinds)
+        or _is_official_rework_checkpoint(ckpt)
+    )
+    if is_official_repair:
+        return False
     is_review_repair = (
         "review_repair" in work_kind
         or any("review_repair" in kind for kind in task_kinds)
@@ -5335,7 +5512,7 @@ async def execute_workers(args):
             next_v,
             source_v,
         )
-    rework_stages = {"quality_failed", "precommit_failed", "repair_planned", "rework_running"}
+    rework_stages = {"quality_failed", "precommit_failed", "official_failed", "repair_planned", "rework_running"}
     if not ckpt.get("master_plan") and ckpt.get("stage") not in rework_stages:
         return _json_tool_result({
             "error": "execute_workers requires a master plan. Call run_master first to produce a task plan.",
@@ -5415,6 +5592,7 @@ async def execute_workers(args):
             if (
                 checkpoint_tasks
                 and not _is_precommit_rework_checkpoint(ckpt)
+                and not _is_official_rework_checkpoint(ckpt)
                 and not review_rework_checkpoint
                 and not critic_rework_checkpoint
             ) else ""
@@ -5523,6 +5701,7 @@ async def execute_workers(args):
         tasks
         and ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}
         and not _is_precommit_rework_checkpoint(ckpt)
+        and not _is_official_rework_checkpoint(ckpt)
         and not review_rework_checkpoint
         and not critic_rework_checkpoint
     ):
@@ -5607,6 +5786,7 @@ async def execute_workers(args):
         tasks
         and ckpt.get("stage") in rework_stages
         and not _is_precommit_rework_checkpoint(ckpt)
+        and not _is_official_rework_checkpoint(ckpt)
         and not review_rework_checkpoint
         and not critic_rework_checkpoint
     ):
@@ -5781,7 +5961,9 @@ async def execute_workers(args):
         "precommit_failed", "repair_planned", "rework_running"
     ):
         rework_kind = "quality_repair" if ckpt.get("stage") == "quality_failed" else "gate_rework"
-        if ckpt.get("stage") == "precommit_failed":
+        if ckpt.get("stage") == "official_failed":
+            rework_kind = "official_repair"
+        elif ckpt.get("stage") == "precommit_failed":
             rework_kind = "precommit_repair"
         elif ckpt.get("parent2_v") is not None:
             rework_kind = f"crossover_{rework_kind}"
@@ -5812,6 +5994,8 @@ async def execute_workers(args):
                 if ckpt.get("parent2_v") is not None or rework_kind.startswith("crossover_")
                 else "critic_repair"
             )
+        elif _is_official_rework_checkpoint(ckpt) or any("official_repair" in kind for kind in task_kinds):
+            rework_kind = "official_repair"
         is_precommit_rework = rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt)
         if is_precommit_rework:
             prior_rework_count = int(ckpt.get("precommit_rework_count") or 0)
@@ -5979,6 +6163,7 @@ async def execute_workers(args):
         if (
             is_quality_rework
             and not _is_precommit_rework_checkpoint(ckpt)
+            and not _is_official_rework_checkpoint(ckpt)
             and ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}
         ):
             force_sequential_rework = True
@@ -6002,6 +6187,13 @@ async def execute_workers(args):
                 f"\n\nNOTE: This is an in-place precommit regression repair. The current code in "
                 f"bots/national_v{next_v}/ is the candidate that failed precommit; preserve it except "
                 f"for targeted EV/matchup regression fixes."
+            )
+        elif rework_kind == "official_repair" or _is_official_rework_checkpoint(ckpt):
+            reviewer_feedback += (
+                f"\n\nNOTE: This is an in-place official EXE full-certification repair. The current code in "
+                f"bots/national_v{next_v}/ passed local gates but failed the real Windows national platform. "
+                "Preserve the candidate except for the exact compliance/state-machine/obvious-decision blocker "
+                "shown in the official evidence; do not use EXE win/loss as strength tuning evidence."
             )
         elif "review_repair" in rework_kind:
             reviewer_feedback += (

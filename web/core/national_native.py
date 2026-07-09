@@ -560,7 +560,11 @@ def run_client(host: str, port: int, name: str, log_path: str = "", seat: str = 
         sock.settimeout(180)
         buffer = ""
         while True:
-            data = sock.recv(4096)
+            try:
+                data = sock.recv(4096)
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as exc:
+                _log(f"RECV closed_by_server exception={type(exc).__name__}: {exc}")
+                return 0
             if not data:
                 _log("RECV empty -> server closed")
                 return 0

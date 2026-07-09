@@ -310,6 +310,84 @@ def _official_preferred_opponent() -> str | None:
     return str(fallback) if fallback.exists() else None
 
 
+def _official_gate_feedback(official_full_gate: dict) -> str:
+    """Build bounded official-full feedback for checkpoint repair/investigation."""
+    status = official_full_gate.get("status") or {}
+    verdict = official_full_gate.get("verdict") or {}
+    evidence_summary = official_full_gate.get("official_evidence_summary") or {}
+    parts = [
+        "Official EXE full certification failed before commit.",
+        "The official platform is a compliance/state-machine oracle here, not a strength rating source.",
+        f"status={status.get('status')} mode={status.get('mode')} "
+        f"classification={verdict.get('classification') or evidence_summary.get('classification')} "
+        f"blocking={bool(verdict.get('blocking') or evidence_summary.get('blocking'))} "
+        f"inconclusive={bool(verdict.get('inconclusive') or evidence_summary.get('inconclusive'))}",
+    ]
+    evidence_path = official_full_gate.get("official_evidence_path")
+    if evidence_path:
+        parts.append(f"evidence_path={evidence_path}")
+    issues = [str(item) for item in (official_full_gate.get("issues") or []) if str(item).strip()]
+    if issues:
+        parts.append("issues:\n- " + "\n- ".join(issues[:20]))
+    llm_summary = status.get("official_llm_analysis_summary") or {}
+    repair_guidance = status.get("official_llm_repair_guidance") or llm_summary.get("repair_guidance")
+    prompt_feedback = status.get("official_llm_prompt_feedback") or llm_summary.get("prompt_feedback")
+    if repair_guidance:
+        parts.append(f"llm_repair_guidance:\n{str(repair_guidance)[:2000]}")
+    if prompt_feedback:
+        parts.append(f"llm_prompt_feedback:\n{str(prompt_feedback)[:2000]}")
+    return "\n\n".join(parts)[:8000]
+
+
+def _official_gate_is_bot_blocker(official_full_gate: dict) -> bool:
+    verdict = official_full_gate.get("verdict") or {}
+    evidence_summary = official_full_gate.get("official_evidence_summary") or {}
+    if bool(verdict.get("blocking")):
+        return True
+    if bool(evidence_summary.get("blocking")) and not bool(evidence_summary.get("inconclusive")):
+        return True
+    classification = str(verdict.get("classification") or evidence_summary.get("classification") or "").lower()
+    return classification in {
+        "protocol_violation",
+        "official_full_incomplete",
+        "obvious_decision_error",
+        "state_machine",
+        "communication",
+        "timeout",
+    }
+
+
+def _record_official_full_gate_checkpoint(v: int, source_v: int, ckpt: dict | None, official_full_gate: dict) -> str:
+    """Persist a non-reentrant official-full outcome and return the new stage."""
+    bot_blocker = _official_gate_is_bot_blocker(official_full_gate)
+    stage = "official_failed" if bot_blocker else "official_inconclusive"
+    gate_payload = {
+        **official_full_gate,
+        "passed": False,
+        "repairable_by_workers": bot_blocker,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    write_pipeline_checkpoint(
+        v,
+        source_v,
+        stage,
+        master_plan=(ckpt or {}).get("master_plan"),
+        reviewer_feedback=_official_gate_feedback(official_full_gate),
+        generation_attempt=(ckpt or {}).get("generation_attempt", 0),
+        gate_results={"official_full": gate_payload},
+        worker_failure_count=(ckpt or {}).get("worker_failure_count", 0),
+        parent2_v=(ckpt or {}).get("parent2_v"),
+        direction_audit=(ckpt or {}).get("direction_audit"),
+        audit_context=(ckpt or {}).get("audit_context", {}) or {},
+        audit_attempt=(ckpt or {}).get("audit_attempt", 0),
+        precommit_attempt=(ckpt or {}).get("precommit_attempt", 0),
+        precommit_rework_count=(ckpt or {}).get("precommit_rework_count", 0),
+        literature_probe=(ckpt or {}).get("literature_probe"),
+        prepare_scope_files=(ckpt or {}).get("prepare_scope_files", []) or [],
+    )
+    return stage
+
+
 async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, gate_results) -> dict:
     execution_mode = _checkpoint_execution_mode(ckpt, gate_results)
     if execution_mode != "native_tcp":
@@ -424,6 +502,7 @@ async def commit_bot(args):
     official_certification_status = {}
     official_full_gate = await _run_official_full_commit_gate(v, source_v, bot_dir, ckpt, gate_results)
     if not official_full_gate.get("passed"):
+        official_stage = _record_official_full_gate_checkpoint(v, source_v, ckpt, official_full_gate)
         try:
             log_system_event(
                 "pipeline.commit_blocked_official_full",
@@ -437,6 +516,7 @@ async def commit_bot(args):
                     "issues": official_full_gate.get("issues", [])[:10],
                     "opponent_selection": official_full_gate.get("opponent_selection"),
                     "official_evidence_path": official_full_gate.get("official_evidence_path"),
+                    "checkpoint_stage": official_stage,
                 },
             )
         except Exception:
@@ -445,6 +525,7 @@ async def commit_bot(args):
             "error": official_full_gate.get("error") or "COMMIT BLOCKED: official EXE full certification did not pass.",
             "version": v,
             "source_v": source_v,
+            "checkpoint_stage": official_stage,
             "official_full_gate": official_full_gate,
         })
     if not official_full_gate.get("skipped"):

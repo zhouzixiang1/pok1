@@ -51,6 +51,7 @@ DEFAULT_PORT = 10001
 CRITICAL_LOG_PATTERNS = (
     "Traceback",
     "ConnectionRefusedError",
+    "ConnectionResetError",
     "BrokenPipeError",
     "TimeoutError",
     "unknown action",
@@ -514,6 +515,15 @@ def _port_busy_before_start(config: OfficialPlatformConfig) -> bool:
     return _port_listening(config.host, config.port)
 
 
+def _wait_for_port_free(config: OfficialPlatformConfig, *, timeout_sec: float = 8.0) -> bool:
+    deadline = time.time() + max(0.0, timeout_sec)
+    while time.time() < deadline:
+        if not _port_listening(config.host, config.port):
+            return True
+        time.sleep(0.25)
+    return not _port_listening(config.host, config.port)
+
+
 def _launch_bot(
     bot: BotLaunchConfig,
     *,
@@ -763,15 +773,18 @@ def run_official_round(
         receipt["issues"].extend(environment["issues"])
         _write_json(round_dir / "receipt.json", receipt)
         return receipt
+    cleanup_env = os.environ.copy()
+    cleanup_env.update(cfg.locale_env())
+    # The official EXE is a single-instance, timing-sensitive Windows program.
+    # Start every round from a clean Wine prefix so previous windows, wineserver
+    # children, or stale listeners cannot leak into the next certification round.
+    _kill_wineprefix(cleanup_env)
+    _wait_for_wine_idle(cleanup_env, timeout_sec=3.0)
+    _wait_for_port_free(cfg, timeout_sec=3.0)
     if _port_busy_before_start(cfg):
-        cleanup_env = os.environ.copy()
-        cleanup_env.update(cfg.locale_env())
-        _kill_wineprefix(cleanup_env)
-        _wait_for_wine_idle(cleanup_env, timeout_sec=3.0)
-        if _port_busy_before_start(cfg):
-            receipt["issues"].append(f"port_busy_before_start: {cfg.host}:{cfg.port}")
-            _write_json(round_dir / "receipt.json", receipt)
-            return receipt
+        receipt["issues"].append(f"port_busy_before_start: {cfg.host}:{cfg.port}")
+        _write_json(round_dir / "receipt.json", receipt)
+        return receipt
 
     display = _choose_display()
     xvfb_proc: subprocess.Popen | None = None
@@ -908,9 +921,10 @@ def run_official_round(
         _terminate_process(wine_proc)
         if platform_env is not None:
             _wait_for_wine_idle(platform_env, timeout_sec=cfg.artifact_grace_sec)
-            if _port_busy_before_start(cfg):
-                _kill_wineprefix(platform_env)
-                _wait_for_wine_idle(platform_env, timeout_sec=3.0)
+            _kill_wineprefix(platform_env)
+            _wait_for_wine_idle(platform_env, timeout_sec=3.0)
+            if not _wait_for_port_free(cfg, timeout_sec=5.0):
+                receipt["issues"].append(f"port_busy_after_cleanup: {cfg.host}:{cfg.port}")
         _terminate_process(xvfb_proc)
         for proc in (wine_proc, xvfb_proc):
             _close_process_files(proc)

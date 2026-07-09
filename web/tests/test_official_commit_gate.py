@@ -117,3 +117,66 @@ def test_official_full_commit_gate_skips_non_native_workflow(monkeypatch, tmp_pa
     assert result["passed"] is True
     assert result["skipped"] is True
     assert result["reason"] == "non_native_tcp_workflow"
+
+
+def test_official_full_gate_records_repairable_checkpoint_stage(monkeypatch, tmp_path):
+    import tool_commit
+
+    writes = []
+
+    def fake_write_checkpoint(*args, **kwargs):
+        writes.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(tool_commit, "write_pipeline_checkpoint", fake_write_checkpoint)
+    stage = tool_commit._record_official_full_gate_checkpoint(
+        134,
+        120,
+        {
+            "next_v": 134,
+            "source_v": 120,
+            "stage": "verified",
+            "master_plan": {"strategy": "crossover"},
+            "gate_results": {"precommit_eval": {"passed": True}},
+            "parent2_v": 117,
+        },
+        {
+            "passed": False,
+            "status": {"status": "official-failed", "mode": "full"},
+            "verdict": {"blocking": True, "classification": "official_full_incomplete"},
+            "official_evidence_path": str(tmp_path / "evidence.json"),
+            "official_evidence_summary": {"classification": "obvious_decision_error", "blocking": True},
+            "issues": ["official_full_round_incomplete_after_progress: hands_started=33 target=70"],
+        },
+    )
+
+    assert stage == "official_failed"
+    args, kwargs = writes[0]
+    assert args[:3] == (134, 120, "official_failed")
+    assert kwargs["gate_results"]["official_full"]["repairable_by_workers"] is True
+    assert "official_full_round_incomplete_after_progress" in kwargs["reviewer_feedback"]
+
+
+def test_official_full_gate_records_inconclusive_checkpoint_stage(monkeypatch, tmp_path):
+    import tool_commit
+
+    writes = []
+    monkeypatch.setattr(tool_commit, "write_pipeline_checkpoint", lambda *a, **k: writes.append((a, k)) or True)
+
+    stage = tool_commit._record_official_full_gate_checkpoint(
+        134,
+        120,
+        {"next_v": 134, "source_v": 120, "stage": "verified"},
+        {
+            "passed": False,
+            "status": {"status": "official-inconclusive", "mode": "full"},
+            "verdict": {"blocking": False, "inconclusive": True, "classification": "inconclusive"},
+            "official_evidence_summary": {"classification": "harness", "blocking": False, "inconclusive": True},
+            "issues": ["official_full_round_no_game_progress: target=70"],
+        },
+    )
+
+    assert stage == "official_inconclusive"
+    args, kwargs = writes[0]
+    assert args[:3] == (134, 120, "official_inconclusive")
+    assert kwargs["gate_results"]["official_full"]["repairable_by_workers"] is False

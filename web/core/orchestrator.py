@@ -201,6 +201,7 @@ _CORRECTIVE_RETRY_STAGES_BY_TOOL = {
         "reviewed",
         "critic_checked",
         "precommit_failed",
+        "official_failed",
         "repair_planned",
         "rework_running",
     },
@@ -1931,7 +1932,7 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
                           "direction_audited", "master_planned", "workers_done",
                           "quality_failed", "quality_passed", "reviewed",
                           "critic_checked", "precommit_failed", "repair_planned",
-                          "rework_running", "verified"}
+                          "rework_running", "verified", "official_failed"}
 
     while True:
         if shutdown_mgr and shutdown_mgr.is_shutting_down:

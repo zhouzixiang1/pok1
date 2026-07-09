@@ -59,6 +59,13 @@ PARENT_BLOCKING_FAILURE_MARKERS = (
     "protocol_action_whitespace",
     "platform_silent_timeout_gap",
     "official_log_silent_timeout_gap",
+    "official_full_round_incomplete_after_progress",
+    "official_full_early_platform_close_after_progress",
+)
+
+OFFICIAL_DECISION_FAILURE_MARKERS = (
+    "official_full_round_incomplete_after_progress",
+    "official_full_early_platform_close_after_progress",
 )
 
 COMPLIANCE_INCONCLUSIVE_FAILURE_MARKERS = (
@@ -342,6 +349,31 @@ def receipt_validation_issues(receipt: dict[str, Any], spec: CertificationSpec) 
     if spec.mode == "full" or spec.target_hands >= 70:
         if thp_hands < spec.target_hands:
             issues.append(f"thp_incomplete_for_full_certification: hands={thp_hands} target={spec.target_hands}")
+            summary = receipt.get("log_summary") or {}
+            try:
+                hands_started = int(summary.get("hands_started_min", 0) or 0)
+                settlements = int(summary.get("settlements_min", 0) or 0)
+            except Exception:
+                hands_started = 0
+                settlements = 0
+            if hands_started > 0 and hands_started < spec.target_hands:
+                net_abs = 0
+                for side in ("bot_a", "bot_b"):
+                    side_summary = summary.get(side) if isinstance(summary.get(side), dict) else {}
+                    try:
+                        net_abs = max(net_abs, abs(int(side_summary.get("net_chips", 0) or 0)))
+                    except Exception:
+                        pass
+                issues.append(
+                    "official_full_round_incomplete_after_progress: "
+                    f"hands_started={hands_started} settlements={settlements} "
+                    f"target={spec.target_hands} max_abs_net_chips={net_abs}"
+                )
+            elif hands_started == 0:
+                issues.append(
+                    "official_full_round_no_game_progress: "
+                    f"target={spec.target_hands}"
+                )
     elif thp_hands < spec.target_hands and not _log_target_reached(receipt, spec.target_hands):
         # Short smoke stops the official EXE before its natural 70-hand THP export.
         # Use bot/platform logs as smoke evidence; full certification still requires THP.
@@ -548,11 +580,26 @@ def official_compliance_verdict(status: dict[str, Any]) -> dict[str, Any]:
         issue for issue in issues
         if _issue_has_marker(issue, PARENT_BLOCKING_FAILURE_MARKERS)
     ]
+    decision_issues = [
+        issue for issue in issues
+        if _issue_has_marker(issue, OFFICIAL_DECISION_FAILURE_MARKERS)
+    ]
     inconclusive_issues = [
         issue for issue in issues
         if _issue_has_marker(issue, COMPLIANCE_INCONCLUSIVE_FAILURE_MARKERS)
     ]
     if violation_issues:
+        if decision_issues and len(decision_issues) == len(violation_issues):
+            return {
+                "ok": False,
+                "blocking": True,
+                "classification": "official_full_incomplete",
+                "inconclusive": False,
+                "violation": False,
+                "issues": issues,
+                "violation_issues": violation_issues,
+                "decision_issues": decision_issues,
+            }
         return {
             "ok": False,
             "blocking": True,

@@ -30,6 +30,8 @@ TARGET_DIR_STAGES = {
     "repair_planned",
     "rework_running",
     "verified",
+    "official_failed",
+    "official_inconclusive",
     "infra_timed_out",
 }
 HEAD_DRIFT_REPAIR_STAGES = {
@@ -37,6 +39,7 @@ HEAD_DRIFT_REPAIR_STAGES = {
     "precommit_failed",
     "repair_planned",
     "rework_running",
+    "official_failed",
 }
 HEAD_DRIFT_POST_QUALITY_STAGES = {
     "quality_passed",
@@ -264,6 +267,10 @@ def checkpoint_recovery_diagnostics(
     }
     if not active:
         return diag
+
+    if stage == "official_inconclusive":
+        issues.append("official_inconclusive_requires_infra_intervention")
+        warnings.append("official_full_gate_not_recoverable_by_bot_rework")
 
     snapshot = snapshot if snapshot is not None else _snapshot_for_recovery(root)
     baseline = checkpoint.get("repo_baseline")

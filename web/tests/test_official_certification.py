@@ -366,6 +366,50 @@ def test_inconclusive_status_includes_non_violation_validation_issues(tmp_path, 
     assert result["official_evidence_summary"]["inconclusive"] is True
 
 
+def test_full_round_incomplete_after_progress_is_blocking_official_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("full", candidate, opponent=opponent)
+    receipt = {
+        "passed": False,
+        "issues": ["BotA_exited_early: rc=0", "thp_missing_for_full_70_hand_round"],
+        "target_hands": 70,
+        "log_summary": {
+            "hands_started_min": 33,
+            "settlements_min": 32,
+            "bot_a": {"net_chips": -19466},
+            "bot_b": {"net_chips": 19466},
+            "issues": [],
+        },
+        "artifacts": {"thp_summaries": []},
+    }
+    report = {
+        "passed": False,
+        "issues": [],
+        "report": {
+            "summary": {"suite_dir": str(tmp_path / "suite"), "rounds_run": 8},
+            "rounds": [receipt for _ in range(8)],
+        },
+    }
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *_args, **_kwargs: FakeResult(report),
+        queue_on_busy=False,
+    )
+    verdict = official_compliance_verdict(result)
+
+    assert result["status"] == STATUS_FAILED
+    assert verdict["blocking"] is True
+    assert verdict["classification"] == "official_full_incomplete"
+    assert result["official_evidence_summary"]["classification"] == "obvious_decision_error"
+    assert result["official_evidence_summary"]["blocking"] is True
+    assert any("official_full_round_incomplete_after_progress" in issue for issue in result["issues"])
+
+
 def test_protocol_violation_result_uses_failed_status(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v1")

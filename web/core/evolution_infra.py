@@ -363,12 +363,16 @@ _REPO_BASELINE_VALIDATION_STAGES = frozenset({
     "quality_passed",
     "precommit_failed",
     "verified",
+    "official_failed",
+    "official_inconclusive",
 })
 _REPO_BASELINE_VALIDATION_GATES = {
     "quality_failed": "quality",
     "quality_passed": "quality",
     "precommit_failed": "precommit_eval",
     "verified": "precommit_eval",
+    "official_failed": "official_full",
+    "official_inconclusive": "official_full",
 }
 _REPO_BASELINE_PLANNING_STAGES = frozenset({
     "direction_audited",

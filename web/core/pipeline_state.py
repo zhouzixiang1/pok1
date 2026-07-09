@@ -24,6 +24,8 @@ STAGE_ORDER = [
     "repair_planned",
     "rework_running",
     "verified",
+    "official_failed",
+    "official_inconclusive",
     "archived",
 ]
 
@@ -43,7 +45,9 @@ STAGE_GATE_ALLOWLIST = {
     "repair_planned": {"quality", "review", "critic", "precommit_eval"},
     "rework_running": {"quality", "review", "critic", "precommit_eval"},
     "verified": {"quality", "review", "critic", "precommit_eval"},
-    "archived": {"quality", "review", "critic", "precommit_eval"},
+    "official_failed": {"quality", "review", "critic", "precommit_eval", "official_full"},
+    "official_inconclusive": {"quality", "review", "critic", "precommit_eval", "official_full"},
+    "archived": {"quality", "review", "critic", "precommit_eval", "official_full"},
 }
 
 NEXT_TOOL_BY_STAGE = {
@@ -62,6 +66,8 @@ NEXT_TOOL_BY_STAGE = {
     "repair_planned": "execute_workers",
     "rework_running": "execute_workers",
     "verified": "commit_bot",
+    "official_failed": "execute_workers",
+    "official_inconclusive": None,
     "archived": "run_archivist",
     "timed_out": "prepare_next_gen",
     "infra_timed_out": "run_precommit_eval",
@@ -188,6 +194,14 @@ HEAD_DRIFT_RESUME_POLICY = {
         "requires_contract_unchanged": True,
         "branch_alias_allowed": False,
     },
+    "official_failed": {
+        "allowed_tools": ("execute_workers",),
+        "resume_kind": "repair",
+        "warning_suffix": "official_repair",
+        "requires_target": True,
+        "requires_contract_unchanged": True,
+        "branch_alias_allowed": True,
+    },
 }
 
 
@@ -307,6 +321,7 @@ def validate_stage_transition(current_stage, proposed_stage):
         "critic_checked",
         "precommit_failed",
         "verified",
+        "official_failed",
     }
     if proposed_stage == "master_planned" and current_stage in retry_sources:
         return True, "retry_reset"
@@ -330,6 +345,8 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "rework_done"
     if proposed_stage == "workers_done" and current_stage == "verified":
         return True, "verified_rework_reset"
+    if proposed_stage == "workers_done" and current_stage == "official_failed":
+        return True, "official_rework_done"
     if current_stage == "critic_checked" and proposed_stage == "reviewed":
         return True, "review_recheck"
 
@@ -389,7 +406,7 @@ def route_policy(checkpoint: dict | None) -> dict:
     profile_refresh_needed = False
 
     if (
-        stage in {"quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified"}
+        stage in {"quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified", "official_failed"}
         and "quality" in gate_results
         and not _quality_gate_matches_active_workflow(gate_results)
     ):
@@ -428,6 +445,8 @@ def route_policy(checkpoint: dict | None) -> dict:
             intent = "quality_rework"
         elif stage == "precommit_failed":
             intent = "precommit_rework"
+        elif stage == "official_failed":
+            intent = "official_rework"
         elif stage in {"quality_passed", "reviewed"}:
             intent = "gate"
         elif stage == "master_planned":
@@ -460,6 +479,18 @@ def route_policy(checkpoint: dict | None) -> dict:
         directive = (
             "Precommit failed. Call execute_workers with the exact precommit blockers; "
             "do not retry precommit on unchanged code."
+        )
+    elif stage == "official_failed":
+        directive = (
+            "Official EXE full certification found a deterministic bot-side compliance, "
+            "state-machine, or obvious decision blocker. Call execute_workers with the "
+            "official_full evidence; do not retry commit_bot on unchanged code."
+        )
+    elif stage == "official_inconclusive":
+        directive = (
+            "Official EXE full certification is inconclusive because the platform/harness "
+            "evidence is insufficient. Do not call commit_bot or edit bot code; fix the "
+            "official harness/runtime evidence path, then rerun certification."
         )
     elif intent == "critic_rework":
         directive = (

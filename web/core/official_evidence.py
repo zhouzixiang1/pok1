@@ -40,12 +40,15 @@ COMMUNICATION_MARKERS = (
     "unknown_server_message",
     "connectionrefused",
     "brokenpipe",
-    "connection reset",
     "protocol error",
     "stdout",
-    "stderr",
     "json response",
     "botzone",
+)
+DECISION_MARKERS = (
+    "official_full_round_incomplete_after_progress",
+    "official_full_early_platform_close_after_progress",
+    "obvious_decision_error",
 )
 TIMEOUT_MARKERS = (
     "timeout",
@@ -66,6 +69,8 @@ HARNESS_MARKERS = (
     "exe_missing",
     "wineprefix_missing",
     "official_platform_lock_timeout",
+    "connection reset",
+    "connectionreseterror",
 )
 ARTIFACT_KEYS = (
     "receipt",
@@ -203,6 +208,8 @@ def classify_issues(issues: list[str]) -> dict[str, Any]:
     buckets: list[str] = []
     if any(marker in lower for marker in PROTOCOL_MARKERS):
         buckets.append("protocol")
+    if any(marker in lower for marker in DECISION_MARKERS):
+        buckets.append("obvious_decision_error")
     if any(marker in lower for marker in COMMUNICATION_MARKERS):
         buckets.append("communication")
     if any(marker in lower for marker in TIMEOUT_MARKERS):
@@ -211,7 +218,7 @@ def classify_issues(issues: list[str]) -> dict[str, Any]:
         buckets.append("harness")
     if not buckets:
         buckets.append("inconclusive")
-    blocking = any(bucket in {"protocol", "communication", "timeout"} for bucket in buckets)
+    blocking = any(bucket in {"protocol", "communication", "timeout", "obvious_decision_error"} for bucket in buckets)
     return {
         "classification": buckets[0],
         "buckets": buckets,
@@ -220,6 +227,64 @@ def classify_issues(issues: list[str]) -> dict[str, Any]:
         "violation": blocking,
         "blocking_issue_count": len(issues) if blocking else 0,
     }
+
+
+def classify_round_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Classify one official round with receipt context, not issue text alone."""
+    issues = [str(issue) for issue in receipt.get("issues") or []]
+    summary = receipt.get("log_summary") or {}
+    try:
+        hands_started = int(summary.get("hands_started_min", 0) or 0)
+        settlements = int(summary.get("settlements_min", 0) or 0)
+        target_hands = int(receipt.get("target_hands", 0) or 0)
+    except Exception:
+        hands_started = 0
+        settlements = 0
+        target_hands = 0
+    text = "\n".join(issues).lower()
+    base = classify_issues(issues)
+    if base.get("classification") == "protocol":
+        return base
+    if target_hands >= 70 and 0 < hands_started < target_hands:
+        if any(marker in text for marker in (
+            "thp_missing_for_full_70_hand_round",
+            "thp_incomplete_for_full_certification",
+            "exited_early",
+            "server closed",
+            "official_full_round_incomplete_after_progress",
+        )):
+            return {
+                "classification": "obvious_decision_error",
+                "buckets": ["obvious_decision_error"],
+                "blocking": True,
+                "inconclusive": False,
+                "violation": False,
+                "blocking_issue_count": max(1, len(issues)),
+                "reason": (
+                    "full official round made game progress but ended before "
+                    f"{target_hands} hands (hands_started={hands_started}, settlements={settlements})"
+                ),
+            }
+    if hands_started == 0 and any(marker in text for marker in (
+        "connectionreseterror",
+        "connection reset",
+        "official_full_round_no_game_progress",
+        "platform_exited_early",
+        "port_busy_before_start",
+        "official platform did not listen",
+        "wine",
+        "xvfb",
+    )):
+        return {
+            "classification": "harness",
+            "buckets": ["harness"],
+            "blocking": False,
+            "inconclusive": True,
+            "violation": False,
+            "blocking_issue_count": 0,
+            "reason": "official platform produced no game-progress evidence",
+        }
+    return base
 
 
 def _round_dir_from_receipt(receipt: dict[str, Any]) -> Path | None:
@@ -327,7 +392,7 @@ def _round_evidence(receipt: dict[str, Any], *, max_log_chars: int) -> dict[str,
         "duration_sec": receipt.get("duration_sec"),
         "bot_returncodes": receipt.get("bot_returncodes", {}),
         "issues": list(dict.fromkeys(issues))[:MAX_ISSUES],
-        "classification": classify_issues(list(dict.fromkeys(issues)))["classification"],
+        "classification": classify_round_receipt({**receipt, "issues": list(dict.fromkeys(issues))})["classification"],
         "log_summary": receipt.get("log_summary", {}),
         "thp_summaries": artifacts.get("thp_summaries", []),
         "wire_replay_summary": replay_summary,
@@ -362,8 +427,36 @@ def build_official_evidence_bundle(
     rounds = [dict(item) for item in (report.get("rounds") or []) if isinstance(item, dict)]
     summary = _suite_summary(payload, report)
     issues = _all_issues(payload, report, rounds)
-    verdict = classify_issues(issues)
     evidence_rounds = [_round_evidence(receipt, max_log_chars=max_log_chars) for receipt in rounds]
+    round_verdicts = [
+        classify_round_receipt({**receipt, "issues": round_item.get("issues") or receipt.get("issues") or []})
+        for receipt, round_item in zip(rounds, evidence_rounds)
+    ]
+    verdict = classify_issues(issues)
+    if any(item.get("blocking") for item in round_verdicts):
+        blocking_round = next(item for item in round_verdicts if item.get("blocking"))
+        verdict = {
+            **verdict,
+            "classification": blocking_round.get("classification") or verdict.get("classification"),
+            "buckets": list(dict.fromkeys([
+                *(blocking_round.get("buckets") or []),
+                *(verdict.get("buckets") or []),
+            ])),
+            "blocking": True,
+            "inconclusive": False,
+            "violation": bool(verdict.get("violation")) or bool(blocking_round.get("violation")),
+            "blocking_issue_count": max(int(verdict.get("blocking_issue_count") or 0), 1),
+        }
+    elif round_verdicts and all(item.get("inconclusive") for item in round_verdicts if item):
+        verdict = {
+            **verdict,
+            "classification": "harness",
+            "buckets": ["harness"],
+            "blocking": False,
+            "inconclusive": True,
+            "violation": False,
+            "blocking_issue_count": 0,
+        }
     raw_passed_value = payload.get("passed", report.get("passed"))
     raw_passed = (
         bool(raw_passed_value)
@@ -387,6 +480,7 @@ def build_official_evidence_bundle(
         "deterministic": {
             "passed": passed,
             "issues": issues,
+            "round_classifications": round_verdicts,
             "rounds_requested": summary.get("rounds_requested"),
             "rounds_run": summary.get("rounds_run", len(rounds)),
             "target_hands": summary.get("target_hands") or payload.get("hands_per_pair"),

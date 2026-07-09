@@ -121,3 +121,82 @@ def test_evidence_from_raw_summary_infers_pass_without_strength_rating(tmp_path)
     assert bundle["deterministic"]["classification"] == "pass"
     assert bundle["deterministic"]["blocking"] is False
     assert "rating" not in json.dumps(bundle, ensure_ascii=False).lower()
+
+
+def test_evidence_classifies_full_incomplete_after_progress_as_obvious_decision_blocker(tmp_path):
+    report = {
+        "candidate": "/tmp/national_v134",
+        "summary": {
+            "suite_dir": str(tmp_path / "suite"),
+            "rounds_requested": 1,
+            "rounds_run": 1,
+            "target_hands": 70,
+        },
+        "rounds": [
+            {
+                "round_id": "self_play_02",
+                "round_kind": "self_play",
+                "round_index": 2,
+                "target_hands": 70,
+                "passed": False,
+                "issues": [
+                    "BotA_exited_early: rc=0",
+                    "thp_missing_for_full_70_hand_round",
+                    "official_full_round_incomplete_after_progress: hands_started=33 settlements=32 target=70 max_abs_net_chips=19466",
+                ],
+                "log_summary": {
+                    "hands_started_min": 33,
+                    "settlements_min": 32,
+                    "bot_a": {"net_chips": -19466},
+                    "bot_b": {"net_chips": 19466},
+                    "issues": [],
+                },
+                "artifacts": {"round_dir": str(tmp_path / "suite" / "self_play_02"), "thp_summaries": []},
+            }
+        ],
+        "issues": [],
+    }
+
+    bundle = build_official_evidence_bundle(report)
+
+    assert bundle["deterministic"]["classification"] == "obvious_decision_error"
+    assert bundle["deterministic"]["blocking"] is True
+    assert bundle["deterministic"]["inconclusive"] is False
+    assert bundle["deterministic"]["round_classifications"][0]["classification"] == "obvious_decision_error"
+    assert bundle["strength_evaluation"] == "not_applicable"
+
+
+def test_evidence_classifies_zero_hand_connection_reset_as_harness_inconclusive(tmp_path):
+    report = {
+        "candidate": "/tmp/national_v134",
+        "summary": {
+            "suite_dir": str(tmp_path / "suite"),
+            "rounds_requested": 1,
+            "rounds_run": 1,
+            "target_hands": 70,
+        },
+        "rounds": [
+            {
+                "round_id": "self_play_04",
+                "round_kind": "self_play",
+                "round_index": 4,
+                "target_hands": 70,
+                "passed": False,
+                "issues": [
+                    "BotA_exited_early: rc=2",
+                    "botA.stderr.log: ConnectionResetError: [Errno 104] Connection reset by peer",
+                    "official_full_round_no_game_progress: target=70",
+                ],
+                "log_summary": {"hands_started_min": 0, "settlements_min": 0, "issues": []},
+                "artifacts": {"round_dir": str(tmp_path / "suite" / "self_play_04"), "thp_summaries": []},
+            }
+        ],
+        "issues": [],
+    }
+
+    bundle = build_official_evidence_bundle(report)
+
+    assert bundle["deterministic"]["classification"] == "harness"
+    assert bundle["deterministic"]["blocking"] is False
+    assert bundle["deterministic"]["inconclusive"] is True
+    assert bundle["deterministic"]["round_classifications"][0]["classification"] == "harness"
