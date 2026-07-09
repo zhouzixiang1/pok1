@@ -726,10 +726,64 @@ def test_process_stream_system_only_stall_times_out_at_first_activity(
     assert fields["system_messages_seen"] >= 1
 
 
+def test_process_stream_mid_loop_stall_cuts_at_stall_timeout(monkeypatch, tmp_path):
+    # B3 (2026-07-09): once a stream has produced substantive output (entered
+    # the tool/think loop), a mid-loop stall — a tool_use is emitted but its
+    # tool_result never returns, or the model stops streaming mid-think — must
+    # be caught at the shorter stall_timeout, NOT the longer idle_timeout.
+    # Otherwise every mid-loop stall costs the full idle budget (240-420s)
+    # before the role retry can restart. This is the recurring tool-exec stall
+    # observed against the deepseek-v4-pro endpoint behind cc-switch.
+    events = []
+
+    async def fake_stream():
+        # substantive output (AssistantMessage with text) then silence forever
+        yield AssistantMessage(content=[TextBlock(text="partial plan")], model="sonnet")
+        await asyncio.sleep(10.0)
+
+    # stall_timeout is SHORT; idle is LONG: only correct if the stall ceiling
+    # is enforced inside the tool/think loop.
+    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "5")
+    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "300")
+    monkeypatch.setenv("POK_LLM_MASTER_STALL_TIMEOUT", "0.5")
+    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "600")
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v269" / "logs" / "master_io.txt"
+    log_file.parent.mkdir(parents=True)
+
+    with pytest.raises(llm_query.LLMRoleTimeout) as exc:
+        asyncio.run(
+            llm_query._process_stream(
+                fake_stream(), str(log_file), _DummyUI(), "MASTER (Try 1)"
+            )
+        )
+
+    # The critical assertion: it timed out at stall (~0.5s), not idle (300s).
+    assert exc.value.timeout_kind == "stall"
+    timeout_events = [
+        event for event in events
+        if event[0] == "pipeline.llm_role_stall_timeout"
+    ]
+    assert timeout_events
+    _category, severity, _message, fields = timeout_events[0]
+    assert severity == "error"
+    assert fields["role"] == "MASTER (Try 1)"
+    assert fields["stall_timeout"] == 0.5
+
+
 def test_default_role_timeout_policy_is_bounded(monkeypatch):
     monkeypatch.delenv("POK_LLM_DEFAULT_FIRST_ACTIVITY_TIMEOUT", raising=False)
     monkeypatch.delenv("POK_LLM_DEFAULT_IDLE_TIMEOUT", raising=False)
     monkeypatch.delenv("POK_LLM_DEFAULT_TOTAL_TIMEOUT", raising=False)
+    monkeypatch.delenv("POK_LLM_DEFAULT_STALL_TIMEOUT", raising=False)
 
     policy = llm_query._role_timeout_policy("COMBINED ANALYST")
 
@@ -737,6 +791,9 @@ def test_default_role_timeout_policy_is_bounded(monkeypatch):
     assert policy["first_activity_timeout"] > 0
     assert policy["idle_timeout"] > 0
     assert policy["total_timeout"] > 0
+    # B3: stall_timeout is derived from idle (~55%, clamped) and exposed.
+    assert policy["stall_timeout"] > 0
+    assert policy["stall_timeout"] < policy["idle_timeout"]
 
 
 def test_crossover_role_timeout_policy_has_extended_total(monkeypatch):

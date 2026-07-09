@@ -1398,11 +1398,30 @@ def _role_timeout_policy(role_name: str) -> dict:
             return float(default)
 
     prefix = f"POK_LLM_{key}_" if key else "POK_LLM_DEFAULT_"
+    first_activity = _env(prefix + "FIRST_ACTIVITY_TIMEOUT", defaults[0])
+    idle = _env(prefix + "IDLE_TIMEOUT", defaults[1])
+    total = _env(prefix + "TOTAL_TIMEOUT", defaults[2])
+    # B3 (2026-07-09): a shorter stall ceiling enforced AFTER the first
+    # substantive model output, i.e. once the stream has entered the
+    # tool/thinking loop. Backends like the deepseek-v4-pro endpoint behind
+    # cc-switch intermittently stall mid-tool-loop (a tool_use is emitted but
+    # its tool_result never returns, or the model stops streaming mid-think).
+    # The full idle_timeout (240-420s) is appropriate for the FIRST real
+    # output but is too long to wait once we are already in the loop: every
+    # mid-loop stall costs the full idle budget before the role retry can
+    # restart. Default to ~55% of idle (clamped to [60, 180]s) so a stall is
+    # caught well before the full idle ceiling while still tolerating legit
+    # slow tool/think deltas. 0 disables (falls back to idle_timeout).
+    stall_default = 0.0
+    if idle > 0:
+        stall_default = max(60.0, min(180.0, idle * 0.55))
+    stall = _env(prefix + "STALL_TIMEOUT", stall_default)
     return {
         "policy_key": key or "DEFAULT",
-        "first_activity_timeout": _env(prefix + "FIRST_ACTIVITY_TIMEOUT", defaults[0]),
-        "idle_timeout": _env(prefix + "IDLE_TIMEOUT", defaults[1]),
-        "total_timeout": _env(prefix + "TOTAL_TIMEOUT", defaults[2]),
+        "first_activity_timeout": first_activity,
+        "idle_timeout": idle,
+        "stall_timeout": stall,
+        "total_timeout": total,
     }
 
 
@@ -1639,6 +1658,9 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     total_timeout = float(timeout_policy.get("total_timeout") or 0)
     first_activity_timeout = float(timeout_policy.get("first_activity_timeout") or 0)
     idle_timeout = float(timeout_policy.get("idle_timeout") or 0)
+    # B3: shorter stall ceiling once substantive output has started (tool/think
+    # loop). 0 means "do not enforce a separate stall ceiling; use idle_timeout".
+    stall_timeout = float(timeout_policy.get("stall_timeout") or 0)
     total_deadline = (stream_started_at + total_timeout) if total_timeout > 0 else None
 
     def _tool_result_text(content):
@@ -1765,6 +1787,8 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             return first_activity_timeout
         if effective_kind == "idle":
             return idle_timeout
+        if effective_kind == "stall":
+            return stall_timeout
         return wait_timeout or 0
 
     def _raise_role_timeout(timeout_kind, wait_timeout):
@@ -1809,9 +1833,21 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                     first_activity_timeout - (now - stream_started_at),
                 )
                 timeout_kind = "first_activity"
-            elif substantive_activity_logged and idle_timeout > 0:
-                wait_timeout = max(0.0, idle_timeout - (now - last_message_at))
-                timeout_kind = "idle"
+            elif substantive_activity_logged:
+                # B3: once we are inside the tool/think loop, a mid-loop stall
+                # (tool_use emitted but tool_result never returns, or the model
+                # stops streaming mid-think) should be caught at the shorter
+                # stall_timeout rather than burning the full idle_timeout
+                # before the role retry can restart. stall_timeout<=0 disables
+                # this layer and falls back to idle_timeout.
+                idle_budget = (idle_timeout - (now - last_message_at)) if idle_timeout > 0 else None
+                stall_budget = (stall_timeout - (now - last_message_at)) if stall_timeout > 0 else None
+                if stall_budget is not None and (idle_budget is None or stall_budget < idle_budget):
+                    wait_timeout = max(0.0, stall_budget)
+                    timeout_kind = "stall"
+                elif idle_budget is not None:
+                    wait_timeout = max(0.0, idle_budget)
+                    timeout_kind = "idle"
             if total_deadline is not None:
                 remaining_total = max(0.0, total_deadline - now)
                 if wait_timeout is None or remaining_total < wait_timeout:
