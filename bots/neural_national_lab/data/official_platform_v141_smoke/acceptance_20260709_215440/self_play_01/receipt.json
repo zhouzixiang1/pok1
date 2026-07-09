@@ -1,0 +1,228 @@
+{
+  "round_id": "self_play_01_20260709_215440",
+  "round_kind": "self_play",
+  "round_index": 1,
+  "target_hands": 70,
+  "started_at": "2026-07-09T21:54:40",
+  "config": {
+    "exe_path": "/home/zzx/project/pok/.codex_worktrees/neural-v141/sever/国赛平台/德州扑克对弈平台限时一分钟2021版/德州扑克对弈平台限时一分钟2021版.exe",
+    "wineprefix": "/home/zzx/.cache/pok_wine_national_platform",
+    "results_dir": "bots/neural_national_lab/data/official_platform_v141_smoke",
+    "host": "127.0.0.1",
+    "port": 10001,
+    "startup_timeout_sec": 45.0,
+    "listen_timeout_sec": 45.0,
+    "no_progress_timeout_sec": 120.0,
+    "round_timeout_sec": 480.0,
+    "lock_timeout_sec": 900.0,
+    "settlement_grace_sec": 2.0,
+    "artifact_grace_sec": 20.0,
+    "lock_path": "/tmp/pok_official_platform.lock",
+    "ui": {
+      "gear_x": 72,
+      "gear_y": 42,
+      "ip_x": 677,
+      "ip_y": 343,
+      "start_x": 657,
+      "start_y": 392,
+      "ok_x": 752,
+      "ok_y": 392
+    }
+  },
+  "bot_a": {
+    "path": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/versions/v141_national_v123_profile_veto_tcp",
+    "name": "BotA",
+    "seat": "upper",
+    "python": "/home/zzx/anaconda3/envs/pytorch/bin/python",
+    "supports_log": true,
+    "supports_seat": true,
+    "extra_args": []
+  },
+  "bot_b": {
+    "path": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/versions/v141_national_v123_profile_veto_tcp",
+    "name": "BotB",
+    "seat": "lower",
+    "python": "/home/zzx/anaconda3/envs/pytorch/bin/python",
+    "supports_log": true,
+    "supports_seat": true,
+    "extra_args": []
+  },
+  "environment": {
+    "ok": true,
+    "issues": [],
+    "warnings": [],
+    "config": {
+      "exe_path": "/home/zzx/project/pok/.codex_worktrees/neural-v141/sever/国赛平台/德州扑克对弈平台限时一分钟2021版/德州扑克对弈平台限时一分钟2021版.exe",
+      "wineprefix": "/home/zzx/.cache/pok_wine_national_platform",
+      "results_dir": "bots/neural_national_lab/data/official_platform_v141_smoke",
+      "host": "127.0.0.1",
+      "port": 10001,
+      "startup_timeout_sec": 45.0,
+      "listen_timeout_sec": 45.0,
+      "no_progress_timeout_sec": 120.0,
+      "round_timeout_sec": 480.0,
+      "lock_timeout_sec": 900.0,
+      "settlement_grace_sec": 2.0,
+      "artifact_grace_sec": 20.0,
+      "lock_path": "/tmp/pok_official_platform.lock",
+      "ui": {
+        "gear_x": 72,
+        "gear_y": 42,
+        "ip_x": 677,
+        "ip_y": 343,
+        "start_x": 657,
+        "start_y": 392,
+        "ok_x": 752,
+        "ok_y": 392
+      }
+    }
+  },
+  "artifacts": {
+    "round_dir": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01",
+    "receipt": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/receipt.json",
+    "platform_log": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/platform.wine.log",
+    "bot_a_log": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/botA.log",
+    "bot_b_log": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/botB.log",
+    "bot_a_stdout": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/botA.stdout.log",
+    "bot_a_stderr": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/botA.stderr.log",
+    "bot_b_stdout": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/botB.stdout.log",
+    "bot_b_stderr": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/botB.stderr.log",
+    "screenshots": [
+      "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/screenshots/01_start.png",
+      "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/screenshots/04_final.png"
+    ],
+    "platform_thp_dirs": [
+      "/home/zzx/project/pok/.codex_worktrees/neural-v141/sever/国赛平台/德州扑克对弈平台限时一分钟2021版",
+      "/home/zzx/project/pok/.codex_worktrees/neural-v141/sever/国赛平台"
+    ],
+    "thp_files": [
+      "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/thp/THP-BotA vs BotB-BotA赢得14934个筹码202607092159- 2018 CCGC.txt"
+    ],
+    "thp_summaries": [
+      {
+        "path": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/thp/THP-BotA vs BotB-BotA赢得14934个筹码202607092159- 2018 CCGC.txt",
+        "exists": true,
+        "hand_records": 70,
+        "bytes": 3083
+      }
+    ]
+  },
+  "issues": [],
+  "passed": true,
+  "window_id": "10485761",
+  "log_summary": {
+    "bot_a": {
+      "path": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/botA.log",
+      "exists": true,
+      "bytes": 39392,
+      "preflop": 70,
+      "earnchips": 69,
+      "sends": 86,
+      "max_hand": 70,
+      "net_chips": 14984,
+      "max_gap_sec": 4,
+      "max_decision_sec": 0.0,
+      "issues": [],
+      "tail": [
+        "[21:58:54] OFFICIAL_ACTION_DELAY wait=0.300s target=0.300s",
+        "[21:58:55] SEND name=BotA hand=66 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='fold'",
+        "[21:58:58] RECV raw='earnChips -50' buffer='earnChips -50'",
+        "[21:58:58] DISPATCH line='earnChips -50'",
+        "[21:58:58] RECV raw='preflop|BIGBLIND|<2,8><1,0>' buffer='preflop|BIGBLIND|<2,8><1,0>'",
+        "[21:58:58] DISPATCH line='preflop|BIGBLIND|<2,8><1,0>'",
+        "[21:58:58] RECV raw='allin' buffer='allin'",
+        "[21:58:58] DISPATCH line='allin'",
+        "[21:58:58] OFFICIAL_ACTION_DELAY wait=0.299s target=0.300s",
+        "[21:58:59] SEND name=BotA hand=67 stage=preflop act_cnt=0 my_sb=100 opp_sb=20000 my_chips=19900 opp_chips=0 is_sb=False msg='fold'",
+        "[21:59:02] RECV raw='earnChips -100' buffer='earnChips -100'",
+        "[21:59:02] DISPATCH line='earnChips -100'",
+        "[21:59:02] RECV raw='preflop|SMALLBLIND|<3,2><2,3>' buffer='preflop|SMALLBLIND|<3,2><2,3>'",
+        "[21:59:02] DISPATCH line='preflop|SMALLBLIND|<3,2><2,3>'",
+        "[21:59:02] OFFICIAL_ACTION_DELAY wait=0.299s target=0.300s",
+        "[21:59:02] SEND name=BotA hand=68 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='fold'",
+        "[21:59:05] RECV raw='earnChips -50' buffer='earnChips -50'",
+        "[21:59:05] DISPATCH line='earnChips -50'",
+        "[21:59:05] RECV raw='preflop|BIGBLIND|<1,0><2,1>' buffer='preflop|BIGBLIND|<1,0><2,1>'",
+        "[21:59:05] DISPATCH line='preflop|BIGBLIND|<1,0><2,1>'",
+        "[21:59:06] RECV raw='raise 308' buffer='raise 308'",
+        "[21:59:06] DISPATCH line='raise 308'",
+        "[21:59:06] OFFICIAL_ACTION_DELAY wait=0.299s target=0.300s",
+        "[21:59:06] SEND name=BotA hand=69 stage=preflop act_cnt=0 my_sb=100 opp_sb=308 my_chips=19900 opp_chips=19692 is_sb=False msg='fold'",
+        "[21:59:09] RECV raw='earnChips -100' buffer='earnChips -100'",
+        "[21:59:09] DISPATCH line='earnChips -100'",
+        "[21:59:09] RECV raw='preflop|SMALLBLIND|<2,7><3,4>' buffer='preflop|SMALLBLIND|<2,7><3,4>'",
+        "[21:59:09] DISPATCH line='preflop|SMALLBLIND|<2,7><3,4>'",
+        "[21:59:09] OFFICIAL_ACTION_DELAY wait=0.299s target=0.300s",
+        "[21:59:09] SEND name=BotA hand=70 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='fold'"
+      ]
+    },
+    "bot_b": {
+      "path": "/home/zzx/project/pok/.codex_worktrees/neural-v141/bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260709_215440/self_play_01/botB.log",
+      "exists": true,
+      "bytes": 34454,
+      "preflop": 70,
+      "earnchips": 69,
+      "sends": 51,
+      "max_hand": 69,
+      "net_chips": -14984,
+      "max_gap_sec": 4,
+      "max_decision_sec": 0.0,
+      "issues": [],
+      "tail": [
+        "[21:58:55] RECV raw='fold' buffer='fold'",
+        "[21:58:55] DISPATCH line='fold'",
+        "[21:58:58] RECV raw='earnChips 50' buffer='earnChips 50'",
+        "[21:58:58] DISPATCH line='earnChips 50'",
+        "[21:58:58] RECV raw='preflop|SMALLBLIND|<1,2><0,10>' buffer='preflop|SMALLBLIND|<1,2><0,10>'",
+        "[21:58:58] DISPATCH line='preflop|SMALLBLIND|<1,2><0,10>'",
+        "[21:58:58] OFFICIAL_ACTION_DELAY wait=0.203s target=0.300s",
+        "[21:58:58] SEND name=BotB hand=67 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='allin'",
+        "[21:58:59] RECV raw='fold' buffer='fold'",
+        "[21:58:59] DISPATCH line='fold'",
+        "[21:59:02] RECV raw='earnChips 100' buffer='earnChips 100'",
+        "[21:59:02] DISPATCH line='earnChips 100'",
+        "[21:59:02] RECV raw='preflop|BIGBLIND|<3,10><1,1>' buffer='preflop|BIGBLIND|<3,10><1,1>'",
+        "[21:59:02] DISPATCH line='preflop|BIGBLIND|<3,10><1,1>'",
+        "[21:59:02] RECV raw='fold' buffer='fold'",
+        "[21:59:02] DISPATCH line='fold'",
+        "[21:59:05] RECV raw='earnChips 50' buffer='earnChips 50'",
+        "[21:59:05] DISPATCH line='earnChips 50'",
+        "[21:59:05] RECV raw='preflop|SMALLBLIND|<3,12><3,7>' buffer='preflop|SMALLBLIND|<3,12><3,7>'",
+        "[21:59:05] DISPATCH line='preflop|SMALLBLIND|<3,12><3,7>'",
+        "[21:59:05] OFFICIAL_ACTION_DELAY wait=0.158s target=0.300s",
+        "[21:59:06] SEND name=BotB hand=69 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='raise 308'",
+        "[21:59:06] RECV raw='fold' buffer='fold'",
+        "[21:59:06] DISPATCH line='fold'",
+        "[21:59:09] RECV raw='earnChips 100' buffer='earnChips 100'",
+        "[21:59:09] DISPATCH line='earnChips 100'",
+        "[21:59:09] RECV raw='preflop|BIGBLIND|<1,7><1,6>' buffer='preflop|BIGBLIND|<1,7><1,6>'",
+        "[21:59:09] DISPATCH line='preflop|BIGBLIND|<1,7><1,6>'",
+        "[21:59:10] RECV raw='fold' buffer='fold'",
+        "[21:59:10] DISPATCH line='fold'"
+      ]
+    },
+    "hands_started_min": 70,
+    "settlements_min": 69,
+    "issues": [],
+    "progress_key": [
+      [
+        70,
+        69,
+        86,
+        39392
+      ],
+      [
+        70,
+        69,
+        51,
+        34454
+      ]
+    ]
+  },
+  "duration_sec": 275.21,
+  "bot_returncodes": {
+    "BotA": -15,
+    "BotB": -15,
+    "platform": -15
+  }
+}
