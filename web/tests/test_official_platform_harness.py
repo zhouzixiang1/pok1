@@ -1,12 +1,16 @@
 from pathlib import Path
+import json
 import sys
 
 from official_platform_harness import (
     BotLaunchConfig,
+    OfficialPlatformConfig,
+    OfficialWireCapture,
     build_bot_command,
     parse_bot_log,
     run_official_acceptance_sync,
     summarize_round_logs,
+    _format_wire_issues,
     _collect_new_thp_files,
     _sent_action_issue,
     _snapshot_platform_thp_files,
@@ -50,6 +54,93 @@ def test_official_platform_cli_defaults_to_manual_70_hand_rounds():
     assert args.self_play_rounds == 1
     assert args.opponent_rounds == 1
     assert args.target_hands == 70
+
+
+def test_official_platform_cli_writes_evidence_and_default_llm_analysis(tmp_path, monkeypatch, capsys):
+    from scripts import official_platform_acceptance as cli
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    suite = tmp_path / "official" / "acceptance_fake"
+
+    class FakeResult:
+        passed = True
+        issues = []
+
+        def model_dump(self):
+            summary = {
+                "suite_dir": str(suite),
+                "self_play_rounds": 1,
+                "opponent_rounds": 0,
+                "target_hands": 5,
+                "rounds_requested": 1,
+                "rounds_run": 1,
+                "passed_rounds": 1,
+                "failed_rounds": 0,
+                "official_platform": True,
+            }
+            return {
+                "passed": True,
+                "issues": [],
+                "summary": summary,
+                "report": json.loads((suite / "summary.json").read_text(encoding="utf-8")),
+            }
+
+    def fake_acceptance(*_args, config, **_kwargs):
+        suite.mkdir(parents=True)
+        report = {
+            "candidate": str(candidate),
+            "opponent": None,
+            "summary": {
+                "suite_dir": str(suite),
+                "rounds_requested": 1,
+                "rounds_run": 1,
+                "target_hands": 5,
+            },
+            "rounds": [
+                {
+                    "round_id": "self_play_01",
+                    "round_kind": "self_play",
+                    "round_index": 1,
+                    "target_hands": 5,
+                    "passed": True,
+                    "issues": [],
+                    "log_summary": {"hands_started_min": 5, "settlements_min": 4, "issues": []},
+                    "artifacts": {"round_dir": str(suite / "self_play_01"), "thp_summaries": []},
+                }
+            ],
+            "issues": [],
+        }
+        (suite / "summary.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+        assert config.results_dir == tmp_path / "official"
+        return FakeResult()
+
+    monkeypatch.setattr(cli, "check_environment", lambda _config: {"ok": True, "issues": [], "warnings": []})
+    monkeypatch.setattr(cli, "run_official_acceptance_sync", fake_acceptance)
+    monkeypatch.delenv("POK_OFFICIAL_LLM_ANALYSIS", raising=False)
+
+    rc = cli.main([
+        "--candidate",
+        str(candidate),
+        "--self-play-rounds",
+        "1",
+        "--opponent-rounds",
+        "0",
+        "--target-hands",
+        "5",
+        "--results-dir",
+        str(tmp_path / "official"),
+    ])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "official_evidence_json=" in out
+    assert "llm_official_analysis_json=" in out
+    assert (suite / "official_evidence.json").exists()
+    analysis = json.loads((suite / "llm_official_analysis.json").read_text(encoding="utf-8"))
+    assert analysis["analysis_source"] == "default"
+    assert analysis["strength_evaluation"] == "not_applicable"
 
 
 def test_parse_bot_log_counts_progress_and_issues(tmp_path):
@@ -193,6 +284,48 @@ def test_build_bot_command_uses_native_launch_contract(tmp_path):
     assert "--name" in cmd and "BotA" in cmd
     assert "--seat" in cmd and "upper" in cmd
     assert "--log" in cmd and str(tmp_path / "botA.log") in cmd
+
+
+def test_official_wire_capture_writes_round_artifacts(tmp_path):
+    cfg = OfficialPlatformConfig(
+        exe_path=tmp_path / "platform.exe",
+        wineprefix=tmp_path / "wine",
+        results_dir=tmp_path / "official",
+        lock_path=tmp_path / "official.lock",
+    )
+    capture = OfficialWireCapture(tmp_path / "round", cfg)
+
+    try:
+        ports = capture.start()
+        summary = capture.write_replay_summary()
+    finally:
+        capture.stop()
+
+    assert set(ports) == {"A", "B"}
+    assert all(isinstance(port, int) and port > 0 for port in ports.values())
+    assert (tmp_path / "round" / "wire_events.jsonl").exists()
+    assert (tmp_path / "round" / "replay_summary.json").exists()
+    assert summary["events_seen"] == 0
+
+
+def test_format_wire_issues_preserves_replay_context():
+    issues = _format_wire_issues({
+        "issues": [
+            {
+                "kind": "illegal_check",
+                "conn": "A",
+                "hand": 3,
+                "stage": "flop",
+                "message": "check",
+                "reason": "postflop check is illegal after the first action",
+            }
+        ]
+    })
+
+    assert issues == [
+        "wire_illegal_check: conn=A hand=3 stage=flop "
+        "msg='check' reason=postflop check is illegal after the first action"
+    ]
 
 
 def test_acceptance_scheduler_runs_self_and_opponent_rounds(tmp_path):

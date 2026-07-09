@@ -21,6 +21,21 @@ from official_platform_harness import (  # noqa: E402
     check_environment,
     run_official_acceptance_sync,
 )
+from official_evidence import build_official_evidence_from_summary  # noqa: E402
+from official_llm_analysis import run_official_llm_analysis_sync, safe_default_analysis  # noqa: E402
+
+
+def _official_llm_analysis_enabled() -> bool:
+    import os
+
+    return os.environ.get("POK_OFFICIAL_LLM_ANALYSIS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -82,7 +97,30 @@ def main(argv: list[str] | None = None) -> int:
     report = payload.get("report", {})
     suite_dir = report.get("summary", {}).get("suite_dir")
     if suite_dir:
-        print(f"summary_json={Path(suite_dir) / 'summary.json'}")
+        summary_path = Path(suite_dir) / "summary.json"
+        print(f"summary_json={summary_path}")
+        try:
+            evidence = build_official_evidence_from_summary(summary_path)
+            evidence_path = Path(evidence.get("evidence_path") or (Path(suite_dir) / "official_evidence.json"))
+            print(f"official_evidence_json={evidence_path}")
+            analysis_path = evidence_path.with_name("llm_official_analysis.json")
+            if _official_llm_analysis_enabled():
+                analysis = run_official_llm_analysis_sync(evidence, output_path=analysis_path)
+            else:
+                analysis = safe_default_analysis(evidence, reason="llm_disabled")
+                analysis["analysis_path"] = str(analysis_path)
+                _write_json(analysis_path, analysis)
+            print(f"llm_official_analysis_json={analysis_path}")
+        except Exception as exc:
+            print(
+                json.dumps(
+                    {"official_evidence_error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+            return 1
     if result.issues:
         print(json.dumps({"issues": result.issues}, ensure_ascii=False, indent=2), file=sys.stderr)
     return 0 if result.passed else 1

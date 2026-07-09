@@ -370,6 +370,33 @@ def test_run_certification_writes_official_evidence_summary(tmp_path, monkeypatc
     assert result["official_evidence_summary"]["classification"] == "pass"
     assert result["official_evidence_summary"]["blocking"] is False
     assert result["official_evidence_summary"]["strength_evaluation"] == "not_applicable"
+    analysis_path = Path(result["official_llm_analysis_path"])
+    assert analysis_path.exists()
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    assert analysis["analysis_source"] == "default"
+    assert analysis["notes"] == ["llm_disabled"]
+    assert result["official_llm_analysis_summary"]["strength_evaluation"] == "not_applicable"
+
+
+def test_official_verdict_prefers_evidence_summary_blocking_over_status_value():
+    status = {
+        "status": STATUS_CERTIFIED,
+        "mode": "full",
+        "issues": [],
+        "official_evidence_summary": {
+            "classification": "communication",
+            "blocking": True,
+            "inconclusive": False,
+            "violation": True,
+        },
+    }
+
+    verdict = official_compliance_verdict(status)
+
+    assert verdict["ok"] is False
+    assert verdict["blocking"] is True
+    assert verdict["classification"] == "communication"
+    assert official_full_certified(status) is False
 
 
 def test_run_certification_evidence_blocking_overrides_raw_pass(tmp_path, monkeypatch):

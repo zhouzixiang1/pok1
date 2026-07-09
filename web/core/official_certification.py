@@ -527,6 +527,41 @@ def official_compliance_verdict(status: dict[str, Any]) -> dict[str, Any]:
     """
     status_value = str(status.get("status") or "")
     issues = _official_issue_strings(status)
+    evidence_summary = status.get("official_evidence_summary") if isinstance(status, dict) else {}
+    evidence_summary = evidence_summary if isinstance(evidence_summary, dict) else {}
+    evidence_class = str(evidence_summary.get("classification") or "")
+    evidence_blocking = bool(evidence_summary.get("blocking")) and not bool(evidence_summary.get("inconclusive"))
+    if evidence_blocking:
+        verdict_class = evidence_class or "official_evidence_blocking"
+        if evidence_class == "protocol":
+            verdict_class = "protocol_violation"
+        elif evidence_class == "obvious_decision_error":
+            verdict_class = "official_full_incomplete"
+        return {
+            "ok": False,
+            "blocking": True,
+            "classification": verdict_class,
+            "inconclusive": False,
+            "violation": bool(evidence_summary.get("violation", True)),
+            "issues": issues,
+            "violation_issues": issues,
+            "official_evidence_summary": evidence_summary,
+        }
+    if bool(evidence_summary.get("inconclusive")) and status_value in {
+        STATUS_CERTIFIED,
+        STATUS_COMPLIANCE_PASS,
+        STATUS_SMOKE_PASS,
+    }:
+        return {
+            "ok": True,
+            "blocking": False,
+            "classification": evidence_class or "inconclusive",
+            "inconclusive": True,
+            "violation": False,
+            "issues": issues,
+            "inconclusive_issues": issues,
+            "official_evidence_summary": evidence_summary,
+        }
     if status_value == STATUS_UNCERTIFIED:
         return {
             "ok": True,
@@ -1024,29 +1059,36 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
                 "strength_evaluation": "not_applicable",
             },
         }
+        analysis_path = evidence_path.with_name("llm_official_analysis.json")
         if _official_llm_analysis_enabled():
             from official_llm_analysis import run_official_llm_analysis_sync
 
-            analysis_path = evidence_path.with_name("llm_official_analysis.json")
             analysis = run_official_llm_analysis_sync(evidence, output_path=analysis_path)
-            evidence_extra["official_llm_analysis_path"] = str(analysis_path)
-            evidence_extra["official_llm_analysis_summary"] = {
-                "compliance_verdict": analysis.get("compliance_verdict"),
-                "failure_class": analysis.get("failure_class"),
-                "blocking": analysis.get("blocking"),
-                "confidence": analysis.get("confidence"),
-                "repair_guidance": _short_text(analysis.get("repair_guidance"), 1200),
-                "prompt_feedback": _short_text(analysis.get("prompt_feedback"), 1200),
-                "strength_evaluation": "not_applicable",
-            }
-            evidence_extra["official_llm_repair_guidance"] = _short_text(
-                analysis.get("repair_guidance"),
-                2000,
-            )
-            evidence_extra["official_llm_prompt_feedback"] = _short_text(
-                analysis.get("prompt_feedback"),
-                2000,
-            )
+        else:
+            from official_llm_analysis import safe_default_analysis
+
+            analysis = safe_default_analysis(evidence, reason="llm_disabled")
+            analysis["analysis_path"] = str(analysis_path)
+            _write_json(analysis_path, analysis)
+        evidence_extra["official_llm_analysis_path"] = str(analysis_path)
+        evidence_extra["official_llm_analysis_summary"] = {
+            "compliance_verdict": analysis.get("compliance_verdict"),
+            "failure_class": analysis.get("failure_class"),
+            "blocking": analysis.get("blocking"),
+            "confidence": analysis.get("confidence"),
+            "analysis_source": analysis.get("analysis_source"),
+            "repair_guidance": _short_text(analysis.get("repair_guidance"), 1200),
+            "prompt_feedback": _short_text(analysis.get("prompt_feedback"), 1200),
+            "strength_evaluation": "not_applicable",
+        }
+        evidence_extra["official_llm_repair_guidance"] = _short_text(
+            analysis.get("repair_guidance"),
+            2000,
+        )
+        evidence_extra["official_llm_prompt_feedback"] = _short_text(
+            analysis.get("prompt_feedback"),
+            2000,
+        )
     except Exception as exc:
         issue = f"official_evidence_error: {type(exc).__name__}: {str(exc)[:300]}"
         issues = list(dict.fromkeys([*issues, issue]))

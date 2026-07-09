@@ -24,6 +24,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable
 
@@ -326,6 +327,16 @@ def _env_for_display(config: OfficialPlatformConfig, display: str) -> dict[str, 
     return env
 
 
+def _official_wire_probe_enabled() -> bool:
+    """Return whether official rounds should capture raw TCP evidence."""
+    return os.environ.get("POK_OFFICIAL_WIRE_PROBE", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
 def _choose_display() -> str:
     for _ in range(100):
         number = random.randint(40, 199)
@@ -532,11 +543,12 @@ def _launch_bot(
     log_path: Path,
     stdout_path: Path,
     stderr_path: Path,
+    port: int | None = None,
 ) -> subprocess.Popen:
     entry = resolve_bot_entry(bot.path)
     stdout = stdout_path.open("wb")
     stderr = stderr_path.open("wb")
-    cmd = build_bot_command(bot, host=config.host, port=config.port, log_path=log_path)
+    cmd = build_bot_command(bot, host=config.host, port=config.port if port is None else int(port), log_path=log_path)
     cwd = entry.parent
     proc = _popen(cmd, cwd=cwd, env=env, stdout=stdout, stderr=stderr)
     proc._pok_stdout = stdout  # type: ignore[attr-defined]
@@ -577,6 +589,154 @@ def _target_reached(summary: dict[str, Any], target_hands: int) -> bool:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class OfficialWireCapture:
+    """Lifecycle wrapper for the official EXE TCP probe.
+
+    The main EXE harness is synchronous because it drives Wine, Xvfb, and xdotool.
+    The transparent TCP proxy is asyncio-based, so it runs on a private event loop
+    thread for the duration of one official round.
+    """
+
+    def __init__(self, round_dir: Path, config: OfficialPlatformConfig):
+        self.round_dir = Path(round_dir)
+        self.config = config
+        self.enabled = _official_wire_probe_enabled()
+        self.recorder = None
+        self.proxy = None
+        self.proxy_ports: dict[str, int] = {}
+        self.issues: list[str] = []
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def wire_events_path(self) -> Path:
+        return self.round_dir / "wire_events.jsonl"
+
+    @property
+    def replay_summary_path(self) -> Path:
+        return self.round_dir / "replay_summary.json"
+
+    def start(self) -> dict[str, int]:
+        if not self.enabled:
+            return {}
+        try:
+            from official_wire_probe import TcpWireProbe, WireEventRecorder
+
+            self.recorder = WireEventRecorder(self.wire_events_path)
+            self.proxy = TcpWireProbe(
+                platform_host=self.config.host,
+                platform_port=self.config.port,
+                recorder=self.recorder,
+            )
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(
+                target=self._run_loop,
+                name="official-wire-probe",
+                daemon=True,
+            )
+            self._thread.start()
+            future = asyncio.run_coroutine_threadsafe(self.proxy.start(self.config.host), self._loop)
+            self.proxy_ports = dict(future.result(timeout=8.0))
+            return self.proxy_ports
+        except Exception as exc:
+            self.issues.append(f"wire_probe_start_error: {type(exc).__name__}: {str(exc)[:300]}")
+            self.stop()
+            return {}
+
+    def _run_loop(self) -> None:
+        assert self._loop is not None
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def summary(self) -> dict[str, Any]:
+        if not self.enabled or self.recorder is None:
+            return {}
+        try:
+            from official_wire_probe import replay_events
+
+            return replay_events(list(self.recorder.events))
+        except Exception as exc:
+            return {
+                "events_seen": 0,
+                "hands_started_min": 0,
+                "settlements_min": 0,
+                "issues": [{"kind": "wire_replay_error", "reason": f"{type(exc).__name__}: {exc}"}],
+                "warnings": [],
+            }
+
+    def write_replay_summary(self) -> dict[str, Any]:
+        summary = self.summary()
+        if self.enabled:
+            _write_json(self.replay_summary_path, summary)
+        return summary
+
+    def stop(self) -> None:
+        if self.proxy is not None and self._loop is not None and self._loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(self.proxy.stop(), self._loop)
+                future.result(timeout=5.0)
+            except Exception as exc:
+                self.issues.append(f"wire_probe_stop_error: {type(exc).__name__}: {str(exc)[:300]}")
+        if self.recorder is not None:
+            try:
+                self.recorder.close()
+            except Exception:
+                pass
+        if self._loop is not None:
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except Exception:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+        if self._loop is not None:
+            try:
+                self._loop.close()
+            except Exception:
+                pass
+        self._loop = None
+        self._thread = None
+        self.proxy = None
+        self.recorder = None
+
+
+def _format_wire_issues(summary: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    for issue in summary.get("issues") or []:
+        if isinstance(issue, dict):
+            kind = issue.get("kind") or "wire_issue"
+            conn = issue.get("conn")
+            hand = issue.get("hand")
+            stage = issue.get("stage")
+            message = issue.get("message")
+            reason = issue.get("reason", "")
+            issues.append(
+                f"wire_{kind}: conn={conn} hand={hand} stage={stage} "
+                f"msg={message!r} reason={reason}"
+            )
+        else:
+            issues.append(f"wire_issue: {issue}")
+    return issues
+
+
+def _combined_target_reached(log_summary: dict[str, Any], wire_summary: dict[str, Any], target_hands: int) -> bool:
+    if wire_summary:
+        return _target_reached(log_summary, target_hands) and _target_reached(wire_summary, target_hands)
+    return _target_reached(log_summary, target_hands)
+
+
+def _combined_progress_key(log_summary: dict[str, Any], wire_summary: dict[str, Any]) -> tuple[Any, ...]:
+    if wire_summary:
+        return (
+            log_summary.get("progress_key"),
+            wire_summary.get("events_seen", 0),
+            wire_summary.get("hands_started_min", 0),
+            wire_summary.get("settlements_min", 0),
+            len(wire_summary.get("issues") or []),
+        )
+    return (log_summary.get("progress_key"),)
 
 
 def _copy_config(cfg: OfficialPlatformConfig, **overrides: Any) -> OfficialPlatformConfig:
@@ -805,6 +965,8 @@ def run_official_round(
     thp_snapshot = _snapshot_platform_thp_files(platform_thp_dirs)
     thp_artifacts: list[str] = []
     artifact_issues: list[str] = []
+    wire_capture = OfficialWireCapture(round_dir, cfg)
+    wire_summary: dict[str, Any] = {}
 
     try:
         xvfb_log = (round_dir / "xvfb.log").open("wb")
@@ -836,6 +998,15 @@ def run_official_round(
                 screenshots.append(second)
             _click(env, window_id, cfg.ui.start_x, cfg.ui.start_y)
             _wait_for_listen(cfg)
+            proxy_ports = wire_capture.start()
+            receipt["wire_probe"] = {
+                "enabled": wire_capture.enabled,
+                "proxy_ports": proxy_ports,
+                "issues": list(wire_capture.issues),
+            }
+            if wire_capture.issues:
+                receipt["issues"].extend(wire_capture.issues)
+                raise RuntimeError("; ".join(wire_capture.issues[:3]))
 
             bot_a_proc = _launch_bot(
                 bot_a,
@@ -844,6 +1015,7 @@ def run_official_round(
                 log_path=log_a,
                 stdout_path=bot_a_stdout,
                 stderr_path=bot_a_stderr,
+                port=proxy_ports.get("A") if proxy_ports else None,
             )
             bot_b_proc = _launch_bot(
                 bot_b,
@@ -852,6 +1024,7 @@ def run_official_round(
                 log_path=log_b,
                 stdout_path=bot_b_stdout,
                 stderr_path=bot_b_stderr,
+                port=proxy_ports.get("B") if proxy_ports else None,
             )
             _wait_for_bot_handshakes(log_a, log_b, timeout_sec=4.0)
             third = _maybe_screenshot(env, round_dir / "screenshots" / "03_connected.png", "connected")
@@ -866,12 +1039,17 @@ def run_official_round(
             deadline = started_at + cfg.round_timeout_sec
             while time.time() < deadline:
                 summary = summarize_round_logs(log_a, log_b)
-                key = summary["progress_key"]
+                wire_summary = wire_capture.summary()
+                key = _combined_progress_key(summary, wire_summary)
                 if key != last_key:
                     last_key = key
                     last_progress_at = time.time()
                 if summary["issues"]:
                     receipt["issues"].extend(summary["issues"])
+                    break
+                wire_issues = _format_wire_issues(wire_summary)
+                if wire_issues:
+                    receipt["issues"].extend(wire_issues)
                     break
                 if bot_a_proc.poll() is not None and not _target_reached(summary, target_hands):
                     receipt["issues"].append(f"{bot_a.name}_exited_early: rc={bot_a_proc.returncode}")
@@ -882,7 +1060,7 @@ def run_official_round(
                 if wine_proc.poll() is not None and not _target_reached(summary, target_hands):
                     receipt["issues"].append(f"platform_exited_early: rc={wine_proc.returncode}")
                     break
-                if _target_reached(summary, target_hands):
+                if _combined_target_reached(summary, wire_summary, target_hands):
                     if target_reached_at is None:
                         target_reached_at = time.time()
                     if time.time() - target_reached_at >= cfg.settlement_grace_sec:
@@ -891,22 +1069,30 @@ def run_official_round(
                     receipt["issues"].append(
                         f"no_progress_timeout: {cfg.no_progress_timeout_sec:g}s "
                         f"hands_started={summary.get('hands_started_min', 0)} "
-                        f"settlements={summary.get('settlements_min', 0)}"
+                        f"settlements={summary.get('settlements_min', 0)} "
+                        f"wire_hands_started={wire_summary.get('hands_started_min', 0) if wire_summary else 0} "
+                        f"wire_settlements={wire_summary.get('settlements_min', 0) if wire_summary else 0}"
                     )
                     break
                 time.sleep(1.0)
             else:
                 summary = summarize_round_logs(log_a, log_b)
+                wire_summary = wire_capture.summary()
                 receipt["issues"].append(
                     f"round_timeout: {cfg.round_timeout_sec:g}s "
                     f"hands_started={summary.get('hands_started_min', 0)} "
-                    f"settlements={summary.get('settlements_min', 0)}"
+                    f"settlements={summary.get('settlements_min', 0)} "
+                    f"wire_hands_started={wire_summary.get('hands_started_min', 0) if wire_summary else 0} "
+                    f"wire_settlements={wire_summary.get('settlements_min', 0) if wire_summary else 0}"
                 )
 
             final = _maybe_screenshot(env, round_dir / "screenshots" / "04_final.png", "final")
             if final:
                 screenshots.append(final)
             receipt["log_summary"] = summary or summarize_round_logs(log_a, log_b)
+            wire_summary = wire_capture.write_replay_summary()
+            if wire_summary:
+                receipt["wire_replay_summary"] = wire_summary
     except Exception as exc:
         receipt["issues"].append(f"official_round_exception: {type(exc).__name__}: {str(exc)[:500]}")
         if "log_summary" not in receipt:
@@ -915,6 +1101,11 @@ def run_official_round(
         for proc in (bot_a_proc, bot_b_proc):
             _terminate_process(proc)
             _close_process_files(proc)
+        if wire_capture.enabled:
+            wire_summary = wire_capture.write_replay_summary()
+            if wire_summary:
+                receipt["wire_replay_summary"] = wire_summary
+        wire_capture.stop()
         if platform_env is not None:
             _close_window(platform_env, window_id)
             time.sleep(2.0)
@@ -930,6 +1121,13 @@ def run_official_round(
             _close_process_files(proc)
     if "log_summary" not in receipt:
         receipt["log_summary"] = summarize_round_logs(log_a, log_b)
+    if wire_capture.enabled and not wire_summary:
+        try:
+            wire_summary = json.loads(wire_capture.replay_summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            wire_summary = {}
+    if wire_summary:
+        receipt["wire_replay_summary"] = wire_summary
     artifact_wait_sec = cfg.artifact_grace_sec if _target_reached(receipt.get("log_summary", {}), target_hands) else 1.0
     thp_artifacts, artifact_issues = _collect_new_thp_files(
         platform_thp_dirs,
@@ -966,7 +1164,15 @@ def run_official_round(
         "thp_files": thp_artifacts,
         "thp_summaries": thp_summaries,
     }
+    if wire_capture.enabled:
+        receipt["artifacts"]["wire_events"] = str(wire_capture.wire_events_path)
+        receipt["artifacts"]["replay_summary"] = str(wire_capture.replay_summary_path)
     receipt["issues"].extend((receipt.get("log_summary") or {}).get("issues") or [])
+    if wire_summary:
+        receipt["issues"].extend(_format_wire_issues(wire_summary))
+    if wire_capture.enabled and not wire_summary.get("events_seen"):
+        receipt["issues"].append("wire_probe_no_events")
+    receipt["issues"].extend(wire_capture.issues)
     receipt["issues"].extend(artifact_issues)
     receipt["issues"].extend(_read_issue_file(bot_a_stdout))
     receipt["issues"].extend(_read_issue_file(bot_a_stderr))

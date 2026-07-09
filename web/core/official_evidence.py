@@ -69,6 +69,7 @@ HARNESS_MARKERS = (
     "exe_missing",
     "wineprefix_missing",
     "official_platform_lock_timeout",
+    "wire_probe",
     "connection reset",
     "connectionreseterror",
 )
