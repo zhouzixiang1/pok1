@@ -148,6 +148,85 @@ def test_run_crossover_incompatible_pair_records_and_abandons(tmp_path, monkeypa
     assert crossover_compat.is_crossover_pair_blocked(7, 1) is True
 
 
+def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
+    # B1 (2026-07-09): when the crossover LLM retries are exhausted (repeated
+    # idle timeouts / SDK stream stalls) WITHOUT a compatibility rejection,
+    # run_crossover must abandon the generation and return a distinct
+    # CROSSOVER_LLM_EXHAUSTED token. Previously it returned a bare
+    # {"success": False} with no "error", which the orchestrator deterministic
+    # router treated as "route done, re-enter loop" and re-routed to
+    # run_crossover again — an infinite deadlock (~28 min/cycle, no progress).
+    import audit_agents
+    import evolution_core
+    import tool_bot_management
+    import tool_commit
+
+    parent_a_dir = tmp_path / "national_v7"
+    parent_b_dir = tmp_path / "national_v1"
+    target_dir = tmp_path / "national_v25"
+    for path in (parent_a_dir, parent_b_dir):
+        path.mkdir()
+        (path / "main.py").write_text("# parent\n", encoding="utf-8")
+        (path / ".completed").touch()
+
+    def _bot_dir(version):
+        return {
+            7: parent_a_dir,
+            1: parent_b_dir,
+            25: target_dir,
+        }[int(version)]
+
+    async def _compat(_parent_a, _parent_b, _ui):
+        # Compatibility passes; the failure is the LLM itself timing out.
+        return {"compatible": True, "compatibility_score": 8}
+
+    async def _crossover_returns_false(*_args, **_kwargs):
+        # _run_crossover returns False when all MAX_CROSSOVER_RETRIES attempts
+        # fail (e.g. each LLM call idle-timed out).
+        return False
+
+    fake_state = tmp_path / "pipeline_state.json"
+    fake_state.write_text("{}", encoding="utf-8")
+    cleared = []
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", _bot_dir)
+    monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(tool_commit, "_run_crossover", _crossover_returns_false)
+    monkeypatch.setattr(audit_agents, "_run_crossover_compatibility_audit", _compat)
+
+    tool_bot_management._LAST_ABANDON_TS[0] = 0.0
+    tool_bot_management._LAST_ABANDON_TS[1] = ""
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
+    monkeypatch.setattr(
+        tool_bot_management,
+        "read_pipeline_checkpoint",
+        lambda: {"next_v": 25, "source_v": 7, "parent2_v": 1, "stage": "selected"},
+    )
+    monkeypatch.setattr(tool_bot_management, "clear_pipeline_checkpoint", lambda: cleared.append(True))
+    monkeypatch.setattr(tool_bot_management, "get_bot_dir", _bot_dir)
+    monkeypatch.setattr(tool_bot_management, "git_dir_is_committed", lambda _v: False)
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 7,
+        "parent_b": 1,
+        "target_v": 25,
+    }))
+    data = _tool_json(result)
+
+    # Must surface a distinct, recognizable error token — NOT a bare
+    # {"success": False} — so the orchestrator can abandon instead of looping.
+    assert data["error"] == "CROSSOVER_LLM_EXHAUSTED"
+    assert data["success"] is False
+    assert data["abandoned"] is True
+    assert data["abandon_result"]["abandoned_v"] == 25
+    assert cleared == [True]
+    # The pair must NOT be recorded as incompatible (it wasn't a compatibility
+    # failure, it was an LLM transport failure — the same pair may succeed later).
+    import crossover_compat
+    assert crossover_compat.is_crossover_pair_blocked(7, 1) is False
+
+
 def test_run_crossover_records_prepare_scope_files(tmp_path, monkeypatch):
     import audit_agents
     import tool_commit

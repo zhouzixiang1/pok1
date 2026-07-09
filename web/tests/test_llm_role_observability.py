@@ -595,9 +595,15 @@ def test_process_stream_unknown_messages_do_not_refresh_idle_timeout(
     assert fields["idle_timeout"] == 0.025
 
 
-def test_process_stream_system_thinking_messages_are_productive_activity(
+def test_process_stream_system_thinking_messages_are_observed_but_not_substantive(
     monkeypatch, tmp_path
 ):
+    # B2 (2026-07-09): SystemMessages (init / thinking_tokens) are SDK/proxy
+    # bookkeeping, not model output. They must still be observed (emit the
+    # first-activity milestone and refresh last_message_at for the silence
+    # watchdog), but they must NOT satisfy the substantive first-activity gate
+    # — otherwise a backend that stalls right after init slips into the longer
+    # idle_timeout dead-wait instead of being cut at first_activity_timeout.
     events = []
 
     async def fake_stream():
@@ -621,9 +627,11 @@ def test_process_stream_system_thinking_messages_are_productive_activity(
             usage={"input_tokens": 4, "output_tokens": 2},
         )
 
-    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "0.02")
-    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "0.02")
-    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "1")
+    # Generous first-activity budget so the bookkeeping stream completes; this
+    # verifies SystemMessages are observed and the ResultMessage terminates.
+    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "5")
+    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "5")
+    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "10")
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
     monkeypatch.setattr(
         llm_query,
@@ -650,6 +658,8 @@ def test_process_stream_system_thinking_messages_are_productive_activity(
         if event[0] == "pipeline.llm_role_unknown_message"
     ] == []
 
+    # The first-activity milestone IS emitted for the SystemMessage (observability),
+    # but it is recorded as non-substantive.
     first_activity = next(
         event for event in events
         if event[0] == "pipeline.llm_role_first_activity"
@@ -657,9 +667,63 @@ def test_process_stream_system_thinking_messages_are_productive_activity(
     _category, severity, _message, fields = first_activity
     assert severity == "info"
     assert fields["activity_kind"] == "system:thinking_tokens"
+    assert fields["substantive"] is False
 
     role_log = log_file.read_text(encoding="utf-8")
     assert "[SYSTEM_MESSAGE subtype=thinking_tokens" in role_log
+
+
+def test_process_stream_system_only_stall_times_out_at_first_activity(
+    monkeypatch, tmp_path
+):
+    # B2: when a stream only produces SystemMessages and then goes silent (the
+    # GLM-behind-cc-switch stall signature), the shorter first_activity_timeout
+    # must fire — NOT the longer idle_timeout. Previously the init message
+    # flipped the budget to idle_timeout, so each stalled attempt cost the full
+    # idle budget before any recovery.
+    events = []
+
+    async def fake_stream():
+        # init then silence forever (no AssistantMessage / ResultMessage)
+        yield SystemMessage(subtype="init", data={})
+        await asyncio.sleep(10.0)
+
+    # first_activity is short, idle is long: only correct if SystemMessage does
+    # NOT satisfy the substantive first-activity gate.
+    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "0.05")
+    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "5")
+    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "10")
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v269" / "logs" / "crossover_io.txt"
+    log_file.parent.mkdir(parents=True)
+
+    with pytest.raises(llm_query.LLMRoleTimeout) as exc:
+        asyncio.run(
+            llm_query._process_stream(
+                fake_stream(), str(log_file), _DummyUI(), "MASTER (Try 1)"
+            )
+        )
+
+    # The critical assertion: it timed out at first_activity, not idle.
+    assert exc.value.timeout_kind == "first_activity"
+    timeout_events = [
+        event for event in events
+        if event[0] == "pipeline.llm_role_first_activity_timeout"
+    ]
+    assert timeout_events
+    _category, severity, _message, fields = timeout_events[0]
+    assert severity == "error"
+    assert fields["first_activity_timeout"] == 0.05
+    # The init message was observed but did not lift the gate.
+    assert fields["system_messages_seen"] >= 1
 
 
 def test_default_role_timeout_policy_is_bounded(monkeypatch):

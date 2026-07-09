@@ -6,7 +6,12 @@ a real business/auth failure (longer backoff). We do NOT integration-test the
 heavy `_run_one_cycle`; the helper is sufficient for this fix.
 """
 
-from core.orchestrator import _is_cycle_infra_error, _is_shutdown_cancel_error
+from core.orchestrator import (
+    _is_cycle_infra_error,
+    _is_shutdown_cancel_error,
+    _is_crossover_incompatible_result,
+    _is_crossover_llm_exhausted_result,
+)
 from claude_agent_sdk import ProcessError, CLINotFoundError, ClaudeSDKError
 import inspect
 import core.orchestrator as orchestrator
@@ -37,6 +42,40 @@ def test_valueerror_exit143_keyword_is_infra():
     # Keyword fallback catches SDK-wrapped ProcessError/exit-143 even when the
     # exception is not an SDK type.
     assert _is_cycle_infra_error(ValueError("exit code 143 in wrapper")) is True
+
+
+# ---------------------------------------------------------------------------
+# Crossover route result-token detectors (B1, 2026-07-09).
+#
+# A crossover that exhausts its LLM retries (repeated idle timeouts / SDK
+# stream stalls) must be distinguishable from a compatibility rejection and
+# from a bare {"success": False}. These pure detectors are the testable seam
+# that lets the deterministic router abandon the generation instead of
+# re-routing to run_crossover forever (the v126 deadlock).
+# ---------------------------------------------------------------------------
+def test_crossover_incompatible_detector_matches_token():
+    assert _is_crossover_incompatible_result({"error": "CROSSOVER_INCOMPATIBLE"}) is True
+
+
+def test_crossover_llm_exhausted_detector_matches_token():
+    assert _is_crossover_llm_exhausted_result({"error": "CROSSOVER_LLM_EXHAUSTED"}) is True
+
+
+def test_crossover_detectors_distinguish_each_other_and_bare_failure():
+    # Exhausted must NOT match the incompatible detector (distinct abandon reason).
+    assert _is_crossover_incompatible_result({"error": "CROSSOVER_LLM_EXHAUSTED"}) is False
+    assert _is_crossover_llm_exhausted_result({"error": "CROSSOVER_INCOMPATIBLE"}) is False
+    # A bare {"success": False} with no error token must match neither — that is
+    # exactly the pre-fix shape that caused the infinite re-route deadlock.
+    assert _is_crossover_incompatible_result({"success": False}) is False
+    assert _is_crossover_llm_exhausted_result({"success": False}) is False
+
+
+def test_crossover_detectors_guard_non_dict_input():
+    assert _is_crossover_incompatible_result(None) is False
+    assert _is_crossover_llm_exhausted_result(None) is False
+    assert _is_crossover_incompatible_result("CROSSOVER_LLM_EXHAUSTED") is False
+    assert _is_crossover_llm_exhausted_result("CROSSOVER_INCOMPATIBLE") is False
 
 
 def test_valueerror_exit143_keyword_during_shutdown_is_cancel():

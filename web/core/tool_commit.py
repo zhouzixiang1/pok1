@@ -1151,6 +1151,55 @@ async def run_crossover(args):
                 {'target_v': target_v, 'parent_a': parent_a, 'parent_b': parent_b})
         except Exception:
             pass
+        # B1 (2026-07-09): when the crossover LLM retries are exhausted (e.g.
+        # repeated idle timeouts / SDK stream stalls) WITHOUT a compatibility
+        # rejection, the checkpoint stays at "crossover_running". Previously
+        # run_crossover returned a bare {"success": False} with no "error", so
+        # the orchestrator deterministic router fell through to "route done,
+        # re-enter loop" and re-routed to run_crossover again — an infinite
+        # deadlock that consumed ~28 min per cycle without progress.
+        #
+        # Mirror the CROSSOVER_INCOMPATIBLE contract: abandon the generation
+        # (clear checkpoint + remove the incomplete dir) and return a distinct
+        # CROSSOVER_LLM_EXHAUSTED token so the orchestrator recognizes the
+        # abandon instead of looping.
+        try:
+            from tool_bot_management import _do_abandon_generation
+            abandon_result = await _do_abandon_generation(
+                reason=f"crossover_llm_exhausted:v{parent_a}xv{parent_b}"
+            )
+        except Exception as abandon_exc:
+            abandon_result = {
+                "abandoned": False,
+                "reason": f"{type(abandon_exc).__name__}: {abandon_exc}",
+            }
+            _log.warning("Failed to abandon crossover-LLM-exhausted generation: %s", abandon_result)
+
+        log_system_event(
+            "pipeline.crossover_llm_exhausted_abandoned",
+            "warn" if abandon_result.get("abandoned") else "error",
+            f"Crossover v{parent_a}×v{parent_b} → v{target_v} exhausted all LLM retries; "
+            f"{'generation abandoned' if abandon_result.get('abandoned') else 'abandon did not complete'}.",
+            {
+                "target_v": target_v,
+                "parent_a": parent_a,
+                "parent_b": parent_b,
+                "abandon_result": abandon_result,
+            },
+        )
+        return _json_tool_result({
+            "error": "CROSSOVER_LLM_EXHAUSTED",
+            "success": False,
+            "abandoned": bool(abandon_result.get("abandoned")),
+            "directive": (
+                f"Crossover v{parent_a}×v{parent_b} exhausted all LLM retries "
+                f"(repeated timeout/SDK stream stall). The generation was abandoned; "
+                "let prepare_generation select a fresh generation."
+            ),
+            "message": f"Crossover v{parent_a}×v{parent_b} failed after exhausting all LLM retries.",
+            "abandon_result": abandon_result,
+            "logs": ui.get_output(),
+        })
 
     result = {"success": success, "logs": ui.get_output()}
     return _json_tool_result(result)

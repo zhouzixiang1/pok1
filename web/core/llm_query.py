@@ -1612,6 +1612,16 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     usage = None
     stream_started_at = time.time()
     first_activity_logged = False
+    # B2 (2026-07-09): a SystemMessage (e.g. subtype=init, thinking_tokens) is
+    # emitted by the SDK/proxy purely to acknowledge the request or carry
+    # billing telemetry — it is not model output. Letting it satisfy the
+    # first-activity gate flips the wait budget from first_activity_timeout to
+    # idle_timeout (e.g. 240s → 420s for CROSSOVER). When a backend (here the
+    # GLM proxy behind cc-switch) stalls right after init, that extra slack
+    # turns a hard stall into a ~420s dead wait per attempt. Track substantive
+    # activity (AssistantMessage/ToolUse/UserMessage/ResultMessage) separately
+    # and keep enforcing first_activity_timeout until real output arrives.
+    substantive_activity_logged = False
     message_count = 0
     last_progress_at = stream_started_at
     last_message_at = stream_started_at
@@ -1652,8 +1662,14 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
         _append_role_io(log_file_path, f"\n{header} {result_preview}\n")
         ui.log_io(result_preview, "tool_result", role_name)
 
-    def _mark_first_activity(kind):
-        nonlocal first_activity_logged
+    def _mark_first_activity(kind, substantive=True):
+        nonlocal first_activity_logged, substantive_activity_logged
+        # substantive output (assistant/tool/user/result) upgrades the gate so
+        # the wait loop may switch to the idle_timeout budget. System-only
+        # messages record the first-activity milestone for observability but do
+        # NOT lift the (shorter) first_activity_timeout ceiling — see B2.
+        if substantive:
+            substantive_activity_logged = True
         if first_activity_logged:
             return
         first_activity_logged = True
@@ -1672,6 +1688,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             elapsed_sec=round(elapsed, 2),
             first_activity_warn_sec=_LLM_FIRST_ACTIVITY_WARN_SEC,
             activity_kind=kind,
+            substantive=substantive,
             **_role_log_metadata(log_file_path),
         )
 
@@ -1782,13 +1799,17 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             wait_timeout = None
             timeout_kind = None
             now = time.time()
-            if not first_activity_logged and first_activity_timeout > 0:
+            # B2: keep the (shorter) first_activity_timeout budget until we see
+            # substantive model output, not just SDK/proxy bookkeeping
+            # (SystemMessage init/thinking_tokens). This prevents a stalled
+            # backend from degrading into the longer idle_timeout dead-wait.
+            if not substantive_activity_logged and first_activity_timeout > 0:
                 wait_timeout = max(
                     0.0,
                     first_activity_timeout - (now - stream_started_at),
                 )
                 timeout_kind = "first_activity"
-            elif first_activity_logged and idle_timeout > 0:
+            elif substantive_activity_logged and idle_timeout > 0:
                 wait_timeout = max(0.0, idle_timeout - (now - last_message_at))
                 timeout_kind = "idle"
             if total_deadline is not None:
@@ -1877,7 +1898,11 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                         estimate,
                     )
                     thinking_tokens_delta_total += max(0, delta)
-                _mark_first_activity(f"system:{subtype}")
+                # B2: SystemMessages (init / thinking_tokens) are SDK/proxy
+                # bookkeeping, not model output — do NOT let them satisfy the
+                # substantive first-activity gate, otherwise a backend that
+                # stalls right after init slips into the longer idle_timeout.
+                _mark_first_activity(f"system:{subtype}", substantive=False)
                 if _should_log_sparse_count(system_message_count):
                     _append_role_io(
                         log_file_path,
