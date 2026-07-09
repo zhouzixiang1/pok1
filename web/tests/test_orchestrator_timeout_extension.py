@@ -20,6 +20,7 @@ checkpoint so the read/rewrite logic runs against tmp_path.
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -911,6 +912,116 @@ def test_stream_stall_timeout_aborts_without_checkpoint(tmp_path, monkeypatch):
 
     # Treated as infra (short backoff), not a hard business failure.
     assert cost == -0.5
+    assert any(e[0] == "pipeline.orchestrator_stream_stall_timeout" for e in events)
+
+
+def test_external_progress_filters_to_current_generation(monkeypatch):
+    import orchestrator
+
+    checkpoint = {
+        "next_v": 136,
+        "run_id": "136#0",
+        "stage": "direction_audited",
+        "last_update_ts": 10.0,
+        "last_stage_change_ts": 10.0,
+    }
+    raw_events = [
+        {
+            "ts": 20.0,
+            "type": "pipeline.llm_role_progress",
+            "message": "old generation progress",
+            "data": {"version": 135, "run_id": "135#0", "emitter_proc": "web"},
+        },
+        {
+            "ts": 21.0,
+            "type": "pipeline.llm_role_progress",
+            "message": "daemon progress",
+            "data": {"version": 136, "run_id": "136#0", "emitter_proc": "daemon"},
+        },
+        {
+            "ts": 22.0,
+            "type": "pipeline.llm_role_stream_silent",
+            "message": "warning, not progress",
+            "data": {"version": 136, "run_id": "136#0", "emitter_proc": "web"},
+        },
+        {
+            "ts": 23.0,
+            "type": "pipeline.llm_role_progress",
+            "message": "MASTER (Try 1): LLM stream active for 120.0s",
+            "data": {
+                "version": 136,
+                "run_id": "136#0",
+                "emitter_proc": "web",
+                "role": "MASTER (Try 1)",
+                "stage": "direction_audited",
+            },
+        },
+    ]
+    monkeypatch.setattr(orchestrator, "_read_active_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(orchestrator, "_read_system_events_tail", lambda max_bytes=None: [
+        json.dumps(event) for event in raw_events
+    ])
+
+    progress = orchestrator._latest_orchestrator_external_progress(15.0)
+
+    assert progress["ts"] == 23.0
+    assert progress["event_type"] == "pipeline.llm_role_progress"
+    assert progress["role"] == "MASTER (Try 1)"
+
+
+def test_stream_stall_timeout_extends_on_current_generation_progress(monkeypatch):
+    import orchestrator
+
+    events = []
+    started_at = time.time()
+    progress_emitted = {"value": False}
+
+    async def _never_yields():
+        await asyncio.sleep(999)
+        if False:
+            yield  # pragma: no cover
+
+    def _fake_external_progress(_since_ts):
+        if progress_emitted["value"]:
+            return None
+        if time.time() - started_at < 0.035:
+            return None
+        progress_emitted["value"] = True
+        return {
+            "ts": time.time(),
+            "source": "system_event",
+            "event_type": "pipeline.llm_role_progress",
+            "next_v": 136,
+            "stage": "direction_audited",
+            "role": "MASTER (Try 1)",
+        }
+
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_STALL_TIMEOUT", 0.05)
+    monkeypatch.setattr(orchestrator, "_latest_orchestrator_external_progress", _fake_external_progress)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(orchestrator._OrchStreamStallTimeout):
+            loop.run_until_complete(
+                orchestrator._await_next_stream_message(
+                    _never_yields().__aiter__(),
+                    last_message_at=started_at,
+                    stream_started_at=started_at,
+                )
+            )
+    finally:
+        loop.close()
+
+    assert time.time() - started_at >= 0.08
+    assert any(e[0] == "pipeline.orchestrator_stream_external_progress" for e in events)
     assert any(e[0] == "pipeline.orchestrator_stream_stall_timeout" for e in events)
 
 

@@ -158,12 +158,12 @@ ORCH_STREAM_POLL_INTERVAL = float(os.environ.get("POK_ORCH_STREAM_POLL_INTERVAL"
 ORCH_ACTIONABLE_STAGE_TIMEOUT = float(os.environ.get("POK_ORCH_ACTIONABLE_STAGE_TIMEOUT", "300"))
 # D (2026-07-09): generic mid-stream stall ceiling for the orchestrator main
 # agent. Unlike _detect_actionable_stage_stall (which needs a checkpoint), this
-# fires on pure wall-clock silence between stream messages regardless of
-# checkpoint state, so a stalled main-agent stream does not wait the full
-# CYCLE_TIMEOUT (5400s). 300s is well above legit inter-message gaps (the model
-# streams thinking_tokens every few seconds) but far below 5400s. Disabled when
-# <= 0 (then only actionable-stage + CYCLE_TIMEOUT bound the wait).
+# fires when the main stream is silent and no current-generation tool/sub-role
+# progress is visible, so a stalled main-agent stream does not wait the full
+# CYCLE_TIMEOUT (5400s). Disabled when <= 0 (then only actionable-stage +
+# CYCLE_TIMEOUT bound the wait).
 ORCH_STREAM_STALL_TIMEOUT = float(os.environ.get("POK_ORCH_STREAM_STALL_TIMEOUT", "300"))
+ORCH_EXTERNAL_PROGRESS_TAIL_BYTES = int(os.environ.get("POK_ORCH_EXTERNAL_PROGRESS_TAIL_BYTES", "524288"))
 POST_GENERATION_CLEANUP_TIMEOUT = int(os.environ.get("POK_POST_GENERATION_CLEANUP_TIMEOUT", "900"))
 RUNTIME_BRANCH_GUARD_INTERVAL = float(os.environ.get("POK_RUNTIME_BRANCH_GUARD_INTERVAL", "5"))
 
@@ -184,6 +184,13 @@ _NOISY_TOOLS = frozenset({
 })
 _REDUNDANT_NOISY_THRESHOLD = 6    # noisy tools: warn once at the 6th call
 _REDUNDANT_STRICT_THRESHOLD = 2   # pipeline tools: warn once at the 2nd call
+
+_ORCH_EXTERNAL_PROGRESS_EVENT_TYPES = frozenset({
+    "pipeline.llm_role_first_activity",
+    "pipeline.llm_role_first_activity_delayed",
+    "pipeline.llm_role_progress",
+    "pipeline.master_checkpoint_heartbeat",
+})
 
 from orchestrator_context import _build_context, _make_precompact_hook, _make_bot_dir_guard_hook, set_cycle_start_time  # noqa: E402
 from orchestrator_session import (  # noqa: E402
@@ -450,6 +457,130 @@ def _deterministic_route_handler_and_args(next_tool, checkpoint, next_v, source_
     return None, None
 
 
+def _coerce_event_ts(value) -> float:
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _read_active_pipeline_checkpoint():
+    try:
+        from evolution_core import read_pipeline_checkpoint
+        checkpoint = read_pipeline_checkpoint()
+    except Exception:
+        return None
+    return checkpoint if isinstance(checkpoint, dict) else None
+
+
+def _read_system_events_tail(max_bytes=None):
+    """Read a bounded tail of legacy system_events.jsonl for progress signals."""
+    try:
+        from system_log import SYSTEM_EVENTS_FILE
+        path = Path(SYSTEM_EVENTS_FILE)
+    except Exception:
+        return []
+    if not path.exists():
+        return []
+    limit = max(4096, int(max_bytes or ORCH_EXTERNAL_PROGRESS_TAIL_BYTES))
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = max(0, size - limit)
+            f.seek(start)
+            if start > 0:
+                f.readline()
+            payload = f.read()
+    except Exception:
+        return []
+    try:
+        return payload.decode("utf-8", errors="replace").splitlines()
+    except Exception:
+        return []
+
+
+def _event_matches_active_generation(event_data, checkpoint):
+    if not checkpoint:
+        return False
+    expected_run_id = str(checkpoint.get("run_id") or "").strip()
+    event_run_id = str(event_data.get("run_id") or "").strip()
+    if expected_run_id and event_run_id == expected_run_id:
+        return True
+
+    expected_v_text = str(checkpoint.get("next_v") or "").strip()
+    if not expected_v_text:
+        return False
+    for key in ("version", "next_v", "candidate_v", "target_v"):
+        if str(event_data.get(key) or "").strip() == expected_v_text:
+            return True
+
+    log_file = str(event_data.get("log_file") or "")
+    return f"/v{expected_v_text}/logs/" in log_file
+
+
+def _latest_orchestrator_external_progress(since_ts):
+    """Return current-generation tool/sub-role progress newer than since_ts.
+
+    The orchestrator main stream is silent while a local MCP tool executes.
+    That silence is not an SDK stall if the active checkpoint or a sub-role log
+    shows current-generation progress. Background daemon events are deliberately
+    ignored so ratings or async queues cannot mask a stuck generation.
+    """
+    since = _coerce_event_ts(since_ts)
+    checkpoint = _read_active_pipeline_checkpoint()
+    best = None
+
+    if checkpoint:
+        checkpoint_ts = max(
+            _coerce_event_ts(checkpoint.get("last_update_ts")),
+            _coerce_event_ts(checkpoint.get("last_stage_change_ts")),
+        )
+        if checkpoint_ts > since:
+            best = {
+                "ts": checkpoint_ts,
+                "source": "checkpoint",
+                "event_type": "pipeline.checkpoint_progress",
+                "next_v": checkpoint.get("next_v"),
+                "stage": checkpoint.get("stage"),
+            }
+
+    if not checkpoint:
+        return best
+
+    for line in _read_system_events_tail():
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type not in _ORCH_EXTERNAL_PROGRESS_EVENT_TYPES:
+            continue
+        ts = _coerce_event_ts(event.get("ts"))
+        if ts <= since:
+            continue
+        data = event.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        emitter_proc = str(data.get("emitter_proc") or data.get("proc") or "")
+        if emitter_proc and emitter_proc not in {"web", "orchestrator"}:
+            continue
+        if not _event_matches_active_generation(data, checkpoint):
+            continue
+        if best is None or ts > best["ts"]:
+            best = {
+                "ts": ts,
+                "source": "system_event",
+                "event_type": event_type,
+                "message": str(event.get("message") or "")[:240],
+                "next_v": checkpoint.get("next_v"),
+                "stage": data.get("stage") or checkpoint.get("stage"),
+                "role": data.get("role"),
+                "log_file": data.get("log_file"),
+            }
+    return best
+
+
 def _detect_actionable_stage_stall(timeout_sec=None):
     """Return checkpoint route data when a deterministic next-tool stage is stale."""
     timeout = ORCH_ACTIONABLE_STAGE_TIMEOUT if timeout_sec is None else float(timeout_sec)
@@ -498,13 +629,14 @@ async def _await_next_stream_message(stream_iter, last_message_at=None, *, strea
     """Wait for the next orchestrator stream message with checkpoint-aware polling.
 
     D (2026-07-09): also enforce a generic mid-stream stall ceiling
-    (ORCH_STREAM_STALL_TIMEOUT) on wall-clock silence between messages,
-    independent of checkpoint state, so a stalled main-agent stream cannot
-    wait the full CYCLE_TIMEOUT (5400s) when no checkpoint/actionable-stage
-    guard applies.
+    (ORCH_STREAM_STALL_TIMEOUT) on main-stream silence. The ceiling is extended
+    only by current-generation MCP tool/sub-role progress, which prevents a
+    healthy long tool call from being mistaken for a dead SDK stream while still
+    catching truly silent cycles before CYCLE_TIMEOUT (5400s).
     """
     pending = asyncio.create_task(stream_iter.__anext__())
     _silence_origin = last_message_at if last_message_at is not None else (stream_started_at or time.time())
+    _last_progress_marker = None
     try:
         while True:
             try:
@@ -515,6 +647,37 @@ async def _await_next_stream_message(stream_iter, last_message_at=None, *, strea
             except asyncio.TimeoutError:
                 # D: generic stall ceiling — fires with or without a checkpoint.
                 if ORCH_STREAM_STALL_TIMEOUT > 0:
+                    progress = _latest_orchestrator_external_progress(_silence_origin)
+                    if progress:
+                        progress_ts = min(time.time(), _coerce_event_ts(progress.get("ts")))
+                        if progress_ts > _silence_origin:
+                            _silence_origin = progress_ts
+                            marker = (
+                                progress.get("source"),
+                                progress.get("event_type"),
+                                progress.get("ts"),
+                            )
+                            if marker != _last_progress_marker:
+                                _last_progress_marker = marker
+                                try:
+                                    log_system_event(
+                                        "pipeline.orchestrator_stream_external_progress",
+                                        "info",
+                                        "Orchestrator main stream is silent, but current-generation tool progress is visible",
+                                        {
+                                            "progress_source": progress.get("source"),
+                                            "progress_event_type": progress.get("event_type"),
+                                            "progress_ts": round(progress_ts, 3),
+                                            "next_v": progress.get("next_v"),
+                                            "stage": progress.get("stage"),
+                                            "role": progress.get("role"),
+                                            "log_file": progress.get("log_file"),
+                                            "stall_timeout": ORCH_STREAM_STALL_TIMEOUT,
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                            continue
                     silent_for = time.time() - _silence_origin
                     if silent_for >= ORCH_STREAM_STALL_TIMEOUT:
                         msg = (
