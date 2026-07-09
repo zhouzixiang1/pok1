@@ -473,11 +473,19 @@ _COT_RUNTIME_SIDE_EFFECT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_COT_TASK_MISMATCH_RE = re.compile(
+    r"(assigned\s+task|task\s+was|task\s+steps?|diff|changed_functions|"
+    r"worker'?s\s+changed|actual\s+surface\s+area).{0,240}"
+    r"(performs?\s+none|none\s+of\s+these|does\s+not\s+implement|"
+    r"not\s+implemented|revers(?:e|es|ed|ing)|inverted|opposite|"
+    r"omits?|omitting|undisclosed|larger\s+and\s+more\s+invasive)",
+    re.IGNORECASE | re.DOTALL,
+)
 
-def _cot_inconsistency_has_runtime_side_effect(cot):
-    """Return True when CoT found an undisclosed runtime/logging side effect."""
+
+def _cot_inconsistency_text(cot) -> str:
     if not isinstance(cot, dict):
-        return False
+        return ""
     parts = []
     for key in ("discrepancies", "focus_areas"):
         value = cot.get(key)
@@ -485,21 +493,36 @@ def _cot_inconsistency_has_runtime_side_effect(cot):
             parts.extend(str(item) for item in value)
         elif value:
             parts.append(str(value))
-    text = "\n".join(parts)
+    return "\n".join(parts)
+
+
+def _cot_inconsistency_has_runtime_side_effect(cot):
+    """Return True when CoT found an undisclosed runtime/logging side effect."""
+    text = _cot_inconsistency_text(cot)
     return bool(text and _COT_RUNTIME_SIDE_EFFECT_RE.search(text))
+
+
+def _cot_inconsistency_is_task_mismatch(cot):
+    """Return True when CoT proves the worker did not perform its assignment."""
+    text = _cot_inconsistency_text(cot)
+    return bool(text and _COT_TASK_MISMATCH_RE.search(text))
 
 
 def _cot_inconsistency_blocks_task(task, cot=None):
     """Hard-block repair mismatches and undisclosed runtime side effects.
 
     Normal innovation workers can surface reviewer focus areas without forcing an
-    immediate retry. Gate/precommit repairs are different: their whole purpose is
-    to resolve exact blockers, so a claim-vs-diff mismatch is actionable failure.
+    immediate retry. Repair tasks are different: their whole purpose is to
+    resolve exact blockers, so a claim-vs-diff mismatch is actionable failure.
     Runtime side effects are also different: hidden stderr/stdout/debug/telemetry
     changes can pollute match logs or affect timing, so they must be disclosed in
-    the worker output or reverted regardless of task kind.
+    the worker output or reverted regardless of task kind. Severe task-mismatch
+    evidence such as reversing the assignment or omitting the actual edited
+    surface is also a hard failure even for non-repair feature work.
     """
     if _cot_inconsistency_has_runtime_side_effect(cot):
+        return True
+    if _cot_inconsistency_is_task_mismatch(cot):
         return True
     text = " ".join([
         str(task.get("task_kind", "")),
@@ -510,6 +533,13 @@ def _cot_inconsistency_blocks_task(task, cot=None):
     return any(marker in text for marker in (
         "quality_repair",
         "precommit_repair",
+        "critic_repair",
+        "review_repair",
+        "reviewer_repair",
+        "official_repair",
+        "repair_planned",
+        "critic rejection",
+        "review rejection",
         "file_size(",
         "position_semantics(",
         "protected_contract",
