@@ -125,6 +125,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     except Exception:
         frontier_trimmed = "Frontier/MAP-Elites: unavailable."
     try:
+        from official_certification import official_feedback_summary
+        official_feedback = _trim_to_budget(official_feedback_summary(), 6_000)
+    except Exception as exc:
+        official_feedback = f"Official EXE compliance feedback unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+    try:
         from workflow_profiles import get_workflow_profile, profile_summary
         workflow_profile = get_workflow_profile()
         workflow_profile_text = profile_summary(workflow_profile)
@@ -168,6 +173,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "battle_experience": battle_experience_trimmed,
         "exploitability_weaknesses": exploitability_trimmed,
         "research_proposals": research_trimmed,
+        "official_feedback": official_feedback,
         "h2h_data_file": h2h_data_file,
         "h2h_snapshot_contract": h2h_snapshot_contract,
     })
@@ -184,6 +190,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"\n{h2h_snapshot_contract}\n"
         f"\n{workflow_profile_text}\n"
         f"\n{frontier_trimmed}\n"
+        f"\nOfficial EXE Compliance Feedback:\n{official_feedback}\n"
         f"\n{line_budget_text}\n"
     )
     master_log_file = get_logs_dir(next_v) / "master_io.txt"

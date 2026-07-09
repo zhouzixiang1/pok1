@@ -67,6 +67,26 @@ Compatibility rules:
   after an opponent postflop check when passing the street.
 </national_tcp_compatibility>
 
+<national_runtime_architecture>
+The official platform allows 60 seconds per pending action, but new code must
+turn that into resilient architecture rather than slow decisions:
+- Prefer bounded module/startup precomputation, immutable lookup tables, and
+  small in-memory caches for pure poker facts such as preflop buckets, board
+  texture masks, range bucket weights, or evaluator shortcuts.
+- Do not build large tables, run unbounded Monte Carlo loops, scan the complete
+  match history repeatedly, perform network I/O, or write files while deciding
+  an action. Use explicit caps and fallback decisions when a computation cannot
+  finish quickly.
+- National-native bots are persistent for a 70-hand match. If your task touches
+  opponent modeling, update match-level state incrementally on received
+  opponent actions, `oppo_hands`, and `earnChips`; keep hand state separate from
+  match state and reset match state only on a new TCP connection.
+- Decision/communication diagnostics must go to the bot log or stderr, never to
+  stdout and never to unsolicited socket sends. If official EXE feedback is
+  cited in the task, fix the cited protocol/state-machine/logging issue before
+  changing strategy strength.
+</national_runtime_architecture>
+
 ## MANDATORY ACTIONS — ALL THREE ARE REQUIRED
 1. You **MUST** modify at least one of your target_files. Reading/analyzing alone is NOT completion — it is a FAILURE. Use the Edit tool for existing files. If the Master explicitly assigned a new target file that does not exist, create only that declared file with a scoped Python command such as `python3 - <<'PY' ... Path('bots/national_v{version}/new_file.py').write_text(...) ... PY`, then use Edit for any existing target file edits.
 2. After EACH edit, use Read to verify the change was applied correctly.

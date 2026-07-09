@@ -81,6 +81,9 @@ Game parameters from `sever/国赛平台/`: 70 hands/match, 20000 chips reset ev
 Heads-up identity: `dealer_id` is SB. Therefore `bb = 1 - dealer_id`; do not use `next_player(dealer_id, 1)` for SB or `next_player(dealer_id, 2)` for BB. Postflop, BB is out of position and acts first; SB/dealer is in position.
 Wire protocol boundary: TCP actions are `raise <amount>`, `fold`, `call`, `check`, `allin`. In adapter mode, JSON bots still return integer actions and the adapter emits TCP text. In national_native mode, `national_bot.py` emits TCP text itself and must not import or depend on `sever/bot_adapter.py`. `bet` is illegal on the wire; use "bet" only as poker prose and implement it as `raise <amount>` on TCP or a positive raise-to-total internally.
 Official EXE timing boundary: national_native plans must preserve the native entry's TCP send throttle (`POK_OFFICIAL_ACTION_DELAY`, default near 0.30s, actions sent through `_send_wire_action`). Local strength evaluation may disable that delay by environment, but do not plan work that removes, bypasses, or moves the throttle into strategy code. Do not plan unsolicited timeout-rescue loops that send `call` or `check` without a pending platform decision.
+Decision-time budget: the official platform allows up to 60 seconds per pending action, but robust bots should spend that budget in architecture, not in unbounded per-action work. Prefer bounded module/startup precomputation, immutable lookup tables, cached range buckets, and deadline-aware fallbacks. When planning any simulation/search/history scan, state its worst-case bound and fallback behavior.
+Persistent match memory: national_native bots run as a persistent process for the 70-hand match. Prefer incremental opponent models and match-level summaries that survive across hands but reset on a new TCP connection. Do not plan repeated full-history scans when an incremental tracker can update on received actions, showdown, or `earnChips`.
+Official feedback loop: if Official EXE Compliance Feedback reports `repair_guidance` or `prompt_feedback`, route at least one task to the exact protocol/state-machine/logging file unless the evidence is purely harness inconclusive. Do not translate official EXE failures into strength tuning.
 Raise rules: first preflop raise-to >= 200; first postflop raise-to >= 100; every re-raise must be strictly greater than 2x the previous raise-to (`prev * 2 + 1` minimum). Raise-to must exceed the player's current street bet, must not exceed available chips, and must not equal all remaining chips.
 Call/check rules: postflop first action cannot be call; postflop after any first action, check is illegal. If the first postflop player checks, the second player passes with call, not another check. Preflop BB cannot call after SB limps/calls; BB should check, raise, or fold.
 All-in rules: use `allin` on native TCP and `-2` only inside legacy JSON internals. After one player all-ins, the opponent may only call or fold; consecutive all-ins are illegal. Avoid plans that rely on TCP postflop check-check being legal; native bots must send `call` after an opponent postflop check when passing the street.
@@ -181,6 +184,9 @@ return None
 
 ## Research Proposals (web-derived hypotheses, verify before using)
 {research_proposals}
+
+## Official EXE Compliance Feedback (compliance-only, not strength)
+{official_feedback}
 
 ## Bot Action Statistics
 {bot_action_stats}

@@ -1308,6 +1308,10 @@ class TestWorkerFailureCircuitBreaker:
                 "official_smoke_errors": [
                     "self_play_1: protocol_raise_format: msg='raise  200'",
                 ],
+                "official_smoke": {
+                    "official_llm_repair_guidance": "Normalize raise formatting in _send_wire_action before socket send.",
+                    "official_llm_prompt_feedback": "Worker must validate pending action and exact wire formatting.",
+                },
             }
         }
         ckpt_file.write_text(json.dumps(state))
@@ -1340,6 +1344,8 @@ class TestWorkerFailureCircuitBreaker:
         assert task["must_change_files"] == ["national_bot.py"]
         assert "protocol_raise_format" in task["worker_prompt"]
         assert "exactly one ASCII space" in task["worker_prompt"]
+        assert "Normalize raise formatting" in task["worker_prompt"]
+        assert "pending action" in task["worker_prompt"]
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "workers_done"
         assert ckpt["master_plan"]["tasks"][0]["repair_blocker"] == "official_smoke"

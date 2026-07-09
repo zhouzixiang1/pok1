@@ -1,7 +1,10 @@
 """Pipeline tools: commit, archivist, and crossover."""
 
+import asyncio
 import json
+import os
 import time
+from dataclasses import asdict
 from typing import Annotated, TypedDict
 
 from logging_config import get_logger
@@ -282,6 +285,98 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
     }
 
 
+def _checkpoint_execution_mode(ckpt, gate_results) -> str:
+    if ckpt:
+        mode = str(ckpt.get("national_execution_mode") or "")
+        if mode:
+            return mode
+    for gate_name in ("quality", "precommit_eval"):
+        gate = (gate_results or {}).get(gate_name) or {}
+        mode = str(gate.get("national_execution_mode") or "")
+        if mode:
+            return mode
+    return ""
+
+
+def _truthy_env(name: str, default: str = "1") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on", "required"}
+
+
+def _official_preferred_opponent() -> str | None:
+    configured = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
+    if configured:
+        return configured
+    fallback = PROJECT_ROOT / "bots" / "national_v70"
+    return str(fallback) if fallback.exists() else None
+
+
+async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, gate_results) -> dict:
+    execution_mode = _checkpoint_execution_mode(ckpt, gate_results)
+    if execution_mode != "native_tcp":
+        return {
+            "passed": True,
+            "skipped": True,
+            "reason": "non_native_tcp_workflow",
+            "national_execution_mode": execution_mode,
+        }
+
+    from official_certification import (
+        build_spec,
+        official_compliance_verdict,
+        official_full_certified,
+        record_grandfathered,
+        run_certification,
+        select_official_opponent,
+    )
+
+    allow_bootstrap = _truthy_env("POK_OFFICIAL_BOOTSTRAP_GRANDFATHER", "1")
+    opponent_selection = select_official_opponent(
+        bot_dir,
+        get_active_bots(),
+        preferred=_official_preferred_opponent(),
+        allow_bootstrap_grandfather=allow_bootstrap,
+    )
+    if not opponent_selection.get("selected"):
+        return {
+            "passed": False,
+            "error": "OFFICIAL FULL CERTIFICATION BLOCKED: no eligible official EXE opponent.",
+            "version": v,
+            "source_v": source_v,
+            "opponent_selection": opponent_selection,
+        }
+
+    opponent = opponent_selection["opponent"]
+    opponent_path = opponent["path"]
+    if opponent.get("reason") == "bootstrap_grandfathered" and _truthy_env("POK_OFFICIAL_RECORD_BOOTSTRAP_GRANDFATHER", "1"):
+        opponent["grandfather_record"] = record_grandfathered(
+            opponent_path,
+            reason=f"bootstrap official opponent for commit_bot v{v}",
+            source="commit_bot_bootstrap_opponent",
+        )
+
+    spec = build_spec("full", bot_dir, opponent=opponent_path)
+    status = await asyncio.to_thread(
+        run_certification,
+        spec,
+        force=False,
+        queue_on_busy=False,
+    )
+    verdict = official_compliance_verdict(status)
+    passed = official_full_certified(status)
+    return {
+        "passed": passed,
+        "version": v,
+        "source_v": source_v,
+        "spec": asdict(spec),
+        "status": status,
+        "verdict": verdict,
+        "opponent_selection": opponent_selection,
+        "official_evidence_path": status.get("official_evidence_path"),
+        "official_evidence_summary": status.get("official_evidence_summary"),
+        "issues": status.get("issues") or [],
+    }
+
+
 @tool("commit_bot", "Commit a bot generation with git commit and tag. review_approved must be true (set after run_review returns approved:true).", {"version": int, "source_v": int, "strategy": str, "review_approved": bool})
 async def commit_bot(args):
     _t0 = time.time()
@@ -325,6 +420,35 @@ async def commit_bot(args):
         return _json_tool_result({
             "error": "COMMIT BLOCKED: review_approved=false. Call run_review() first; only pass review_approved=true if it returns approved:true.",
         })
+
+    official_certification_status = {}
+    official_full_gate = await _run_official_full_commit_gate(v, source_v, bot_dir, ckpt, gate_results)
+    if not official_full_gate.get("passed"):
+        try:
+            log_system_event(
+                "pipeline.commit_blocked_official_full",
+                "error",
+                f"Commit blocked for v{v}: official EXE full certification did not pass",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "status": (official_full_gate.get("status") or {}).get("status"),
+                    "mode": (official_full_gate.get("status") or {}).get("mode"),
+                    "issues": official_full_gate.get("issues", [])[:10],
+                    "opponent_selection": official_full_gate.get("opponent_selection"),
+                    "official_evidence_path": official_full_gate.get("official_evidence_path"),
+                },
+            )
+        except Exception:
+            pass
+        return _json_tool_result({
+            "error": official_full_gate.get("error") or "COMMIT BLOCKED: official EXE full certification did not pass.",
+            "version": v,
+            "source_v": source_v,
+            "official_full_gate": official_full_gate,
+        })
+    if not official_full_gate.get("skipped"):
+        official_certification_status = official_full_gate.get("status") or {}
 
     # fix-6: novelty gate — warn (advisory) if new bot doesn't add behavioral
     # diversity. This is advisory-only: it does NOT block the commit, because
@@ -387,19 +511,6 @@ async def commit_bot(args):
 
     (bot_dir / ".completed").touch()
 
-    official_certification_status = {}
-    try:
-        from official_certification import build_spec, enqueue_certification
-        default_opponent = PROJECT_ROOT / "bots" / "national_v76"
-        spec = build_spec(
-            "compliance",
-            bot_dir,
-            opponent=default_opponent if default_opponent.exists() else None,
-        )
-        official_certification_status = enqueue_certification(spec, reason="commit_bot_compliance")
-    except Exception as e:
-        _log.warning("Official compliance certification enqueue failed for v%d: %s", v, e)
-
     # Write reap_signal early so daemon discovers new bot immediately, even if archive/timeout interrupts later
     reap_signal = RESULTS_DIR / ".reap_signal"
     reap_signal.write_text(str(time.time()))
@@ -442,6 +553,7 @@ async def commit_bot(args):
                 "status": official_certification_status.get("status"),
                 "mode": official_certification_status.get("mode"),
                 "cache_key": official_certification_status.get("cache_key"),
+                "official_evidence_path": official_certification_status.get("official_evidence_path"),
             }
     except Exception:
         pass
@@ -516,6 +628,14 @@ async def commit_bot(args):
         pass  # non-blocking enrichment
 
     result = {"committed": True, "version": v, "source_v": source_v, "push_ok": push_ok}
+    if official_full_gate and not official_full_gate.get("skipped"):
+        result["official_full_gate"] = {
+            "status": official_certification_status.get("status"),
+            "mode": official_certification_status.get("mode"),
+            "cache_hit": official_certification_status.get("cache_hit"),
+            "official_evidence_path": official_certification_status.get("official_evidence_path"),
+            "opponent": (official_full_gate.get("opponent_selection") or {}).get("opponent"),
+        }
     if novelty_info:
         result["novelty_gate"] = novelty_info
     active_bots = get_active_bots()

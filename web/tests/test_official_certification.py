@@ -7,6 +7,7 @@ from official_certification import (
     STATUS_COMPLIANCE_PASS,
     STATUS_CERTIFIED,
     STATUS_FAILED,
+    STATUS_GRANDFATHERED,
     STATUS_INCONCLUSIVE,
     STATUS_PENDING,
     STATUS_SMOKE_PASS,
@@ -14,15 +15,20 @@ from official_certification import (
     build_spec,
     cache_key,
     enqueue_certification,
+    official_feedback_summary,
+    official_full_certified,
     official_compliance_verdict,
     official_failure_blocks_parent,
+    official_opponent_eligibility,
     process_certification_queue,
     queue_snapshot,
+    record_grandfathered,
     record_local_pass,
     report_validation_issues,
     report_valid_for_spec,
     run_certification,
     read_status,
+    select_official_opponent,
     write_status,
 )
 
@@ -222,6 +228,45 @@ def test_full_certification_status_requires_full_report(tmp_path, monkeypatch):
     )
 
     assert result["status"] == STATUS_CERTIFIED
+    assert official_full_certified(result) is True
+
+
+def test_full_certification_persists_llm_repair_feedback(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    monkeypatch.setenv("POK_OFFICIAL_LLM_ANALYSIS", "1")
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("full", candidate, opponent=opponent)
+
+    def fake_llm(evidence, *, output_path=None, **_kwargs):
+        payload = {
+            "compliance_verdict": "pass",
+            "failure_class": "none",
+            "blocking": False,
+            "confidence": 0.91,
+            "repair_guidance": "Keep pending-action validation before every send.",
+            "prompt_feedback": "Require wire send checks in worker tasks.",
+            "strength_evaluation": "not_applicable",
+        }
+        if output_path:
+            Path(output_path).write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    monkeypatch.setattr("official_llm_analysis.run_official_llm_analysis_sync", fake_llm)
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *args, **kwargs: FakeResult(_report(target_hands=70, rounds=8)),
+    )
+    feedback = official_feedback_summary()
+
+    assert result["status"] == STATUS_CERTIFIED
+    assert result["official_llm_repair_guidance"] == "Keep pending-action validation before every send."
+    assert result["official_llm_prompt_feedback"] == "Require wire send checks in worker tasks."
+    assert "compliance-only" in feedback
+    assert "pending-action validation" in feedback
 
 
 def test_compliance_certification_has_distinct_status(tmp_path, monkeypatch):
@@ -381,6 +426,54 @@ def test_record_local_pass_writes_local_status_for_uncertified(tmp_path, monkeyp
     assert result["status"] == "local-pass"
     assert result["issues"] == []
     assert verdict["classification"] == "local_pass"
+
+
+def test_record_grandfathered_marks_historical_opponent_without_certifying(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v70")
+
+    result = record_grandfathered(candidate, reason="bootstrap active pool", source="test")
+    verdict = official_compliance_verdict(result)
+
+    assert result["status"] == STATUS_GRANDFATHERED
+    assert result["grandfathered"] is True
+    assert verdict["classification"] == "grandfathered"
+    assert verdict["blocking"] is False
+    assert official_full_certified(result) is False
+
+
+def test_official_opponent_eligibility_allows_bootstrap_but_not_blocking_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    historical = _bot(tmp_path / "national_v70")
+
+    bootstrap = official_opponent_eligibility(historical)
+    assert bootstrap["eligible"] is True
+    assert bootstrap["reason"] == "bootstrap_grandfathered"
+
+    write_status(historical, STATUS_FAILED, mode="smoke", issues=["protocol_raise_format"])
+    failed = official_opponent_eligibility(historical)
+    assert failed["eligible"] is False
+    assert failed["reason"] == "blocking_official_failure"
+
+
+def test_select_official_opponent_prefers_certified_over_bootstrap(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v134")
+    bootstrap = _bot(tmp_path / "national_v70")
+    certified = _bot(tmp_path / "national_v120")
+    (bootstrap / ".completed").touch()
+    (certified / ".completed").touch()
+    write_status(certified, STATUS_CERTIFIED, mode="full", issues=[])
+
+    result = select_official_opponent(
+        candidate,
+        [str(bootstrap), str(certified)],
+        allow_bootstrap_grandfather=True,
+    )
+
+    assert result["selected"] is True
+    assert result["opponent"]["bot"] == "national_v120"
+    assert result["opponent"]["reason"] == "official_certified"
 
 
 def test_record_local_pass_preserves_inconclusive_official_evidence(tmp_path, monkeypatch):

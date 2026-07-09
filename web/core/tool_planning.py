@@ -4266,15 +4266,25 @@ def _official_smoke_contracts(quality, failures):
 
     source_items = []
     source_items.extend(_flatten_text_items(quality.get("official_smoke_errors")))
+    official_payload = quality.get("official_smoke") or {}
+    if isinstance(official_payload, dict):
+        llm_summary = official_payload.get("official_llm_analysis_summary") or {}
+        source_items.extend(_flatten_text_items(official_payload.get("official_llm_repair_guidance")))
+        source_items.extend(_flatten_text_items(official_payload.get("official_llm_prompt_feedback")))
+        source_items.extend(_flatten_text_items(llm_summary.get("repair_guidance")))
+        source_items.extend(_flatten_text_items(llm_summary.get("prompt_feedback")))
     source_items.extend(
         item for item in failures or []
         if _is_official_smoke_protocol_failure_text(item)
     )
-    source_items = [
-        str(item).strip()
-        for item in source_items
-        if str(item).strip() and _is_official_smoke_protocol_failure_text(item)
-    ]
+    source_items = [str(item).strip() for item in source_items if str(item).strip()]
+    protocol_items = [item for item in source_items if _is_official_smoke_protocol_failure_text(item)]
+    # Once deterministic evidence has established a blocking official-platform
+    # violation, LLM guidance is allowed to be descriptive rather than keyword
+    # matched.  Keep it bounded but do not discard useful phrasing such as
+    # "Normalize raise formatting".
+    guidance_items = [item for item in source_items if item not in protocol_items]
+    source_items = protocol_items + guidance_items
     if blocking and not source_items:
         source_items.append("official_smoke protocol_violation")
     if not source_items:

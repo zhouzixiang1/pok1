@@ -80,6 +80,17 @@ You check ONLY these five areas:
 
 3. **Code correctness** — The bot must compile. `national_bot.py` must connect over TCP and send only official raw national actions without relying on newline delimiters; it must split sticky inbound TCP packets before state updates, preserve `POK_OFFICIAL_ACTION_DELAY`/`_send_wire_action`, and never send unsolicited fallback actions without a pending decision. If a legacy/local `main.py` exists, it must still output valid `{"response": <int>}` JSON when used for regression. No unavailable imports (stdlib only). No infinite loops.
 
+   **Runtime architecture check** — For national_native candidates, inspect any
+   changed simulation, strategy, opponent-model, or TCP code for 60-second
+   budget safety. Reject unbounded per-action Monte Carlo/search/history scans,
+   dynamic construction of large lookup tables inside decision paths, file or
+   network I/O inside decision logic, or a fallback path that can miss the
+   pending action. If the task adds opponent modeling, verify match-level memory
+   is incremental, survives across hands, resets on a new connection, and is
+   actually consumed by strategy. If the task cites official EXE feedback,
+   verify the cited protocol/state-machine/logging issue was addressed; do not
+   approve a pure strength tweak for a compliance failure.
+
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.
 
 5. **Strategy drift detection** — Check whether the changes introduce unintended side effects OUTSIDE the declared scope:

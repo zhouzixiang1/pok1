@@ -42,6 +42,7 @@ STATUS_SMOKE_PASS = "official-smoke-pass"
 STATUS_COMPLIANCE_PASS = "official-compliance-pass"
 STATUS_PENDING = "official-pending"
 STATUS_CERTIFIED = "official-certified"
+STATUS_GRANDFATHERED = "official-grandfathered"
 STATUS_INCONCLUSIVE = "official-inconclusive"
 STATUS_FAILED = "official-failed"
 STATUS_UNCERTIFIED = "official-uncertified"
@@ -443,6 +444,35 @@ def record_local_pass(candidate: str | Path, *, source: str = "quality_gates") -
     return write_status(candidate, STATUS_LOCAL_PASS, source=source, issues=[])
 
 
+def record_grandfathered(
+    candidate: str | Path,
+    *,
+    reason: str,
+    source: str = "official_transition",
+) -> dict[str, Any]:
+    """Record a transitional official-opponent allowance for a historical bot.
+
+    Grandfathering is never a substitute for certifying a new candidate.  It is
+    only used to keep the existing active pool usable while historical bots are
+    gradually audited under the real EXE.
+    """
+    current = read_status(candidate)
+    if current.get("status") == STATUS_CERTIFIED:
+        return current
+    if current.get("status") == STATUS_FAILED and official_failure_blocks_parent(current):
+        return current
+    return write_status(
+        candidate,
+        STATUS_GRANDFATHERED,
+        mode="full",
+        source=source,
+        reason=reason,
+        grandfathered=True,
+        previous_status=current.get("status"),
+        issues=[],
+    )
+
+
 def _official_issue_strings(status: dict[str, Any]) -> list[str]:
     return [str(issue) for issue in (status.get("issues") or [])]
 
@@ -483,6 +513,16 @@ def official_compliance_verdict(status: dict[str, Any]) -> dict[str, Any]:
             "inconclusive": False,
             "violation": False,
             "issues": issues,
+        }
+    if status_value == STATUS_GRANDFATHERED:
+        return {
+            "ok": True,
+            "blocking": False,
+            "classification": "grandfathered",
+            "inconclusive": False,
+            "violation": False,
+            "issues": issues,
+            "grandfathered": True,
         }
     if status_value == STATUS_INCONCLUSIVE:
         return {
@@ -537,8 +577,145 @@ def official_failure_blocks_parent(status: dict[str, Any]) -> bool:
     return bool(official_compliance_verdict(status).get("blocking"))
 
 
+def official_full_certified(status: dict[str, Any]) -> bool:
+    verdict = official_compliance_verdict(status)
+    return (
+        status.get("status") == STATUS_CERTIFIED
+        and status.get("mode") == "full"
+        and bool(verdict.get("ok"))
+        and not bool(verdict.get("inconclusive"))
+        and not bool(verdict.get("blocking"))
+    )
+
+
 def parent_eligible(candidate: str | Path) -> bool:
     return not official_failure_blocks_parent(read_status(candidate))
+
+
+def official_opponent_eligibility(
+    candidate: str | Path,
+    *,
+    allow_bootstrap_grandfather: bool = True,
+) -> dict[str, Any]:
+    """Return whether a bot may be used as an official-EXE opponent.
+
+    New candidates still need ``official-certified`` full status.  This helper is
+    for selecting opponents: certified bots are preferred, explicitly
+    grandfathered historical bots are allowed, and otherwise active historical
+    bots may be used as bootstrap-grandfathered opponents when they have no
+    known blocking official failure.
+    """
+    status = read_status(candidate)
+    verdict = official_compliance_verdict(status)
+    if bool(verdict.get("blocking")):
+        return {
+            "eligible": False,
+            "reason": "blocking_official_failure",
+            "status": status.get("status"),
+            "mode": status.get("mode"),
+            "verdict": verdict,
+        }
+    if official_full_certified(status):
+        reason = "official_certified"
+        priority = 0
+    elif status.get("status") == STATUS_GRANDFATHERED:
+        reason = "official_grandfathered"
+        priority = 1
+    elif allow_bootstrap_grandfather:
+        reason = "bootstrap_grandfathered"
+        priority = 2
+    else:
+        return {
+            "eligible": False,
+            "reason": "not_official_certified",
+            "status": status.get("status"),
+            "mode": status.get("mode"),
+            "verdict": verdict,
+        }
+    return {
+        "eligible": True,
+        "reason": reason,
+        "priority": priority,
+        "status": status.get("status"),
+        "mode": status.get("mode"),
+        "verdict": verdict,
+    }
+
+
+def _bot_path_from_token(token: str | Path) -> Path:
+    raw = Path(token).expanduser()
+    if raw.is_absolute() or len(raw.parts) > 1:
+        return raw.resolve()
+    version = parse_bot_version(str(token))
+    if version is not None:
+        return (ROOT / "bots" / bot_name(version)).resolve()
+    return (ROOT / "bots" / str(token)).resolve()
+
+
+def _same_bot_path(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except Exception:
+        return str(a) == str(b)
+
+
+def select_official_opponent(
+    candidate: str | Path,
+    active_bots: list[str] | tuple[str, ...],
+    *,
+    preferred: str | Path | None = None,
+    allow_bootstrap_grandfather: bool = True,
+) -> dict[str, Any]:
+    candidate_path = _bot_path_from_token(candidate)
+    raw_tokens: list[str | Path] = []
+    if preferred:
+        raw_tokens.append(preferred)
+    raw_tokens.extend(active_bots)
+
+    considered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for token in raw_tokens:
+        path = _bot_path_from_token(token)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        name = path.name
+        if _same_bot_path(path, candidate_path):
+            considered.append({"bot": name, "path": str(path), "eligible": False, "reason": "candidate_self"})
+            continue
+        if not path.exists() or not (path / "national_bot.py").exists():
+            considered.append({"bot": name, "path": str(path), "eligible": False, "reason": "missing_native_entry"})
+            continue
+        if not (path / ".completed").exists():
+            considered.append({"bot": name, "path": str(path), "eligible": False, "reason": "missing_completed_sentinel"})
+            continue
+        eligibility = official_opponent_eligibility(path, allow_bootstrap_grandfather=allow_bootstrap_grandfather)
+        item = {
+            "bot": name,
+            "path": str(path),
+            **eligibility,
+        }
+        considered.append(item)
+
+    eligible = [item for item in considered if item.get("eligible")]
+    if not eligible:
+        return {
+            "selected": False,
+            "reason": "no_official_eligible_opponent",
+            "candidate": str(candidate_path),
+            "considered": considered,
+        }
+    selected = sorted(
+        eligible,
+        key=lambda item: (int(item.get("priority", 99)), -(parse_bot_version(item.get("bot")) or 0)),
+    )[0]
+    return {
+        "selected": True,
+        "candidate": str(candidate_path),
+        "opponent": selected,
+        "considered": considered,
+    }
 
 
 def official_lock_busy(config: OfficialPlatformConfig | None = None) -> bool:
@@ -667,6 +844,83 @@ def _official_llm_analysis_enabled() -> bool:
     return os.environ.get("POK_OFFICIAL_LLM_ANALYSIS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _short_text(value: Any, limit: int = 1200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def official_feedback_summary(*, limit: int = 8, max_chars: int = 6000) -> str:
+    """Return bounded official-EXE compliance feedback for planning prompts.
+
+    This is compliance-only context.  Win/loss and score outcomes from the
+    official EXE are intentionally excluded so the Master cannot treat the
+    platform as a strength evaluator.
+    """
+    rows: list[dict[str, Any]] = []
+    try:
+        files = sorted(status_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        files = []
+    for path in files:
+        payload = _read_json(path) or {}
+        if not payload:
+            continue
+        verdict = official_compliance_verdict(payload)
+        llm_summary = payload.get("official_llm_analysis_summary") or {}
+        repair_guidance = payload.get("official_llm_repair_guidance") or llm_summary.get("repair_guidance")
+        prompt_feedback = payload.get("official_llm_prompt_feedback") or llm_summary.get("prompt_feedback")
+        issues = payload.get("issues") or []
+        has_signal = (
+            verdict.get("blocking")
+            or verdict.get("inconclusive")
+            or repair_guidance
+            or prompt_feedback
+            or payload.get("status") in {STATUS_FAILED, STATUS_INCONCLUSIVE, STATUS_GRANDFATHERED}
+        )
+        if not has_signal:
+            continue
+        rows.append({
+            "bot": payload.get("bot") or path.stem,
+            "status": payload.get("status"),
+            "mode": payload.get("mode"),
+            "classification": verdict.get("classification"),
+            "blocking": bool(verdict.get("blocking")),
+            "inconclusive": bool(verdict.get("inconclusive")),
+            "issues": issues[:5],
+            "evidence_path": payload.get("official_evidence_path"),
+            "repair_guidance": _short_text(repair_guidance, 900),
+            "prompt_feedback": _short_text(prompt_feedback, 900),
+        })
+        if len(rows) >= limit:
+            break
+    if not rows:
+        return "No official EXE compliance feedback recorded yet."
+
+    lines = [
+        "Official EXE feedback is compliance-only; do not use EXE wins/losses as strength evidence.",
+    ]
+    for row in rows:
+        lines.append(
+            f"- {row['bot']}: status={row['status']} mode={row['mode']} "
+            f"classification={row['classification']} blocking={row['blocking']} "
+            f"inconclusive={row['inconclusive']}"
+        )
+        if row["issues"]:
+            lines.append("  issues: " + "; ".join(str(item)[:180] for item in row["issues"]))
+        if row["repair_guidance"]:
+            lines.append("  repair_guidance: " + row["repair_guidance"])
+        if row["prompt_feedback"]:
+            lines.append("  prompt_feedback: " + row["prompt_feedback"])
+        if row["evidence_path"]:
+            lines.append(f"  evidence: {row['evidence_path']}")
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[: max_chars - 3].rstrip() + "..."
+    return text
+
+
 def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache_hit: bool, cache_key_value: str) -> dict[str, Any]:
     validation_issues = report_validation_issues(result, spec)
     valid = not validation_issues
@@ -719,8 +973,18 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
                 "failure_class": analysis.get("failure_class"),
                 "blocking": analysis.get("blocking"),
                 "confidence": analysis.get("confidence"),
+                "repair_guidance": _short_text(analysis.get("repair_guidance"), 1200),
+                "prompt_feedback": _short_text(analysis.get("prompt_feedback"), 1200),
                 "strength_evaluation": "not_applicable",
             }
+            evidence_extra["official_llm_repair_guidance"] = _short_text(
+                analysis.get("repair_guidance"),
+                2000,
+            )
+            evidence_extra["official_llm_prompt_feedback"] = _short_text(
+                analysis.get("prompt_feedback"),
+                2000,
+            )
     except Exception as exc:
         evidence_extra = {
             "official_evidence_error": f"{type(exc).__name__}: {str(exc)[:300]}",

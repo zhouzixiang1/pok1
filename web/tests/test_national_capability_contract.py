@@ -1,0 +1,117 @@
+from pathlib import Path
+
+from national_capability_contract import evaluate_national_capabilities
+
+
+def _write_bot(root: Path, *, national_bot: str, opponent: str = "", strategy: str = "") -> Path:
+    root.mkdir(parents=True)
+    (root / "national_bot.py").write_text(national_bot, encoding="utf-8")
+    (root / "opponent.py").write_text(opponent, encoding="utf-8")
+    (root / "strategy.py").write_text(strategy, encoding="utf-8")
+    return root
+
+
+def test_capability_contract_accepts_safe_wire_and_flags_missing_architecture(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v1",
+        national_bot="""
+import argparse
+import sys
+import time
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def __init__(self):
+        self._requests = []
+        self._history = []
+        self._showdowns = []
+    def _send_wire_action(self, action):
+        pass
+    def handle(self, msg):
+        if msg.startswith('earnChips') or msg.startswith('oppo_hands'):
+            self._history.append(msg)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        opponent="""
+def build_opponent_model(requests):
+    return {'opp_aggression': len(requests)}
+""",
+        strategy="""
+MAX_MONTE_CARLO_SAMPLES = 120
+def get_action(req, requests):
+    start = time.monotonic()
+    return 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    warning_names = {item["name"] for item in result["advisory_warnings"]}
+
+    assert result["ok"] is True
+    assert result["required_failures"] == []
+    assert "incremental_opponent_model" in warning_names
+
+
+def test_capability_contract_blocks_stdout_pollution_and_missing_throttle(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v2",
+        national_bot="""
+def main():
+    print('debug')
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    failure_names = {item["name"] for item in result["required_failures"]}
+
+    assert result["ok"] is False
+    assert "official_safe_wire_send" in failure_names
+    assert "clean_diagnostics_channel" in failure_names
+
+
+def test_capability_contract_detects_precompute_and_incremental_model(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v3",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def __init__(self):
+        self._requests = []
+        self._history = []
+        self._showdowns = []
+    def _send_wire_action(self, action):
+        pass
+    def handle(self, msg):
+        if msg.startswith('earnChips') or msg.startswith('oppo_hands'):
+            self._history.append(msg)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        opponent="""
+class OpponentTracker:
+    def __init__(self):
+        self.match_profile = {}
+    def update_opponent(self, event):
+        self.match_profile['actions'] = self.match_profile.get('actions', 0) + 1
+""",
+        strategy="""
+import time
+PREFLOP_LOOKUP_TABLE = {(12, 12): 1.0}
+BOARD_TEXTURE_CACHE = {}
+MAX_DECISION_SAMPLES = 64
+def get_action(req, requests, runtime_ctx=None):
+    elapsed = time.monotonic()
+    opp_profile = (runtime_ctx or {}).get('opponent_tracker')
+    return 0 if opp_profile is None else 100
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    checks = {item["name"]: item["passed"] for item in result["checks"]}
+
+    assert result["ok"] is True
+    assert checks["precompute_lookup_path"] is True
+    assert checks["incremental_opponent_model"] is True

@@ -106,6 +106,20 @@ def test_prompts_require_structured_battle_memory_citations():
     assert "ev_*" in worker_prompt
 
 
+def test_prompts_require_national_runtime_architecture_contracts():
+    master_prompt = _prompt("master_prompt.md")
+    worker_prompt = _prompt("worker_prompt.md")
+    reviewer_prompt = _prompt("reviewer_prompt.md")
+
+    assert "Decision-time budget" in master_prompt
+    assert "Official EXE Compliance Feedback" in master_prompt
+    assert "{official_feedback}" in master_prompt
+    assert "bounded module/startup precomputation" in worker_prompt
+    assert "persistent for a 70-hand match" in worker_prompt
+    assert "Runtime architecture check" in reviewer_prompt
+    assert "incremental" in reviewer_prompt
+
+
 def test_readonly_review_prompts_ban_temp_redirect_probes():
     for name in ("reviewer_prompt.md", "critic_prompt.md", "master_prompt.md", "master_plan_audit.md"):
         text = _prompt(name)

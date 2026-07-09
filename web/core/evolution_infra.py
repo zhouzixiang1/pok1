@@ -887,11 +887,11 @@ def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versio
     for version in sorted(tag_versions):
         if version in reaped_versions:
             continue
-        if not is_active_bot_protocol_eligible(version):
-            continue
         bot_dir = BOTS_DIR / bot_name(version)
         sentinel = bot_dir / ".completed"
         if not bot_dir.is_dir() or sentinel.exists():
+            continue
+        if not is_active_bot_protocol_eligible(version):
             continue
         try:
             sentinel.write_text(f"restored from {bot_tag(version)} tag\n", encoding="utf-8")
@@ -920,6 +920,25 @@ def active_native_contract_filter_enabled() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+_ACTIVE_BOT_PROTOCOL_CACHE: dict[tuple[int, str, tuple[tuple[str, int, int], ...]], tuple[str, ...]] = {}
+
+
+def _bot_protocol_fingerprint(bot_dir: Path) -> tuple[tuple[str, int, int], ...]:
+    files: list[tuple[str, int, int]] = []
+    if not bot_dir.exists():
+        return (("<missing>", 0, 0),)
+    for path in sorted(bot_dir.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        try:
+            st = path.stat()
+            rel = str(path.relative_to(bot_dir)).replace(os.sep, "/")
+            files.append((rel, int(st.st_mtime_ns), int(st.st_size)))
+        except OSError:
+            continue
+    return tuple(files)
+
+
 def active_bot_protocol_errors(version: int) -> list[str]:
     """Return active-pool protocol errors for a tagged bot version.
 
@@ -932,6 +951,12 @@ def active_bot_protocol_errors(version: int) -> list[str]:
     if not active_native_contract_filter_enabled():
         return []
     bot_dir = BOTS_DIR / bot_name(version)
+    fingerprint = _bot_protocol_fingerprint(bot_dir)
+    cache_key = (int(version), str(bot_dir.resolve()), fingerprint)
+    cached = _ACTIVE_BOT_PROTOCOL_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
     errors = []
     try:
         from national_native import check_native_contract
@@ -943,6 +968,13 @@ def active_bot_protocol_errors(version: int) -> list[str]:
         errors.extend(detect_position_semantics_errors(bot_dir))
     except Exception as exc:
         errors.append(f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
+    stale_keys = [
+        key for key in _ACTIVE_BOT_PROTOCOL_CACHE
+        if key[0] == int(version) and key[1] == str(bot_dir.resolve())
+    ]
+    for key in stale_keys:
+        _ACTIVE_BOT_PROTOCOL_CACHE.pop(key, None)
+    _ACTIVE_BOT_PROTOCOL_CACHE[cache_key] = tuple(errors)
     return errors
 
 

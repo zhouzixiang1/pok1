@@ -498,6 +498,33 @@ async def run_quality_gates(args):
             native_contract_errors = check_native_contract(bot_dir)
         except Exception as e:
             native_contract_errors = [f"native_contract_check_error: {type(e).__name__}: {str(e)[:200]}"]
+    national_capability_contract = {
+        "schema_version": 1,
+        "ok": True,
+        "required_failures": [],
+        "advisory_warnings": [],
+        "checks": [],
+        "skipped": not native_tcp_mode,
+    }
+    national_capability_ok = True
+    national_capability_required = _env_enabled("POK_NATIONAL_CAPABILITY_GATE", "0")
+    if native_tcp_mode:
+        try:
+            from national_capability_contract import evaluate_national_capabilities
+            national_capability_contract = evaluate_national_capabilities(bot_dir)
+            national_capability_ok = bool(national_capability_contract.get("ok"))
+            if national_capability_required:
+                national_capability_ok = national_capability_ok and not national_capability_contract.get("advisory_warnings")
+        except Exception as e:
+            national_capability_ok = False
+            national_capability_contract = {
+                "schema_version": 1,
+                "ok": False,
+                "error": f"national_capability_contract_error: {type(e).__name__}: {str(e)[:200]}",
+                "required_failures": [],
+                "advisory_warnings": [],
+                "checks": [],
+            }
     embedded_selftest_errors = []
     try:
         from code_verification import run_bot_embedded_self_tests
@@ -1004,6 +1031,7 @@ async def run_quality_gates(args):
         and telemetry_fidelity_ok  # M6: multi-arm detector telemetry must be function-scope (false-INERT prevention)
         and reachability_ok  # R1: newly-added helper code must be wired/called
         and position_semantics_ok  # National/local heads-up identity: dealer=SB, BB first postflop
+        and national_capability_ok
     )
 
     result = {
@@ -1019,6 +1047,9 @@ async def run_quality_gates(args):
         "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
         "national_native_contract_ok": len(native_contract_errors) == 0,
         "national_native_contract_errors": native_contract_errors[:5] if native_contract_errors else [],
+        "national_capability_contract_ok": national_capability_ok,
+        "national_capability_contract_required": national_capability_required,
+        "national_capability_contract": national_capability_contract,
         "embedded_selftests_ok": len(embedded_selftest_errors) == 0,
         "embedded_selftest_errors": embedded_selftest_errors[:5] if embedded_selftest_errors else [],
         "smoke_ok": len(smoke_errors) == 0,
@@ -1094,6 +1125,18 @@ async def run_quality_gates(args):
                 "national_native_contract",
                 "native_tcp",
                 f"Native national TCP contract violation: {err}",
+            )
+    if not national_capability_ok:
+        failures = national_capability_contract.get("required_failures") or national_capability_contract.get("advisory_warnings") or []
+        failed_gates_detail.append(
+            f"national_capability_contract({'; '.join(str(item.get('name', item))[:120] for item in failures[:3])})"
+        )
+        for item in failures[:6]:
+            _record_quality_failure(
+                v,
+                "national_capability_contract",
+                str(item.get("name", "runtime_architecture")),
+                f"National runtime architecture contract issue: {item.get('guidance') or item}",
             )
     if embedded_selftest_errors:
         failed_gates_detail.append(
