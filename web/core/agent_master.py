@@ -178,7 +178,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"Ratings file: web/core/results/glicko_ratings.json\n"
         f"Rating history: web/core/results/rating_history.jsonl\n"
         f"Head-to-Head data snapshot: {h2h_data_file}\n"
-        f"Live H2H file: web/core/results/head_to_head.json (background only; daemon may update it during planning)\n"
+        f"Do not read live H2H for matchup counts during planning; use the snapshot above.\n"
         f"Bot stats: web/core/results/bot_stats.json\n"
         f"Experience pool: web/core/experience_pool.md  ← READ THIS, not evolution_workspace/experience_pool.md\n"
         f"\n{h2h_snapshot_contract}\n"

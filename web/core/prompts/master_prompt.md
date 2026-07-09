@@ -13,7 +13,7 @@ results.
 <data_files>
 Read these files FIRST to understand current state:
 - `{h2h_data_file}` — stable generation H2H snapshot for specific matchup strengths/weaknesses. Opponents with WR < 40% = weakness, > 60% = strength only when games and coverage are adequate.
-- `web/core/results/match_history.jsonl` — append-only match results; use it to sanity-check H2H coverage when the stable H2H snapshot is sparse.
+- `web/core/results/match_history.jsonl` — append-only match results; use it only for hand-level diagnostics and coverage sanity. Do not derive matchup records, W/L counts, or nemesis claims from match_history when the stable H2H snapshot has a row for that pair.
 - `web/core/results/glicko_ratings.json` — Glicko-2 ratings and RD uncertainty. Conservative rating (`r - 2*rd`) discounts unreliable raw ratings.
 - `web/core/results/bot_stats.json` — Per-bot aggregate stats. Useful as a broad signal, but frequency-weighted by scheduler choices.
 - `web/core/results/rating_history.jsonl` — Performance snapshots over time
@@ -35,6 +35,9 @@ The stable H2H snapshot is authoritative for matchup strength and weakness.
 When you name a nemesis, cite a matchup win rate, or claim "vX loses/beats vY",
 you MUST quote the snapshot row verbatim using the row key plus
 `games`, `a_wins`, `b_wins`, and `win_rate` from `{h2h_data_file}`.
+Use the `canonical_citation` rows in the compact stable snapshot summary when
+available. If a row is sparse, label it sparse/advisory; do not replace it with
+live H2H, match_history, replay-window, or daemon-updated counts.
 
 Replay Spotlight, match_history excerpts, battle_evidence rows, and pending
 summaries are hand-level or short-window diagnostics. They may explain WHY a
@@ -46,6 +49,8 @@ the stable H2H row for that pair has exactly that count.
 
 If the snapshot has no adequate matchup sample for the claimed opponent, label
 the evidence as sparse/advisory and do not call it a confirmed nemesis.
+Never read `web/core/results/head_to_head.json` for this planning step when
+`{h2h_data_file}` points to `web/core/results/v*/evidence_snapshot/head_to_head.json`.
 </h2h_evidence_hierarchy>
 
 <task>

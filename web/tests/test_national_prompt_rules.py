@@ -125,6 +125,8 @@ def test_master_prompts_prioritize_h2h_snapshot_over_spotlight_samples():
     assert "Replay Spotlight, match_history excerpts" in master_prompt
     assert "must not override" in master_prompt
     assert "`games`, `a_wins`, `b_wins`, and `win_rate`" in master_prompt
+    assert "canonical_citation" in master_prompt
+    assert "Never read `web/core/results/head_to_head.json`" in master_prompt
 
     assert "Reject plans that use replay spotlight" in audit_prompt
     assert "short-window samples" in audit_prompt

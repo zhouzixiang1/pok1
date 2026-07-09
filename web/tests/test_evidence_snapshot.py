@@ -198,7 +198,72 @@ def test_h2h_prompt_summary_uses_stable_source_perspective(monkeypatch, tmp_path
     assert "source_wr=0.3000" in summary
     assert "national_v31 vs national_v120: games=5" in summary
     assert "class=sparse" in summary
+    assert "canonical_citation=\"national_v31 vs national_v120: games=5, a_wins=4, b_wins=1" in summary
     assert "games=100" not in summary
+
+
+def test_h2h_prompt_summary_keeps_all_source_rows_before_other_rows(monkeypatch, tmp_path):
+    import evidence_snapshot
+
+    payload = {}
+    for opp in range(1, 35):
+        payload[f"national_v123 vs national_v{opp}"] = {
+            "games": 30,
+            "a_wins": 15,
+            "b_wins": 15,
+            "draws": 0,
+            "win_rate": 0.5,
+        }
+    payload["national_v123 vs national_v74"] = {
+        "games": 5,
+        "a_wins": 3,
+        "b_wins": 2,
+        "draws": 0,
+        "win_rate": 0.6,
+    }
+    for idx in range(200, 260):
+        payload[f"national_v{idx} vs national_v{idx + 1}"] = {
+            "games": 200,
+            "a_wins": 100,
+            "b_wins": 100,
+            "draws": 0,
+            "win_rate": 0.5,
+        }
+
+    _patch_h2h_paths(monkeypatch, tmp_path, payload)
+    evidence_snapshot.ensure_generation_h2h_snapshot(124)
+
+    summary = evidence_snapshot.build_h2h_prompt_summary(124, source_v=123, max_rows=35)
+
+    assert "national_v123 vs national_v74: games=5, a_wins=3, b_wins=2" in summary
+    assert "canonical_citation=\"national_v123 vs national_v74: games=5, a_wins=3, b_wins=2, win_rate=0.6000\"" in summary
+    assert "source_record=3W/2L" in summary
+    assert "national_v200 vs national_v201" not in summary
+
+
+def test_h2h_citation_repair_guidance_returns_canonical_snapshot_rows(monkeypatch, tmp_path):
+    import evidence_snapshot
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v123 vs national_v74": {
+            "games": 5,
+            "a_wins": 3,
+            "b_wins": 2,
+            "draws": 0,
+            "win_rate": 0.6,
+        }
+    })
+    evidence_snapshot.ensure_generation_h2h_snapshot(124)
+    errors = [
+        "national_v74 vs national_v123 cited games=10, snapshot has games=5 (key national_v123 vs national_v74)",
+        "national_v74 vs national_v123 cited a_wins=2, snapshot has a_wins=3 (key national_v123 vs national_v74)",
+    ]
+
+    guidance = evidence_snapshot.h2h_citation_repair_guidance(124, errors, source_v=123)
+
+    assert "canonical_citation: national_v123 vs national_v74: games=5, a_wins=3, b_wins=2, win_rate=0.6000" in guidance
+    assert "v123 perspective: 3W/2L, wr=0.6000" in guidance
+    assert "Do not replace them with live H2H" in guidance
 
 
 def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
@@ -234,7 +299,7 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
 
     assert result is not None
     assert "web/core/results/v24/evidence_snapshot/head_to_head.json" in captured["prompt"]
-    assert "Do not reject a plan because the live `web/core/results/head_to_head.json` changed" in captured["prompt"]
+    assert "Do not read live H2H for matchup counts during planning" in captured["prompt"]
 
 
 def test_master_plan_audit_prompt_includes_snapshot_json(monkeypatch, tmp_path):

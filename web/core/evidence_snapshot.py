@@ -166,7 +166,7 @@ def build_h2h_prompt_summary(
     next_v: int | str,
     *,
     source_v: int | str | None = None,
-    max_rows: int = 24,
+    max_rows: int = 64,
     confirmed_games: int = 10,
 ) -> str:
     """Return a compact, citation-safe H2H summary for prompts.
@@ -226,22 +226,37 @@ def build_h2h_prompt_summary(
             "source_wins": source_wins,
             "source_losses": source_losses,
             "sample_class": sample_class,
+            "canonical_citation": (
+                f"{key}: games={games}, a_wins={a_wins}, "
+                f"b_wins={b_wins}, win_rate={wr_a:.4f}"
+            ),
         })
 
     if source:
         rows.sort(key=lambda r: (
             not r["source_match"],
-            r["sample_class"] not in {"confirmed_weakness", "confirmed_strength"},
+            {
+                "confirmed_weakness": 0,
+                "adequate_context": 1,
+                "confirmed_strength": 2,
+                "sparse": 3,
+            }.get(r["sample_class"], 4),
+            r["source_wr"] if r["source_wr"] is not None else 0.5,
             -r["games"],
         ))
     else:
         rows.sort(key=lambda r: -r["games"])
+    if source:
+        source_rows = [r for r in rows if r["source_match"]]
+        other_rows = [r for r in rows if not r["source_match"]]
+        rows = source_rows + other_rows[:max(0, max_rows - len(source_rows))]
     rows = rows[:max_rows]
 
     lines = [
         "Compact source-focused H2H summary from the stable snapshot:",
         f"- Adequate/confirmed matchup claims require games >= {confirmed_games}; otherwise label sparse/advisory.",
         "- Quote row key, games, a_wins, b_wins, and win_rate exactly when citing a matchup.",
+        "- Prefer the canonical_citation text below; do not derive matchup records from live H2H or match_history.",
     ]
     for r in rows:
         base = (
@@ -254,8 +269,75 @@ def build_h2h_prompt_summary(
                 f", source_wr={r['source_wr']:.4f}, "
                 f"source_record={r['source_wins']}W/{r['source_losses']}L"
             )
+        base += f", canonical_citation=\"{r['canonical_citation']}\""
         lines.append(base)
     return "\n".join(lines)
+
+
+def h2h_citation_repair_guidance(
+    next_v: int | str,
+    citation_errors: list[str],
+    *,
+    source_v: int | str | None = None,
+    max_rows: int = 12,
+) -> str:
+    """Return concrete snapshot rows to repair rejected H2H citations.
+
+    Audit rejection feedback is often too negative ("the numbers are wrong")
+    without giving the Master a replacement fact. This helper maps citation
+    errors back to exact snapshot rows so the retry prompt contains the row key
+    and counts to use verbatim.
+    """
+    h2h = load_generation_h2h_snapshot(next_v)
+    if not h2h or not citation_errors:
+        return ""
+
+    wanted: list[str] = []
+    seen: set[str] = set()
+    for err in citation_errors:
+        for key in re.findall(r"\(key ([^)]+)\)", str(err)):
+            if key in h2h and key not in seen:
+                wanted.append(key)
+                seen.add(key)
+        for alias_match in _H2H_KEY_RE.finditer(str(err)):
+            a_v, b_v = alias_match.group(1), alias_match.group(2)
+            for key in (f"national_v{a_v} vs national_v{b_v}", f"national_v{b_v} vs national_v{a_v}"):
+                if key in h2h and key not in seen:
+                    wanted.append(key)
+                    seen.add(key)
+
+    rows: list[str] = []
+    for key in wanted[:max_rows]:
+        row = h2h.get(key)
+        if not isinstance(row, dict):
+            continue
+        games = int(row.get("games", 0) or 0)
+        a_wins = int(row.get("a_wins", 0) or 0)
+        b_wins = int(row.get("b_wins", 0) or 0)
+        win_rate = _row_win_rate(row)
+        if win_rate is None:
+            win_rate = 0.0
+        line = (
+            f"- canonical_citation: {key}: games={games}, "
+            f"a_wins={a_wins}, b_wins={b_wins}, win_rate={win_rate:.4f}"
+        )
+        a_v, b_v = _row_versions(key)
+        if source_v is not None and str(source_v) in {a_v, b_v}:
+            source = str(source_v)
+            if a_v == source:
+                source_wins, source_losses, source_wr = a_wins, b_wins, win_rate
+            else:
+                source_wins, source_losses, source_wr = b_wins, a_wins, 1.0 - win_rate
+            line += f" (v{source} perspective: {source_wins}W/{source_losses}L, wr={source_wr:.4f})"
+        rows.append(line)
+
+    if not rows:
+        return ""
+    return "\n".join([
+        "Use these exact stable snapshot rows to repair the rejected H2H citations:",
+        *rows,
+        "Do not replace them with live H2H, match_history, replay-window, or daemon-updated counts.",
+    ])
 
 
 def h2h_snapshot_contract_text(
@@ -276,10 +358,9 @@ def h2h_snapshot_contract_text(
         "Stable H2H evidence snapshot for this generation:",
         f"- Snapshot file: `{snapshot['h2h_relpath']}`",
         f"- Snapshot manifest: `{snapshot['manifest_relpath']}`",
-        f"- Source live file at snapshot time: `{snapshot['live_h2h_relpath']}`",
         f"- sha256: `{snapshot.get('sha256', '')}`; entries: {snapshot.get('entries', 0)}; bytes: {snapshot.get('bytes', 0)}",
         "- For verbatim H2H counts in Master plans and MasterPlanAudit, use this snapshot only.",
-        "- Do not reject a plan because the live `web/core/results/head_to_head.json` changed after this snapshot was created.",
+        "- Live H2H may drift after snapshot creation; planning and audit must ignore that drift.",
     ]
     try:
         lines.extend(["", build_h2h_prompt_summary(next_v, source_v=source_v)])
