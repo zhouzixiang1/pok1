@@ -1,0 +1,192 @@
+{
+  "execution_mode": "native_tcp",
+  "candidate_path": "/home/zzx/project/pok/bots/neural_national_lab/versions/v140_national_v123_overlay_no_large_commit_veto_tcp",
+  "opponent_paths": [
+    "/home/zzx/project/pok/bots/national_v123"
+  ],
+  "hands_per_match": 10,
+  "seeds": [
+    2026074700
+  ],
+  "workers": 1,
+  "paired": true,
+  "requires_native_opponents": true,
+  "bot_seed_base": 2026075700,
+  "trace_decisions": false,
+  "force": {
+    "hand": null,
+    "decision": null,
+    "action": null
+  },
+  "elapsed_sec": 13.259,
+  "rows": [
+    {
+      "candidate": "v140_national_v123_overlay_no_large_commit_veto_tcp",
+      "opponent": "national_v123",
+      "opponent_path": "/home/zzx/project/pok/bots/national_v123",
+      "match_idx": 0,
+      "leg": "paired",
+      "deck_seed_base": 2026074700,
+      "bot_seed_base": 2026075700,
+      "hands_played": 20,
+      "net_chips": 0,
+      "net_chips_per_hand": 0.0,
+      "hand_net_chips": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "passed_compliance": true,
+      "issues": [],
+      "candidate_illegal": 0,
+      "candidate_timeouts": 0,
+      "opponent_illegal": 0,
+      "opponent_timeouts": 0,
+      "adapter_actions_candidate": 0,
+      "adapter_actions_opponent": 0,
+      "legs": [
+        {
+          "candidate": "v140_national_v123_overlay_no_large_commit_veto_tcp",
+          "opponent": "national_v123",
+          "opponent_path": "/home/zzx/project/pok/bots/national_v123",
+          "match_idx": 0,
+          "leg": "forward",
+          "deck_seed_base": 2026074700,
+          "bot_seed_base": 2026075700,
+          "hands_played": 10,
+          "net_chips": 420,
+          "net_chips_per_hand": 42.0,
+          "hand_net_chips": [
+            665,
+            -636,
+            100,
+            701,
+            100,
+            -260,
+            -100,
+            -100,
+            -100,
+            50
+          ],
+          "passed_compliance": true,
+          "issues": [],
+          "candidate_illegal": 0,
+          "candidate_timeouts": 0,
+          "opponent_illegal": 0,
+          "opponent_timeouts": 0,
+          "adapter_actions_candidate": 0,
+          "adapter_actions_opponent": 0,
+          "candidate_native": {
+            "returncode": 0,
+            "bot_seed": 2026075700,
+            "stdout_tail": "",
+            "stderr_tail": "=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nRIVER_THIN_VALUE reason=skip_not_river_to0\nPOT_FRAC flop=0.501(2) turn=0.574(1) river=0.890(1)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.324 shove_rate=0.053 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=4 postflop_shoves=0 postflop_aggr=4 cv=0.494\nPOLARITY_MARGIN final_milli=+93 polarity_delta_milli=+0 shove_delta_milli=-1 street_pol=+0.000 shove_rate=0.053 opp_conf=0.40 size_bucket=medium round=1\nBET_SIZE_ADAPT delta_milli=-10 deviation=-0.581 current_bb=1.0 avg_bb=2.4 conf=0.40 round=1\nPOT_FRAC flop=0.501(2) turn=0.574(1) river=0.890(1)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.324 shove_rate=0.053 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=4 postflop_shoves=0 postflop_aggr=4 cv=0.494\nSB_OPEN_PRESSURE open_d=+0.0368 pfr=0.465 ftr=0.251 vpip=0.665 conf=0.40 reason=deviation_fired\nSB_OPEN_SIZE base_bb=2.73 opp_bb_delta=+0.23 fold_signal=-0.94 ftr=0.251 conf=0.40\nPOT_FRAC flop=0.522(3) turn=0.574(1) river=0.890(1)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.457 shove_rate=0.049 flop_shove=0.058 turn_shove=0.071 river_shove=0.071 flop_pol=+1.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=5 postflop_shoves=0 postflop_aggr=5 cv=0.519\nPOLARITY_MARGIN final_milli=+40 polarity_delta_milli=+3 shove_delta_milli=-1 street_pol=+1.000 shove_rate=0.049 opp_conf=0.46 size_bucket=medium round=1\nBET_SIZE_ADAPT delta_milli=-8 deviation=-0.363 current_bb=1.3 avg_bb=2.0 conf=0.46 round=1\n",
+            "decision_trace": [],
+            "process_failures": 0,
+            "json_response_stdout": 0
+          },
+          "opponent_native": {
+            "returncode": 0,
+            "bot_seed": 2026075701,
+            "stdout_tail": "",
+            "stderr_tail": "465 ftr=0.220 vpip=0.847 conf=0.34 reason=deviation_fired\nSB_OPEN_SIZE base_bb=2.71 opp_bb_delta=+0.21 fold_signal=-1.00 ftr=0.220 conf=0.34\nPOT_FRAC flop=0.613(2) turn=0.621(1) river=0.750(0)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nRIVER_THIN_VALUE reason=skip_not_river_to0\nPOT_FRAC flop=0.613(2) turn=0.621(1) river=0.750(0)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nBB_DEFENSE_PRESSURE call_d=+0.0459 bluff_freq_d=-0.0643 iso_d=+0.0279 pfr=0.394 ftr=0.220 vpip=0.794 conf=0.43 reason=deviation_fired\nPOT_FRAC flop=0.613(2) turn=0.621(1) river=0.750(0)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nRIVER_THIN_VALUE reason=skip_not_river_to0\nPOT_FRAC flop=0.613(2) turn=0.621(1) river=0.750(0)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nSB_OPEN_PRESSURE open_d=+0.0391 pfr=0.394 ftr=0.220 vpip=0.794 conf=0.43 reason=deviation_fired\nSB_OPEN_SIZE base_bb=2.76 opp_bb_delta=+0.26 fold_signal=-1.00 ftr=0.220 conf=0.43\n",
+            "decision_trace": [],
+            "process_failures": 0,
+            "json_response_stdout": 0
+          }
+        },
+        {
+          "candidate": "v140_national_v123_overlay_no_large_commit_veto_tcp",
+          "opponent": "national_v123",
+          "opponent_path": "/home/zzx/project/pok/bots/national_v123",
+          "match_idx": 0,
+          "leg": "swapped",
+          "deck_seed_base": 2026074700,
+          "bot_seed_base": 2026075700,
+          "hands_played": 10,
+          "net_chips": -420,
+          "net_chips_per_hand": -42.0,
+          "hand_net_chips": [
+            -665,
+            636,
+            -100,
+            -701,
+            -100,
+            260,
+            100,
+            100,
+            100,
+            -50
+          ],
+          "passed_compliance": true,
+          "issues": [],
+          "candidate_illegal": 0,
+          "candidate_timeouts": 0,
+          "opponent_illegal": 0,
+          "opponent_timeouts": 0,
+          "adapter_actions_candidate": 0,
+          "adapter_actions_opponent": 0,
+          "candidate_native": {
+            "returncode": 0,
+            "bot_seed": 2026075701,
+            "stdout_tail": "",
+            "stderr_tail": "465 ftr=0.220 vpip=0.847 conf=0.34 reason=deviation_fired\nSB_OPEN_SIZE base_bb=2.71 opp_bb_delta=+0.21 fold_signal=-1.00 ftr=0.220 conf=0.34\nPOT_FRAC flop=0.613(2) turn=0.621(1) river=0.750(0)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nRIVER_THIN_VALUE reason=skip_not_river_to0\nPOT_FRAC flop=0.613(2) turn=0.621(1) river=0.750(0)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nBB_DEFENSE_PRESSURE call_d=+0.0459 bluff_freq_d=-0.0643 iso_d=+0.0279 pfr=0.394 ftr=0.220 vpip=0.794 conf=0.43 reason=deviation_fired\nPOT_FRAC flop=0.613(2) turn=0.621(1) river=0.750(0)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nRIVER_THIN_VALUE reason=skip_not_river_to0\nPOT_FRAC flop=0.613(2) turn=0.621(1) river=0.750(0)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.000 shove_rate=0.058 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nSB_OPEN_PRESSURE open_d=+0.0391 pfr=0.394 ftr=0.220 vpip=0.794 conf=0.43 reason=deviation_fired\nSB_OPEN_SIZE base_bb=2.76 opp_bb_delta=+0.26 fold_signal=-1.00 ftr=0.220 conf=0.43\n",
+            "decision_trace": [],
+            "process_failures": 0,
+            "json_response_stdout": 0
+          },
+          "opponent_native": {
+            "returncode": 0,
+            "bot_seed": 2026075700,
+            "stdout_tail": "",
+            "stderr_tail": "=+0.000 shove_rate=0.058 flop_shove=0.071 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=3 postflop_shoves=0 postflop_aggr=3 cv=0.000\nRIVER_THIN_VALUE reason=skip_not_river_to0\nPOT_FRAC flop=0.501(2) turn=0.574(1) river=0.890(1)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.324 shove_rate=0.053 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=4 postflop_shoves=0 postflop_aggr=4 cv=0.494\nPOLARITY_MARGIN final_milli=+93 polarity_delta_milli=+0 shove_delta_milli=-1 street_pol=+0.000 shove_rate=0.053 opp_conf=0.40 size_bucket=medium round=1\nBET_SIZE_ADAPT delta_milli=-10 deviation=-0.581 current_bb=1.0 avg_bb=2.4 conf=0.40 round=1\nPOT_FRAC flop=0.501(2) turn=0.574(1) river=0.890(1)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.324 shove_rate=0.053 flop_shove=0.064 turn_shove=0.071 river_shove=0.071 flop_pol=+0.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=4 postflop_shoves=0 postflop_aggr=4 cv=0.494\nSB_OPEN_PRESSURE open_d=+0.0368 pfr=0.465 ftr=0.251 vpip=0.665 conf=0.40 reason=deviation_fired\nSB_OPEN_SIZE base_bb=2.73 opp_bb_delta=+0.23 fold_signal=-0.94 ftr=0.251 conf=0.40\nPOT_FRAC flop=0.522(3) turn=0.574(1) river=0.890(1)\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nFOLD_TO_JAM_RATE rate=0.450 samples=0 folds=0\nBETSIZE_POLARITY polarity=+0.457 shove_rate=0.049 flop_shove=0.058 turn_shove=0.071 river_shove=0.071 flop_pol=+1.000 turn_pol=+0.000 river_pol=+0.000 postflop_raise_samples=5 postflop_shoves=0 postflop_aggr=5 cv=0.519\nPOLARITY_MARGIN final_milli=+40 polarity_delta_milli=+3 shove_delta_milli=-1 street_pol=+1.000 shove_rate=0.049 opp_conf=0.46 size_bucket=medium round=1\nBET_SIZE_ADAPT delta_milli=-8 deviation=-0.363 current_bb=1.3 avg_bb=2.0 conf=0.46 round=1\n",
+            "decision_trace": [],
+            "process_failures": 0,
+            "json_response_stdout": 0
+          }
+        }
+      ]
+    }
+  ],
+  "combined": {
+    "matches": 1,
+    "hands": 20,
+    "compliant_matches": 1,
+    "total_net_chips": 0,
+    "mean_per_hand": 0.0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 1
+  },
+  "opponents": {
+    "national_v123": {
+      "matches": 1,
+      "hands": 20,
+      "compliant_matches": 1,
+      "total_net_chips": 0,
+      "mean_net_chips": 0,
+      "median_net_chips": 0,
+      "mean_per_hand": 0.0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 1,
+      "samples": [
+        0
+      ],
+      "issues": [],
+      "candidate_illegal_total": 0,
+      "candidate_timeouts_total": 0,
+      "opponent_illegal_total": 0,
+      "opponent_timeouts_total": 0,
+      "adapter_actions_candidate_total": 0,
+      "adapter_actions_opponent_total": 0
+    }
+  }
+}
