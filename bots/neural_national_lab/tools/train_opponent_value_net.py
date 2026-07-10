@@ -87,6 +87,71 @@ def _opponent_profile_features(req: dict[str, Any]) -> list[float]:
     return [_clip01(_f(p, k)) for k in keys]
 
 
+# Number of cross-hand opponent features (must match runtime).
+CROSS_HAND_DIM = 20
+
+
+def _f_list(lst: Any, idx: int, default: float = 0.0) -> float:
+    try:
+        return float(lst[idx]) if lst is not None and len(lst) > idx else default
+    except (TypeError, ValueError, IndexError):
+        return default
+
+
+def _cross_hand_opp_features(req: dict[str, Any]) -> list[float]:
+    """Cross-hand opponent encoding: aggregated behavioural stats + showdown
+    summaries + match-progress context (CROSS_HAND_DIM = 20 features).
+
+    [0:12]  opponent_profile rates (confidence, fold/call/check/raise/allin,
+            aggression, preflop/postflop norms + raise rates, actions_total_norm)
+    [12]    hand progress (hand/max_hand)
+    [13]    net chip position
+    [14:18] showdown: n_showdowns_norm, opp_win_rate, opp_aggression, avg_pot
+    [18]    is_small_blind
+    [19]    confidence * actions_total_norm (reliability)
+    """
+    p = req.get("opponent_profile") or {}
+    if not isinstance(p, dict):
+        p = {}
+    rates = [
+        _clip01(_f(p, "confidence")), _clip01(_f(p, "fold_rate")),
+        _clip01(_f(p, "call_rate")), _clip01(_f(p, "check_rate")),
+        _clip01(_f(p, "raise_rate")), _clip01(_f(p, "allin_rate")),
+        _clip01(_f(p, "aggression")), _clip01(_f(p, "preflop_raise_rate")),
+        _clip01(_f(p, "postflop_raise_rate")), _clip01(_f(p, "preflop_actions_norm")),
+        _clip01(_f(p, "postflop_actions_norm")), _clip01(_f(p, "actions_total_norm")),
+    ]
+    hand = _f(req, "hand", 0.0)
+    max_hand = _f(req, "max_hand", 70.0) or 70.0
+    hand_prog = _clip01(hand / max(max_hand, 1.0))
+    my_chips = _f(req, "my_chips", 20000.0)
+    twc = req.get("total_win_chips") or [0.0, 0.0]
+    net_pos = _clip01((my_chips + _f_list(twc, 0)) / 40000.0)
+    sds = req.get("opponent_showdowns") or []
+    n_sd = min(len(sds), 10)
+    opp_won = opp_agg = 0.0
+    pots = []
+    for sd in sds[:10]:
+        if not isinstance(sd, dict):
+            continue
+        earned = _f(sd, "earned", 0.0)
+        if earned < 0:
+            opp_won += 1
+        hist = sd.get("history") or []
+        n_raise = sum(1 for h in hist if isinstance(h, dict)
+                      and str(h.get("action_type", "")).lower() == "raise")
+        opp_agg += _clip01(n_raise / max(1, len(hist)))
+        pots.append(abs(earned))
+    n_sd_norm = _clip01(n_sd / 10.0)
+    opp_win_sd = _clip01(opp_won / max(1, n_sd))
+    opp_agg_sd = _clip01(opp_agg / max(1, n_sd))
+    avg_pot = _clip01((sum(pots) / max(1, len(pots))) / 20000.0) if pots else 0.0
+    is_sb = 1.0 if _f(req, "dealer_id", -1) == _f(req, "my_id", -2) else 0.0
+    reliability = rates[0] * rates[11]
+    return rates + [hand_prog, net_pos, n_sd_norm, opp_win_sd, opp_agg_sd,
+                    avg_pot, is_sb, reliability]
+
+
 def _street_onehot(history_entry: dict[str, Any]) -> list[float]:
     stage = history_entry.get("stage_bet", 0)
     # Derive street from public-card count if available; fall back to round.
@@ -179,6 +244,7 @@ def build_sample(row: dict[str, Any], *, max_hist: int = 16) -> dict[str, Any]:
     return {
         "state": state_feat,
         "profile": profile_feat,
+        "cross_hand": _cross_hand_opp_features(req),
         "history": hist_feat,
         "target": target,
         "rule_id": rule_id,
@@ -188,14 +254,22 @@ def build_sample(row: dict[str, Any], *, max_hist: int = 16) -> dict[str, Any]:
 
 
 class OpponentAwareValueNet(nn.Module):
-    """State MLP + opponent-history GRU -> per-legal-action value vector."""
+    """State MLP + intra-hand GRU + cross-hand opponent encoder -> value vector."""
 
     def __init__(self, state_dim: int, profile_dim: int, *, gru_hidden: int = 64,
-                 hidden: int = 128, dropout: float = 0.1) -> None:
+                 hidden: int = 128, dropout: float = 0.1,
+                 cross_hand_dim: int = CROSS_HAND_DIM) -> None:
         super().__init__()
         self.gru = nn.GRU(HIST_FEAT_DIM, gru_hidden, batch_first=True)
+        self.cross_hand_dim = cross_hand_dim
+        self.opp_encoder = nn.Sequential(
+            nn.Linear(cross_hand_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+        )
+        head_in = state_dim + profile_dim + gru_hidden + 16
         self.head = nn.Sequential(
-            nn.Linear(state_dim + profile_dim + gru_hidden, hidden),
+            nn.Linear(head_in, hidden),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden, hidden),
@@ -205,14 +279,17 @@ class OpponentAwareValueNet(nn.Module):
         )
 
     def forward(self, state: torch.Tensor, profile: torch.Tensor,
-                hist: torch.Tensor, hist_mask: torch.Tensor) -> torch.Tensor:
-        # hist: (B, T, F), hist_mask: (B, 1, 1) multiplier for valid lengths
+                hist: torch.Tensor, hist_mask: torch.Tensor,
+                cross_hand: torch.Tensor | None = None) -> torch.Tensor:
         if hist.size(1) > 0:
             _, h = self.gru(hist)
             opp_emb = h.squeeze(0) * hist_mask.squeeze(-1)
         else:
             opp_emb = torch.zeros(state.size(0), self.gru.hidden_size, device=state.device)
-        x = torch.cat([state, profile, opp_emb], dim=1)
+        parts = [state, profile, opp_emb]
+        if cross_hand is not None and self.cross_hand_dim > 0:
+            parts.append(self.opp_encoder(cross_hand))
+        x = torch.cat(parts, dim=1)
         return self.head(x)
 
 
@@ -234,8 +311,10 @@ def collate(samples: list[dict[str, Any]], *, max_hist: int, device: str):
     B = len(samples)
     state_dim = len(samples[0]["state"]) if samples else 0
     profile_dim = len(samples[0]["profile"]) if samples else 0
+    cross_dim = len(samples[0].get("cross_hand") or []) if samples else 0
     state_t = torch.zeros(B, state_dim, device=device)
     profile_t = torch.zeros(B, profile_dim, device=device)
+    cross_t = torch.zeros(B, cross_dim, device=device) if cross_dim else None
     hist_t = torch.zeros(B, max_hist, HIST_FEAT_DIM, device=device)
     hist_mask = torch.zeros(B, 1, 1, device=device)
     target_t = torch.full((B, NUM_LABELS), float("nan"), device=device)
@@ -244,6 +323,8 @@ def collate(samples: list[dict[str, Any]], *, max_hist: int, device: str):
     for i, s in enumerate(samples):
         state_t[i] = torch.tensor(s["state"], dtype=torch.float32)
         profile_t[i] = torch.tensor(s["profile"], dtype=torch.float32)
+        if cross_t is not None and s.get("cross_hand"):
+            cross_t[i] = torch.tensor(s["cross_hand"], dtype=torch.float32)
         h = s["history"]
         for t, vec in enumerate(h):
             hist_t[i, t] = torch.tensor(vec, dtype=torch.float32)
@@ -252,7 +333,7 @@ def collate(samples: list[dict[str, Any]], *, max_hist: int, device: str):
         target_t[i] = torch.tensor(s["target"], dtype=torch.float32)
         rule_ids.append(s["rule_id"])
         cand_ids.append(s["candidate_id"])
-    return state_t, profile_t, hist_t, hist_mask, target_t, rule_ids, cand_ids
+    return state_t, profile_t, cross_t, hist_t, hist_mask, target_t, rule_ids, cand_ids
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -321,14 +402,14 @@ def main(argv: list[str] | None = None) -> int:
         all_lbl = []
         for start in range(0, len(idx), args.batch_size):
             batch = [samples[i] for i in idx[start:start + args.batch_size]]
-            state_t, profile_t, hist_t, hist_mask, target_t, _, _ = collate(
+            state_t, profile_t, cross_t, hist_t, hist_mask, target_t, _, _ = collate(
                 batch, max_hist=args.max_hist, device=device)
             target_t = torch.clamp(target_t, -args.clip_target, args.clip_target)
             valid = ~torch.isnan(target_t)
             if valid.sum() == 0:
                 continue
             scale = float(args.clip_target)
-            pred = model(state_t, profile_t, hist_t, hist_mask)
+            pred = model(state_t, profile_t, hist_t, hist_mask, cross_t)
             if args.task == "regression":
                 target_norm = target_t / scale
                 target_clean = torch.where(valid, target_norm, torch.zeros_like(target_norm))
@@ -415,6 +496,7 @@ def _export_json(model, out_path: str, state_dim: int, profile_dim: int,
         "hist_feat_dim": HIST_FEAT_DIM,
         "hidden": hidden,
         "max_hist": max_hist,
+        "cross_hand_dim": CROSS_HAND_DIM,
         metric_key: float(best_val_mae) if best_val_mae == best_val_mae else None,
     }
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
