@@ -16,8 +16,8 @@ trained from duplicated smoke rows and must not be used as performance evidence.
   preflop/postflop aggression, public street reach, showdown, and settlement.
 - The probe and native bot use the same `public_opponent_hand_v1` feature
   implementation. No opponent private cards enter the sequence.
-- The multi-task trainer supports GRU, Deep Sets, and a small exportable
-  Transformer over the same temporal input.
+- The multi-task trainer supports GRU, GRU with soft mixture-of-experts,
+  Deep Sets, and a small exportable Transformer over the same temporal input.
 - Value heads predict hand, tail, and full-match deltas. The response head uses
   a separately encoded public state with hero private-card features masked.
 - JSON models run in a stdlib-only runtime. Torch and CUDA are training-only.
@@ -41,9 +41,15 @@ python -m pytest sever/tests/test_national_platform_alignment.py -q
 
 Torch and stdlib outputs agree for aggregate-only, GRU, Deep Sets, and
 Transformer models, including empty, 32-hand, and over-length temporal inputs.
-A CUDA smoke sweep trained and exported all three temporal encoders and selected
+A CUDA smoke sweep trained and exported all four temporal encoders and selected
 an architecture using validation data only. The smoke dataset is intentionally
 too small and duplicated to support any architecture or strength conclusion.
+
+The formal scaling grid includes an xlarge range of about 4.2-4.9 million
+parameters. Local stdlib benchmarks measured 296-977 ms for a maximum-history
+value-plus-response inference across these xlarge encoders. Runtime is recorded
+per seed, summed for the complete seed ensemble, and enforced as a
+model-selection gate.
 
 `check_native_contract` returns no errors for v151. Official EXE acceptance and
 paired native strength evaluation are deliberately deferred until an active

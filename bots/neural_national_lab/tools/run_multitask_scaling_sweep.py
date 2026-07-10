@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run reproducible small/medium/large opponent-model scaling experiments."""
+"""Run reproducible multi-scale opponent-model architecture experiments."""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,7 @@ from pathlib import Path
 import statistics
 import subprocess
 import sys
+import time
 from typing import Any
 
 
@@ -18,23 +19,32 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from audit_oppmodel_dataset import audit  # noqa: E402
+from opp_multitask_runtime import OpponentMultiTaskRuntime  # noqa: E402
 
 
 DEFAULT_CONFIGS = (
     "small_gru@gru:128:64:48:32:32:64",
+    "small_moe@gru_moe:128:64:48:32:32:64",
     "small_set@deep_set:128:64:48:32:32:64",
     "small_tx@transformer:128:64:48:32:32:64",
     "medium_gru@gru:256:128:96:64:64:128",
+    "medium_moe@gru_moe:256:128:96:64:64:128",
     "medium_set@deep_set:256:128:96:64:64:128",
     "medium_tx@transformer:256:128:96:64:64:128",
     "large_gru@gru:512:256:192:128:128:256",
+    "large_moe@gru_moe:512:256:192:128:128:256",
     "large_set@deep_set:512:256:192:128:128:256",
     "large_tx@transformer:512:256:192:128:128:256",
+    "xlarge_gru@gru:1024:512:256:256:256:512",
+    "xlarge_moe@gru_moe:1024:512:256:256:256:512",
+    "xlarge_set@deep_set:1024:512:256:256:256:512",
+    "xlarge_tx@transformer:1024:512:256:256:256:512",
 )
 
 
 def _parse_config(
-    raw: str, *, cross_transformer_heads: int = 4
+    raw: str, *, cross_transformer_heads: int = 4,
+    cross_moe_experts: int = 4,
 ) -> dict[str, Any]:
     parts = raw.split(":")
     if len(parts) not in {6, 7}:
@@ -47,7 +57,7 @@ def _parse_config(
         name, encoder = name_spec.rsplit("@", 1)
     else:
         name, encoder = name_spec, "gru"
-    if encoder not in {"gru", "deep_set", "transformer"}:
+    if encoder not in {"gru", "gru_moe", "deep_set", "transformer"}:
         raise SystemExit(f"invalid cross-hand encoder in {raw!r}: {encoder}")
     values = [int(value) for value in parts[1:]]
     if len(values) == 5:
@@ -63,6 +73,7 @@ def _parse_config(
     ))
     config["cross_sequence_encoder"] = encoder
     config["cross_transformer_heads"] = int(cross_transformer_heads)
+    config["cross_moe_experts"] = int(cross_moe_experts)
     if config["cross_transformer_heads"] <= 0:
         raise SystemExit("cross-transformer-heads must be positive")
     if (
@@ -72,11 +83,56 @@ def _parse_config(
         raise SystemExit(
             f"transformer sequence hidden size must be divisible by heads in {raw!r}"
         )
+    if encoder == "gru_moe" and config["cross_moe_experts"] < 2:
+        raise SystemExit("cross-moe-experts must be at least two")
     return config
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _benchmark_runtime(path: Path, *, repeats: int) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    meta = payload.get("meta") or {}
+    model_meta = meta.get("model") or {}
+    runtime = OpponentMultiTaskRuntime(payload)
+    state = [0.01] * int(meta.get("state_dim", 48))
+    profile = [0.02] * int(meta.get("profile_dim", 12))
+    history = [
+        [0.03] * int(meta.get("hist_feat_dim", 15))
+        for _ in range(int(model_meta.get("max_hist", 16)))
+    ]
+    cross_hand = [0.04] * int(meta.get("cross_hand_dim", 20))
+    cross_sequence = [
+        [0.05] * int(meta.get("cross_hand_sequence_dim", 16))
+        for _ in range(int(model_meta.get("max_cross_hands", 32)))
+    ]
+    hero_action = [0.0] * int(meta.get("hero_action_dim", 10))
+    if hero_action:
+        hero_action[0] = 1.0
+
+    def predict() -> None:
+        values = runtime.predict_values(
+            state, profile, history, cross_hand, 0, cross_sequence
+        )
+        response = runtime.predict_response(
+            state, profile, history, cross_hand, hero_action, cross_sequence
+        )
+        if not values or not response:
+            raise SystemExit(f"stdlib runtime benchmark failed for {path}")
+
+    predict()
+    timings = []
+    for _ in range(max(1, int(repeats))):
+        start = time.perf_counter()
+        predict()
+        timings.append((time.perf_counter() - start) * 1000.0)
+    return {
+        "repeats": len(timings),
+        "mean_value_response_ms": statistics.fmean(timings),
+        "max_value_response_ms": max(timings),
+    }
 
 
 def _model_matches(
@@ -96,7 +152,8 @@ def _model_matches(
         return False
     for key in (
         "hidden", "latent", "gru_hidden", "cross_hidden",
-        "cross_sequence_hidden", "cross_transformer_heads", "head_hidden",
+        "cross_sequence_hidden", "cross_transformer_heads",
+        "cross_moe_experts", "head_hidden",
     ):
         if int(model.get(key, -1)) != int(config[key]):
             return False
@@ -146,6 +203,7 @@ def _run_training(
         "--cross-sequence-hidden", str(config["cross_sequence_hidden"]),
         "--cross-sequence-encoder", config["cross_sequence_encoder"],
         "--cross-transformer-heads", str(config["cross_transformer_heads"]),
+        "--cross-moe-experts", str(config["cross_moe_experts"]),
         "--head-hidden", str(config["head_hidden"]),
         "--epochs", str(args.epochs),
         "--patience", str(args.patience),
@@ -191,11 +249,18 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cross-transformer-heads", type=int, default=4)
+    parser.add_argument("--cross-moe-experts", type=int, default=4)
+    parser.add_argument("--runtime-benchmark-repeats", type=int, default=3)
+    parser.add_argument("--max-stdlib-runtime-ms", type=float, default=5000.0)
     parser.add_argument("--min-value-train", type=int, default=500)
     parser.add_argument("--min-behavior-train", type=int, default=2000)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--allow-missing-cross-hand-sequence", action="store_true")
     args = parser.parse_args()
+    if args.runtime_benchmark_repeats <= 0:
+        raise SystemExit("runtime-benchmark-repeats must be positive")
+    if args.max_stdlib_runtime_ms <= 0:
+        raise SystemExit("max-stdlib-runtime-ms must be positive")
 
     data_dir = args.data_dir.resolve()
     out_dir = args.out_dir.resolve()
@@ -214,7 +279,9 @@ def main() -> int:
 
     configs = [
         _parse_config(
-            raw, cross_transformer_heads=args.cross_transformer_heads
+            raw,
+            cross_transformer_heads=args.cross_transformer_heads,
+            cross_moe_experts=args.cross_moe_experts,
         )
         for raw in (args.config or DEFAULT_CONFIGS)
     ]
@@ -257,12 +324,21 @@ def main() -> int:
                 "model_sha256": _sha256(output),
                 "parameters": payload["meta"]["model"]["parameters"],
                 "validation": payload["meta"]["validation"],
+                "stdlib_runtime": _benchmark_runtime(
+                    output, repeats=args.runtime_benchmark_repeats
+                ),
             })
 
     config_summaries = []
     for config in configs:
         rows = [row for row in experiments if row["config"]["name"] == config["name"]]
         scores = [float(row["validation"]["selection_score"]) for row in rows]
+        max_member_runtime = max(
+            row["stdlib_runtime"]["max_value_response_ms"] for row in rows
+        )
+        estimated_ensemble_runtime = sum(
+            row["stdlib_runtime"]["max_value_response_ms"] for row in rows
+        )
         config_summaries.append({
             "config": config,
             "seeds": len(rows),
@@ -270,18 +346,55 @@ def main() -> int:
             "mean_validation_score": statistics.mean(scores),
             "stdev_validation_score": statistics.pstdev(scores),
             "parameters": rows[0]["parameters"],
+            "median_stdlib_runtime_ms": statistics.median(
+                row["stdlib_runtime"]["mean_value_response_ms"]
+                for row in rows
+            ),
+            "max_member_stdlib_runtime_ms": max_member_runtime,
+            "estimated_ensemble_stdlib_runtime_ms": estimated_ensemble_runtime,
+            "runtime_eligible": (
+                estimated_ensemble_runtime <= args.max_stdlib_runtime_ms
+            ),
         })
-    config_summaries.sort(key=lambda row: (
+    candidate_summary_path = out_dir / "architecture_candidates.json"
+    candidate_summary_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "selection_used_held_out": False,
+            "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
+            "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
+            "dataset_audit": str(out_dir / "dataset_audit.json"),
+            "experiments": experiments,
+            "config_summaries": config_summaries,
+        }, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    eligible_summaries = [
+        row for row in config_summaries
+        if row["runtime_eligible"]
+    ]
+    if not eligible_summaries:
+        raise SystemExit(
+            "no architecture satisfies the stdlib runtime budget; "
+            "see architecture_candidates.json"
+        )
+    eligible_summaries.sort(key=lambda row: (
         row["median_validation_score"],
         row["stdev_validation_score"],
         row["parameters"],
     ))
-    selected_config = config_summaries[0]["config"]
+    config_summaries.sort(key=lambda row: (
+        not row["runtime_eligible"],
+        row["median_validation_score"],
+        row["stdev_validation_score"],
+        row["parameters"],
+    ))
+    selected_config = eligible_summaries[0]["config"]
     selected_rows = [
         row for row in experiments
         if row["config"]["name"] == selected_config["name"]
     ]
-    selected_median = config_summaries[0]["median_validation_score"]
+    selected_median = eligible_summaries[0]["median_validation_score"]
     selected_row = min(
         selected_rows,
         key=lambda row: abs(float(row["validation"]["selection_score"]) - selected_median),
@@ -315,13 +428,26 @@ def main() -> int:
             "model_sha256": _sha256(final_path),
             "validation": final_payload["meta"]["validation"],
             "held_out": final_payload["meta"]["held_out"],
+            "stdlib_runtime": _benchmark_runtime(
+                final_path, repeats=args.runtime_benchmark_repeats
+            ),
         })
     representative = next(
         member for member in final_members if member["seed"] == selected_seed
     )
+    final_ensemble_runtime_ms = sum(
+        member["stdlib_runtime"]["max_value_response_ms"]
+        for member in final_members
+    )
+    if final_ensemble_runtime_ms > args.max_stdlib_runtime_ms:
+        raise SystemExit(
+            "selected final ensemble exceeds the stdlib runtime budget"
+        )
     ensemble_manifest = {
         "format": "opp_multitask_ensemble_v1",
         "selection_used_held_out": False,
+        "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
+        "estimated_ensemble_stdlib_runtime_ms": final_ensemble_runtime_ms,
         "config": selected_config,
         "std_multiplier": 1.0,
         "members": [
@@ -340,7 +466,10 @@ def main() -> int:
     summary = {
         "schema_version": 3,
         "selection_used_held_out": False,
+        "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
+        "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
         "dataset_audit": str(out_dir / "dataset_audit.json"),
+        "architecture_candidates": str(candidate_summary_path),
         "experiments": experiments,
         "config_summaries": config_summaries,
         "selected": {

@@ -206,13 +206,19 @@ class OpponentAwareMultiTaskNet(nn.Module):
         cross_sequence_hidden: int = 0,
         cross_sequence_encoder: str = "gru",
         cross_transformer_heads: int = 4,
+        cross_moe_experts: int = 4,
     ) -> None:
         super().__init__()
         self.gru = nn.GRU(HIST_FEAT_DIM, gru_hidden, batch_first=True)
         encoder = str(cross_sequence_encoder)
-        if encoder not in {"none", "gru", "deep_set", "transformer"}:
+        if encoder not in {
+            "none", "gru", "gru_moe", "deep_set", "transformer"
+        }:
             raise ValueError(f"unsupported cross-hand sequence encoder: {encoder}")
+        if encoder == "gru_moe" and int(cross_moe_experts) < 2:
+            raise ValueError("GRU MoE requires at least two experts")
         self.cross_sequence_encoder = encoder
+        self.cross_moe_expert_count = int(cross_moe_experts)
         self.cross_sequence_hidden = (
             0 if encoder == "none" else max(1, int(cross_sequence_hidden))
         )
@@ -222,7 +228,29 @@ class OpponentAwareMultiTaskNet(nn.Module):
                 self.cross_sequence_hidden,
                 batch_first=True,
             )
-            if encoder == "gru" and self.cross_sequence_hidden > 0
+            if encoder in {"gru", "gru_moe"} and self.cross_sequence_hidden > 0
+            else None
+        )
+        self.cross_moe_gate = (
+            nn.Linear(self.cross_sequence_hidden, self.cross_moe_expert_count)
+            if encoder == "gru_moe"
+            else None
+        )
+        self.cross_moe_expert_layers = (
+            nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(
+                        self.cross_sequence_hidden, self.cross_sequence_hidden
+                    ),
+                    nn.ReLU(),
+                    nn.Linear(
+                        self.cross_sequence_hidden, self.cross_sequence_hidden
+                    ),
+                    nn.ReLU(),
+                )
+                for _ in range(self.cross_moe_expert_count)
+            ])
+            if encoder == "gru_moe"
             else None
         )
         self.cross_set_encoder = (
@@ -331,6 +359,19 @@ class OpponentAwareMultiTaskNet(nn.Module):
                 cross_embedding = cross_final.squeeze(0) * (
                     cross_lengths > 0
                 ).float().unsqueeze(1)
+                if self.cross_moe_gate is not None:
+                    gate = torch.softmax(
+                        self.cross_moe_gate(cross_embedding), dim=1
+                    )
+                    experts = torch.stack([
+                        expert(cross_embedding)
+                        for expert in self.cross_moe_expert_layers
+                    ], dim=1)
+                    cross_embedding = (
+                        experts * gate.unsqueeze(2)
+                    ).sum(dim=1) * (
+                        cross_lengths > 0
+                    ).float().unsqueeze(1)
             elif self.cross_set_encoder is not None:
                 encoded = self.cross_set_encoder(cross_sequence)
                 mask = (
@@ -768,10 +809,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cross-sequence-hidden", type=int, default=64)
     parser.add_argument(
         "--cross-sequence-encoder",
-        choices=("none", "gru", "deep_set", "transformer"),
+        choices=("none", "gru", "gru_moe", "deep_set", "transformer"),
         default="gru",
     )
     parser.add_argument("--cross-transformer-heads", type=int, default=4)
+    parser.add_argument("--cross-moe-experts", type=int, default=4)
     parser.add_argument("--head-hidden", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max-hist", type=int, default=16)
@@ -870,6 +912,7 @@ def main(argv: list[str] | None = None) -> int:
         cross_sequence_hidden=args.cross_sequence_hidden,
         cross_sequence_encoder=args.cross_sequence_encoder,
         cross_transformer_heads=args.cross_transformer_heads,
+        cross_moe_experts=args.cross_moe_experts,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -1104,6 +1147,7 @@ def main(argv: list[str] | None = None) -> int:
                 "cross_sequence_hidden_requested": args.cross_sequence_hidden,
                 "cross_sequence_encoder": args.cross_sequence_encoder,
                 "cross_transformer_heads": args.cross_transformer_heads,
+                "cross_moe_experts": args.cross_moe_experts,
                 "head_hidden": args.head_hidden,
                 "dropout": args.dropout,
                 "max_hist": args.max_hist,

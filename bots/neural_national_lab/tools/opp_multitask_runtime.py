@@ -37,8 +37,9 @@ class OpponentMultiTaskRuntime:
         self.cross_transformer_heads = int(
             model.get("cross_transformer_heads", 4)
         )
+        self.cross_moe_experts = int(model.get("cross_moe_experts", 4))
         if self.cross_sequence_encoder not in {
-            "none", "gru", "deep_set", "transformer"
+            "none", "gru", "gru_moe", "deep_set", "transformer"
         }:
             raise ValueError("unsupported cross-hand sequence encoder")
         if self.cross_sequence_encoder == "none" and self.cross_sequence_hidden:
@@ -49,6 +50,10 @@ class OpponentMultiTaskRuntime:
             or self.cross_sequence_hidden % self.cross_transformer_heads
         ):
             raise ValueError("invalid cross-hand transformer dimensions")
+        if self.cross_sequence_encoder == "gru_moe" and (
+            self.cross_sequence_hidden <= 0 or self.cross_moe_experts < 2
+        ):
+            raise ValueError("invalid cross-hand GRU MoE dimensions")
         self.labels = list(meta.get("labels") or [])
         self.response_labels = list(meta.get("opponent_action_labels") or [])
         self.value_fields = list(meta.get("value_fields") or [])
@@ -126,6 +131,11 @@ class OpponentMultiTaskRuntime:
                     hidden_size=self.cross_sequence_hidden,
                     max_steps=self.max_cross_hands,
                 ) if cross_sequence else [0.0] * self.cross_sequence_hidden
+                if (
+                    cross_sequence
+                    and self.cross_sequence_encoder == "gru_moe"
+                ):
+                    sequence_embedding = self._moe_forward(sequence_embedding)
             context += sequence_embedding
         return context
 
@@ -162,6 +172,28 @@ class OpponentMultiTaskRuntime:
         return [
             sum(row[index] for row in encoded) / len(encoded)
             for index in range(self.cross_sequence_hidden)
+        ]
+
+    def _moe_forward(self, embedding: list[float]) -> list[float]:
+        gate = _softmax(_matvec(
+            self.weights.get("cross_moe_gate.weight"),
+            embedding,
+            self.weights.get("cross_moe_gate.bias"),
+        ))
+        experts = [
+            self._linear_stack(
+                embedding,
+                f"cross_moe_expert_layers.{index}",
+                (0, 2),
+                final_relu=True,
+            )
+            for index in range(self.cross_moe_experts)
+        ]
+        if len(gate) != len(experts) or any(not expert for expert in experts):
+            return [0.0] * self.cross_sequence_hidden
+        return [
+            sum(gate[index] * experts[index][feature] for index in range(len(gate)))
+            for feature in range(self.cross_sequence_hidden)
         ]
 
     def _layer_norm(self, values: list[float], prefix: str) -> list[float]:

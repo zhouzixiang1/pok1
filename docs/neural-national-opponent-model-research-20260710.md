@@ -80,13 +80,21 @@ uses identical splits, seeds, heads, losses, and model-selection rules:
 | temporal GRU | Current low-latency primary path |
 | Deep Sets | Tests whether order adds value beyond hand distribution |
 | small Transformer over prior hands | Tests longer-range mode changes and recency |
-| GRU plus mixture-of-experts | Tests latent opponent modes without hard types |
+| GRU plus mixture-of-experts | Learns soft latent opponent modes without hard types |
 
 Selection uses validation opponents only and whole-match clustered bootstrap.
 Calibration and held-out opponents remain untouched until the architecture and
 ensemble seeds are frozen. A larger model wins only if the median validation
 score improves across seeds and stdlib inference stays safely within the
 national time budget.
+
+The implemented sweep now spans roughly 26-thousand to 4.9-million parameters.
+On this machine, untrained xlarge exports required about 296-977 ms for one
+stdlib value-plus-response inference at maximum history length. The sweep
+records this measurement for every seed and rejects architectures when the
+estimated sequential latency of the complete seed ensemble exceeds a
+configurable runtime budget. These timings establish deployability only; model
+quality remains entirely data- and evaluation-dependent.
 
 ## Execution Order
 

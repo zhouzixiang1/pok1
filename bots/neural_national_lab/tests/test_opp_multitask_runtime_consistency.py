@@ -51,16 +51,20 @@ def test_response_samples_mask_unobservable_private_cards() -> None:
     assert all(response["state"][index] == 0.0 for index in trainer.PRIVATE_STATE_INDICES)
 
 
-@pytest.mark.parametrize("encoder", ["gru", "deep_set", "transformer"])
+@pytest.mark.parametrize(
+    "encoder", ["gru", "gru_moe", "deep_set", "transformer"]
+)
 def test_scaling_config_preserves_temporal_encoder(encoder: str) -> None:
     config = scaling._parse_config(
         f"tiny_{encoder}@{encoder}:64:32:16:16:12:32",
         cross_transformer_heads=2,
+        cross_moe_experts=3,
     )
 
     assert config["cross_sequence_encoder"] == encoder
     assert config["cross_sequence_hidden"] == 12
     assert config["cross_transformer_heads"] == 2
+    assert config["cross_moe_experts"] == 3
 
 
 def test_scaling_config_rejects_incompatible_transformer_heads() -> None:
@@ -72,7 +76,8 @@ def test_scaling_config_rejects_incompatible_transformer_heads() -> None:
 
 
 @pytest.mark.parametrize(
-    "cross_sequence_encoder", [None, "gru", "deep_set", "transformer"]
+    "cross_sequence_encoder",
+    [None, "gru", "gru_moe", "deep_set", "transformer"],
 )
 def test_multitask_runtime_matches_torch_outputs(
     cross_sequence_encoder: str | None,
@@ -91,6 +96,7 @@ def test_multitask_runtime_matches_torch_outputs(
         cross_sequence_hidden=4 if temporal_cross_hand else 0,
         cross_sequence_encoder=cross_sequence_encoder or "none",
         cross_transformer_heads=2,
+        cross_moe_experts=3,
     )
     model.eval()
     clips = {
@@ -121,6 +127,7 @@ def test_multitask_runtime_matches_torch_outputs(
                 "max_cross_hands": 32,
                 "cross_sequence_encoder": cross_sequence_encoder or "none",
                 "cross_transformer_heads": 2,
+                "cross_moe_experts": 3,
             },
             "training": {"clips": clips},
         },
