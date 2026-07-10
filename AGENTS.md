@@ -443,6 +443,16 @@ Stage only the files changed for the current task. Do not use `git add -A` unles
 
 Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `national-bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
 
+National lifecycle state is also Git-backed. `national-reaped-v{N}` annotated
+tags are permanent active-pool tombstones,
+`national-reaped-registry-v1` marks the completed legacy-ledger migration, and
+`national-high-water-v{N}` prevents version/sunset rollback. Do not delete or
+retarget these tags. Run `scripts/migrate_national_epoch_registry.py` without
+flags for a dry-run; `--apply --push` is allowed only at a stopped, reviewed
+runtime migration point. After the marker exists, a reaped bot must be retired
+through `record_reaped_bot`/`reap_weakest`, never by deleting `.completed`
+directly.
+
 `ref/DanLM` and `ref/neuron_poker` are gitlinks in this checkout, but `.gitmodules` is currently absent. `git submodule status` may fail or report noise; do not repair or stage gitlink changes unless the task is specifically about references/submodules.
 
 After a task that changes files, commit and push task-related changes:

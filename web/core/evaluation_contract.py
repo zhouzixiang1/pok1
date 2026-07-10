@@ -38,10 +38,15 @@ _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+
 # Guarding the guard itself is non-negotiable: if these files changed on disk,
 # the running process may be making drift decisions with older in-memory code.
 ALWAYS_CRITICAL_EXACT = frozenset({
+    "web/core/bot_artifact.py",
     "web/core/bot_namespace.py",
     "web/core/evaluation_contract.py",
     "web/core/evolution_infra.py",
     "web/core/evolution_scope.py",
+    "web/core/national_epoch_registry.py",
+    "web/core/official_certification.py",
+    "web/core/official_eligibility.py",
+    "web/core/official_grandfathering.json",
     "web/core/orchestrator.py",
     "web/core/pipeline_recovery.py",
     "web/core/pipeline_state.py",

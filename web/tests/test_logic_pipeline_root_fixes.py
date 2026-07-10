@@ -1865,6 +1865,7 @@ def test_git_commit_bot_refuses_preexisting_blocking_staged_files(monkeypatch):
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
+    monkeypatch.setattr(evolution_infra, "_require_national_epoch_registry_for_commit", lambda: None)
 
     with __import__("pytest").raises(RuntimeError, match="pre-existing blocking staged"):
         evolution_infra.git_commit_bot(
@@ -1914,6 +1915,12 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
+    monkeypatch.setattr(evolution_infra, "_require_national_epoch_registry_for_commit", lambda: None)
+    monkeypatch.setattr(
+        evolution_infra,
+        "_advance_national_epoch_high_water",
+        lambda _version: type("Mutation", (), {"created_tags": ()})(),
+    )
 
     push_ok = evolution_infra.git_commit_bot(
         999,
@@ -1967,6 +1974,13 @@ def test_git_commit_bot_binds_official_certificate_to_commit_and_tag(monkeypatch
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
+    monkeypatch.setattr(evolution_infra, "_require_national_epoch_registry_for_commit", lambda: None)
+    monkeypatch.setattr(
+        evolution_infra,
+        "_advance_national_epoch_high_water",
+        lambda version: calls.append(("advance-high-water", version))
+        or type("Mutation", (), {"created_tags": (f"national-high-water-v{version}",)})(),
+    )
 
     evolution_infra.git_commit_bot(
         999,
@@ -1980,3 +1994,7 @@ def test_git_commit_bot_binds_official_certificate_to_commit_and_tag(monkeypatch
     )
 
     assert any(call[:3] == ("tag", "national-bot-v999", "-m") for call in calls)
+    commit_index = next(index for index, call in enumerate(calls) if call[:1] == ("commit",))
+    high_water_index = calls.index(("advance-high-water", 999))
+    tag_index = next(index for index, call in enumerate(calls) if call[:3] == ("tag", "national-bot-v999", "-m"))
+    assert commit_index < high_water_index < tag_index

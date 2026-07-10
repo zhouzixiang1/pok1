@@ -154,6 +154,41 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         return None
 
     try:
+        from workflow_profiles import get_workflow_profile
+
+        workflow_profile = get_workflow_profile()
+        workflow_id = str(getattr(workflow_profile, "profile_id", "") or "")
+        execution_mode = str(
+            getattr(workflow_profile, "national_execution_mode", "") or ""
+        )
+    except Exception as exc:
+        log_system_event(
+            "pipeline.prepare_blocked_workflow_contract",
+            "error",
+            "Prepare generation could not resolve the national-native workflow contract",
+            {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+        )
+        return None
+    if workflow_id != "national_native" or execution_mode != "native_tcp":
+        log_system_event(
+            "pipeline.prepare_blocked_workflow_contract",
+            "error",
+            "Formal evolution requires the national_native/native_tcp workflow",
+            {
+                "workflow_profile_id": workflow_id,
+                "national_execution_mode": execution_mode,
+                "required_profile_id": "national_native",
+                "required_execution_mode": "native_tcp",
+            },
+        )
+        if ui:
+            ui.log_history(
+                "Evolution blocked: formal bot output requires national_native/native_tcp.",
+                "error",
+            )
+        return None
+
+    try:
         from tool_runtime_guard import ensure_runtime_git_guard
         guard_ok, guard_payload = ensure_runtime_git_guard("prepare_generation", {})
         if not guard_ok:

@@ -5,15 +5,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import threading
+import time
 from typing import Any
 
 from bot_artifact import canonical_digest, published_bot_identity
-from bot_namespace import parse_tag_version
+from national_epoch_registry import (
+    DEFAULT_LEGACY_LEDGER,
+    effective_target_version,
+    load_registry_state,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = ROOT / "web" / "core" / "official_grandfathering.json"
 ALLOWED_ROLES = {"parent_source", "rating_pool", "official_opponent"}
+_REGISTRY_CACHE_TTL_SEC = 2.0
+_REGISTRY_CACHE_LOCK = threading.Lock()
+_REGISTRY_CACHE: dict[str, Any] = {"loaded_at": 0.0, "head": "", "state": None}
 
 
 def load_grandfather_policy(path: str | Path | None = None) -> dict[str, Any]:
@@ -28,21 +37,82 @@ def load_grandfather_policy(path: str | Path | None = None) -> dict[str, Any]:
     return payload
 
 
-def current_target_version() -> int:
+def _current_head() -> str:
     result = subprocess.run(
-        ["git", "tag", "-l", "national-bot-v*"],
+        ["git", "rev-parse", "HEAD"],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
         timeout=30,
         check=False,
     )
-    versions = [
-        version
-        for version in (parse_tag_version(line.strip()) for line in result.stdout.splitlines())
-        if version is not None
-    ]
-    return max(versions, default=0) + 1
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _registry_state():
+    now = time.monotonic()
+    head = _current_head()
+    with _REGISTRY_CACHE_LOCK:
+        cached = _REGISTRY_CACHE.get("state")
+        if (
+            cached is not None
+            and _REGISTRY_CACHE.get("head") == head
+            and now - float(_REGISTRY_CACHE.get("loaded_at") or 0.0) < _REGISTRY_CACHE_TTL_SEC
+        ):
+            return cached
+    state = load_registry_state(
+        ROOT,
+        legacy_ledger=DEFAULT_LEGACY_LEDGER,
+        include_history=True,
+    )
+    with _REGISTRY_CACHE_LOCK:
+        _REGISTRY_CACHE.update({"loaded_at": now, "head": head, "state": state})
+    return state
+
+
+def clear_registry_state_cache() -> None:
+    with _REGISTRY_CACHE_LOCK:
+        _REGISTRY_CACHE.update({"loaded_at": 0.0, "head": "", "state": None})
+
+
+def epoch_lifecycle_eligibility(version: int) -> dict[str, Any]:
+    try:
+        state = _registry_state()
+    except Exception as exc:
+        return {
+            "eligible": False,
+            "reason": "national_epoch_registry_error",
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
+    if not state.available:
+        return {
+            "eligible": False,
+            "reason": "national_epoch_registry_unavailable",
+            "diagnostics": list(state.diagnostics),
+        }
+    if int(version) in state.reaped_versions:
+        return {
+            "eligible": False,
+            "reason": "national_bot_reaped",
+            "version": int(version),
+            "registry_source": state.source,
+        }
+    return {
+        "eligible": True,
+        "reason": "national_epoch_active",
+        "version": int(version),
+        "registry_source": state.source,
+    }
+
+
+def current_target_version(requested: int | None = None) -> int:
+    state = _registry_state()
+    baseline = max(1, int(requested or 1))
+    return effective_target_version(
+        baseline,
+        repo_root=ROOT,
+        state=state,
+    )
 
 
 def grandfather_eligibility(
@@ -64,7 +134,15 @@ def grandfather_eligibility(
             "error": f"{type(exc).__name__}: {str(exc)[:200]}",
         }
 
-    identity = published_bot_identity(candidate)
+    try:
+        identity = published_bot_identity(candidate)
+    except Exception as exc:
+        return {
+            "eligible": False,
+            "reason": "artifact_identity_error",
+            "role": role,
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
     if not identity.get("published"):
         return {
             "eligible": False,
@@ -74,6 +152,9 @@ def grandfather_eligibility(
         }
     cutoff = int(active_policy.get("new_candidate_cutoff", 0) or 0)
     version = int(identity.get("version") or 0)
+    lifecycle = epoch_lifecycle_eligibility(version)
+    if not lifecycle.get("eligible"):
+        return {**lifecycle, "role": role}
     if cutoff and version >= cutoff:
         return {
             "eligible": False,
@@ -107,7 +188,15 @@ def grandfather_eligibility(
     if role not in roles:
         return {"eligible": False, "reason": "role_not_granted", "role": role}
 
-    target = int(target_version if target_version is not None else current_target_version())
+    try:
+        target = current_target_version(target_version)
+    except Exception as exc:
+        return {
+            "eligible": False,
+            "reason": "national_epoch_target_unavailable",
+            "role": role,
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
     role_sunsets = grant.get("role_sunset_versions") or {}
     sunset = int(
         role_sunsets.get(

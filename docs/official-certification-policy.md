@@ -33,7 +33,17 @@ caching. Before Git commit, the candidate hash is checked again. The annotated
 `national-bot-vN` tag records `official-certificate`,
 `official-candidate-hash`, and `official-policy` fields. A published bot is
 formally certified only when the mutable status, immutable certificate record,
-current artifact, and tag annotation all agree.
+current artifact, and tag annotation all agree. Certificate validation also
+reopens the retained evidence and LLM files and verifies every per-round
+artifact manifest entry. Deleting or changing a THP, wire trace, replay, bot
+log, stdout/stderr capture, platform log, or screenshot invalidates the
+certificate.
+
+The `national-bot-vN` namespace is formal-output-only. `commit_bot` rejects
+every workflow except `national_native/native_tcp`, and the lower-level Git
+commit API requires a valid `official-full-v2` certificate. Adapter workflows
+remain available only for explicit legacy regression; they cannot commit or tag
+a new national bot.
 
 ## Eligibility Roles
 
@@ -57,13 +67,34 @@ opponent grant exists only to bootstrap the first `official-full-v2`
 certificate and expires by policy. Once a formally certified opponent exists,
 it has higher selection priority.
 
-## Migration Safety
+## Durable Lifecycle Registry
 
 The tracked transition allowlist preserves the current 30-bot inventory while
 historical certification proceeds. This avoids deleting ratings and H2H state
-all at once. It also prevents loss of the runtime reaped ledger from reviving
-every historical tag: a legacy bot outside the tracked allowlist remains
-ineligible.
+all at once. Active/retired lifecycle state is durable in annotated Git tags:
+
+- `national-reaped-vN` is a permanent retirement tombstone;
+- `national-reaped-registry-v1` proves the legacy JSONL ledger was fully
+  migrated;
+- `national-high-water-vN` preserves a monotonic version floor even if ordinary
+  completion tags are removed.
+
+Before the migration marker exists, a missing, empty, or malformed legacy
+ledger fails closed. After migration, tombstone tags are authoritative and the
+legacy ledger is diagnostic only. Reaping creates and, in the long-running
+runtime, pushes the tombstone before removing `.completed`. A failed durable
+publication leaves the sentinel intact.
+
+Migration is dry-run by default:
+
+```bash
+python3 scripts/migrate_national_epoch_registry.py \
+  --repo-root /home/zzx/project/pok/.evolution_pok
+```
+
+Use `--apply --push` only while evolution is stopped and after the dry-run maps
+every legacy entry. The migration uses one local ref transaction and does not
+move `HEAD`.
 
 Historical bots should be recertified in batches. A failed bot moves out of
 eligible roles but its source, old ratings, and evidence remain available for

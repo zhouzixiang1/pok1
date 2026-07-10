@@ -22,7 +22,7 @@ from typing import Any, Callable, Literal
 
 from bot_artifact import canonical_digest, hash_path, published_bot_identity
 from bot_namespace import bot_name, parse_bot_version
-from official_eligibility import grandfather_eligibility
+from official_eligibility import epoch_lifecycle_eligibility, grandfather_eligibility
 from official_platform_harness import (
     OfficialPlatformConfig,
     _copy_config,
@@ -1039,6 +1039,9 @@ def official_full_certified(
 
 
 def parent_eligible(candidate: str | Path) -> bool:
+    version = parse_bot_version(Path(candidate).name)
+    if version is None or not epoch_lifecycle_eligibility(version).get("eligible"):
+        return False
     status = read_status(candidate)
     if official_failure_blocks_parent(status):
         return False
@@ -1050,6 +1053,9 @@ def parent_eligible(candidate: str | Path) -> bool:
 
 
 def active_pool_eligible(candidate: str | Path) -> bool:
+    version = parse_bot_version(Path(candidate).name)
+    if version is None or not epoch_lifecycle_eligibility(version).get("eligible"):
+        return False
     status = read_status(candidate)
     if official_failure_blocks_parent(status):
         return False
@@ -1067,6 +1073,18 @@ def official_opponent_eligibility(
     target_version: int | None = None,
 ) -> dict[str, Any]:
     """Return content-bound eligibility for an official-EXE opponent."""
+    version = parse_bot_version(Path(candidate).name)
+    lifecycle = (
+        epoch_lifecycle_eligibility(version)
+        if version is not None
+        else {"eligible": False, "reason": "invalid_national_bot_label"}
+    )
+    if not lifecycle.get("eligible"):
+        return {
+            "eligible": False,
+            "reason": lifecycle.get("reason") or "national_epoch_ineligible",
+            "lifecycle": lifecycle,
+        }
     status = read_status(candidate)
     verdict = official_compliance_verdict(status)
     if bool(verdict.get("blocking")):

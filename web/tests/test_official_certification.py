@@ -822,6 +822,10 @@ def test_mutable_grandfather_status_is_rejected(tmp_path, monkeypatch):
 
 def test_official_opponent_eligibility_rejects_untracked_bootstrap_and_blocking_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    monkeypatch.setattr(
+        "official_certification.epoch_lifecycle_eligibility",
+        lambda version: {"eligible": True, "reason": "national_epoch_active", "version": version},
+    )
     historical = _bot(tmp_path / "national_v70")
 
     bootstrap = official_opponent_eligibility(historical)

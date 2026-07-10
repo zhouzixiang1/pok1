@@ -1,6 +1,35 @@
 """Tests for generation_scheduler — strategy decision and branch parsing logic."""
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
+
+
+def test_prepare_generation_blocks_legacy_adapter_workflow(monkeypatch):
+    import generation_scheduler
+    import workflow_profiles
+
+    events = []
+    monkeypatch.setattr(
+        workflow_profiles,
+        "get_workflow_profile",
+        lambda: SimpleNamespace(
+            profile_id="national_primary",
+            national_execution_mode="adapter",
+        ),
+    )
+    monkeypatch.setattr(
+        generation_scheduler,
+        "log_system_event",
+        lambda *args: events.append(args),
+    )
+
+    result = asyncio.run(generation_scheduler.prepare_generation(None))
+
+    assert result is None
+    assert events[0][0] == "pipeline.prepare_blocked_workflow_contract"
+    assert events[0][3]["required_profile_id"] == "national_native"
 
 
 class TestDecideStrategy:

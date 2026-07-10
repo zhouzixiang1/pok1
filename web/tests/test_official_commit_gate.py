@@ -338,6 +338,7 @@ def test_git_commit_bot_rejects_certificate_drift_before_staging(monkeypatch, tm
     candidate = _native_bot(tmp_path / "bots" / "national_v143")
     git_calls = []
     monkeypatch.setattr(evolution_infra, "_git_ensure_main_branch", lambda: None)
+    monkeypatch.setattr(evolution_infra, "_require_national_epoch_registry_for_commit", lambda: None)
     monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _version: candidate)
     monkeypatch.setattr(evolution_infra, "_git", lambda *args, **_kwargs: git_calls.append(args) or "")
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "changed-hash")
@@ -377,6 +378,7 @@ def test_git_commit_bot_rejects_certificate_drift_while_staging(monkeypatch, tmp
 
     hashes = iter(["certified-hash", "changed-hash"])
     monkeypatch.setattr(evolution_infra, "_git_ensure_main_branch", lambda: None)
+    monkeypatch.setattr(evolution_infra, "_require_national_epoch_registry_for_commit", lambda: None)
     monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _version: candidate)
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: next(hashes))
