@@ -390,7 +390,7 @@ Local ladder ELO:
 
 Evolution Glicko-2:
 
-- Defaults: `r=1500`, `rd=350`, `sigma=0.06`.
+- Defaults: `r=1500`, `rd=350`, `sigma=0.06`; the Glicko-2 volatility constant is `TAU=0.3` in `glicko2.py` (NOT 0.5).
 - Conservative rating is `r - 2 * rd`.
 - The daemon maintains H2H and bot statistics in addition to ratings.
 - Reaping sorts by conservative Glicko rating as the primary cull key. Reap events include `selection_key=conservative_glicko`, `conservative_rating`, `leaderboard_score`, and `h2h_avg_wr` so logs show both the actual decision key and contextual matchup metrics.
@@ -437,6 +437,7 @@ Do not revert, reset, restore, or checkout unrelated changes unless the user exp
 - 只改当前任务需要的文件，不顺手重构、不统一无关风格、不碰运行产物。
 - 协议、adapter、THP、card mapping、质量门、进化提示词等边界变更必须配套测试或至少明确的冒烟验证。
 - Web 进化相关变更要同时检查 Python 逻辑、prompt 文档、quality gates，避免旧提示词继续生成旧行为。
+- 文档与代码同步：当模块结构、文件清单、行数、关键常量值（如 Glicko-2 的 TAU=0.3）或 prompt 模板数量发生变动时，必须同步更新 CLAUDE.md 与 AGENTS.md 中的模块地图、行数表及相关计数，避免文档与代码漂移；完成代码改动后，顺手校正当前任务触及部分的文档。
 - 最终汇报必须说明改了什么、跑了什么验证、提交/推送结果，以及哪些已有脏项未触碰。
 
 Stage only the files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Runtime/generated paths such as `web/core/results/`, `web/logs/`, `web/frontend/dist/`, `web/server/static/`, `results/*.json`, `ladder_results/`, `bots/graveyard/`, and `.completed` sentinels should not be staged unless the task is specifically about them.
