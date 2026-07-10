@@ -2226,6 +2226,18 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
            orchestrator-level guard does not cover sub-agents).
     """
     call_started_at = time.time()
+    from evolution_infra import (
+        PROJECT_ROOT,
+        MAX_PROMPT_CHARS,
+        _BLOCKED_MCP_TOOLS,
+        resolve_ui,
+    )
+
+    # Headless callers (official-platform certification, CLI probes, offline
+    # analysis) intentionally have no dashboard. Normalize that boundary once
+    # so stream, retry, cost, and error paths all receive the same UI contract.
+    ui = resolve_ui(ui)
+
     # Pre-check: if already rate-limited, wait before making any API call
     from rate_limiter import rate_limiter
     if rate_limiter.is_blocked():
@@ -2242,8 +2254,6 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                 "warn",
             )
         await rate_limiter.wait_until_reset()
-
-    from evolution_infra import PROJECT_ROOT, MAX_PROMPT_CHARS, _BLOCKED_MCP_TOOLS
 
     prompt = _format_runtime_path_contract(PROJECT_ROOT, allowed_write_dir) + (prompt or "")
 
