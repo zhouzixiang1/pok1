@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+import stat
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from bot_namespace import bot_tag, parse_bot_version
@@ -14,38 +15,172 @@ from bot_namespace import bot_tag, parse_bot_version
 
 ROOT = Path(__file__).resolve().parents[2]
 
+ARTIFACT_MANIFEST_SCHEMA = 1
+_EXCLUDED_DIRECTORY_NAMES = frozenset({"__pycache__"})
+_EXCLUDED_FILE_NAMES = frozenset({".completed"})
+_EXCLUDED_FILE_SUFFIXES = frozenset({".pyc", ".pyo"})
+
+
+class ArtifactIntegrityError(RuntimeError):
+    """Raised when a bot artifact cannot be identified without ambiguity."""
+
+    def __init__(self, root: Path, offending_path: Path, reason: str) -> None:
+        self.root = root
+        self.offending_path = offending_path
+        self.reason = reason
+        try:
+            display_path = offending_path.relative_to(root).as_posix() or "."
+        except ValueError:
+            display_path = str(offending_path)
+        super().__init__(
+            f"invalid bot artifact {root}: {reason} at {display_path}"
+        )
+
+
+def _absolute_without_resolving(path_or_token: str | Path) -> Path:
+    """Return an absolute path without following a possibly unsafe symlink."""
+    return Path(os.path.abspath(os.fspath(Path(path_or_token).expanduser())))
+
+
+def _entry_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _raise_invalid(root: Path, path: Path, reason: str) -> None:
+    raise ArtifactIntegrityError(root, path, reason)
+
+
+def _read_file_digest(root: Path, path: Path, expected: os.stat_result) -> str:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        _raise_invalid(root, path, f"cannot safely open regular file ({exc})")
+
+    digest = hashlib.sha256()
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            _raise_invalid(root, path, "artifact file is not regular")
+        if _entry_identity(opened) != _entry_identity(expected):
+            _raise_invalid(root, path, "artifact changed while hashing")
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        finished = os.fstat(descriptor)
+        if _entry_identity(finished) != _entry_identity(opened):
+            _raise_invalid(root, path, "artifact changed while hashing")
+    finally:
+        os.close(descriptor)
+    return digest.hexdigest()
+
+
+def _is_excluded_file(path: Path) -> bool:
+    return (
+        path.name in _EXCLUDED_FILE_NAMES
+        or path.suffix.lower() in _EXCLUDED_FILE_SUFFIXES
+    )
+
+
+def _scan_directory(
+    root: Path,
+    directory: Path,
+    entries: list[dict[str, Any]],
+    *,
+    excluded: bool = False,
+) -> None:
+    try:
+        children = sorted(directory.iterdir(), key=lambda item: os.fsencode(item.name))
+    except OSError as exc:
+        _raise_invalid(root, directory, f"cannot enumerate directory ({exc})")
+
+    for child in children:
+        try:
+            metadata = child.lstat()
+        except OSError as exc:
+            _raise_invalid(root, child, f"cannot inspect artifact entry ({exc})")
+
+        if stat.S_ISLNK(metadata.st_mode):
+            _raise_invalid(root, child, "symbolic links are forbidden")
+
+        relative = child.relative_to(root).as_posix()
+        if stat.S_ISDIR(metadata.st_mode):
+            child_excluded = excluded or child.name in _EXCLUDED_DIRECTORY_NAMES
+            if not child_excluded:
+                entries.append({"path": relative, "type": "directory"})
+            # Excluded cache trees are still inspected so a symlink cannot hide in one.
+            _scan_directory(root, child, entries, excluded=child_excluded)
+            continue
+
+        if stat.S_ISREG(metadata.st_mode):
+            if excluded or _is_excluded_file(child):
+                continue
+            entries.append(
+                {
+                    "path": relative,
+                    "type": "file",
+                    "size": metadata.st_size,
+                    "sha256": _read_file_digest(root, child, metadata),
+                }
+            )
+            continue
+
+        _raise_invalid(root, child, "only regular files and directories are allowed")
+
+
+def artifact_manifest(path_or_token: str | Path) -> dict[str, Any]:
+    """Build a deterministic manifest covering every executable artifact entry."""
+    path = _absolute_without_resolving(path_or_token)
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        _raise_invalid(path, path, f"artifact path is unavailable ({exc})")
+
+    if stat.S_ISLNK(metadata.st_mode):
+        _raise_invalid(path, path, "symbolic links are forbidden")
+
+    if stat.S_ISREG(metadata.st_mode):
+        if _is_excluded_file(path):
+            _raise_invalid(path, path, "artifact root cannot be a runtime cache file")
+        entries = [
+            {
+                "path": path.name,
+                "type": "file",
+                "size": metadata.st_size,
+                "sha256": _read_file_digest(path, path, metadata),
+            }
+        ]
+        artifact_type = "file"
+    elif stat.S_ISDIR(metadata.st_mode):
+        entries = [{"path": ".", "type": "directory"}]
+        _scan_directory(path, path, entries)
+        artifact_type = "directory"
+    else:
+        _raise_invalid(path, path, "artifact root must be a regular file or directory")
+
+    return {
+        "schema_version": ARTIFACT_MANIFEST_SCHEMA,
+        "artifact_type": artifact_type,
+        "entries": entries,
+    }
+
 
 def hash_path(path_or_token: str | Path) -> str:
-    """Hash a bot artifact while excluding runtime-only files."""
-    path = Path(path_or_token).expanduser().resolve()
-    digest = hashlib.sha256()
-    if path.is_file():
-        digest.update(path.name.encode("utf-8", "surrogateescape"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        return digest.hexdigest()
-    if not path.exists():
-        digest.update(f"missing:{path}".encode("utf-8", "surrogateescape"))
-        return digest.hexdigest()
-
-    files: list[tuple[str, Path]] = []
-    for item in path.rglob("*"):
-        if not item.is_file() or item.is_symlink():
-            continue
-        relative = item.relative_to(path)
-        if "__pycache__" in relative.parts:
-            continue
-        if item.name == ".completed" or item.suffix in {".pyc", ".pyo"}:
-            continue
-        if item.name.startswith("."):
-            continue
-        files.append((str(relative).replace(os.sep, "/"), item))
-    for relative, item in sorted(files):
-        digest.update(relative.encode("utf-8", "surrogateescape"))
-        digest.update(b"\0")
-        digest.update(item.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    """Hash the deterministic manifest for a valid bot artifact."""
+    return canonical_digest(artifact_manifest(path_or_token))
 
 
 def canonical_digest(payload: dict[str, Any]) -> str:
@@ -54,7 +189,7 @@ def canonical_digest(payload: dict[str, Any]) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
-    ).encode("utf-8")
+    ).encode("utf-8", "surrogateescape")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -84,7 +219,7 @@ def _tag_metadata(tag: str) -> dict[str, str]:
 
 def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
     """Resolve the immutable Git publication identity for a national bot."""
-    path = Path(path_or_token).expanduser().resolve()
+    path = _absolute_without_resolving(path_or_token)
     version = parse_bot_version(path.name)
     issues: list[str] = []
     try:
