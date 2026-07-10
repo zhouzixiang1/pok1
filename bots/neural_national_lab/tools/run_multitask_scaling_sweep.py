@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import statistics
 import subprocess
@@ -92,13 +93,48 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _training_recipe(args: argparse.Namespace) -> dict[str, float]:
+def _training_recipe(
+    args: argparse.Namespace, config: dict[str, Any] | None = None
+) -> dict[str, float]:
     return {
-        "match_ranking_weight": float(args.match_ranking_weight),
+        "match_ranking_weight": float(
+            (config or {}).get(
+                "match_ranking_weight", args.match_ranking_weight
+            )
+        ),
         "ranking_margin": float(args.ranking_margin),
         "ranking_temperature": float(args.ranking_temperature),
         "direction_score_weight": float(args.direction_score_weight),
     }
+
+
+def _expand_ranking_weights(
+    configs: list[dict[str, Any]], raw_grid: str, *, default: float
+) -> tuple[list[dict[str, Any]], list[float]]:
+    try:
+        weights = (
+            [float(value) for value in raw_grid.split(",") if value.strip()]
+            if raw_grid.strip()
+            else [float(default)]
+        )
+    except ValueError as exc:
+        raise SystemExit("invalid match ranking weight grid") from exc
+    if not weights or any(
+        not math.isfinite(weight) or weight < 0 for weight in weights
+    ):
+        raise SystemExit("match ranking weights must be non-negative")
+    weights = list(dict.fromkeys(weights))
+    expanded = []
+    for config in configs:
+        for weight in weights:
+            item = dict(config)
+            item["base_name"] = config["name"]
+            item["match_ranking_weight"] = weight
+            if len(weights) > 1:
+                suffix = f"{weight:g}".replace("-", "m").replace(".", "p")
+                item["name"] = f"{config['name']}_rw{suffix}"
+            expanded.append(item)
+    return expanded, weights
 
 
 def _benchmark_runtime(path: Path, *, repeats: int) -> dict[str, Any]:
@@ -173,7 +209,7 @@ def _model_matches(
         return False
     if training.get("trainer_sha256") != _sha256(TRAINER):
         return False
-    for key, expected in _training_recipe(args).items():
+    for key, expected in _training_recipe(args, config).items():
         if float(training.get(key, float("nan"))) != expected:
             return False
     if meta.get("response_encoder") != "separate_public_v1":
@@ -219,7 +255,7 @@ def _run_training(
         "--cross-sequence-encoder", config["cross_sequence_encoder"],
         "--cross-transformer-heads", str(config["cross_transformer_heads"]),
         "--cross-moe-experts", str(config["cross_moe_experts"]),
-        "--match-ranking-weight", str(args.match_ranking_weight),
+        "--match-ranking-weight", str(config["match_ranking_weight"]),
         "--ranking-margin", str(args.ranking_margin),
         "--ranking-temperature", str(args.ranking_temperature),
         "--direction-score-weight", str(args.direction_score_weight),
@@ -270,6 +306,7 @@ def main() -> int:
     parser.add_argument("--cross-transformer-heads", type=int, default=4)
     parser.add_argument("--cross-moe-experts", type=int, default=4)
     parser.add_argument("--match-ranking-weight", type=float, default=0.5)
+    parser.add_argument("--match-ranking-weight-grid", default="")
     parser.add_argument("--ranking-margin", type=float, default=100.0)
     parser.add_argument("--ranking-temperature", type=float, default=0.1)
     parser.add_argument("--direction-score-weight", type=float, default=0.5)
@@ -305,7 +342,7 @@ def main() -> int:
     if not audit_report["passed"]:
         raise SystemExit("dataset audit failed; see dataset_audit.json")
 
-    configs = [
+    base_configs = [
         _parse_config(
             raw,
             cross_transformer_heads=args.cross_transformer_heads,
@@ -313,6 +350,11 @@ def main() -> int:
         )
         for raw in (args.config or DEFAULT_CONFIGS)
     ]
+    configs, ranking_weight_grid = _expand_ranking_weights(
+        base_configs,
+        args.match_ranking_weight_grid,
+        default=args.match_ranking_weight,
+    )
     seeds = [int(value) for value in args.seeds.split(",") if value.strip()]
     if not seeds:
         raise SystemExit("at least one seed is required")
@@ -399,7 +441,8 @@ def main() -> int:
             "selection_used_held_out": False,
             "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
             "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
-            "training_recipe": _training_recipe(args),
+            "training_recipe_defaults": _training_recipe(args),
+            "match_ranking_weight_grid": ranking_weight_grid,
             "dataset_audit": str(out_dir / "dataset_audit.json"),
             "experiments": experiments,
             "config_summaries": config_summaries,
@@ -484,7 +527,7 @@ def main() -> int:
         "format": "opp_multitask_ensemble_v1",
         "selection_used_held_out": False,
         "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
-        "training_recipe": _training_recipe(args),
+        "training_recipe": _training_recipe(args, selected_config),
         "estimated_ensemble_stdlib_runtime_ms": final_ensemble_runtime_ms,
         "config": selected_config,
         "std_multiplier": 1.0,
@@ -506,7 +549,8 @@ def main() -> int:
         "selection_used_held_out": False,
         "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
         "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
-        "training_recipe": _training_recipe(args),
+        "training_recipe": _training_recipe(args, selected_config),
+        "match_ranking_weight_grid": ranking_weight_grid,
         "dataset_audit": str(out_dir / "dataset_audit.json"),
         "architecture_candidates": str(candidate_summary_path),
         "experiments": experiments,

@@ -101,6 +101,24 @@ def test_scaling_config_rejects_incompatible_transformer_heads() -> None:
         )
 
 
+def test_scaling_expands_ranking_weight_as_selection_dimension() -> None:
+    base = scaling._parse_config(
+        "tiny@gru:64:32:16:16:12:32",
+        cross_transformer_heads=2,
+        cross_moe_experts=3,
+    )
+
+    configs, weights = scaling._expand_ranking_weights(
+        [base], "0,0.5,1,0.5", default=0.25
+    )
+
+    assert weights == [0.0, 0.5, 1.0]
+    assert [config["name"] for config in configs] == [
+        "tiny_rw0", "tiny_rw0p5", "tiny_rw1"
+    ]
+    assert [config["match_ranking_weight"] for config in configs] == weights
+
+
 @pytest.mark.parametrize(
     "cross_sequence_encoder",
     [None, "gru", "gru_moe", "deep_set", "transformer"],

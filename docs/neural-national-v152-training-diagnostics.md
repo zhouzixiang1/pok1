@@ -60,6 +60,24 @@ Every exported model records the ranking recipe and trainer SHA-256. Resume
 rejects a model if either the recipe or trainer implementation changes, avoiding
 silent reuse of old MAE-only weights.
 
+## Ranking-Weight Diagnostic
+
+The scaling runner now treats ranking weight as a validation-only selection
+dimension rather than requiring separate manually compared runs. A small-GRU
+3-seed grid on the same pass-5 snapshot produced:
+
+| Ranking weight | Median selection score | Match direction balanced | Match MAE | Response balanced |
+|---:|---:|---:|---:|---:|
+| 0.00 | 1.1580 | 61.7% | 678.7 | 48.5% |
+| 0.25 | 1.1471 | 61.0% | 725.0 | 50.4% |
+| 0.50 | 1.1517 | 61.7% | 734.8 | 49.4% |
+| 1.00 | 1.1444 | 63.0% | 752.2 | 49.2% |
+
+Weight 1.0 won this preliminary combined score, but only by 0.0027 over 0.25
+and with worse match MAE. This is not enough evidence to freeze the weight.
+Formal scaling will jointly compare architecture, size, weight, and seeds after
+the dataset contains many independent clusters per opponent.
+
 ## Next Evidence
 
 1. Run validation-only ranking-weight ablations on larger match-cluster counts.
