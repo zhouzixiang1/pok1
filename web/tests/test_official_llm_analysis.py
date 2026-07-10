@@ -3,6 +3,7 @@ import json
 
 from official_llm_analysis import (
     build_official_analysis_prompt,
+    compact_evidence_for_llm,
     normalize_official_analysis,
     run_official_llm_analysis,
     run_official_llm_analysis_sync,
@@ -47,8 +48,210 @@ def test_official_analysis_prompt_forbids_strength_evaluation():
     prompt = build_official_analysis_prompt(_clean_evidence())
 
     assert "Do not evaluate poker strength" in prompt
+    assert "compliance oracle only" in prompt
+    assert "It is not\na poker-strength oracle" in prompt
     assert "official_platform_compliance" in prompt
     assert '"strength_evaluation": "not_applicable"' in prompt
+
+
+def test_official_analysis_prompt_excludes_raw_and_path_evidence():
+    evidence = _blocking_evidence()
+    evidence["deterministic"]["issues"].append(
+        "summary_read_error: /private/DETERMINISTIC_PATH_MARKER/summary.json"
+    )
+    evidence.update({
+        "candidate": "/private/CANDIDATE_PATH_MARKER/national_v1",
+        "opponent": "/private/OPPONENT_PATH_MARKER/national_v2",
+        "artifact_root": "/private/ARTIFACT_ROOT_MARKER/suite",
+        "summary": {
+            "request": "FULL_REQUEST_MARKER",
+            "history": ["FULL_HISTORY_MARKER"],
+            "net_chips": 19000,
+        },
+        "rounds": [
+            {
+                "round_id": "self_play_01",
+                "round_kind": "self_play",
+                "round_index": 1,
+                "target_hands": 70,
+                "passed": False,
+                "classification": "protocol",
+                "issues": ["wire_replay: illegal_check"],
+                "log_summary": {
+                    "request_history": "LOG_SUMMARY_HISTORY_MARKER",
+                    "net_chips": -19000,
+                },
+                "log_tails": {"bot_a_log": "RAW_LOG_TAIL_MARKER"},
+                "artifacts": {
+                    "receipt": {"path": "/private/ABSOLUTE_ARTIFACT_PATH_MARKER/receipt.json"},
+                },
+                "thp_summaries": [
+                    {
+                        "path": "/private/THP_PATH_MARKER/match.txt",
+                        "hand_records": 17,
+                        "bytes": 2048,
+                        "history": "THP_HISTORY_MARKER",
+                    }
+                ],
+                "wire_replay_summary": {
+                    "events_seen": 9,
+                    "hands_started_min": 1,
+                    "settlements_min": 0,
+                    "raw_hex": "RAW_HEX_MARKER_001122334455",
+                    "request": "WIRE_REQUEST_MARKER",
+                    "history": ["WIRE_HISTORY_MARKER"],
+                    "issues": [
+                        {
+                            "kind": "illegal_check",
+                            "conn": "A",
+                            "hand": 1,
+                            "stage": "flop",
+                            "message": "check",
+                            "raw_hex": "ISSUE_RAW_HEX_MARKER",
+                            "request": "ISSUE_REQUEST_MARKER",
+                            "history": ["ISSUE_HISTORY_MARKER"],
+                            "previous_event": {
+                                "conn": "A",
+                                "direction": "server_to_bot",
+                                "messages": ["RAW_STATE_REQUEST_MARKER"],
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+    })
+
+    prompt = build_official_analysis_prompt(evidence)
+
+    forbidden_markers = {
+        "CANDIDATE_PATH_MARKER",
+        "OPPONENT_PATH_MARKER",
+        "ARTIFACT_ROOT_MARKER",
+        "FULL_REQUEST_MARKER",
+        "FULL_HISTORY_MARKER",
+        "LOG_SUMMARY_HISTORY_MARKER",
+        "RAW_LOG_TAIL_MARKER",
+        "ABSOLUTE_ARTIFACT_PATH_MARKER",
+        "DETERMINISTIC_PATH_MARKER",
+        "THP_PATH_MARKER",
+        "THP_HISTORY_MARKER",
+        "RAW_HEX_MARKER_001122334455",
+        "WIRE_REQUEST_MARKER",
+        "WIRE_HISTORY_MARKER",
+        "ISSUE_RAW_HEX_MARKER",
+        "ISSUE_REQUEST_MARKER",
+        "ISSUE_HISTORY_MARKER",
+        "RAW_STATE_REQUEST_MARKER",
+    }
+    assert all(marker not in prompt for marker in forbidden_markers)
+    assert '"raw_hex"' not in prompt
+    assert '"log_tails"' not in prompt
+    assert '"artifact_paths"' not in prompt
+    assert '"net_chips"' not in prompt
+    assert "summary_read_error: <absolute-path>" in prompt
+
+
+def test_compact_evidence_keeps_stable_bounded_attribution():
+    evidence = _blocking_evidence()
+    evidence["rounds"] = [
+        {
+            "round_id": "self_play_01",
+            "round_kind": "self_play",
+            "round_index": 1,
+            "target_hands": 70,
+            "passed": False,
+            "classification": "protocol",
+            "issues": ["wire_replay: illegal_check"],
+            "thp_summaries": [
+                {
+                    "path": "/private/never-send-this/match.txt",
+                    "exists": True,
+                    "hand_records": 17,
+                    "bytes": 2048,
+                }
+            ],
+            "wire_replay_summary": {
+                "events_seen": 42,
+                "hands_started_min": 17,
+                "settlements_min": 16,
+                "max_platform_silent_gap_sec": 1.25,
+                "issues": [
+                    {
+                        "kind": "illegal_check",
+                        "conn": "A",
+                        "hand": 17,
+                        "stage": "turn",
+                        "message": "check",
+                        "dt": 12.5,
+                        "expected_reason": "respond_to_check",
+                        "previous_event": {
+                            "dt": 12.0,
+                            "conn": "A",
+                            "direction": "server_to_bot",
+                            "messages": ["check"],
+                        },
+                        "next_event": {
+                            "dt": 12.6,
+                            "conn": "A",
+                            "direction": "server_to_bot",
+                            "messages": ["call"],
+                        },
+                    }
+                ],
+                "pending_expected_actions": [
+                    {
+                        "conn": "B",
+                        "hand": 17,
+                        "stage": "turn",
+                        "waited_sec": 2.75,
+                        "expected_reason": "turn_first_action",
+                    }
+                ],
+            },
+        }
+    ]
+
+    first = compact_evidence_for_llm(evidence)
+    second = compact_evidence_for_llm(evidence)
+
+    assert first == second
+    round_item = first["rounds"][0]
+    assert round_item["round_id"] == "self_play_01"
+    assert round_item["evidence_id"].startswith("round-")
+    assert round_item["thp_summaries"] == [
+        {
+            "summary_index": 1,
+            "exists": True,
+            "hand_records": 17,
+            "size_bytes": 2048,
+            "evidence_id": round_item["thp_summaries"][0]["evidence_id"],
+        }
+    ]
+    replay = round_item["wire_replay_summary"]
+    assert replay["events_seen"] == 42
+    assert replay["hands_started_min"] == 17
+    assert replay["settlements_min"] == 16
+    finding = replay["issues"][0]
+    assert finding["evidence_id"].startswith("wire-issue-")
+    assert finding["round_evidence_id"] == round_item["evidence_id"]
+    assert finding["round_id"] == "self_play_01"
+    assert finding["hand"] == 17
+    assert finding["street"] == "turn"
+    assert finding["connection"] == "A"
+    assert finding["observed_action"] == "check"
+    assert finding["expected_rule"] == "check_legal_for_current_state"
+    assert finding["expected_reason"] == "respond_to_check"
+    assert 1 <= len(finding["state_sequence"]) <= 5
+    assert all(item["evidence_id"].startswith("state-") for item in finding["state_sequence"])
+    pending = replay["pending_expected_actions"][0]
+    assert pending["connection"] == "B"
+    assert pending["hand"] == 17
+    assert pending["street"] == "turn"
+    assert pending["expected_reason"] == "turn_first_action"
+    prompt = build_official_analysis_prompt(evidence)
+    assert finding["evidence_id"] in prompt
+    assert round_item["thp_summaries"][0]["evidence_id"] in prompt
 
 
 def test_normalize_does_not_allow_llm_to_block_clean_deterministic_pass():
