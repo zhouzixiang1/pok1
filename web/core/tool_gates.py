@@ -1227,6 +1227,15 @@ async def run_quality_gates(args):
         "national_execution_mode": result["national_execution_mode"],
         "national_native_contract_ok": result["national_native_contract_ok"],
         "national_native_contract_errors": result["national_native_contract_errors"],
+        "national_capability_contract_ok": result["national_capability_contract_ok"],
+        "national_capability_contract_required": result["national_capability_contract_required"],
+        "national_capability_contract": result["national_capability_contract"],
+        "national_capability_required_failure_count": len(
+            result["national_capability_contract"].get("required_failures") or []
+        ),
+        "national_capability_advisory_count": len(
+            result["national_capability_contract"].get("advisory_warnings") or []
+        ),
         "embedded_selftests_ok": result["embedded_selftests_ok"],
         "embedded_selftest_errors": result["embedded_selftest_errors"],
         "smoke_ok": result["smoke_ok"],
@@ -1283,6 +1292,28 @@ async def run_quality_gates(args):
         len(native_contract_errors) == 0,
         failures=native_contract_errors[:5],
         metrics={"execution_mode": "native_tcp" if native_tcp_mode else "adapter"},
+        blocking=native_tcp_mode,
+        hidden=not native_tcp_mode,
+    ))
+    capability_required_failures = national_capability_contract.get("required_failures") or []
+    capability_advisory_warnings = national_capability_contract.get("advisory_warnings") or []
+    capability_failures = capability_required_failures
+    if national_capability_required:
+        capability_failures = [*capability_required_failures, *capability_advisory_warnings]
+    scorecard.add(GateResult.from_bool(
+        "national_capability_contract",
+        national_capability_ok,
+        failures=[
+            str(item.get("name", item))[:300] if isinstance(item, dict) else str(item)[:300]
+            for item in capability_failures[:8]
+        ],
+        metrics={
+            "execution_mode": "native_tcp" if native_tcp_mode else "adapter",
+            "required": national_capability_required,
+            "required_failure_count": len(capability_required_failures),
+            "advisory_warning_count": len(capability_advisory_warnings),
+        },
+        artifacts={"contract": national_capability_contract},
         blocking=native_tcp_mode,
         hidden=not native_tcp_mode,
     ))
