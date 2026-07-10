@@ -53,31 +53,6 @@ def _name_text(node: ast.AST) -> str:
     return ""
 
 
-def _decision_function_nodes(sources: dict[str, str]) -> list[tuple[str, str, ast.FunctionDef | ast.AsyncFunctionDef]]:
-    """Return likely per-action decision functions from bot sources."""
-    nodes: list[tuple[str, str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
-    decision_name_markers = (
-        "get_action",
-        "decide",
-        "decision",
-        "choose_action",
-        "select_action",
-        "act",
-    )
-    for filename, text in sources.items():
-        try:
-            tree = ast.parse(text, filename=filename)
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            name = node.name.lower()
-            if name == "action" or any(marker in name for marker in decision_name_markers):
-                nodes.append((filename, node.name, node))
-    return nodes
-
-
 class _DecisionPathVisitor(ast.NodeVisitor):
     """Collect runtime-architecture risks inside likely decision functions."""
 
@@ -110,9 +85,12 @@ class _DecisionPathVisitor(ast.NodeVisitor):
         self.external_io: list[str] = []
         self.history_scans: list[str] = []
         self.large_runtime_tables: list[str] = []
+        self.calls: list[str] = []
 
     def visit_Call(self, node: ast.Call) -> Any:
         name = _call_name(node.func)
+        if name:
+            self.calls.append(name)
         attr = name.rsplit(".", 1)[-1] if name else ""
         if name in self._EXTERNAL_IO_CALLS or attr in self._FILE_METHODS:
             self.external_io.append(f"L{getattr(node, 'lineno', '?')}:{name or attr}")
@@ -189,25 +167,120 @@ class _DecisionPathVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _likely_decision_function_name(function_name: str) -> bool:
+    name = function_name.lower()
+    decision_name_markers = (
+        "get_action",
+        "decide",
+        "decision",
+        "choose_action",
+        "select_action",
+    )
+    return name in {"act", "action"} or any(marker in name for marker in decision_name_markers)
+
+
+def _function_profiles(sources: dict[str, str]) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
+    profiles: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, list[str]] = {}
+    for filename, text in sources.items():
+        try:
+            tree = ast.parse(text, filename=filename)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            visitor = _DecisionPathVisitor()
+            visitor.visit(node)
+            key = f"{filename}:{node.name}"
+            profiles[key] = {
+                "filename": filename,
+                "name": node.name,
+                "label": key,
+                "calls": list(dict.fromkeys(visitor.calls)),
+                "external_io": visitor.external_io,
+                "history_scans": visitor.history_scans,
+                "large_runtime_tables": visitor.large_runtime_tables,
+                "is_decision": _likely_decision_function_name(node.name),
+            }
+            by_name.setdefault(node.name, []).append(key)
+    return profiles, by_name
+
+
+def _resolve_call_targets(call_name: str, by_name: dict[str, list[str]]) -> list[str]:
+    """Resolve simple same-bot helper calls without pretending to be a type checker."""
+    if not call_name:
+        return []
+    names = [call_name]
+    if "." in call_name:
+        names.append(call_name.rsplit(".", 1)[-1])
+    targets: list[str] = []
+    for name in names:
+        for key in by_name.get(name, []):
+            if key not in targets:
+                targets.append(key)
+    return targets
+
+
+def _format_risk(chain: list[str], item: str) -> str:
+    return "->".join(chain + [item])
+
+
+def _prioritized_risk_examples(items: list[str], limit: int = 3) -> list[str]:
+    def key(item: str) -> tuple[int, int, str]:
+        strategy_path = "strategy.py:get_action" in item
+        generated_bot_logic = any(
+            marker in item
+            for marker in ("opponent.py:", "state.py:", "postflop.py:", "simulation.py:")
+        )
+        wire_bookkeeping = "national_bot.py:" in item and not strategy_path
+        return (
+            0 if strategy_path else 1 if generated_bot_logic else 2 if not wire_bookkeeping else 3,
+            item.count("->"),
+            item,
+        )
+
+    return sorted(dict.fromkeys(items), key=key)[:limit]
+
+
 def _decision_path_risks(sources: dict[str, str]) -> dict[str, Any]:
     external_io: list[str] = []
     history_scans: list[str] = []
     large_runtime_tables: list[str] = []
     decision_functions: list[str] = []
-    for filename, function_name, node in _decision_function_nodes(sources):
-        decision_functions.append(f"{filename}:{function_name}")
-        visitor = _DecisionPathVisitor()
-        visitor.visit(node)
-        external_io.extend(f"{filename}:{function_name}:{item}" for item in visitor.external_io)
-        history_scans.extend(f"{filename}:{function_name}:{item}" for item in visitor.history_scans)
-        large_runtime_tables.extend(
-            f"{filename}:{function_name}:{item}" for item in visitor.large_runtime_tables
-        )
+    profiles, by_name = _function_profiles(sources)
+    decision_keys = [key for key, profile in profiles.items() if profile.get("is_decision")]
+    max_depth = 4
+    for decision_key in decision_keys:
+        decision_functions.append(decision_key)
+        stack: list[tuple[str, list[str], int]] = [(decision_key, [decision_key], 0)]
+        visited: set[tuple[str, int]] = set()
+        while stack:
+            key, chain, depth = stack.pop()
+            visit_key = (key, depth)
+            if visit_key in visited:
+                continue
+            visited.add(visit_key)
+            profile = profiles.get(key)
+            if not profile:
+                continue
+            external_io.extend(_format_risk(chain, item) for item in profile["external_io"])
+            history_scans.extend(_format_risk(chain, item) for item in profile["history_scans"])
+            large_runtime_tables.extend(
+                _format_risk(chain, item) for item in profile["large_runtime_tables"]
+            )
+            if depth >= max_depth:
+                continue
+            for call_name in profile["calls"]:
+                for target in _resolve_call_targets(call_name, by_name):
+                    if target in chain:
+                        continue
+                    stack.append((target, chain + [target], depth + 1))
     return {
-        "decision_functions": decision_functions,
-        "external_io": external_io,
-        "history_scans": history_scans,
-        "large_runtime_tables": large_runtime_tables,
+        "decision_functions": sorted(dict.fromkeys(decision_functions)),
+        "external_io": sorted(dict.fromkeys(external_io)),
+        "history_scans": sorted(dict.fromkeys(history_scans)),
+        "large_runtime_tables": sorted(dict.fromkeys(large_runtime_tables)),
     }
 
 
@@ -339,6 +412,7 @@ def national_runtime_feedback_summary(
     required = result.get("required_failures") or []
     advisory = result.get("advisory_warnings") or []
     checks = result.get("checks") or []
+    risks = result.get("decision_path_risks") or {}
     lines = [
         f"National runtime architecture feedback for {source_label}:",
         "This is a planning signal only; official EXE compliance and native TCP gates remain authoritative for legality.",
@@ -357,6 +431,17 @@ def national_runtime_feedback_summary(
                 f"- {item.get('name')}: {item.get('guidance')} "
                 f"(evidence: {item.get('evidence')})"
             )
+        risk_examples: list[str] = []
+        for key, label in (
+            ("external_io", "decision_path_external_io"),
+            ("history_scans", "decision_path_history_scan"),
+            ("large_runtime_tables", "decision_path_runtime_table"),
+        ):
+            for item in _prioritized_risk_examples(risks.get(key) or [], limit=3):
+                risk_examples.append(f"- {label}: {item}")
+        if risk_examples:
+            lines.append("Decision path evidence to route into worker tasks:")
+            lines.extend(risk_examples[:6])
     else:
         lines.append("No advisory runtime-architecture gaps detected by the static contract.")
     passed = [item for item in checks if item.get("passed")]

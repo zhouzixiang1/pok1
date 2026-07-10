@@ -170,3 +170,133 @@ def get_action(req, requests):
     assert result["decision_path_risks"]["external_io"]
     assert result["decision_path_risks"]["history_scans"]
     assert result["decision_path_risks"]["large_runtime_tables"]
+
+
+def test_capability_contract_does_not_treat_wire_action_helpers_as_decision_roots(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v5",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def __init__(self):
+        self._requests = []
+        self._history = []
+        self._showdowns = []
+    def _send_wire_action(self, action):
+        pass
+    def _action_to_tcp(self, action):
+        return 'call'
+    def handle(self, msg):
+        if msg.startswith('earnChips') or msg.startswith('oppo_hands'):
+            self._history.append(msg)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        strategy="""
+import time
+MAX_DECISION_SAMPLES = 64
+def get_action(req, requests):
+    start = time.monotonic()
+    return 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert "national_bot.py:_action_to_tcp" not in result["decision_path_risks"]["decision_functions"]
+    assert "strategy.py:get_action" in result["decision_path_risks"]["decision_functions"]
+
+
+def test_capability_contract_traces_indirect_decision_path_risks(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v6",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def __init__(self):
+        self._requests = []
+        self._history = []
+        self._showdowns = []
+    def _send_wire_action(self, action):
+        pass
+    def handle(self, msg):
+        if msg.startswith('earnChips') or msg.startswith('oppo_hands'):
+            self._history.append(msg)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        opponent="""
+def build_opponent_model(requests):
+    profile = {'aggression': 0}
+    for item in requests:
+        profile['aggression'] += 1
+    return profile
+""",
+        strategy="""
+import time
+from opponent import build_opponent_model
+MAX_DECISION_SAMPLES = 64
+def get_action(req, requests):
+    start = time.monotonic()
+    profile = build_opponent_model(requests)
+    return 100 if profile['aggression'] > 10 else 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    warning_names = {item["name"] for item in result["advisory_warnings"]}
+    scans = result["decision_path_risks"]["history_scans"]
+
+    assert "decision_path_no_full_history_scan" in warning_names
+    assert any(
+        "strategy.py:get_action->opponent.py:build_opponent_model" in item
+        for item in scans
+    )
+
+    feedback = national_runtime_feedback_summary(bot, source_label="national_v6")
+    assert "Decision path evidence to route into worker tasks" in feedback
+    assert "strategy.py:get_action->opponent.py:build_opponent_model" in feedback
+
+
+def test_capability_contract_traces_indirect_large_runtime_table(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v7",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def __init__(self):
+        self._requests = []
+        self._history = []
+        self._showdowns = []
+    def _send_wire_action(self, action):
+        pass
+    def handle(self, msg):
+        if msg.startswith('earnChips') or msg.startswith('oppo_hands'):
+            self._history.append(msg)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        strategy="""
+import time
+MAX_DECISION_SAMPLES = 64
+def build_lookup():
+    return {i: i for i in range(100)}
+def get_action(req, requests, runtime_ctx=None):
+    start = time.monotonic()
+    lookup = build_lookup()
+    return lookup.get(1, 0)
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    warning_names = {item["name"] for item in result["advisory_warnings"]}
+    tables = result["decision_path_risks"]["large_runtime_tables"]
+
+    assert "decision_path_no_large_runtime_tables" in warning_names
+    assert any("strategy.py:get_action->strategy.py:build_lookup" in item for item in tables)
