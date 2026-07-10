@@ -284,6 +284,15 @@ policies. The sweep exited nonzero, did not open held-out, and created no bot.
 The repaired architecture summary SHA-256 was
 `3203e14f0d847684fd619e3c7d97cdfc8c6bb982153828d576076ea3479fff87`.
 
+A second controlled sweep filled in lower-ranking weights 0.1 and 0.25 for
+both encoders. All four ensembles were rejected. GRU 0.1 covered 13 clusters
+but had negative override hand value and negative CIs; GRU 0.25 and GRU+MoE
+0.25 regressed on v98; GRU+MoE 0.1 either covered only v142 or crossed zero
+once it covered both opponents. This rules out simple interpolation between
+the sparse weight-0 policy and the broad weight-0.5 policy on the pass-22
+snapshot. The intermediate-weight architecture summary SHA-256 was
+`340cdc0486146074c2b0b9f22ce94fbcaa82989b96e84b6db831ffd530d9f31e`.
+
 ## Next Evidence
 
 1. Repeat the fixed `rule_relative_zero_v1` validation-only check at a
