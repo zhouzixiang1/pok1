@@ -69,6 +69,11 @@ def _write_rows(path: Path, rows: list[dict]) -> None:
     )
 
 
+def _append_row(path: Path, row: dict) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row) + "\n")
+
+
 def _collection(source: Path, *, requested_passes: int = 1) -> None:
     source.mkdir()
     rows = {
@@ -161,3 +166,68 @@ def test_freeze_refuses_incomplete_collection(tmp_path: Path) -> None:
             min_behavior_train=1,
             required_alternative_labels={"call"},
         )
+
+
+def test_incomplete_freeze_requires_atomic_collector_state(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _collection(source, requested_passes=2)
+
+    with pytest.raises(
+        FileNotFoundError, match="collector_state.json is required"
+    ):
+        freeze.freeze_dataset(
+            source,
+            tmp_path / "frozen",
+            calibration_opponents={"national_v1"},
+            min_value_train=1,
+            min_behavior_train=1,
+            required_alternative_labels={"call"},
+            allow_incomplete=True,
+        )
+
+
+def test_incomplete_freeze_excludes_rows_after_completed_pass(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "frozen"
+    _collection(source, requested_passes=2)
+    (source / "collector_state.json").write_text(
+        json.dumps({
+            "completed_passes": 1,
+            "total_rows": {"train": 2, "val": 2, "held_out": 1},
+            "total_behavior_rows": {
+                "train": 2,
+                "val": 2,
+                "held_out": 1,
+            },
+        }),
+        encoding="utf-8",
+    )
+    _append_row(source / "cf_train.jsonl", _value_row("national_v99", 99))
+    _append_row(
+        source / "opponent_actions_train.jsonl",
+        _behavior_row("national_v99", 99),
+    )
+
+    manifest = freeze.freeze_dataset(
+        source,
+        output,
+        calibration_opponents={"national_v1"},
+        min_value_train=1,
+        min_behavior_train=1,
+        required_alternative_labels={"call"},
+        allow_incomplete=True,
+    )
+
+    frozen_train = [
+        json.loads(line)
+        for line in (output / "cf_train.jsonl").read_text().splitlines()
+    ]
+    assert [row["opponent"] for row in frozen_train] == ["national_v2"]
+    assert manifest["source_completed_passes"] == 1
+    assert manifest["snapshot_boundary"]["mode"] == "collector_state_prefix"
+    source_manifest = manifest["input_files"]["cf_train.jsonl"]
+    assert source_manifest["rows"] == 2
+    assert source_manifest["truncated_to_collector_state"] is True
+    assert source_manifest["source_bytes_at_read"] > source_manifest["bytes"]

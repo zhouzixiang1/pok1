@@ -135,10 +135,20 @@ returned exit code 1 while preserving all model, manifest, summary, and gate
 failure artifacts. This verifies pipeline semantics only; the synthetic smoke
 data and relaxed selection thresholds are not strength evidence.
 
-The live 70-hand collector had completed 9 of 160 passes at the time of this
-update, with 412 train, 108 validation, and 108 held-out value rows plus 2,604
+The live 70-hand collector had completed 10 of 160 passes at the time of this
+update, with 460 train, 120 validation, and 115 held-out value rows plus 2,943
 opponent-action rows. Collection remains active, and these append-only files
 must not be treated as a frozen training dataset.
+
+The first incomplete diagnostic freeze exposed that cumulative files may
+already contain rows from the next in-progress pass before `pool_snapshots` and
+`collector_state.json` advance. The old `--allow-incomplete` path incorrectly
+included those rows while reporting the previous completed-pass count. The
+freeze tool now requires the atomic collector state for incomplete snapshots,
+reads exactly its recorded row prefixes, verifies prefix hashes, and rejects a
+state/snapshot pass mismatch. The corrected pass-10 freeze contains 412 value
+and 1,679 behavior training rows after moving v121/v135 to calibration; v98 and
+v142 remain validation-only, while v57 and v66 remain held-out-only.
 
 ## Next Evidence
 

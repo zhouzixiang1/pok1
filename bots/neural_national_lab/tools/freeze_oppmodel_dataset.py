@@ -32,23 +32,73 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _read_jsonl_snapshot(
+    path: Path,
+    *,
+    row_limit: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if row_limit is not None and row_limit < 0:
+        raise RuntimeError(f"negative snapshot row limit for {path}: {row_limit}")
     rows = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, 1):
-            if not line.strip():
+    digest = hashlib.sha256()
+    snapshot_bytes = 0
+    with path.open("rb") as handle:
+        for line_number, raw_line in enumerate(handle, 1):
+            if row_limit is not None and len(rows) >= row_limit:
+                break
+            digest.update(raw_line)
+            snapshot_bytes += len(raw_line)
+            if not raw_line.strip():
                 continue
             try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError as exc:
+                rows.append(json.loads(raw_line.decode("utf-8")))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise RuntimeError(f"{path}:{line_number}: invalid JSON") from exc
-    return rows
+    if row_limit is not None and len(rows) != row_limit:
+        raise RuntimeError(
+            f"snapshot boundary exceeds {path}: expected {row_limit} rows, "
+            f"read {len(rows)}"
+        )
+    source_bytes_at_read = path.stat().st_size
+    with path.open("rb") as handle:
+        verify = handle.read(snapshot_bytes)
+    if len(verify) != snapshot_bytes or hashlib.sha256(verify).hexdigest() != digest.hexdigest():
+        raise RuntimeError(f"source prefix changed while reading: {path}")
+    if row_limit is None and source_bytes_at_read != snapshot_bytes:
+        raise RuntimeError(f"source changed while reading: {path}")
+    return rows, {
+        "bytes": snapshot_bytes,
+        "rows": len(rows),
+        "sha256": digest.hexdigest(),
+        "source_bytes_at_read": source_bytes_at_read,
+        "truncated_to_collector_state": row_limit is not None,
+    }
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
+def _verify_input_snapshot(path: Path, manifest: dict[str, Any]) -> None:
+    snapshot_bytes = int(manifest["bytes"])
+    digest = hashlib.sha256()
+    remaining = snapshot_bytes
+    with path.open("rb") as handle:
+        while remaining:
+            chunk = handle.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise RuntimeError(f"source snapshot was truncated: {path}")
+            digest.update(chunk)
+            remaining -= len(chunk)
+    if digest.hexdigest() != manifest["sha256"]:
+        raise RuntimeError(f"source snapshot prefix changed: {path}")
+    if (
+        not manifest["truncated_to_collector_state"]
+        and path.stat().st_size != snapshot_bytes
+    ):
+        raise RuntimeError(f"source changed after reading: {path}")
 
 
 def _opponent(row: dict[str, Any]) -> str:
@@ -108,6 +158,7 @@ def freeze_dataset(
 
     collection_manifest_path = source_dir / "collection_manifest.json"
     snapshots_path = source_dir / "pool_snapshots.jsonl"
+    collector_state_path = source_dir / "collector_state.json"
     if not collection_manifest_path.exists() or not snapshots_path.exists():
         raise FileNotFoundError("collection manifest or pool snapshots are missing")
     collection_manifest = json.loads(
@@ -117,6 +168,48 @@ def freeze_dataset(
     pool_snapshots_sha256 = _sha256(snapshots_path)
     requested_passes = int(collection_manifest.get("passes_requested", 0) or 0)
     completed_passes = _completed_passes(snapshots_path)
+    collector_state = None
+    collector_state_sha256 = None
+    snapshot_row_limits: dict[str, dict[str, int]] | None = None
+    if allow_incomplete:
+        if not collector_state_path.exists():
+            raise FileNotFoundError(
+                "collector_state.json is required for an incomplete atomic freeze"
+            )
+        collector_state_bytes = collector_state_path.read_bytes()
+        collector_state_sha256 = hashlib.sha256(
+            collector_state_bytes
+        ).hexdigest()
+        try:
+            collector_state = json.loads(collector_state_bytes)
+            state_completed_passes = int(
+                collector_state.get("completed_passes", 0) or 0
+            )
+            snapshot_row_limits = {
+                "cf": {
+                    split: int(collector_state["total_rows"][split])
+                    for split in SOURCE_SPLITS
+                },
+                "opponent_actions": {
+                    split: int(
+                        collector_state["total_behavior_rows"][split]
+                    )
+                    for split in SOURCE_SPLITS
+                },
+            }
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("invalid collector_state.json") from exc
+        if state_completed_passes != completed_passes:
+            raise RuntimeError(
+                "collector state/snapshot boundary mismatch: "
+                f"state={state_completed_passes} snapshots={completed_passes}"
+            )
+        if any(
+            count < 0
+            for prefix in snapshot_row_limits.values()
+            for count in prefix.values()
+        ):
+            raise RuntimeError("collector_state.json contains negative row counts")
     if not allow_incomplete and completed_passes < requested_passes:
         raise RuntimeError(
             f"collection incomplete: {completed_passes}/{requested_passes} passes"
@@ -133,13 +226,14 @@ def freeze_dataset(
             path = source_dir / f"{prefix}_{split}.jsonl"
             if not path.exists():
                 raise FileNotFoundError(path)
-            input_files[path.name] = {
-                "bytes": path.stat().st_size,
-                "sha256": _sha256(path),
-            }
-            rows = _read_jsonl(path)
-            if _sha256(path) != input_files[path.name]["sha256"]:
-                raise RuntimeError(f"source changed while reading: {path}")
+            row_limit = (
+                snapshot_row_limits[prefix][split]
+                if snapshot_row_limits is not None
+                else None
+            )
+            rows, input_files[path.name] = _read_jsonl_snapshot(
+                path, row_limit=row_limit
+            )
             source_rows[split] = rows
         if selection_val_opponents:
             observed_val = {_opponent(row) for row in source_rows["val"]}
@@ -216,6 +310,11 @@ def freeze_dataset(
             raise RuntimeError("collection manifest changed during freeze")
         if _sha256(snapshots_path) != pool_snapshots_sha256:
             raise RuntimeError("pool snapshots changed during freeze")
+        if collector_state_sha256 is not None:
+            if _sha256(collector_state_path) != collector_state_sha256:
+                raise RuntimeError("collector state changed during freeze")
+        for name, details in input_files.items():
+            _verify_input_snapshot(source_dir / name, details)
         for prefix in PREFIXES:
             for split in OUTPUT_SPLITS:
                 _write_jsonl(
@@ -226,10 +325,18 @@ def freeze_dataset(
             collection_manifest_path, temporary / collection_manifest_path.name
         )
         shutil.copyfile(snapshots_path, temporary / snapshots_path.name)
+        if collector_state_sha256 is not None:
+            shutil.copyfile(
+                collector_state_path, temporary / collector_state_path.name
+            )
         if _sha256(temporary / collection_manifest_path.name) != collection_manifest_sha256:
             raise RuntimeError("copied collection manifest hash mismatch")
         if _sha256(temporary / snapshots_path.name) != pool_snapshots_sha256:
             raise RuntimeError("copied pool snapshots hash mismatch")
+        if collector_state_sha256 is not None and _sha256(
+            temporary / collector_state_path.name
+        ) != collector_state_sha256:
+            raise RuntimeError("copied collector state hash mismatch")
         report = audit(
             temporary,
             min_value_rows=min_value_train,
@@ -270,6 +377,15 @@ def freeze_dataset(
             "source_completed_passes": completed_passes,
             "source_requested_passes": requested_passes,
             "allow_incomplete": bool(allow_incomplete),
+            "snapshot_boundary": {
+                "mode": (
+                    "collector_state_prefix"
+                    if snapshot_row_limits is not None
+                    else "complete_files"
+                ),
+                "completed_passes": completed_passes,
+                "collector_state_sha256": collector_state_sha256,
+            },
             "partition_mode": partition_mode,
             "selection_val_opponents": sorted(selection_val_opponents),
             "calibration_opponents": sorted(calibration_opponents),
