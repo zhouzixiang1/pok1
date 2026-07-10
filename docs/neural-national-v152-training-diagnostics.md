@@ -305,11 +305,48 @@ a simultaneous nonnegative match-LCB floor reduced coverage to 6 overrides in
 5 clusters and was not adopted. The nonnegative hand-LCB floor is now part of
 the formal offline-candidate contract rather than a per-opponent threshold.
 
+## Match-Cluster Bootstrap A/B
+
+The three random-seed members above still trained on exactly the same 78 match
+clusters, so seed disagreement could not measure uncertainty in which matches
+happened to be collected. The trainer now has an optional opponent-stratified
+match-cluster bootstrap. Each member samples the same number of whole matches
+with replacement inside every training opponent and applies identical cluster
+multiplicities to the value and opponent-action rows. The source manifests
+remain unchanged while model metadata records the complete bootstrap draw and
+effective row counts.
+
+A controlled pass-22 A/B trained the same GRU and GRU+MoE architectures at
+lower-ranking weights 0 and 0.5 with seeds 101/211/307. Each member drew 78
+clusters; only 53-58 were unique because each training opponent had just four
+or five source matches. The table reports median supervised metrics and the
+highest-coverage diagnostic policy with a nonnegative per-decision hand LCB.
+
+| Encoder | Lower rank weight | Match dir. balanced | Lower dir. balanced | Overrides/clusters | CI lower / stratified | Result |
+|---|---:|---:|---:|---:|---:|---|
+| GRU | 0.0 | 72.6% | 61.4% | 8 / 3 | -231.50 / -227.95 | reject: unsafe and sparse |
+| GRU | 0.5 | 71.6% | 72.7% | 14 / 4 | -190.99 / -183.07 | reject: v98 uncovered |
+| GRU+MoE | 0.0 | 71.9% | 59.0% | 16 / 5 | -193.69 / -186.59 | reject: CI and coverage |
+| GRU+MoE | 0.5 | 72.1% | 70.8% | 12 / 5 | -299.90 / -308.57 | reject: negative hand value and v98 |
+
+All four ensembles remained fast at 65-76 ms for three-member stdlib
+value-plus-response inference. None passed policy selection, held-out stayed
+unopened, and no bot was created. The architecture summary SHA-256 was
+`9e801f50e12ac621211aa830facc14b406787b3553001949412e54ebe8bc2e87`.
+
+The bootstrap is behaving conservatively rather than improving the small
+checkpoint: it exposes substantial match-sampling sensitivity and removes the
+apparently positive sparse policies seen when every member shares the same
+matches. It remains useful as a larger-data robustness control, but this
+pass-22 result does not justify replacing the non-bootstrap recipe. Pass 40
+will therefore keep the full non-bootstrap sweep as its primary experiment and
+repeat a targeted bootstrap A/B on the same frozen prefix.
+
 ## Next Evidence
 
-1. Repeat the fixed `rule_relative_zero_v1` validation-only check at a
-   materially larger match-cluster checkpoint; do not tune from held-out
-   results.
+1. At pass 40, repeat the fixed `rule_relative_zero_v1` validation-only check
+   with the full non-bootstrap grid and a targeted match-cluster bootstrap
+   control; do not tune from held-out results.
 2. Repeat the full GRU, GRU+MoE, Deep Sets, and Transformer scaling grid after
    the 160-pass dataset is frozen.
 3. Use calibration only for output calibration and coverage diagnostics; keep
