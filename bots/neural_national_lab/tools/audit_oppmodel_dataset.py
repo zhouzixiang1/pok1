@@ -22,7 +22,7 @@ from cross_hand_sequence import (  # noqa: E402
     MAX_CROSS_HANDS,
 )
 
-SPLITS = ("train", "val", "held_out")
+SPLITS = ("train", "val", "calibration", "held_out")
 VALUE_FIELDS = ("delta_vs_rule", "tail_delta_vs_rule", "match_delta_vs_rule")
 ACTION_LABELS = ("fold", "check", "call", "raise", "allin")
 

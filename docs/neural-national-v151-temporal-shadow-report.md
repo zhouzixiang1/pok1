@@ -72,6 +72,15 @@ This is an early snapshot of the still-running 160-pass collection. Formal
 training must wait for substantially more match clusters and freeze the final
 files with hashes.
 
+The calibration split is pre-registered before model selection: completed
+opponents v121 and v135 will be moved wholly out of train at freeze time. The
+choice uses rating coverage rather than observed model scores. Validation stays
+v98/v142 and held-out stays v57/v66. The freeze tool requires all 160 contiguous
+pass snapshots, no unfinished probe files, stable read hashes, and a passing
+four-way opponent-disjoint audit.
+The scaling sweep requires this calibration split by default and will reject a
+raw three-way collection unless a legacy diagnostic override is explicit.
+
 ## Remaining Gates
 
 1. Complete and freeze the v152 dataset.

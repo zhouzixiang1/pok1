@@ -256,6 +256,7 @@ def main() -> int:
     parser.add_argument("--min-behavior-train", type=int, default=2000)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--allow-missing-cross-hand-sequence", action="store_true")
+    parser.add_argument("--allow-missing-calibration", action="store_true")
     args = parser.parse_args()
     if args.runtime_benchmark_repeats <= 0:
         raise SystemExit("runtime-benchmark-repeats must be positive")
@@ -302,7 +303,15 @@ def main() -> int:
         "value_calibration": data_dir / "cf_calibration.jsonl",
         "behavior_calibration": data_dir / "opponent_actions_calibration.jsonl",
     }
-    if all(path.exists() for path in calibration_paths.values()):
+    calibration_exists = [path.exists() for path in calibration_paths.values()]
+    if any(calibration_exists) and not all(calibration_exists):
+        raise SystemExit("calibration split is incomplete")
+    if not all(calibration_exists) and not args.allow_missing_calibration:
+        raise SystemExit(
+            "calibration split is required; freeze the collection first or use "
+            "--allow-missing-calibration for a legacy diagnostic"
+        )
+    if all(calibration_exists):
         held_out_data.update(calibration_paths)
     experiments = []
     for config in configs:

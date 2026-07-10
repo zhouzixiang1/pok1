@@ -87,7 +87,7 @@ def test_audit_accepts_disjoint_protocol_clean_splits(tmp_path: Path) -> None:
     )
 
     assert report["passed"] is True
-    assert report["valid_probes"] == 3
+    assert report["valid_probes"] == len(tool.SPLITS)
 
 
 def test_audit_rejects_opponent_leakage(tmp_path: Path) -> None:
