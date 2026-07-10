@@ -204,9 +204,53 @@ alternatives, still below the required override and cluster coverage. This is
 useful learning-head progress, not a bot candidate; the experiment must be
 repeated as independent match clusters accumulate.
 
+## Pass-22 Lower-Risk Ranking Checkpoint
+
+An atomic prefix freeze at 22 completed collection passes contained 896 value
+and 3,352 behavior training rows after moving v121/v135 to calibration. The
+calibration, validation, and held-out splits contained 120/477, 259/1,328, and
+259/669 value/behavior rows respectively. The freeze remained explicitly
+incomplete (`22/160`) and therefore could not qualify a candidate even if a
+diagnostic policy passed. Its manifest SHA-256 was
+`655e8420b9d8292e52e557b9776ee6de5c13e2e40194ff3d95da50a1b4fb60d5`.
+
+The checkpoint trained 24 CUDA models: small GRU and GRU+MoE encoders, four
+lower-head ranking weights, and seeds 101/211/307. The table reports medians
+over the three seeds and the closest strict validation policy for each
+ensemble. `CI lower` is the opponent-stratified whole-match cluster bootstrap
+lower bound in chips per decision opportunity.
+
+| Encoder | Lower rank weight | Match dir. balanced | Lower dir. balanced | Lower positive | Best overrides/clusters | CI lower | Result |
+|---|---:|---:|---:|---:|---:|---:|---|
+| GRU | 0.00 | 70.6% | 60.7% | 12.9% | 32 / 8 | -152.5 | reject |
+| GRU | 0.10 | 69.0% | 63.3% | 21.6% | 35 / 10 | -234.5 | reject |
+| GRU | 0.25 | 68.8% | 64.2% | 23.4% | 17 / 10 | -272.3 | reject |
+| GRU | 0.50 | 68.9% | 63.4% | 24.3% | 8 / 4 | +1.6 | reject: sparse, v98 uncovered |
+| GRU+MoE | 0.00 | 67.7% | 60.9% | 12.6% | 19 / 6 | 0.0 | reject: sparse clusters |
+| GRU+MoE | 0.10 | 72.1% | 61.3% | 20.7% | 31 / 9 | -157.8 | reject |
+| GRU+MoE | 0.25 | 69.6% | 62.5% | 22.5% | 16 / 7 | -149.6 | reject |
+| GRU+MoE | 0.50 | 69.4% | 62.8% | 23.7% | 12 / 6 | -150.9 | reject |
+
+All eight ensembles stayed far below the 5-second stdlib runtime budget; the
+measured three-member value-plus-response estimates were 68-74 ms. The sweep
+correctly exited nonzero with `no architecture satisfies the policy/runtime
+selection gates`. Its architecture summary SHA-256 was
+`452a6633f40ddf7a35c9ef9cc3e7b037bafd66ae9d29d621eb9e4079e814fc0c`.
+Held-out data was not opened and no bot version was created.
+
+The checkpoint changes the diagnosis without changing the acceptance result.
+At pass 10 every long-horizon policy produced zero conservative overrides. At
+pass 22 the lower-risk heads produce useful coverage, and GRU+MoE can find
+nonnegative overrides on both validation opponents, but too few independent
+match clusters support a strictly positive lower bound. The remaining blocker
+is cross-match and cross-opponent evidence, not GPU utilization or protocol
+integration. Lowering the cluster gates would recreate the sparse-evidence
+failure that invalidated v146.
+
 ## Next Evidence
 
-1. Run validation-only ranking-weight ablations on larger match-cluster counts.
+1. Repeat the validation-only lower-ranking check at a materially larger
+   match-cluster checkpoint; do not tune from held-out results.
 2. Repeat the full GRU, GRU+MoE, Deep Sets, and Transformer scaling grid after
    the 160-pass dataset is frozen.
 3. Use calibration only for output calibration and coverage diagnostics; keep
