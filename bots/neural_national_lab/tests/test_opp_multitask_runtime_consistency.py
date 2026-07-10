@@ -51,6 +51,32 @@ def test_response_samples_mask_unobservable_private_cards() -> None:
     assert all(response["state"][index] == 0.0 for index in trainer.PRIVATE_STATE_INDICES)
 
 
+def test_pairwise_ranking_loss_prefers_rule_relative_direction() -> None:
+    target = torch.tensor([
+        [float("nan"), 0.0, 500.0, -500.0, float("nan"), float("nan")]
+    ])
+    rule_ids = torch.tensor([1])
+    lower = torch.zeros(1, trainer.NUM_ACTIONS)
+    good_mean = torch.tensor([[0.0, 0.0, 0.5, -0.5, 0.0, 0.0]])
+    bad_mean = -good_mean
+    kwargs = {
+        "margin": 100.0,
+        "temperature": 0.1,
+        "positive_weight": torch.tensor(1.0),
+        "action_weights": torch.ones(trainer.NUM_ACTIONS),
+    }
+
+    good, count = trainer._pairwise_ranking_loss(
+        torch.cat([good_mean, lower], dim=1), target, rule_ids, **kwargs
+    )
+    bad, _ = trainer._pairwise_ranking_loss(
+        torch.cat([bad_mean, lower], dim=1), target, rule_ids, **kwargs
+    )
+
+    assert count == 2
+    assert good.item() < bad.item()
+
+
 @pytest.mark.parametrize(
     "encoder", ["gru", "gru_moe", "deep_set", "transformer"]
 )

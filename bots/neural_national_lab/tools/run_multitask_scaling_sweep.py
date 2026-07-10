@@ -92,6 +92,15 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _training_recipe(args: argparse.Namespace) -> dict[str, float]:
+    return {
+        "match_ranking_weight": float(args.match_ranking_weight),
+        "ranking_margin": float(args.ranking_margin),
+        "ranking_temperature": float(args.ranking_temperature),
+        "direction_score_weight": float(args.direction_score_weight),
+    }
+
+
 def _benchmark_runtime(path: Path, *, repeats: int) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     meta = payload.get("meta") or {}
@@ -141,6 +150,7 @@ def _model_matches(
     config: dict[str, Any],
     seed: int,
     data_paths: dict[str, Path],
+    args: argparse.Namespace,
 ) -> bool:
     if not path.exists():
         return False
@@ -161,6 +171,11 @@ def _model_matches(
         return False
     if int(training.get("seed", -1)) != seed:
         return False
+    if training.get("trainer_sha256") != _sha256(TRAINER):
+        return False
+    for key, expected in _training_recipe(args).items():
+        if float(training.get(key, float("nan"))) != expected:
+            return False
     if meta.get("response_encoder") != "separate_public_v1":
         return False
     if meta.get("format") != "opp_multitask_gru_v2":
@@ -185,7 +200,7 @@ def _run_training(
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     if args.resume and _model_matches(
-        output, config=config, seed=seed, data_paths=data_paths
+        output, config=config, seed=seed, data_paths=data_paths, args=args
     ):
         return json.loads(output.read_text(encoding="utf-8"))
     command = [
@@ -204,6 +219,10 @@ def _run_training(
         "--cross-sequence-encoder", config["cross_sequence_encoder"],
         "--cross-transformer-heads", str(config["cross_transformer_heads"]),
         "--cross-moe-experts", str(config["cross_moe_experts"]),
+        "--match-ranking-weight", str(args.match_ranking_weight),
+        "--ranking-margin", str(args.ranking_margin),
+        "--ranking-temperature", str(args.ranking_temperature),
+        "--direction-score-weight", str(args.direction_score_weight),
         "--head-hidden", str(config["head_hidden"]),
         "--epochs", str(args.epochs),
         "--patience", str(args.patience),
@@ -250,6 +269,10 @@ def main() -> int:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cross-transformer-heads", type=int, default=4)
     parser.add_argument("--cross-moe-experts", type=int, default=4)
+    parser.add_argument("--match-ranking-weight", type=float, default=0.5)
+    parser.add_argument("--ranking-margin", type=float, default=100.0)
+    parser.add_argument("--ranking-temperature", type=float, default=0.1)
+    parser.add_argument("--direction-score-weight", type=float, default=0.5)
     parser.add_argument("--runtime-benchmark-repeats", type=int, default=3)
     parser.add_argument("--max-stdlib-runtime-ms", type=float, default=5000.0)
     parser.add_argument("--min-value-train", type=int, default=500)
@@ -262,6 +285,10 @@ def main() -> int:
         raise SystemExit("runtime-benchmark-repeats must be positive")
     if args.max_stdlib_runtime_ms <= 0:
         raise SystemExit("max-stdlib-runtime-ms must be positive")
+    if args.match_ranking_weight < 0 or args.direction_score_weight < 0:
+        raise SystemExit("ranking and direction score weights must be non-negative")
+    if args.ranking_margin < 0 or args.ranking_temperature <= 0:
+        raise SystemExit("ranking margin must be non-negative and temperature positive")
 
     data_dir = args.data_dir.resolve()
     out_dir = args.out_dir.resolve()
@@ -372,6 +399,7 @@ def main() -> int:
             "selection_used_held_out": False,
             "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
             "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
+            "training_recipe": _training_recipe(args),
             "dataset_audit": str(out_dir / "dataset_audit.json"),
             "experiments": experiments,
             "config_summaries": config_summaries,
@@ -456,6 +484,7 @@ def main() -> int:
         "format": "opp_multitask_ensemble_v1",
         "selection_used_held_out": False,
         "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
+        "training_recipe": _training_recipe(args),
         "estimated_ensemble_stdlib_runtime_ms": final_ensemble_runtime_ms,
         "config": selected_config,
         "std_multiplier": 1.0,
@@ -477,6 +506,7 @@ def main() -> int:
         "selection_used_held_out": False,
         "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
         "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
+        "training_recipe": _training_recipe(args),
         "dataset_audit": str(out_dir / "dataset_audit.json"),
         "architecture_candidates": str(candidate_summary_path),
         "experiments": experiments,

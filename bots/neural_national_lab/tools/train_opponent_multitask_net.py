@@ -449,12 +449,16 @@ def _value_batch_tensors(samples: list[dict[str, Any]], device: str):
     }
 
 
-def _rule_action_tensor(samples: list[dict[str, Any]], device: str) -> torch.Tensor:
-    labels = torch.tensor(
+def _rule_ids_tensor(samples: list[dict[str, Any]], device: str) -> torch.Tensor:
+    return torch.tensor(
         [int(sample.get("rule_id", 1) or 0) for sample in samples],
         dtype=torch.long,
         device=device,
     ).clamp(min=0, max=NUM_ACTIONS - 1)
+
+
+def _rule_action_tensor(samples: list[dict[str, Any]], device: str) -> torch.Tensor:
+    labels = _rule_ids_tensor(samples, device)
     return F.one_hot(labels, num_classes=NUM_ACTIONS).float()
 
 
@@ -476,6 +480,72 @@ def _value_loss(
     quantile_loss = torch.maximum(quantile * error, (quantile - 1.0) * error).mean()
     order_penalty = F.relu(lower[valid] - mean[valid]).mean()
     return mean_loss + quantile_loss + 0.1 * order_penalty, int(valid.sum().item())
+
+
+def _ranking_statistics(
+    samples: list[dict[str, Any]], *, field: str, margin: float
+) -> dict[str, Any]:
+    action_counts = [0] * NUM_ACTIONS
+    positive = negative = 0
+    for sample in samples:
+        rule_id = int(sample.get("rule_id", -1) or 0)
+        target = sample["value_targets"][field]
+        for action, value in enumerate(target):
+            if action == rule_id or math.isnan(value) or abs(value) <= margin:
+                continue
+            action_counts[action] += 1
+            if value > 0:
+                positive += 1
+            else:
+                negative += 1
+    present = sum(count > 0 for count in action_counts)
+    total = sum(action_counts)
+    action_weights = [
+        math.sqrt(total / (present * count)) if count and present else 0.0
+        for count in action_counts
+    ]
+    positive_weight = negative / positive if positive else 1.0
+    return {
+        "field": field,
+        "margin": float(margin),
+        "samples": total,
+        "positive": positive,
+        "negative": negative,
+        "positive_weight": float(positive_weight),
+        "per_action_samples": action_counts,
+        "per_action_weights": action_weights,
+    }
+
+
+def _pairwise_ranking_loss(
+    output: torch.Tensor,
+    target: torch.Tensor,
+    rule_ids: torch.Tensor,
+    *,
+    margin: float,
+    temperature: float,
+    positive_weight: torch.Tensor,
+    action_weights: torch.Tensor,
+) -> tuple[torch.Tensor, int]:
+    mean = output[:, :NUM_ACTIONS]
+    valid = ~torch.isnan(target)
+    valid &= target.abs() > margin
+    action_ids = torch.arange(NUM_ACTIONS, device=target.device).unsqueeze(0)
+    valid &= action_ids != rule_ids.unsqueeze(1)
+    if not bool(valid.any()):
+        return output.sum() * 0.0, 0
+    rule_mean = mean.gather(1, rule_ids.unsqueeze(1))
+    logits = (mean - rule_mean) / max(1e-6, float(temperature))
+    labels = (target > 0).float()
+    raw = F.binary_cross_entropy_with_logits(
+        logits[valid],
+        labels[valid],
+        pos_weight=positive_weight,
+        reduction="none",
+    )
+    weights = action_weights.unsqueeze(0).expand_as(target)[valid]
+    loss = (raw * weights).sum() / weights.sum().clamp(min=1e-6)
+    return loss, int(valid.sum().item())
 
 
 def _chunks(order: list[int], batch_size: int) -> list[list[int]]:
@@ -514,6 +584,39 @@ def _assert_disjoint(split_rows: dict[str, list[dict[str, Any]]]) -> dict[str, l
     return {name: sorted(values) for name, values in split_opponents.items()}
 
 
+def _direction_report(counts: dict[str, Any]) -> dict[str, Any]:
+    class_accuracies = [
+        counts[f"{label}_correct"] / counts[label]
+        for label in ("positive", "negative")
+        if counts[label]
+    ]
+    return {
+        "direction_samples": counts["total"],
+        "direction_accuracy": (
+            counts["correct"] / counts["total"] if counts["total"] else None
+        ),
+        "direction_balanced_accuracy": (
+            float(np.mean(class_accuracies)) if class_accuracies else None
+        ),
+        "target_positive_rate": (
+            counts["positive"] / counts["total"] if counts["total"] else None
+        ),
+        "predicted_positive_rate": (
+            counts["predicted_positive"] / counts["total"]
+            if counts["total"] else None
+        ),
+        "direction_per_action": {
+            LABELS[action]: {
+                "samples": row["total"],
+                "accuracy": (
+                    row["correct"] / row["total"] if row["total"] else None
+                ),
+            }
+            for action, row in enumerate(counts["actions"])
+        },
+    }
+
+
 def _evaluate(
     model: OpponentAwareMultiTaskNet,
     value_samples: list[dict[str, Any]],
@@ -525,10 +628,27 @@ def _evaluate(
     device: str,
     lower_calibration: dict[str, Any] | None = None,
     response_temperature: float = 1.0,
+    ranking_margin: float = 100.0,
+    direction_score_weight: float = 0.5,
 ) -> dict[str, Any]:
     model.eval()
     abs_errors = {field: [] for field in VALUE_FIELDS}
     lower_coverage = {field: [] for field in VALUE_FIELDS}
+    direction_counts = {
+        field: {
+            "total": 0,
+            "correct": 0,
+            "positive": 0,
+            "negative": 0,
+            "positive_correct": 0,
+            "negative_correct": 0,
+            "predicted_positive": 0,
+            "actions": [
+                {"total": 0, "correct": 0} for _ in range(NUM_ACTIONS)
+            ],
+        }
+        for field in VALUE_FIELDS
+    }
     response_total = response_correct = 0
     class_total = [0] * len(OPPONENT_ACTION_LABELS)
     class_correct = [0] * len(OPPONENT_ACTION_LABELS)
@@ -574,6 +694,38 @@ def _evaluate(
                 lower = lower + offset_tensor
                 abs_errors[field].extend((mean[valid] - clipped[valid]).abs().cpu().tolist())
                 lower_coverage[field].extend((clipped[valid] <= lower[valid]).cpu().tolist())
+                rule_ids = _rule_ids_tensor(batch, device)
+                rule_mean = mean.gather(1, rule_ids.unsqueeze(1))
+                predicted_positive = (mean - rule_mean) > 0
+                target_positive = target > 0
+                direction_valid = valid & (target.abs() > ranking_margin)
+                correct = predicted_positive == target_positive
+                counts = direction_counts[field]
+                counts["total"] += int(direction_valid.sum().item())
+                counts["correct"] += int((correct & direction_valid).sum().item())
+                counts["positive"] += int(
+                    (target_positive & direction_valid).sum().item()
+                )
+                counts["negative"] += int(
+                    ((~target_positive) & direction_valid).sum().item()
+                )
+                counts["positive_correct"] += int(
+                    (correct & target_positive & direction_valid).sum().item()
+                )
+                counts["negative_correct"] += int(
+                    (correct & (~target_positive) & direction_valid).sum().item()
+                )
+                counts["predicted_positive"] += int(
+                    (predicted_positive & direction_valid).sum().item()
+                )
+                for action in range(NUM_ACTIONS):
+                    action_valid = direction_valid[:, action]
+                    counts["actions"][action]["total"] += int(
+                        action_valid.sum().item()
+                    )
+                    counts["actions"][action]["correct"] += int(
+                        (correct[:, action] & action_valid).sum().item()
+                    )
         for indices in _chunks(list(range(len(behavior_samples))), batch_size):
             batch = [behavior_samples[idx] for idx in indices]
             (
@@ -641,6 +793,7 @@ def _evaluate(
                 "samples": len(abs_errors[field]),
                 "lower_quantile_coverage": float(np.mean(lower_coverage[field]))
                 if lower_coverage[field] else None,
+                **_direction_report(direction_counts[field]),
             }
             for field in VALUE_FIELDS
         },
@@ -657,11 +810,17 @@ def _evaluate(
     tail_mae = result["value"]["tail_delta_vs_rule"]["mae"]
     match_mae = result["value"]["match_delta_vs_rule"]["mae"]
     balanced = result["response"]["balanced_accuracy"]
+    match_direction = result["value"]["match_delta_vs_rule"][
+        "direction_balanced_accuracy"
+    ]
     score = 0.0
     score += hand_mae / clips["delta_vs_rule"] if hand_mae is not None else 2.0
     score += 0.5 * tail_mae / clips["tail_delta_vs_rule"] if tail_mae is not None else 1.0
     score += 0.5 * match_mae / clips["match_delta_vs_rule"] if match_mae is not None else 1.0
     score += 1.0 - balanced if balanced is not None else 1.0
+    score += direction_score_weight * (
+        1.0 - match_direction if match_direction is not None else 1.0
+    )
     result["selection_score"] = float(score)
     return result
 
@@ -828,11 +987,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tail-clip", type=float, default=2000.0)
     parser.add_argument("--match-clip", type=float, default=2000.0)
     parser.add_argument("--lower-quantile", type=float, default=0.2)
+    parser.add_argument("--match-ranking-weight", type=float, default=0.5)
+    parser.add_argument("--ranking-margin", type=float, default=100.0)
+    parser.add_argument("--ranking-temperature", type=float, default=0.1)
+    parser.add_argument("--direction-score-weight", type=float, default=0.5)
     parser.add_argument("--min-calibration-per-action", type=int, default=20)
     parser.add_argument("--require-cross-hand-sequence", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args(argv)
+    if args.match_ranking_weight < 0 or args.direction_score_weight < 0:
+        raise SystemExit("ranking and direction score weights must be non-negative")
+    if args.ranking_margin < 0 or args.ranking_temperature <= 0:
+        raise SystemExit("ranking margin must be non-negative and temperature positive")
 
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(args.seed)
@@ -927,6 +1094,17 @@ def main(argv: list[str] | None = None) -> int:
         "tail_delta_vs_rule": 0.5,
         "match_delta_vs_rule": 0.5,
     }
+    ranking_stats = _ranking_statistics(
+        value["train"],
+        field="match_delta_vs_rule",
+        margin=args.ranking_margin,
+    )
+    ranking_positive_weight = torch.tensor(
+        ranking_stats["positive_weight"], dtype=torch.float32, device=device
+    )
+    ranking_action_weights = torch.tensor(
+        ranking_stats["per_action_weights"], dtype=torch.float32, device=device
+    )
     best_score = float("inf")
     best_epoch = 0
     best_state = None
@@ -938,6 +1116,7 @@ def main(argv: list[str] | None = None) -> int:
         f"behavior={len(behavior['train'])}/{len(behavior['val'])}/{len(behavior['calibration'])}/{len(behavior['held_out'])}",
         flush=True,
     )
+    print(f"[multitask] match_ranking={ranking_stats}", flush=True)
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -975,6 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
                     cross_lengths=cross_lengths,
                 ))
                 targets = _value_batch_tensors(batch, device)
+                rule_ids = _rule_ids_tensor(batch, device)
                 value_loss = torch.zeros((), device=device)
                 for field in VALUE_FIELDS:
                     field_loss, _ = _value_loss(
@@ -984,6 +1164,18 @@ def main(argv: list[str] | None = None) -> int:
                         quantile=args.lower_quantile,
                     )
                     value_loss = value_loss + field_weights[field] * field_loss
+                ranking_loss, _ = _pairwise_ranking_loss(
+                    outputs["match_delta_vs_rule"],
+                    targets["match_delta_vs_rule"],
+                    rule_ids,
+                    margin=args.ranking_margin,
+                    temperature=args.ranking_temperature,
+                    positive_weight=ranking_positive_weight,
+                    action_weights=ranking_action_weights,
+                )
+                value_loss = (
+                    value_loss + args.match_ranking_weight * ranking_loss
+                )
                 losses.append(value_loss)
             if behavior_batches:
                 indices = behavior_batches[step % len(behavior_batches)]
@@ -1042,6 +1234,8 @@ def main(argv: list[str] | None = None) -> int:
             max_hist=args.max_hist,
             batch_size=args.batch_size,
             device=device,
+            ranking_margin=args.ranking_margin,
+            direction_score_weight=args.direction_score_weight,
         )
         score = float(validation["selection_score"])
         improved = score < best_score
@@ -1060,6 +1254,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"[multitask] ep={epoch} loss={epoch_loss/max(1, steps):.5f} "
                 f"val_score={score:.5f} response_bal_acc="
                 f"{validation['response']['balanced_accuracy']}"
+                " match_dir_bal_acc="
+                f"{validation['value']['match_delta_vs_rule']['direction_balanced_accuracy']}"
                 f"{' *best' if improved else ''}",
                 flush=True,
             )
@@ -1072,6 +1268,8 @@ def main(argv: list[str] | None = None) -> int:
     validation = _evaluate(
         model, value["val"], behavior["val"], clips=clips,
         max_hist=args.max_hist, batch_size=args.batch_size, device=device,
+        ranking_margin=args.ranking_margin,
+        direction_score_weight=args.direction_score_weight,
     )
     lower_calibration = _calibrate_lower_bounds(
         model,
@@ -1110,12 +1308,16 @@ def main(argv: list[str] | None = None) -> int:
         device=device,
         lower_calibration=lower_calibration,
         response_temperature=response_calibration["temperature"],
+        ranking_margin=args.ranking_margin,
+        direction_score_weight=args.direction_score_weight,
     ) if value["calibration"] or behavior["calibration"] else None
     held_out = _evaluate(
         model, value["held_out"], behavior["held_out"], clips=clips,
         max_hist=args.max_hist, batch_size=args.batch_size, device=device,
         lower_calibration=lower_calibration,
         response_temperature=response_calibration["temperature"],
+        ranking_margin=args.ranking_margin,
+        direction_score_weight=args.direction_score_weight,
     ) if value["held_out"] or behavior["held_out"] else None
     manifests = {
         name: _manifest(path, raw[name]) for name, path in paths.items()
@@ -1163,6 +1365,14 @@ def main(argv: list[str] | None = None) -> int:
                 "learning_rate": args.lr,
                 "weight_decay": args.weight_decay,
                 "lower_quantile": args.lower_quantile,
+                "match_ranking_weight": args.match_ranking_weight,
+                "ranking_margin": args.ranking_margin,
+                "ranking_temperature": args.ranking_temperature,
+                "direction_score_weight": args.direction_score_weight,
+                "ranking_statistics": ranking_stats,
+                "trainer_sha256": hashlib.sha256(
+                    Path(__file__).read_bytes()
+                ).hexdigest(),
                 "required_cross_hand_sequence": bool(
                     args.require_cross_hand_sequence
                 ),

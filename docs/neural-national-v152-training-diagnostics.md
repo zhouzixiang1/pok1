@@ -1,0 +1,71 @@
+# v152 Training Diagnostics
+
+Date: 2026-07-10
+
+This report records early pipeline diagnostics from the still-running v152
+collection. It is not a strength report and must not be used to choose a formal
+bot from held-out results.
+
+## Pass-5 Snapshot
+
+The temporary four-way freeze used v121 and v135 for calibration, v98 and v142
+for validation, and v57 and v66 for held-out. After removing calibration from
+train, it contained 196 value rows and 846 opponent-response rows. Most
+opponents still had only one match cluster, so all measurements below are
+deliberately preliminary.
+
+The alternative value labels exposed a structural MAE problem:
+
+- hand delta: 36.8% exact zero, with observed extremes beyond +/-27000;
+- tail delta: 75.4% exact zero, with observed extremes beyond +/-36000;
+- match delta: 36.1% exact zero, with observed extremes beyond +/-38000;
+- match direction beyond a +/-100 dead zone: 87 positive and 131 negative
+  training alternatives.
+
+Smooth-L1 and clipped quantile losses bound the extremes, but an all-zero mean
+can still look competitive under MAE while being unusable for action selection.
+
+## Architecture Diagnostic
+
+An MAE-only 8-architecture, 3-seed CUDA sweep selected small Deep Sets. A
+separate stdlib replay over validation labels showed that its rule-relative
+match-direction balanced accuracy was only 51.5% median. The comparable
+pre-ranking medians were:
+
+| Encoder | Match direction balanced accuracy |
+|---|---:|
+| small GRU | 57.3% |
+| medium GRU+MoE | 57.9% |
+| small Deep Sets | 51.5% |
+| medium Deep Sets | 51.7% |
+
+This demonstrates that MAE and opponent-response accuracy alone are not a safe
+model-selection objective.
+
+## Pairwise Ranking Change
+
+The trainer now adds a rule-relative ranking loss on match-delta alternatives
+outside a +/-100 chip dead zone. Positive/negative examples and action classes
+are weighted from the training split only. No new deployment head is added: the
+existing match-value means supply the candidate-minus-rule logit.
+
+Validation now reports overall, balanced, positive-rate, and per-action
+direction metrics. The architecture selection score includes match-direction
+balanced accuracy. On the same pass-5 snapshot, the 4-architecture, 3-seed
+ranking sweep selected small GRU, whose validation match-direction balanced
+accuracy improved from 57.3% to 61.7% median. The improvement is useful pipeline
+evidence, but it is too early to freeze the ranking weight or architecture.
+
+Every exported model records the ranking recipe and trainer SHA-256. Resume
+rejects a model if either the recipe or trainer implementation changes, avoiding
+silent reuse of old MAE-only weights.
+
+## Next Evidence
+
+1. Run validation-only ranking-weight ablations on larger match-cluster counts.
+2. Repeat the full GRU, GRU+MoE, Deep Sets, and Transformer scaling grid after
+   the 160-pass dataset is frozen.
+3. Keep calibration and held-out out of architecture and recipe selection.
+4. Use offline clustered policy selection before creating an active TCP bot.
+5. Treat native paired classic-pool EV, not these supervised metrics, as the
+   eventual strength criterion.
