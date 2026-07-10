@@ -1,0 +1,35 @@
+{
+  "events_seen": 157,
+  "hands_started_min": 10,
+  "settlements_min": 9,
+  "seats": {
+    "A": {
+      "name": "Candidate",
+      "hands_started": 10,
+      "settlements": 9,
+      "max_response_sec": 0.301,
+      "pending_expected_action": true,
+      "expected_reason": "respond_to_check"
+    },
+    "B": {
+      "name": "Opponent",
+      "hands_started": 10,
+      "settlements": 9,
+      "max_response_sec": 0.301,
+      "pending_expected_action": false,
+      "expected_reason": ""
+    }
+  },
+  "issues": [],
+  "warnings": [],
+  "pending_expected_actions": [
+    {
+      "conn": "A",
+      "hand": 10,
+      "stage": "river",
+      "waited_sec": 0.19,
+      "expected_reason": "respond_to_check"
+    }
+  ],
+  "max_platform_silent_gap_sec": 3.815
+}

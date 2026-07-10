@@ -1053,6 +1053,9 @@ async def _run_tcp_server_with_processes(
     timeout_sec: float,
     deck_seed_base: int | None,
     bot_seed_base: int | None = None,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    capture_events: bool = False,
 ) -> dict[str, Any]:
     clients: list[_TCPClient] = []
     connected = asyncio.Event()
@@ -1085,10 +1088,16 @@ async def _run_tcp_server_with_processes(
     process_drain_timeout = max(1.0, min(5.0, float(timeout_sec) / 6.0))
     bot_seeds: dict[str, int | None] = {}
     try:
+        env_overrides = (bot_a_env_overrides or {}, bot_b_env_overrides or {})
         for idx, (spec, label) in enumerate(zip((bot_a, bot_b), run_labels)):
             env = os.environ.copy()
             env["POK_OFFICIAL_ACTION_DELAY"] = os.environ.get("POK_NATIVE_LOCAL_ACTION_DELAY", "0")
             env["PYTHONPATH"] = str(spec.path) + os.pathsep + env.get("PYTHONPATH", "")
+            for key, value in env_overrides[idx].items():
+                if value is None:
+                    env.pop(str(key), None)
+                else:
+                    env[str(key)] = str(value)
             seed = _native_bot_seed(bot_seed_base, idx)
             bot_seeds[label] = seed
             if seed is None:
@@ -1317,6 +1326,7 @@ async def _run_tcp_server_with_processes(
         "passed_compliance": not issues,
         "issues": issues,
         "events_tail": events[-20:],
+        **({"events": list(events)} if capture_events else {}),
     }
 
 
@@ -1330,6 +1340,9 @@ async def run_native_tcp_pair(
     deck_seed_base: int | None = None,
     bot_seed_base: int | None = None,
     timeout_sec: float | None = None,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    capture_events: bool = False,
 ) -> dict[str, Any]:
     """Run a formal native TCP match using both bots' existing entries.
 
@@ -1351,6 +1364,9 @@ async def run_native_tcp_pair(
         deck_seed_base=deck_seed_base,
         bot_seed_base=bot_seed_base,
         timeout_sec=timeout_sec,
+        bot_a_env_overrides=bot_a_env_overrides,
+        bot_b_env_overrides=bot_b_env_overrides,
+        capture_events=capture_events,
     )
 
 
@@ -1388,6 +1404,9 @@ async def _run_native_tcp_pair(
     deck_seed_base: int | None,
     bot_seed_base: int | None,
     timeout_sec: float | None,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    capture_events: bool = False,
 ) -> dict[str, Any]:
     label_a, dir_a = resolve_bot(bot_a_token)
     label_b, dir_b = resolve_bot(bot_b_token)
@@ -1417,6 +1436,9 @@ async def _run_native_tcp_pair(
             timeout_sec=float(timeout_sec),
             deck_seed_base=deck_seed_base,
             bot_seed_base=bot_seed_base,
+            bot_a_env_overrides=bot_a_env_overrides,
+            bot_b_env_overrides=bot_b_env_overrides,
+            capture_events=capture_events,
         )
     finally:
         _cleanup_specs(specs)

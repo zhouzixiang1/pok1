@@ -139,6 +139,12 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             "adapter_actions_opponent": result["per_player"][opponent_key]["adapter"]["actions_sent"],
             "candidate_native": result["per_player"][candidate_key]["native"],
             "opponent_native": result["per_player"][opponent_key]["native"],
+            "candidate_runtime_telemetry": result["per_player"][candidate_key].get(
+                "runtime_telemetry", {}
+            ),
+            "opponent_runtime_telemetry": result["per_player"][opponent_key].get(
+                "runtime_telemetry", {}
+            ),
         }
 
     async def one(opponent_idx: int, opponent: Path, match_idx: int, deck_seed: int | None) -> dict[str, Any]:
