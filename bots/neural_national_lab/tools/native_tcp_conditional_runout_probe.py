@@ -294,6 +294,7 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
         "format": "native_tcp_conditional_runout_v1",
         "execution_mode": "native_tcp",
         "adapter_used": False,
+        "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "source": {
             "path": str(args.source.resolve()),
             "sha256": hashlib.sha256(args.source.read_bytes()).hexdigest(),
