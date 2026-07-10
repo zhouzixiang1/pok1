@@ -99,6 +99,36 @@ def test_game_engine_deck_factory_makes_in_process_eval_reproducible():
     assert asyncio.run(run_once()) == asyncio.run(run_once())
 
 
+def test_game_engine_action_event_records_server_wait_and_timeout_budget():
+    async def run():
+        events = []
+
+        async def send(_player_idx, _msg):
+            return None
+
+        async def broadcast(event):
+            events.append(event)
+
+        engine = GameEngine(send_func=send, broadcast_func=broadcast)
+        engine.players[0].name = "A"
+        engine.players[1].name = "B"
+        engine.hand_num = 1
+
+        async def recv_action(_player_idx):
+            await asyncio.sleep(0)
+            return "fold"
+
+        engine._recv_action = recv_action
+        await engine._run_hand(1)
+        return next(event for event in events if event.get("type") == "action")
+
+    event = asyncio.run(run())
+
+    assert event["action"] == "fold"
+    assert event["decision_wait_sec"] >= 0.0
+    assert event["timeout_budget_sec"] == 60.0
+
+
 def test_allin_runout_records_public_cards_in_thp():
     async def run():
         sent = []

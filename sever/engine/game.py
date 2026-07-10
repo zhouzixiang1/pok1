@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 import logging
+import time
 from dataclasses import dataclass, field
 from engine.deck import Deck, Card, cards_to_str
 from engine.evaluator import best_hand, compare_hands, hand_name
@@ -268,8 +269,15 @@ class GameEngine:
                 "player_action_count": action_counts[current_idx],
             }
 
-            # 接收玩家行为
+            # 接收玩家行为，并记录平台实际等待时长。这个事实源用于
+            # 区分 bot 决策慢、TCP 通信慢、官方 throttle 和真实超时。
+            decision_wait_started = time.perf_counter()
             raw = await self._recv_action(current_idx)
+            decision_wait_sec = max(0.0, time.perf_counter() - decision_wait_started)
+            decision_timing = {
+                "decision_wait_sec": round(decision_wait_sec, 6),
+                "timeout_budget_sec": float(getattr(self, "action_timeout_sec", 60.0)),
+            }
 
             if raw is None:
                 # 超时 → fold
@@ -281,6 +289,7 @@ class GameEngine:
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "timeout",
                     "stage": stage, "hand": self.hand_num,
+                    **decision_timing,
                 })
                 return BettingResult(folded=True, winner_idx=waiting_idx,
                                       pot=pot, community=community)
@@ -302,6 +311,7 @@ class GameEngine:
                 await self._emit("action", {
                     "player_idx": current_idx, "action": f"illegal:{raw}",
                     "reason": reason, "stage": stage, "hand": self.hand_num,
+                    **decision_timing,
                 })
                 return BettingResult(folded=True, winner_idx=waiting_idx,
                                       pot=pot, community=community)
@@ -318,6 +328,7 @@ class GameEngine:
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "fold",
                     "stage": stage, "hand": self.hand_num,
+                    **decision_timing,
                 })
                 return BettingResult(folded=True, winner_idx=waiting_idx,
                                       pot=pot, community=community)
@@ -337,6 +348,7 @@ class GameEngine:
                     "player_idx": current_idx, "action": "call",
                     "amount": actual, "stage": stage, "hand": self.hand_num,
                     "pot": pot,
+                    **decision_timing,
                 })
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} "
                             f"calls ({actual}), chips={current.chips}")
@@ -366,6 +378,7 @@ class GameEngine:
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "check",
                     "stage": stage, "hand": self.hand_num,
+                    **decision_timing,
                 })
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} checks")
 
@@ -392,6 +405,7 @@ class GameEngine:
                     "player_idx": current_idx, "action": "raise",
                     "amount": amount, "needed": needed,
                     "stage": stage, "hand": self.hand_num, "pot": pot,
+                    **decision_timing,
                 })
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} "
                             f"raises to {amount} (puts in {needed}), chips={current.chips}")
@@ -413,6 +427,7 @@ class GameEngine:
                     "player_idx": current_idx, "action": "allin",
                     "amount": all_in_amount,
                     "stage": stage, "hand": self.hand_num, "pot": pot,
+                    **decision_timing,
                 })
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} "
                             f"all-in ({all_in_amount})")
