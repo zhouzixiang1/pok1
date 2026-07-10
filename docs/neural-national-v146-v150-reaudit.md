@@ -90,8 +90,12 @@ The first six-opponent large-data pass emitted 48 value and 359 behavior rows
 in 531 seconds. A resumed second pass correctly skipped eight already-written
 rows and added 40 value plus 300 behavior rows in 383 seconds.
 
-The active dataset is
-`bots/neural_national_lab/data/oppmodel/matchscope_v150_large/`. Its fixed
+The initial long dataset under `matchscope_v150_large/` was stopped after an
+action-coverage audit found that fixed-order truncation never probed
+`raise_2pot` or `allin` as alternatives. It remains diagnostic evidence only.
+The active balanced dataset is
+`bots/neural_national_lab/data/oppmodel/matchscope_v151_balanced/`. It rotates
+two alternatives deterministically across every non-rule action class. Its fixed
 partitions are:
 
 - train includes the live pool and the v141 nemesis;
@@ -107,6 +111,20 @@ cross-hand opponent encoder with:
 - lower-quantile heads used for risk-aware decisions;
 - opponent fold/check/call/raise/allin prediction;
 - opponent raise-size prediction.
+
+The corrected training/runtime contract additionally:
+
+- conditions every relative-value prediction on the rule action one-hot;
+- masks private-card state features from OpponentActionNet;
+- uses a separate public-state response MLP to avoid value-task interference;
+- restores the best validation checkpoint and exports complete data hashes;
+- reserves v98 for architecture/policy selection and v142 for lower-quantile
+  plus response-probability calibration;
+- uses v57/v66 only after selection and calibration are frozen;
+- supports a multi-seed ensemble whose LCB combines calibrated member lower
+  bounds with `mean - standard_deviation`;
+- freezes runtime policy weights/margins from an offline bootstrap search and
+  emits no-response and mean-only ablations.
 
 The pure-Python runtime matches Torch output in tests. A preliminary 32-value
 row / 240-behavior row smoke compared 57k, 200k, and 742k parameter models over

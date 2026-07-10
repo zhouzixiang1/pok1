@@ -57,7 +57,13 @@ def _percentile(values: list[float], fraction: float) -> float | None:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
-def audit(data_dir: Path, *, min_value_rows: int, min_behavior_rows: int) -> dict[str, Any]:
+def audit(
+    data_dir: Path,
+    *,
+    min_value_rows: int,
+    min_behavior_rows: int,
+    required_alternative_labels: set[str] | None = None,
+) -> dict[str, Any]:
     errors: list[str] = []
     value_rows = {
         split: _read(data_dir / f"cf_{split}.jsonl") for split in SPLITS
@@ -93,6 +99,7 @@ def audit(data_dir: Path, *, min_value_rows: int, min_behavior_rows: int) -> dic
     seen_value_keys = set()
     distributions = {field: [] for field in VALUE_FIELDS}
     valid_probes = invalid_probes = 0
+    alternative_classes = Counter()
     for split, rows in value_rows.items():
         for row in rows:
             location = f"cf_{split}.jsonl:{row['__line__']}"
@@ -133,6 +140,7 @@ def audit(data_dir: Path, *, min_value_rows: int, min_behavior_rows: int) -> dic
                     invalid_probes += 1
                     continue
                 valid_probes += 1
+                alternative_classes[str(probe.get("forced_label", ""))] += 1
                 if probe.get("force_confirmed") is not True:
                     errors.append(f"{location}: valid probe lacks force confirmation")
                 if int(probe.get("illegal_actions", 0) or 0) != 0:
@@ -145,6 +153,9 @@ def audit(data_dir: Path, *, min_value_rows: int, min_behavior_rows: int) -> dic
                 if all(_finite(value) for value in (hand_delta, tail_delta, match_delta)):
                     if abs(float(hand_delta) + float(tail_delta) - float(match_delta)) > 1e-6:
                         errors.append(f"{location}: probe hand + tail != match")
+    for label in sorted(required_alternative_labels or set()):
+        if alternative_classes[label] <= 0:
+            errors.append(f"required alternative label has no valid probes: {label}")
 
     seen_behavior_keys = set()
     behavior_classes = Counter()
@@ -188,6 +199,7 @@ def audit(data_dir: Path, *, min_value_rows: int, min_behavior_rows: int) -> dic
         "opponents": {split: sorted(values) for split, values in opponents.items()},
         "valid_probes": valid_probes,
         "invalid_probes_excluded_by_masks": invalid_probes,
+        "alternative_classes": dict(sorted(alternative_classes.items())),
         "behavior_classes": dict(sorted(behavior_classes.items())),
         "targets": {
             field: {
@@ -210,11 +222,13 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--min-value-rows", type=int, default=1)
     parser.add_argument("--min-behavior-rows", type=int, default=1)
+    parser.add_argument("--require-alternative-label", action="append", default=[])
     args = parser.parse_args()
     report = audit(
         args.data_dir.resolve(),
         min_value_rows=args.min_value_rows,
         min_behavior_rows=args.min_behavior_rows,
+        required_alternative_labels=set(args.require_alternative_label),
     )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
