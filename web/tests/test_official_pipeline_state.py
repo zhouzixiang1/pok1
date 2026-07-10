@@ -1,4 +1,8 @@
-from pipeline_state import route_policy, validate_stage_transition
+from pipeline_state import STAGE_GATE_ALLOWLIST, route_policy, validate_stage_transition
+
+
+def test_verified_stage_retains_content_bound_official_gate():
+    assert "official_full" in STAGE_GATE_ALLOWLIST["verified"]
 
 
 def test_official_failed_routes_to_worker_repair():

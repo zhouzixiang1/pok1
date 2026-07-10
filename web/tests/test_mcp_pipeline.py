@@ -38,6 +38,7 @@ class TestPrepareNextGen:
         monkeypatch.setattr(tool_gates, "find_current_v", lambda: 99)
         # git_has_tag is checked by prepare_next_gen to verify source bot commit
         monkeypatch.setattr(evolution_infra, "git_has_tag", lambda v: True)
+        monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: ["national_v99"])
 
         resp = client.post("/api/control/tool/prepare_next_gen",
                            json={"args": {"source_v": 99, "next_v": 100}})
@@ -77,6 +78,7 @@ class TestPrepareNextGen:
         monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 254)
         monkeypatch.setattr(tool_gates, "find_current_v", lambda: 254)
         monkeypatch.setattr(evolution_infra, "git_has_tag", lambda v: True)
+        monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: ["national_v254"])
 
         assert evolution_infra.write_pipeline_checkpoint(next_v=265, source_v=254, stage="selected")
 
@@ -92,6 +94,33 @@ class TestPrepareNextGen:
         assert result["source_v"] == 254
         assert (fake_bots / "national_v265").exists()
         assert not (fake_bots / "national_v255").exists()
+
+    def test_rejects_source_outside_active_eligible_pool(self, client, tmp_path, monkeypatch):
+        import evolution_infra
+        import tool_gates
+
+        fake_bots = tmp_path / "bots"
+        fake_bots.mkdir()
+        src = fake_bots / "national_v99"
+        src.mkdir()
+        (src / "main.py").write_text("x = 1\n")
+        (src / ".completed").touch()
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", fake_bots)
+        monkeypatch.setattr(evolution_infra, "GRAVEYARD_DIR", fake_bots / "graveyard")
+        monkeypatch.setattr(tool_gates, "get_bot_dir", evolution_infra.get_bot_dir)
+        monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 99)
+        monkeypatch.setattr(tool_gates, "find_current_v", lambda: 99)
+        monkeypatch.setattr(evolution_infra, "git_has_tag", lambda v: True)
+        monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: [])
+
+        response = client.post(
+            "/api/control/tool/prepare_next_gen",
+            json={"args": {"source_v": 99, "next_v": 100}},
+        )
+
+        result = json.loads(response.json()["result"])
+        assert "not eligible for the active national pool" in result["error"]
+        assert not (fake_bots / "national_v100").exists()
 
     def test_prepare_refuses_active_crossover_checkpoint(self, client, tmp_path, monkeypatch):
         import evolution_infra

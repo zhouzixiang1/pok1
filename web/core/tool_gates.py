@@ -1565,6 +1565,15 @@ async def prepare_next_gen(args):
     from evolution_infra import copy_bot_tree_for_candidate, git_has_tag, git_dir_is_committed
     if not git_has_tag(source_v):
         return _json_tool_result({"error": f"Source bot v{source_v} has .completed but no git tag '{bot_tag(source_v)}'. Cannot evolve from uncommitted code. Try a different source version."})
+    from evolution_infra import get_active_bots
+
+    if bot_name(source_v) not in set(get_active_bots()):
+        return _json_tool_result({
+            "error": (
+                f"Source bot v{source_v} is not eligible for the active national pool "
+                "(reaped, protocol-invalid, uncertified, or grandfather grant expired)."
+            )
+        })
 
     # Guard: refuse to overwrite a completed bot
     if next_dir.exists() and (next_dir / ".completed").exists():

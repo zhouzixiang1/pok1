@@ -56,6 +56,7 @@ CRITICAL_LEGACY_ADAPTER_EXACT = frozenset({
 CRITICAL_EVALUATION_GATE_EXACT = frozenset({
     # Gate and precommit logic whose output defines whether a bot is publishable.
     "web/core/battle_scheduler.py",
+    "web/core/bot_artifact.py",
     "web/core/candidate_hygiene.py",
     "web/core/code_verification.py",
     "web/core/decision_tester.py",
@@ -63,14 +64,21 @@ CRITICAL_EVALUATION_GATE_EXACT = frozenset({
     "web/core/eval_stats.py",
     "web/core/fix_verification.py",
     "web/core/national_native.py",
+    "web/core/national_epoch_registry.py",
     "web/core/official_certification.py",
+    "web/core/official_eligibility.py",
+    "web/core/official_evidence.py",
+    "web/core/official_grandfathering.json",
+    "web/core/official_llm_analysis.py",
     "web/core/official_platform_harness.py",
+    "web/core/official_wire_probe.py",
     "web/core/protected_contracts.py",
     "web/core/smoke_tester.py",
     "web/core/tool_commit.py",
     "web/core/tool_eval.py",
     "web/core/tool_gates.py",
     "web/core/worker_boundary.py",
+    "web/core/prompts/official_platform_analysis.md",
 })
 
 CRITICAL_GENERATION_EXACT = frozenset({

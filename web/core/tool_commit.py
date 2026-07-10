@@ -388,13 +388,46 @@ def _record_official_full_gate_checkpoint(v: int, source_v: int, ckpt: dict | No
     return stage
 
 
+def _record_official_full_pass_checkpoint(
+    v: int,
+    source_v: int,
+    ckpt: dict | None,
+    official_full_gate: dict,
+) -> bool:
+    """Persist the exact content-bound certificate before any Git mutation."""
+    gate_payload = {
+        **official_full_gate,
+        "passed": True,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    return bool(write_pipeline_checkpoint(
+        v,
+        source_v,
+        "verified",
+        master_plan=(ckpt or {}).get("master_plan"),
+        gate_results={"official_full": gate_payload},
+        worker_failure_count=(ckpt or {}).get("worker_failure_count", 0),
+        parent2_v=(ckpt or {}).get("parent2_v"),
+        direction_audit=(ckpt or {}).get("direction_audit"),
+        audit_context=(ckpt or {}).get("audit_context", {}) or {},
+        audit_attempt=(ckpt or {}).get("audit_attempt", 0),
+        precommit_attempt=(ckpt or {}).get("precommit_attempt", 0),
+        precommit_rework_count=(ckpt or {}).get("precommit_rework_count", 0),
+        literature_probe=(ckpt or {}).get("literature_probe"),
+        prepare_scope_files=(ckpt or {}).get("prepare_scope_files", []) or [],
+    ))
+
+
 async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, gate_results) -> dict:
     execution_mode = _checkpoint_execution_mode(ckpt, gate_results)
     if execution_mode != "native_tcp":
         return {
-            "passed": True,
-            "skipped": True,
-            "reason": "non_native_tcp_workflow",
+            "passed": False,
+            "error": (
+                "OFFICIAL FULL CERTIFICATION BLOCKED: only national_native/native_tcp "
+                "candidates may enter the national-bot completion namespace."
+            ),
+            "reason": "formal_submission_requires_native_tcp",
             "national_execution_mode": execution_mode,
         }
 
@@ -402,17 +435,15 @@ async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, g
         build_spec,
         official_compliance_verdict,
         official_full_certified,
-        record_grandfathered,
         run_certification,
         select_official_opponent,
     )
 
-    allow_bootstrap = _truthy_env("POK_OFFICIAL_BOOTSTRAP_GRANDFATHER", "1")
     opponent_selection = select_official_opponent(
         bot_dir,
         get_active_bots(),
         preferred=_official_preferred_opponent(),
-        allow_bootstrap_grandfather=allow_bootstrap,
+        allow_bootstrap_grandfather=False,
     )
     if not opponent_selection.get("selected"):
         return {
@@ -425,12 +456,6 @@ async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, g
 
     opponent = opponent_selection["opponent"]
     opponent_path = opponent["path"]
-    if opponent.get("reason") == "bootstrap_grandfathered" and _truthy_env("POK_OFFICIAL_RECORD_BOOTSTRAP_GRANDFATHER", "1"):
-        opponent["grandfather_record"] = record_grandfathered(
-            opponent_path,
-            reason=f"bootstrap official opponent for commit_bot v{v}",
-            source="commit_bot_bootstrap_opponent",
-        )
 
     spec = build_spec("full", bot_dir, opponent=opponent_path)
     status = await asyncio.to_thread(
@@ -440,7 +465,7 @@ async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, g
         queue_on_busy=False,
     )
     verdict = official_compliance_verdict(status)
-    passed = official_full_certified(status)
+    passed = official_full_certified(status, bot_dir)
     return {
         "passed": passed,
         "version": v,
@@ -451,6 +476,9 @@ async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, g
         "opponent_selection": opponent_selection,
         "official_evidence_path": status.get("official_evidence_path"),
         "official_evidence_summary": status.get("official_evidence_summary"),
+        "certificate_digest": status.get("certificate_digest"),
+        "certificate_path": status.get("certificate_path"),
+        "certification_identity": status.get("certification_identity"),
         "issues": status.get("issues") or [],
     }
 
@@ -528,8 +556,19 @@ async def commit_bot(args):
             "checkpoint_stage": official_stage,
             "official_full_gate": official_full_gate,
         })
-    if not official_full_gate.get("skipped"):
-        official_certification_status = official_full_gate.get("status") or {}
+    official_certification_status = official_full_gate.get("status") or {}
+    if not _record_official_full_pass_checkpoint(
+        v,
+        source_v,
+        ckpt,
+        official_full_gate,
+    ):
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: failed to persist official full certificate in checkpoint ledger.",
+            "version": v,
+            "source_v": source_v,
+        })
+    ckpt = read_pipeline_checkpoint() or ckpt
 
     # fix-6: novelty gate — warn (advisory) if new bot doesn't add behavioral
     # diversity. This is advisory-only: it does NOT block the commit, because
@@ -580,8 +619,35 @@ async def commit_bot(args):
     wr_str = f" h2h_avg_wr={h2h_wr:.2%}" if h2h_wr is not None else ""
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}{wr_str}" if p else ""
 
+    official_certificate = None
+    if official_certification_status:
+        from official_certification import official_full_certified
+
+        if not official_full_certified(
+            official_certification_status,
+            bot_dir,
+        ):
+            return _json_tool_result({
+                "error": "COMMIT BLOCKED: candidate or official certificate changed before Git commit.",
+                "version": v,
+                "source_v": source_v,
+            })
+        identity = official_certification_status.get("certification_identity") or {}
+        official_certificate = {
+            "certificate_digest": official_certification_status.get("certificate_digest"),
+            "candidate_hash": identity.get("candidate_hash"),
+            "policy_id": official_certification_status.get("policy_id"),
+        }
+
     parent2_v = ckpt.get("parent2_v") if ckpt else None
-    push_ok = git_commit_bot(v, source_v, strategy, rating_info=rating_info, parent2_v=parent2_v)
+    push_ok = git_commit_bot(
+        v,
+        source_v,
+        strategy,
+        rating_info=rating_info,
+        parent2_v=parent2_v,
+        official_certificate=official_certificate,
+    )
 
     # Verify tag was created
     if not git_has_tag(v):
@@ -709,7 +775,7 @@ async def commit_bot(args):
         pass  # non-blocking enrichment
 
     result = {"committed": True, "version": v, "source_v": source_v, "push_ok": push_ok}
-    if official_full_gate and not official_full_gate.get("skipped"):
+    if official_full_gate:
         result["official_full_gate"] = {
             "status": official_certification_status.get("status"),
             "mode": official_certification_status.get("mode"),
@@ -1146,6 +1212,22 @@ async def run_crossover(args):
         return _json_tool_result({"error": f"Parent A v{parent_a} has no git tag '{bot_tag(parent_a)}'. Cannot use uncommitted code."})
     if not git_has_tag(parent_b):
         return _json_tool_result({"error": f"Parent B v{parent_b} has no git tag '{bot_tag(parent_b)}'. Cannot use uncommitted code."})
+    active_parent_set = set(get_active_bots())
+    ineligible_parents = [
+        bot_name(version)
+        for version in (parent_a, parent_b)
+        if bot_name(version) not in active_parent_set
+    ]
+    if ineligible_parents:
+        return _json_tool_result({
+            "error": "CROSSOVER_PARENT_NOT_ACTIVE_ELIGIBLE",
+            "success": False,
+            "ineligible_parents": ineligible_parents,
+            "directive": (
+                "Select parents from get_active_bots(); direct tagged/reaped or "
+                "uncertified historical paths cannot bypass role eligibility."
+            ),
+        })
     try:
         from national_position_contract import detect_position_semantics_errors
         parent_a_position_errors = detect_position_semantics_errors(parent_a_dir)

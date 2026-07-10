@@ -115,6 +115,9 @@ def test_E2_oscillation_forces_crossover_when_leader_outside_set(monkeypatch):
 
     monkeypatch.setattr(gs, "_read_source_v_history",
                         lambda: [30, 31, 32, 30, 31, 32, 30, 31])
+    monkeypatch.setattr(gs, "_active_source_versions", lambda: {30, 31, 32, 40})
+    monkeypatch.setattr(gs, "_get_unified_leader_v", lambda _ratings: 40)
+    monkeypatch.setattr(gs, "_pick_oscillation_breakout_source", lambda *_args: None)
     ratings = {
         "national_v30": _FakeRating(1300.0),
         "national_v31": _FakeRating(1400.0),

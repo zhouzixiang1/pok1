@@ -115,6 +115,8 @@ class TestP1TimeBasedRefresh:
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
+        monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
 
         result = get_active_bots()
         assert "national_v99" in result
@@ -136,6 +138,8 @@ class TestP1TimeBasedRefresh:
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
+        monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
 
         result = get_active_bots()
         assert "national_v99" not in result
@@ -198,6 +202,8 @@ class TestP1TimeBasedRefresh:
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
+        monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
 
         result = get_active_bots()
         assert result == ["national_v99"]
@@ -223,6 +229,8 @@ class TestP1TimeBasedRefresh:
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
         monkeypatch.setattr(evolution_infra, "is_active_bot_protocol_eligible", _eligible)
+        monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
+        monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
 
         result = get_active_bots()
 
@@ -280,6 +288,14 @@ class TestP1TimeBasedRefresh:
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(evolution_infra, "REAPED_BOTS_FILE", results_dir / "reaped_bots.jsonl")
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v1\nnational-bot-v2\n")
+        monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
+        reaped_versions = set()
+        monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set(reaped_versions))
+        monkeypatch.setattr(
+            tbm,
+            "record_reaped_bot",
+            lambda name, **_kwargs: reaped_versions.add(int(name.split("_v", 1)[1])) or {"bot": name},
+        )
         monkeypatch.setattr(tbm, "PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(tbm, "REPLAY_DIR", replay_dir)

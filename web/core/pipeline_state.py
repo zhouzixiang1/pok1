@@ -44,7 +44,7 @@ STAGE_GATE_ALLOWLIST = {
     "precommit_failed": {"quality", "review", "critic", "precommit_eval"},
     "repair_planned": {"quality", "review", "critic", "precommit_eval"},
     "rework_running": {"quality", "review", "critic", "precommit_eval"},
-    "verified": {"quality", "review", "critic", "precommit_eval"},
+    "verified": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "official_failed": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "official_inconclusive": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "archived": {"quality", "review", "critic", "precommit_eval", "official_full"},

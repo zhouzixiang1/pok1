@@ -44,9 +44,18 @@ class TestListBots:
             assert "status" in bot["official_certification"]
 
     @pytest.mark.requires_active_bot
-    def test_data_stream_bot_snapshot_uses_active_namespace(self):
+    def test_data_stream_bot_snapshot_uses_active_namespace(self, monkeypatch):
+        import evolution_infra
         from server.routes.data_stream import _get_bots
 
+        # The global isolation fixture exposes read-only bots through symlinks.
+        # Formal artifact identity correctly rejects symlink roots, but this
+        # route test only verifies namespace projection, not certification.
+        monkeypatch.setattr(
+            evolution_infra,
+            "_official_parent_eligible",
+            lambda _bot_dir: True,
+        )
         data = _get_bots()
         assert data["active"]
         assert all(bot["name"].startswith(ACTIVE_BOT_PREFIX) for bot in data["active"])

@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import elo_daemon
+import national_native
 import tool_eval
 from national_eval import run_national_precommit
 from workflow_profiles import get_workflow_profile
@@ -181,6 +182,40 @@ def test_daemon_defaults_to_native_national_rating_backend(monkeypatch):
     assert result == ("A", "B", 1, 0, 0, 1, None, [100])
     assert calls["national"][4]["protocol"] == "national"
     assert calls["national"][4]["national_execution_mode"] == "native_tcp"
+
+
+def test_daemon_native_rating_requires_existing_native_entries_for_both_players(monkeypatch):
+    calls = []
+
+    async def fake_native_pair(bot_a, bot_b, hands, **kwargs):
+        calls.append((bot_a, bot_b, hands, kwargs))
+        return {
+            "net_chips_a": 100,
+            "passed_compliance": True,
+            "issues": [],
+            "wrapper_used": False,
+        }
+
+    monkeypatch.setattr(national_native, "run_native_tcp_pair", fake_native_pair)
+    monkeypatch.setattr(elo_daemon, "save_match_replay", lambda *_args: None)
+
+    result = elo_daemon._run_national_rating_match(
+        "A",
+        "B",
+        "/bots/A/main.py",
+        "/bots/B/main.py",
+        {
+            "national_hands": 70,
+            "national_matches": 1,
+            "national_execution_mode": "native_tcp",
+            "strict": True,
+        },
+    )
+
+    assert result == ("A", "B", 1, 0, 0, 1, None, [100])
+    assert len(calls) == 1
+    assert calls[0][3]["require_native_a"] is True
+    assert calls[0][3]["require_native_b"] is True
 
 
 def test_daemon_national_rating_maps_net_chips(monkeypatch):

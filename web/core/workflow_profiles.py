@@ -15,7 +15,10 @@ _PROFILES = {
     ),
     "national_primary": WorkflowProfile(
         profile_id="national_primary",
-        description="Make national 70-hand matches the primary evolution and rating protocol.",
+        description=(
+            "Legacy adapter-backed national regression profile. It cannot produce "
+            "or commit formal national-bot versions."
+        ),
         evaluation_protocol="national",
         rating_protocol="national",
         national_execution_mode="adapter",

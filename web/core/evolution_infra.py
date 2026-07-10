@@ -833,38 +833,58 @@ def _bot_version_from_name(bot_name):
 
 
 def load_reaped_bot_versions():
-    """Return versions intentionally removed from the active pool."""
-    versions = set()
-    try:
-        with locked_file(REAPED_BOTS_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                version = entry.get("version")
-                if version is None:
-                    version = _bot_version_from_name(entry.get("bot"))
-                try:
-                    versions.add(int(version))
-                except (TypeError, ValueError):
-                    continue
-    except (FileNotFoundError, OSError):
-        pass
-    return versions
+    """Return durable reaped versions, raising when lifecycle state is unavailable."""
+    from national_epoch_registry import load_registry_state
+
+    state = load_registry_state(
+        PROJECT_ROOT,
+        legacy_ledger=REAPED_BOTS_FILE,
+        include_history=False,
+    )
+    return set(state.require_reaped_versions())
 
 
 def record_reaped_bot(bot_name, *, reason="", data=None):
-    """Persist active-pool deactivation without changing tracked bot source."""
+    """Durably tombstone a bot before recording the advisory runtime ledger."""
     version = _bot_version_from_name(bot_name)
+    if version is None:
+        raise ValueError(f"invalid national bot label: {bot_name}")
+    push_enabled = evolution_git_push_enabled()
+    push_required = evolution_git_push_required()
+    if push_required and not push_enabled:
+        raise RuntimeError(
+            "durable reaping requires EVOLUTION_GIT_PUSH=1 in the evolution runtime"
+        )
+    from national_epoch_registry import create_reaped_tombstone
+
+    mutation = create_reaped_tombstone(
+        version,
+        repo_root=PROJECT_ROOT,
+        legacy_ledger=REAPED_BOTS_FILE,
+    )
+    tombstone_tag = f"national-reaped-v{version}"
+    pushed = False
+    if push_enabled or push_required:
+        pushed = git_push_refs(tombstone_tag)
+        if push_required and not pushed:
+            raise RuntimeError(f"failed to publish durable reaped tombstone {tombstone_tag}")
+    try:
+        from official_eligibility import clear_registry_state_cache
+
+        clear_registry_state_cache()
+    except Exception:
+        pass
     entry = {
         "ts": time.time(),
         "bot": bot_name,
         "version": version,
         "reason": reason,
         "data": data or {},
+        "registry": {
+            "tombstone_tag": tombstone_tag,
+            "created_tags": list(mutation.created_tags),
+            "pushed": pushed,
+        },
     }
     os.makedirs(RESULTS_DIR, exist_ok=True)
     append_locked_jsonl(REAPED_BOTS_FILE, entry)
@@ -883,7 +903,11 @@ def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versio
     if tag_versions is None:
         tag_versions = _tagged_bot_versions()
     if reaped_versions is None:
-        reaped_versions = load_reaped_bot_versions()
+        try:
+            reaped_versions = load_reaped_bot_versions()
+        except Exception as exc:
+            log.error("National reaped registry unavailable; refusing sentinel restore: %s", exc)
+            return []
     if not tag_versions or not BOTS_DIR.exists():
         return []
 
@@ -1022,7 +1046,22 @@ def get_active_bots():
     protocol eligibility.
     """
     tag_versions = _tagged_bot_versions()
-    reaped_versions = load_reaped_bot_versions()
+    try:
+        reaped_versions = load_reaped_bot_versions()
+    except Exception as exc:
+        log.error("National reaped registry unavailable; active pool fails closed: %s", exc)
+        try:
+            from system_log import log_system_event
+
+            log_system_event(
+                "pipeline.national_epoch_registry_unavailable",
+                "error",
+                "National epoch lifecycle registry unavailable; active pool disabled",
+                {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+            )
+        except Exception:
+            pass
+        return []
     _ensure_completed_sentinels_for_tagged_bots(tag_versions, reaped_versions)
 
     bots = []
@@ -1044,10 +1083,16 @@ def get_active_bots():
 
 def _official_parent_eligible(bot_dir: Path) -> bool:
     try:
-        from official_certification import parent_eligible
-        return bool(parent_eligible(bot_dir))
-    except Exception:
-        return True
+        from official_certification import active_pool_eligible
+
+        return bool(active_pool_eligible(bot_dir))
+    except Exception as exc:
+        log.error(
+            "Official active-pool eligibility failed closed for %s: %s",
+            bot_dir.name,
+            exc,
+        )
+        return False
 
 
 def find_current_v():
@@ -1676,7 +1721,41 @@ def publish_runtime_expected_head(reason: str = "", version=None) -> str:
     return head
 
 
-def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=None):
+def _require_national_epoch_registry_for_commit():
+    from national_epoch_registry import load_registry_state
+
+    state = load_registry_state(
+        PROJECT_ROOT,
+        legacy_ledger=REAPED_BOTS_FILE,
+        include_history=True,
+    )
+    if not state.available or not state.migration_marker:
+        diagnostics = "; ".join(state.diagnostics) or "migration marker missing"
+        raise RuntimeError(
+            "national epoch registry is not durably migrated; " + diagnostics
+        )
+    return state
+
+
+def _advance_national_epoch_high_water(version):
+    from national_epoch_registry import advance_high_water
+
+    return advance_high_water(
+        int(version),
+        repo_root=PROJECT_ROOT,
+        legacy_ledger=REAPED_BOTS_FILE,
+    )
+
+
+def git_commit_bot(
+    version,
+    source_v,
+    strategy_tag,
+    rating_info="",
+    parent2_v=None,
+    *,
+    official_certificate,
+):
     """Commit a completed bot generation.
 
     Always commits on EVOLUTION_BRANCH (main). Calls _git_ensure_main_branch()
@@ -1684,6 +1763,32 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     Stage only the evolved bot and curated learning notes; daemon/result churn
     must not leak into evolution commits.
     """
+    certificate = dict(official_certificate or {})
+    certificate_digest = str(certificate.get("certificate_digest") or "")
+    expected_bot_hash = str(certificate.get("candidate_hash") or "")
+    certificate_policy = str(certificate.get("policy_id") or "")
+    if not certificate:
+        raise RuntimeError(
+            "official full certificate is required for national-bot commit/tag"
+        )
+    if not (certificate_digest and expected_bot_hash and certificate_policy):
+        raise RuntimeError("official certificate metadata is incomplete")
+    if certificate_policy != "official-full-v2":
+        raise RuntimeError(
+            f"unsupported official certificate policy: {certificate_policy or '<missing>'}"
+        )
+
+    from bot_artifact import hash_path
+
+    current_bot_hash = hash_path(get_bot_dir(version))
+    if current_bot_hash != expected_bot_hash:
+        raise RuntimeError(
+            "candidate changed after official certification: "
+            f"expected {expected_bot_hash}, current {current_bot_hash}"
+        )
+
+    _require_national_epoch_registry_for_commit()
+
     _git_ensure_main_branch()
     parent_line = f"parent: {bot_name(source_v)}"
     if parent2_v is not None:
@@ -1693,6 +1798,11 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         f"{parent_line}\n"
         f"strategy: {strategy_tag}\n"
         f"{rating_info}"
+    )
+    msg += (
+        f"\nofficial-certificate: {certificate_digest}"
+        f"\nofficial-candidate-hash: {expected_bot_hash}"
+        f"\nofficial-policy: {certificate_policy}"
     )
     bot_path = bot_relpath(version)
     preexisting_staged = [
@@ -1730,6 +1840,13 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     # LOG GAP FIX (2026-06-29): record what gets staged so a hand-edit bypass
     # (orchestrator LLM mutating bot code outside execute_workers) is visible.
     _staged = _git("add", "--", bot_path, check=False)
+    staged_bot_hash = hash_path(get_bot_dir(version))
+    if staged_bot_hash != expected_bot_hash:
+        _git("restore", "--staged", "--", bot_path, check=False)
+        raise RuntimeError(
+            "candidate changed while staging official-certified artifact: "
+            f"expected {expected_bot_hash}, current {staged_bot_hash}"
+        )
     allowed_paths = [bot_path]
     # Capture the staged file list right before commit for auditability.
     _staged_files = _git("diff", "--cached", "--name-only", check=False).strip().splitlines()
@@ -1787,9 +1904,23 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     _git("commit", "-m", msg, "--", *allowed_paths)
     _commit_hash = _git("rev-parse", "HEAD", check=False).strip()[:12]
     publish_runtime_expected_head("bot_commit", version=version)
+    high_water_mutation = _advance_national_epoch_high_water(version)
+    high_water_refs = list(high_water_mutation.created_tags)
     tag = bot_tag(version)
     _git("tag", "-d", tag, check=False)
-    _git("tag", tag, "-m", f"National bot v{format_version(version)}: {strategy_tag}")
+    tag_message = f"National bot v{format_version(version)}: {strategy_tag}"
+    tag_message += (
+        f"\n\nofficial-certificate: {certificate_digest}"
+        f"\nofficial-candidate-hash: {expected_bot_hash}"
+        f"\nofficial-policy: {certificate_policy}"
+    )
+    _git("tag", tag, "-m", tag_message)
+    try:
+        from official_eligibility import clear_registry_state_cache
+
+        clear_registry_state_cache()
+    except Exception:
+        pass
     try:
         from system_log import log_system_event
         log_system_event(
@@ -1802,7 +1933,7 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
 
     push_ok = False
     if evolution_git_push_enabled():
-        push_ok = git_push_refs("main", tag)
+        push_ok = git_push_refs("main", tag, *high_water_refs)
         publish_runtime_expected_head("bot_commit_push", version=version)
     return push_ok
 

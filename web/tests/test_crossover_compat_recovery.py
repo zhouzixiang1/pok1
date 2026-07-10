@@ -1,6 +1,19 @@
 import asyncio
 import json
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _eligible_test_parents(monkeypatch):
+    import tool_commit
+
+    monkeypatch.setattr(
+        tool_commit,
+        "get_active_bots",
+        lambda: ["national_v1", "national_v7"],
+    )
+
 
 def _tool_json(result):
     return json.loads(result["content"][0]["text"])

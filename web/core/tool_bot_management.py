@@ -132,12 +132,9 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
             bot_src = PROJECT_ROOT / "bots" / culled_name
             if not bot_src.exists():
                 return {"reaped": False, "reason": f"{culled_name} already moved"}
-            # Keep git-tracked bot source in place. Active membership is the
-            # runtime .completed sentinel plus active-epoch tag, so removing the
-            # sentinel deactivates the bot without dirtying the worktree.
-            sentinel = bot_src / ".completed"
-            if sentinel.exists():
-                sentinel.unlink()
+            # Publish the durable tombstone before mutating runtime metadata.
+            # A failed tag/push must leave the sentinel intact so the operator
+            # can retry without an ambiguous half-reaped state.
             record_reaped_bot(
                 culled_name,
                 reason="max_active_bots",
@@ -149,6 +146,9 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
                     "quiet": quiet,
                 },
             )
+            sentinel = bot_src / ".completed"
+            if sentinel.exists():
+                sentinel.unlink()
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 

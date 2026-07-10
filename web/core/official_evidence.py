@@ -318,6 +318,8 @@ def classify_round_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
         "connectionreseterror",
         "connection reset",
         "official_full_round_no_game_progress",
+        "no_progress_timeout",
+        "round_timeout",
         "platform_exited_early",
         "port_busy_before_start",
         "official platform did not listen",
