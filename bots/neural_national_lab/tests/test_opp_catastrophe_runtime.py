@@ -151,6 +151,29 @@ def test_platt_grid_improves_shifted_logits() -> None:
     assert calibration["samples"] == 5
 
 
+def test_risk_selection_score_rejects_all_negative_collapse() -> None:
+    labels = np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    severity_target = np.asarray([0.0, 0.0, 0.0, 6000.0], dtype=np.float64)
+    severity_prediction = severity_target.copy()
+    ranked = trainer._binary_metrics(
+        np.asarray([-4.0, -3.0, -2.0, 2.0]),
+        labels,
+        severity_prediction,
+        severity_target,
+    )
+    collapsed = trainer._binary_metrics(
+        np.asarray([-4.0, -3.0, -2.0, -5.0]),
+        labels,
+        severity_prediction,
+        severity_target,
+    )
+    ranked_score = trainer._risk_selection_score(ranked, severity_clip=20000.0)
+    collapsed_score = trainer._risk_selection_score(
+        collapsed, severity_clip=20000.0
+    )
+    assert ranked_score < collapsed_score
+
+
 def test_runtime_file_hash_matches_sha256(tmp_path: Path) -> None:
     path = tmp_path / "base.json"
     path.write_bytes(b"base-model")

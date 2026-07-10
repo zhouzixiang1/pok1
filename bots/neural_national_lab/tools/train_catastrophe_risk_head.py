@@ -326,6 +326,24 @@ def _predict_arrays(
     )
 
 
+def _risk_selection_score(metrics: dict[str, Any], *, severity_clip: float) -> float:
+    auroc = metrics.get("auroc")
+    average_precision = metrics.get("average_precision")
+    severity_mae = metrics.get("severity_mae")
+    return float(
+        (1.0 - float(auroc) if auroc is not None else 1.0)
+        + 0.5 * (
+            1.0 - float(average_precision)
+            if average_precision is not None else 1.0
+        )
+        + 0.1 * metrics.get("nll", 10.0)
+        + 0.05 * (
+            float(severity_mae) / float(severity_clip)
+            if severity_mae is not None else 1.0
+        )
+    )
+
+
 def _evaluate(
     head: CatastropheRiskHead,
     split: dict[str, torch.Tensor],
@@ -365,15 +383,8 @@ def _evaluate(
             bias=float(calibration.get("bias", 0.0)),
         )
     result["per_action"] = per_action
-    auroc = result.get("auroc")
-    severity_mae = result.get("severity_mae")
-    result["selection_score"] = float(
-        result.get("nll", 10.0)
-        + 0.5 * (1.0 - float(auroc) if auroc is not None else 1.0)
-        + 0.1 * (
-            float(severity_mae) / float(severity_clip)
-            if severity_mae is not None else 1.0
-        )
+    result["selection_score"] = _risk_selection_score(
+        result, severity_clip=severity_clip
     )
     return result
 
@@ -680,6 +691,10 @@ def main(argv: list[str] | None = None) -> int:
                 "learning_rate": args.lr,
                 "weight_decay": args.weight_decay,
                 "severity_loss_weight": args.severity_loss_weight,
+                "selection_score": (
+                    "1-auroc+0.5*(1-average_precision)+0.1*nll"
+                    "+0.05*normalized_severity_mae"
+                ),
                 "positive_weight_mode": args.positive_weight_mode,
                 "class_report": class_report,
                 "cluster_bootstrap": bootstrap,
