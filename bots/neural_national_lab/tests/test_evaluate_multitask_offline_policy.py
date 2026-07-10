@@ -62,6 +62,30 @@ def test_offline_policy_uses_lcb_and_response_signal() -> None:
     assert no_response["override_clusters"] == 1
     assert no_response["override_opponents"] == 1
     assert no_response["by_opponent"]["national_v1"]["overrides"] == 1
+    assert no_response["override_trace"] == [{
+        "source_row_index": 0,
+        "opponent": "national_v1",
+        "cluster": "row:0",
+        "decision": {},
+        "rule_id": 1,
+        "candidate": {"label_id": 2, "label": None, "action": None},
+        "prediction": {
+            "value_key": "lower",
+            "hand": 100.0,
+            "tail": 100.0,
+            "match": 100.0,
+            "hand_weight": 1.0,
+            "tail_weight": 0.0,
+            "match_weight": 0.0,
+            "response_signal": 0.0,
+            "policy_score": 100.0,
+        },
+        "observed": {
+            "hand_delta": 5.0,
+            "tail_delta": 5.0,
+            "match_delta": 10.0,
+        },
+    }]
 
 
 def test_policy_eligibility_requires_override_cluster_coverage() -> None:
@@ -189,6 +213,43 @@ def test_policy_selection_rejects_negative_cluster_confidence_bound() -> None:
     assert selection["selection_failure"] is not None
     errors = selection["grid"][0]["eligibility_errors"]
     assert "cluster_ci_lower<=0.0" in errors
+
+
+def test_policy_grid_reserves_weight_for_match_value() -> None:
+    tool = _load_tool()
+
+    selection = tool.select_offline_policy(
+        [],
+        margins=[0.0],
+        hand_weights=[0.5, 0.75, 1.0],
+        tail_weights=[0.0, 0.25],
+        min_match_weight=0.25,
+        response_weights=[0.0],
+        min_overrides=0,
+        min_selection_clusters=0,
+        min_override_clusters=0,
+        min_overrides_per_opponent=0,
+        min_override_hand_mean=0.0,
+        require_nonnegative_opponent_mean=True,
+        bootstrap_samples=10,
+        bootstrap_seed=1,
+        min_cluster_ci_lower=-1.0,
+        min_opponent_stratified_ci_lower=-1.0,
+    )
+
+    weights = {
+        (
+            row["config"]["hand_weight"],
+            row["config"]["tail_weight"],
+            row["config"]["match_weight"],
+        )
+        for row in selection["grid"]
+    }
+    assert weights == {
+        (0.5, 0.0, 0.5),
+        (0.5, 0.25, 0.25),
+        (0.75, 0.0, 0.25),
+    }
 
 
 def test_cluster_bootstrap_resamples_whole_matches() -> None:

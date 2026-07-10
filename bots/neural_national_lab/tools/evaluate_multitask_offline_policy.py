@@ -150,7 +150,7 @@ def _prepare_rows(
     raw_rows: list[dict[str, Any]], ensemble: OpponentMultiTaskEnsemble
 ) -> list[dict[str, Any]]:
     prepared = []
-    for raw in raw_rows:
+    for source_row_index, raw in enumerate(raw_rows):
         sample = build_value_sample(raw, max_hist=ensemble.max_hist)
         rule_id = int(sample.get("rule_id", 1) or 0)
         values = ensemble.predict_values(
@@ -202,6 +202,7 @@ def _prepare_rows(
         if candidates:
             opponent = str(raw.get("_opponent_label") or raw.get("opponent"))
             prepared.append({
+                "source_row_index": source_row_index,
                 "opponent": opponent,
                 "cluster": "|".join((
                     opponent,
@@ -209,6 +210,20 @@ def _prepare_rows(
                     str(raw.get("bot_seed_base")),
                 )),
                 "rule_id": rule_id,
+                "decision": {
+                    key: raw.get(key)
+                    for key in (
+                        "deck_seed_base",
+                        "bot_seed_base",
+                        "hand",
+                        "stage",
+                        "hand_decision_index",
+                        "decision_serial",
+                        "rule_label",
+                        "rule_final",
+                        "rule_value",
+                    )
+                },
                 "values": values,
                 "candidates": candidates,
             })
@@ -224,6 +239,7 @@ def _evaluate_config(
 ) -> dict[str, Any]:
     deltas = []
     selected = []
+    override_trace = []
     by_opponent: dict[str, list[float]] = {}
     by_cluster: dict[str, list[float]] = {}
     by_opponent_cluster: dict[str, dict[str, list[float]]] = {}
@@ -234,6 +250,12 @@ def _evaluate_config(
     opponent_negative_overrides = Counter()
     opponent_override_clusters: dict[str, set[str]] = {}
     hand_weight = float(config["hand_weight"])
+    tail_weight = float(config.get("tail_weight", 0.0))
+    match_weight = float(
+        config.get("match_weight", 1.0 - hand_weight - tail_weight)
+    )
+    if min(hand_weight, tail_weight, match_weight) < -1e-9:
+        raise ValueError("policy value weights must be non-negative")
     response_weight = float(config["response_weight"])
     margin = float(config["margin"])
     use_lower = bool(config.get("use_lower", True))
@@ -245,20 +267,52 @@ def _evaluate_config(
         for candidate in row["candidates"]:
             label_id = candidate["label_id"]
             hand = row["values"]["delta_vs_rule"][value_key][label_id]
+            tail = row["values"]["tail_delta_vs_rule"][value_key][label_id]
             match = row["values"]["match_delta_vs_rule"][value_key][label_id]
             score = (
                 hand_weight * float(hand)
-                + (1.0 - hand_weight) * float(match)
+                + tail_weight * float(tail)
+                + match_weight * float(match)
                 + response_weight * float(candidate["response_signal"])
             )
             if best is None or score > best[0]:
-                best = (score, candidate)
+                best = (
+                    score, candidate, float(hand), float(tail), float(match)
+                )
         chosen = None
         if best is not None and best[0] > margin:
             candidate = best[1]
             delta = float(candidate["match_delta"])
             selected.append(candidate)
             chosen = candidate
+            override_trace.append({
+                "source_row_index": row.get("source_row_index", row_index),
+                "opponent": opponent,
+                "cluster": cluster,
+                "decision": row.get("decision") or {},
+                "rule_id": row["rule_id"],
+                "candidate": {
+                    "label_id": candidate["label_id"],
+                    "label": candidate.get("label"),
+                    "action": candidate.get("action"),
+                },
+                "prediction": {
+                    "value_key": value_key,
+                    "hand": best[2],
+                    "tail": best[3],
+                    "match": best[4],
+                    "hand_weight": hand_weight,
+                    "tail_weight": tail_weight,
+                    "match_weight": match_weight,
+                    "response_signal": candidate["response_signal"],
+                    "policy_score": best[0],
+                },
+                "observed": {
+                    "hand_delta": candidate["hand_delta"],
+                    "tail_delta": candidate["tail_delta"],
+                    "match_delta": candidate["match_delta"],
+                },
+            })
         else:
             delta = 0.0
         deltas.append(delta)
@@ -305,6 +359,7 @@ def _evaluate_config(
         "override_opponents": len(override_opponents),
         "override_opponent_names": sorted(override_opponents),
         "overrides_by_action": dict(sorted(override_by_action.items())),
+        "override_trace": override_trace,
         "override_match_mean": statistics.fmean(override_match) if override_match else 0.0,
         "override_hand_mean": statistics.fmean(override_hand) if override_hand else 0.0,
         "override_tail_mean": statistics.fmean(override_tail) if override_tail else 0.0,
@@ -439,40 +494,49 @@ def select_offline_policy(
     bootstrap_seed: int,
     min_cluster_ci_lower: float = 0.0,
     min_opponent_stratified_ci_lower: float = 0.0,
+    tail_weights: list[float] | None = None,
+    min_match_weight: float = 0.0,
 ) -> dict[str, Any]:
     grid = []
+    tail_weights = list(tail_weights or [0.0])
     for margin in margins:
         for hand_weight in hand_weights:
-            for response_weight in response_weights:
-                config = {
-                    "margin": float(margin),
-                    "hand_weight": float(hand_weight),
-                    "response_weight": float(response_weight),
-                    "use_lower": True,
-                }
-                result = _evaluate_config(
-                    rows,
-                    config,
-                    bootstrap_samples=bootstrap_samples,
-                    bootstrap_seed=bootstrap_seed,
-                )
-                result["eligibility_errors"] = _selection_eligibility(
-                    result,
-                    min_overrides=min_overrides,
-                    min_selection_clusters=min_selection_clusters,
-                    min_override_clusters=min_override_clusters,
-                    min_overrides_per_opponent=min_overrides_per_opponent,
-                    min_override_hand_mean=min_override_hand_mean,
-                    require_nonnegative_opponent_mean=(
-                        require_nonnegative_opponent_mean
-                    ),
-                    min_cluster_ci_lower=min_cluster_ci_lower,
-                    min_opponent_stratified_ci_lower=(
-                        min_opponent_stratified_ci_lower
-                    ),
-                )
-                result["eligible"] = not result["eligibility_errors"]
-                grid.append(result)
+            for tail_weight in tail_weights:
+                match_weight = 1.0 - hand_weight - tail_weight
+                if match_weight + 1e-9 < min_match_weight:
+                    continue
+                for response_weight in response_weights:
+                    config = {
+                        "margin": float(margin),
+                        "hand_weight": float(hand_weight),
+                        "tail_weight": float(tail_weight),
+                        "match_weight": float(match_weight),
+                        "response_weight": float(response_weight),
+                        "use_lower": True,
+                    }
+                    result = _evaluate_config(
+                        rows,
+                        config,
+                        bootstrap_samples=bootstrap_samples,
+                        bootstrap_seed=bootstrap_seed,
+                    )
+                    result["eligibility_errors"] = _selection_eligibility(
+                        result,
+                        min_overrides=min_overrides,
+                        min_selection_clusters=min_selection_clusters,
+                        min_override_clusters=min_override_clusters,
+                        min_overrides_per_opponent=min_overrides_per_opponent,
+                        min_override_hand_mean=min_override_hand_mean,
+                        require_nonnegative_opponent_mean=(
+                            require_nonnegative_opponent_mean
+                        ),
+                        min_cluster_ci_lower=min_cluster_ci_lower,
+                        min_opponent_stratified_ci_lower=(
+                            min_opponent_stratified_ci_lower
+                        ),
+                    )
+                    result["eligible"] = not result["eligibility_errors"]
+                    grid.append(result)
     eligible = [result for result in grid if result["eligible"]]
     selected = max(
         eligible,
@@ -505,6 +569,8 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--margin-grid", default="0,25,50,100,200,400")
     parser.add_argument("--hand-weight-grid", default="0.25,0.5,0.75,1.0")
+    parser.add_argument("--tail-weight-grid", default="0,0.25")
+    parser.add_argument("--min-match-weight", type=float, default=0.25)
     parser.add_argument("--response-weight-grid", default="0,0.05,0.1")
     parser.add_argument("--min-overrides", type=int, default=10)
     parser.add_argument("--min-selection-clusters", type=int, default=8)
@@ -522,6 +588,8 @@ def main() -> int:
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--bootstrap-seed", type=int, default=20260710)
     args = parser.parse_args()
+    if not 0.0 <= args.min_match_weight <= 1.0:
+        raise SystemExit("min-match-weight must be in [0, 1]")
 
     model_paths = [Path(path).resolve() for path in args.model]
     ensemble = OpponentMultiTaskEnsemble.load(model_paths)
@@ -538,6 +606,12 @@ def main() -> int:
             for value in args.hand_weight_grid.split(",")
             if value.strip()
         ],
+        tail_weights=[
+            float(value)
+            for value in args.tail_weight_grid.split(",")
+            if value.strip()
+        ],
+        min_match_weight=args.min_match_weight,
         response_weights=[
             float(value)
             for value in args.response_weight_grid.split(",")
@@ -569,6 +643,7 @@ def main() -> int:
         "min_override_clusters": args.min_override_clusters,
         "min_overrides_per_opponent": args.min_overrides_per_opponent,
         "min_override_hand_mean": args.min_override_hand_mean,
+        "min_match_weight": args.min_match_weight,
         "require_nonnegative_opponent_mean": (
             not args.allow_negative_selection_opponent
         ),
@@ -577,7 +652,7 @@ def main() -> int:
     }
     if policy_selection["selected"] is None:
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "selection_used_held_out": False,
             "models": model_manifests,
             "selection_data": str(args.selection_data.resolve()),
@@ -622,7 +697,7 @@ def main() -> int:
     no_response_config = dict(selected["config"], response_weight=0.0)
     mean_only_config = dict(selected["config"], use_lower=False)
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "selection_used_held_out": False,
         "models": model_manifests,
         "selection_data": str(args.selection_data.resolve()),

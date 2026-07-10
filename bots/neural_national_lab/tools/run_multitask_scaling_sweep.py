@@ -68,6 +68,7 @@ OFFLINE_CANDIDATE_REQUIREMENTS = {
     "held_out_overrides": 10,
     "held_out_override_clusters": 8,
     "bootstrap_samples": 500,
+    "minimum_match_weight": 0.25,
 }
 
 
@@ -275,6 +276,23 @@ def _offline_candidate_gate(
         errors.append("calibration_ci_lower_threshold<0")
     if args.policy_min_held_out_ci_lower < 0:
         errors.append("held_out_ci_lower_threshold<0")
+    if args.policy_min_match_weight < requirements["minimum_match_weight"]:
+        errors.append(
+            f"minimum_match_weight<{requirements['minimum_match_weight']}"
+        )
+    if post_selection_policy is not None:
+        policy_config = post_selection_policy.get("policy_config") or {}
+        selected_match_weight = float(policy_config.get(
+            "match_weight",
+            1.0
+            - float(policy_config.get("hand_weight", 1.0))
+            - float(policy_config.get("tail_weight", 0.0)),
+        ))
+        if selected_match_weight < requirements["minimum_match_weight"]:
+            errors.append(
+                "selected_match_weight"
+                f"<{requirements['minimum_match_weight']}"
+            )
     if args.policy_allow_negative_opponent:
         errors.append("negative_selection_opponent_allowed")
     if args.allow_missing_cross_hand_sequence:
@@ -353,6 +371,12 @@ def _run_policy_selection(
             name="policy hand weight",
             maximum=1.0,
         ),
+        tail_weights=_float_grid(
+            args.policy_tail_weight_grid,
+            name="policy tail weight",
+            maximum=1.0,
+        ),
+        min_match_weight=args.policy_min_match_weight,
         response_weights=_float_grid(
             args.policy_response_weight_grid, name="policy response weight"
         ),
@@ -373,7 +397,7 @@ def _run_policy_selection(
     )
     path = out_dir / f"policy_selection_{config['name']}.json"
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "selection_used_held_out": False,
         "config": config,
         "models": [
@@ -396,6 +420,7 @@ def _run_policy_selection(
                 args.policy_min_overrides_per_opponent
             ),
             "min_override_hand_mean": args.policy_min_override_hand_mean,
+            "min_match_weight": args.policy_min_match_weight,
             "require_nonnegative_opponent_mean": (
                 not args.policy_allow_negative_opponent
             ),
@@ -523,6 +548,7 @@ def _run_post_selection_policy(
         "held_out": held_out,
         "held_out_gate": held_out_gate,
         "passed": passed,
+        "policy_config": policy_config,
     }
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
@@ -531,6 +557,7 @@ def _run_post_selection_policy(
         "path": str(path),
         "sha256": _sha256(path),
         "passed": passed,
+        "policy_config": policy_config,
         "calibration_gate": calibration_gate,
         "held_out_gate": held_out_gate,
         "calibration_match_mean_per_opportunity": calibration[
@@ -759,6 +786,8 @@ def main() -> int:
     )
     parser.add_argument("--policy-margin-grid", default="0,25,50,100,200,400")
     parser.add_argument("--policy-hand-weight-grid", default="0.25,0.5,0.75,1")
+    parser.add_argument("--policy-tail-weight-grid", default="0,0.25")
+    parser.add_argument("--policy-min-match-weight", type=float, default=0.25)
     parser.add_argument("--policy-response-weight-grid", default="0,0.05,0.1")
     parser.add_argument("--policy-min-overrides", type=int, default=10)
     parser.add_argument("--policy-min-selection-clusters", type=int, default=8)
@@ -795,6 +824,8 @@ def main() -> int:
         raise SystemExit("ranking margin must be non-negative and temperature positive")
     if args.policy_bootstrap_samples <= 0:
         raise SystemExit("policy-bootstrap-samples must be positive")
+    if not 0.0 <= args.policy_min_match_weight <= 1.0:
+        raise SystemExit("policy-min-match-weight must be in [0, 1]")
     for name in (
         "policy_min_overrides",
         "policy_min_selection_clusters",

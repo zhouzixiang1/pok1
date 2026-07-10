@@ -150,6 +150,7 @@ def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
         policy_min_selection_ci_lower=-1.0,
         policy_min_calibration_ci_lower=0.0,
         policy_min_held_out_ci_lower=0.0,
+        policy_min_match_weight=requirements["minimum_match_weight"],
         policy_allow_negative_opponent=False,
         allow_missing_cross_hand_sequence=False,
     )
@@ -175,7 +176,14 @@ def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
         audit_report=audit,
         data_dir=tmp_path,
         seeds=[101, 211, 307],
-        post_selection_policy={"passed": True},
+        post_selection_policy={
+            "passed": True,
+            "policy_config": {
+                "hand_weight": 0.5,
+                "tail_weight": 0.25,
+                "match_weight": 0.25,
+            },
+        },
     )
 
     assert gate["passed"] is False
@@ -199,7 +207,14 @@ def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
         audit_report=audit,
         data_dir=tmp_path,
         seeds=[101, 211, 307],
-        post_selection_policy={"passed": True},
+        post_selection_policy={
+            "passed": True,
+            "policy_config": {
+                "hand_weight": 0.5,
+                "tail_weight": 0.25,
+                "match_weight": 0.25,
+            },
+        },
     )
 
     assert passing["passed"] is True

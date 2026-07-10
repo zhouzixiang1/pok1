@@ -161,6 +161,33 @@ state/snapshot pass mismatch. The corrected pass-10 freeze contains 412 value
 and 1,679 behavior training rows after moving v121/v135 to calibration; v98 and
 v142 remain validation-only, while v57 and v66 remain held-out-only.
 
+## Pass-10 Policy Sweep
+
+The atomic pass-10 diagnostic trained 72 CUDA models: eight small/medium
+encoder configurations, three ranking weights, and three seeds. All 24 seed
+ensembles met the stdlib runtime budget, but none met the validation policy
+gate. Every one of the 1,728 policy grid points had fewer than ten overrides
+and fewer than eight override clusters.
+
+Ranking supervision still produced a useful supervised signal. Small GRU rose
+from 56.7% match-direction balanced accuracy without ranking to about 71% with
+ranking weight 0.5 or 1.0. Small MoE reached 68.3%-70.4%. Medium models did not
+improve on the small models, so scale has not yet earned its runtime cost.
+
+Only unranked Transformer ensembles approached the policy coverage threshold.
+A deliberately relaxed check selected small Transformer with eight overrides
+across six validation clusters. It failed calibration: v135 was negative, five
+of eight calibration overrides lost match value, and both cluster CI lower
+bounds were negative. Held-out deltas were positive but covered only two of ten
+clusters, leaving clustered CI lower bounds at zero. No candidate bot was
+created.
+
+The new override trace identified a structural selection error rather than a
+margin issue. All near-passing policies chose `hand_weight=1.0`, even when the
+model's match-value lower bound was strongly negative. The policy grid now
+models hand, tail, and match value on a simplex and reserves at least 25% weight
+for match value. Pure single-hand policies are not eligible for formal scaling.
+
 ## Next Evidence
 
 1. Run validation-only ranking-weight ablations on larger match-cluster counts.
