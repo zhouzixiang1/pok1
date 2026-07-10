@@ -59,6 +59,56 @@ def test_offline_policy_uses_lcb_and_response_signal() -> None:
 
     assert no_response["match_total"] == 10.0
     assert with_response["match_total"] == 20.0
+    assert no_response["override_clusters"] == 1
+    assert no_response["override_opponents"] == 1
+    assert no_response["by_opponent"]["national_v1"]["overrides"] == 1
+
+
+def test_policy_eligibility_requires_override_cluster_coverage() -> None:
+    tool = _load_tool()
+    result = {
+        "overrides": 4,
+        "match_clusters": 4,
+        "override_clusters": 1,
+        "override_hand_mean": 100.0,
+        "by_opponent": {
+            "national_v1": {"overrides": 4, "mean": 100.0},
+        },
+    }
+
+    errors = tool._selection_eligibility(
+        result,
+        min_overrides=3,
+        min_selection_clusters=3,
+        min_override_clusters=2,
+        min_overrides_per_opponent=2,
+        min_override_hand_mean=0.0,
+        require_nonnegative_opponent_mean=True,
+    )
+
+    assert errors == ["override_clusters<2"]
+
+
+def test_calibration_gate_rejects_zero_override_evidence() -> None:
+    tool = _load_tool()
+    result = {
+        "overrides": 0,
+        "override_clusters": 0,
+        "match_opponent_stratified_cluster_ci": {"lower": 0.0},
+        "by_opponent": {"national_v1": {"mean": 0.0}},
+    }
+
+    gate = tool._calibration_gate(
+        result,
+        min_overrides=2,
+        min_override_clusters=2,
+        require_nonnegative_opponent_mean=True,
+    )
+
+    assert gate == {
+        "passed": False,
+        "errors": ["overrides<2", "override_clusters<2"],
+    }
 
 
 def test_cluster_bootstrap_resamples_whole_matches() -> None:

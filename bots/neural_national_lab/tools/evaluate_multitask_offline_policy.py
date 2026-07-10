@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import math
@@ -226,12 +227,20 @@ def _evaluate_config(
     by_opponent: dict[str, list[float]] = {}
     by_cluster: dict[str, list[float]] = {}
     by_opponent_cluster: dict[str, dict[str, list[float]]] = {}
+    override_clusters: set[str] = set()
+    override_opponents: set[str] = set()
+    override_by_action = Counter()
+    opponent_override_counts = Counter()
+    opponent_negative_overrides = Counter()
+    opponent_override_clusters: dict[str, set[str]] = {}
     hand_weight = float(config["hand_weight"])
     response_weight = float(config["response_weight"])
     margin = float(config["margin"])
     use_lower = bool(config.get("use_lower", True))
     value_key = "lower" if use_lower else "mean"
     for row_index, row in enumerate(rows):
+        opponent = row["opponent"]
+        cluster = str(row.get("cluster") or f"row:{row_index}")
         best = None
         for candidate in row["candidates"]:
             label_id = candidate["label_id"]
@@ -244,20 +253,29 @@ def _evaluate_config(
             )
             if best is None or score > best[0]:
                 best = (score, candidate)
+        chosen = None
         if best is not None and best[0] > margin:
             candidate = best[1]
             delta = float(candidate["match_delta"])
             selected.append(candidate)
+            chosen = candidate
         else:
             delta = 0.0
         deltas.append(delta)
-        opponent = row["opponent"]
-        cluster = str(row.get("cluster") or f"row:{row_index}")
         by_opponent.setdefault(opponent, []).append(delta)
         by_cluster.setdefault(cluster, []).append(delta)
         by_opponent_cluster.setdefault(opponent, {}).setdefault(
             cluster, []
         ).append(delta)
+        if chosen is not None:
+            override_clusters.add(cluster)
+            override_opponents.add(opponent)
+            opponent_override_counts[opponent] += 1
+            opponent_override_clusters.setdefault(opponent, set()).add(cluster)
+            if delta < 0:
+                opponent_negative_overrides[opponent] += 1
+            label = str(chosen.get("label") or LABELS[chosen["label_id"]])
+            override_by_action[label] += 1
     override_match = [candidate["match_delta"] for candidate in selected]
     override_hand = [candidate["hand_delta"] for candidate in selected]
     override_tail = [candidate["tail_delta"] for candidate in selected]
@@ -283,6 +301,10 @@ def _evaluate_config(
         "match_cluster_bootstrap_mean_ci": cluster_ci,
         "match_opponent_stratified_cluster_ci": stratified_cluster_ci,
         "match_clusters": len(by_cluster),
+        "override_clusters": len(override_clusters),
+        "override_opponents": len(override_opponents),
+        "override_opponent_names": sorted(override_opponents),
+        "overrides_by_action": dict(sorted(override_by_action.items())),
         "override_match_mean": statistics.fmean(override_match) if override_match else 0.0,
         "override_hand_mean": statistics.fmean(override_hand) if override_hand else 0.0,
         "override_tail_mean": statistics.fmean(override_tail) if override_tail else 0.0,
@@ -295,12 +317,87 @@ def _evaluate_config(
             opponent: {
                 "rows": len(values),
                 "clusters": len(by_opponent_cluster.get(opponent, {})),
+                "overrides": opponent_override_counts[opponent],
+                "override_clusters": len(
+                    opponent_override_clusters.get(opponent, set())
+                ),
+                "negative_overrides": opponent_negative_overrides[opponent],
                 "total": sum(values),
                 "mean": statistics.fmean(values),
             }
             for opponent, values in sorted(by_opponent.items())
         },
     }
+
+
+def _selection_eligibility(
+    result: dict[str, Any],
+    *,
+    min_overrides: int,
+    min_selection_clusters: int,
+    min_override_clusters: int,
+    min_overrides_per_opponent: int,
+    min_override_hand_mean: float,
+    require_nonnegative_opponent_mean: bool,
+) -> list[str]:
+    errors = []
+    if result["overrides"] < min_overrides:
+        errors.append(f"overrides<{min_overrides}")
+    if result["match_clusters"] < min_selection_clusters:
+        errors.append(f"selection_clusters<{min_selection_clusters}")
+    if result["override_clusters"] < min_override_clusters:
+        errors.append(f"override_clusters<{min_override_clusters}")
+    if result["override_hand_mean"] < min_override_hand_mean:
+        errors.append(f"override_hand_mean<{min_override_hand_mean}")
+    for opponent, row in result["by_opponent"].items():
+        if row["overrides"] < min_overrides_per_opponent:
+            errors.append(
+                f"{opponent}:overrides<{min_overrides_per_opponent}"
+            )
+        if require_nonnegative_opponent_mean and row["mean"] < 0:
+            errors.append(f"{opponent}:mean<0")
+    return errors
+
+
+def _calibration_gate(
+    result: dict[str, Any] | None,
+    *,
+    min_overrides: int,
+    min_override_clusters: int,
+    require_nonnegative_opponent_mean: bool,
+) -> dict[str, Any] | None:
+    if result is None:
+        return None
+    errors = []
+    if result["overrides"] < min_overrides:
+        errors.append(f"overrides<{min_overrides}")
+    if result["override_clusters"] < min_override_clusters:
+        errors.append(f"override_clusters<{min_override_clusters}")
+    lower = result["match_opponent_stratified_cluster_ci"]["lower"]
+    if lower < 0:
+        errors.append("opponent_stratified_cluster_ci_lower<0")
+    if require_nonnegative_opponent_mean:
+        for opponent, row in result["by_opponent"].items():
+            if row["mean"] < 0:
+                errors.append(f"{opponent}:mean<0")
+    return {"passed": not errors, "errors": errors}
+
+
+def _file_manifest(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return {
+        "path": str(path.resolve()),
+        "bytes": path.stat().st_size,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
+def _write_payload(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
 
 
 def main() -> int:
@@ -315,7 +412,15 @@ def main() -> int:
     parser.add_argument("--response-weight-grid", default="0,0.05,0.1")
     parser.add_argument("--min-overrides", type=int, default=10)
     parser.add_argument("--min-selection-clusters", type=int, default=8)
+    parser.add_argument("--min-override-clusters", type=int, default=8)
+    parser.add_argument("--min-overrides-per-opponent", type=int, default=2)
     parser.add_argument("--min-override-hand-mean", type=float, default=0.0)
+    parser.add_argument("--allow-negative-selection-opponent", action="store_true")
+    parser.add_argument("--min-calibration-overrides", type=int, default=5)
+    parser.add_argument(
+        "--min-calibration-override-clusters", type=int, default=3
+    )
+    parser.add_argument("--allow-negative-calibration-opponent", action="store_true")
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--bootstrap-seed", type=int, default=20260710)
     args = parser.parse_args()
@@ -345,21 +450,64 @@ def main() -> int:
                     bootstrap_samples=args.bootstrap_samples,
                     bootstrap_seed=args.bootstrap_seed,
                 )
-                result["eligible"] = (
-                    result["overrides"] >= args.min_overrides
-                    and result["match_clusters"] >= args.min_selection_clusters
-                    and result["override_hand_mean"] >= args.min_override_hand_mean
+                result["eligibility_errors"] = _selection_eligibility(
+                    result,
+                    min_overrides=args.min_overrides,
+                    min_selection_clusters=args.min_selection_clusters,
+                    min_override_clusters=args.min_override_clusters,
+                    min_overrides_per_opponent=args.min_overrides_per_opponent,
+                    min_override_hand_mean=args.min_override_hand_mean,
+                    require_nonnegative_opponent_mean=(
+                        not args.allow_negative_selection_opponent
+                    ),
                 )
+                result["eligible"] = not result["eligibility_errors"]
                 grid.append(result)
     eligible = [result for result in grid if result["eligible"]]
+    model_manifests = [_file_manifest(path) for path in model_paths]
+    data_manifests = {
+        "selection": _file_manifest(args.selection_data),
+        "calibration": _file_manifest(args.calibration_data),
+        "held_out": _file_manifest(args.held_out_data),
+    }
+    selection_criteria = {
+        "min_overrides": args.min_overrides,
+        "min_selection_clusters": args.min_selection_clusters,
+        "min_override_clusters": args.min_override_clusters,
+        "min_overrides_per_opponent": args.min_overrides_per_opponent,
+        "min_override_hand_mean": args.min_override_hand_mean,
+        "require_nonnegative_opponent_mean": (
+            not args.allow_negative_selection_opponent
+        ),
+    }
     if not eligible:
-        raise SystemExit("no offline policy config met minimum override/safety constraints")
+        payload = {
+            "schema_version": 2,
+            "selection_used_held_out": False,
+            "models": model_manifests,
+            "selection_data": str(args.selection_data.resolve()),
+            "data_manifests": data_manifests,
+            "selection_criteria": selection_criteria,
+            "grid": grid,
+            "selected": None,
+            "selection_failure": (
+                "no offline policy config met override coverage/safety constraints"
+            ),
+            "calibration": None,
+            "calibration_gate": None,
+            "held_out": None,
+            "ablations": {},
+        }
+        _write_payload(args.output, payload)
+        print(json.dumps({"selection_failure": payload["selection_failure"]}, indent=2))
+        return 1
     selected = max(
         eligible,
         key=lambda result: (
             result["match_opponent_stratified_cluster_ci"]["lower"],
             result["match_cluster_bootstrap_mean_ci"]["lower"],
             result["match_mean_per_opportunity"],
+            result["override_clusters"],
             -result["negative_override_rate"],
             -result["config"]["margin"],
         ),
@@ -378,22 +526,27 @@ def main() -> int:
 
     calibration = evaluate_optional(args.calibration_data, selected["config"])
     held_out = evaluate_optional(args.held_out_data, selected["config"])
+    calibration_gate = _calibration_gate(
+        calibration,
+        min_overrides=args.min_calibration_overrides,
+        min_override_clusters=args.min_calibration_override_clusters,
+        require_nonnegative_opponent_mean=(
+            not args.allow_negative_calibration_opponent
+        ),
+    )
     no_response_config = dict(selected["config"], response_weight=0.0)
     mean_only_config = dict(selected["config"], use_lower=False)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "selection_used_held_out": False,
-        "models": [
-            {
-                "path": str(path),
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            }
-            for path in model_paths
-        ],
+        "models": model_manifests,
         "selection_data": str(args.selection_data.resolve()),
+        "data_manifests": data_manifests,
+        "selection_criteria": selection_criteria,
         "grid": grid,
         "selected": selected,
         "calibration": calibration,
+        "calibration_gate": calibration_gate,
         "held_out": held_out,
         "ablations": {
             "no_response_held_out": evaluate_optional(
@@ -404,16 +557,13 @@ def main() -> int:
             ),
         },
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    _write_payload(args.output, payload)
     print(json.dumps({
         "selected": selected,
         "calibration": calibration,
         "held_out": held_out,
     }, indent=2, sort_keys=True))
-    return 0
+    return 0 if calibration_gate is None or calibration_gate["passed"] else 1
 
 
 if __name__ == "__main__":

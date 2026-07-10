@@ -78,6 +78,27 @@ and with worse match MAE. This is not enough evidence to freeze the weight.
 Formal scaling will jointly compare architecture, size, weight, and seeds after
 the dataset contains many independent clusters per opponent.
 
+## Policy-Level Failure Audit
+
+A deliberately relaxed offline-policy run on the pass-5 ranking winner found a
+validation policy with only four overrides across three match clusters. Those
+four labels happened to total +78094 match chips, yielding an apparently
+positive opponent-stratified CI. This was sparse jackpot evidence, not a robust
+policy:
+
+- calibration v121/v135: zero overrides, so no calibration coverage;
+- held-out overall: -287.9 chips per opportunity;
+- held-out v66: -1690.9 chips per opportunity;
+- held-out overrides: all 25 were all-in actions.
+
+The offline evaluator now distinguishes total observed clusters from clusters
+that actually receive overrides. Selection requires minimum override-cluster
+coverage, minimum overrides against every validation opponent, and nonnegative
+per-opponent means. A separately reported calibration gate requires override
+coverage and a nonnegative opponent-stratified cluster CI. Failed selection and
+calibration reports are still written with model/data hashes. Under these strict
+defaults the pass-5 policy is correctly rejected before any active bot is made.
+
 ## Next Evidence
 
 1. Run validation-only ranking-weight ablations on larger match-cluster counts.
