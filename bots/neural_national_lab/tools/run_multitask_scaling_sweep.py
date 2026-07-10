@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import math
@@ -49,6 +50,25 @@ DEFAULT_CONFIGS = (
     "xlarge_set@deep_set:1024:512:256:256:256:512",
     "xlarge_tx@transformer:1024:512:256:256:256:512",
 )
+
+OFFLINE_CANDIDATE_REQUIREMENTS = {
+    "value_train_rows": 500,
+    "behavior_train_rows": 2000,
+    "ensemble_seeds": 3,
+    "train_opponents": 4,
+    "val_opponents": 2,
+    "calibration_opponents": 2,
+    "held_out_opponents": 2,
+    "selection_overrides": 10,
+    "selection_clusters": 8,
+    "selection_override_clusters": 8,
+    "selection_overrides_per_opponent": 2,
+    "calibration_overrides": 5,
+    "calibration_override_clusters": 3,
+    "held_out_overrides": 10,
+    "held_out_override_clusters": 8,
+    "bootstrap_samples": 500,
+}
 
 
 def _parse_config(
@@ -164,6 +184,148 @@ def _float_grid(
     ):
         raise SystemExit(f"invalid {name} grid")
     return list(dict.fromkeys(values))
+
+
+def _offline_candidate_gate(
+    *,
+    args: argparse.Namespace,
+    audit_report: dict[str, Any],
+    data_dir: Path,
+    seeds: list[int],
+    post_selection_policy: dict[str, Any] | None,
+) -> dict[str, Any]:
+    requirements = OFFLINE_CANDIDATE_REQUIREMENTS
+    errors = []
+
+    def minimum(name: str, actual: int | float, required: int | float) -> None:
+        if actual < required:
+            errors.append(f"{name}<{required}")
+
+    if args.selection_mode != "policy":
+        errors.append("selection_mode!=policy")
+    if post_selection_policy is None or not post_selection_policy["passed"]:
+        errors.append("post_selection_policy_failed")
+    minimum(
+        "value_train_rows",
+        int(audit_report["value_rows"]["train"]),
+        requirements["value_train_rows"],
+    )
+    minimum(
+        "behavior_train_rows",
+        int(audit_report["behavior_rows"]["train"]),
+        requirements["behavior_train_rows"],
+    )
+    minimum("ensemble_seeds", len(seeds), requirements["ensemble_seeds"])
+    for split in ("train", "val", "calibration", "held_out"):
+        minimum(
+            f"{split}_opponents",
+            len(audit_report["opponents"][split]),
+            requirements[f"{split}_opponents"],
+        )
+    minimum(
+        "selection_overrides",
+        args.policy_min_overrides,
+        requirements["selection_overrides"],
+    )
+    minimum(
+        "selection_clusters",
+        args.policy_min_selection_clusters,
+        requirements["selection_clusters"],
+    )
+    minimum(
+        "selection_override_clusters",
+        args.policy_min_override_clusters,
+        requirements["selection_override_clusters"],
+    )
+    minimum(
+        "selection_overrides_per_opponent",
+        args.policy_min_overrides_per_opponent,
+        requirements["selection_overrides_per_opponent"],
+    )
+    minimum(
+        "calibration_overrides",
+        args.policy_min_calibration_overrides,
+        requirements["calibration_overrides"],
+    )
+    minimum(
+        "calibration_override_clusters",
+        args.policy_min_calibration_override_clusters,
+        requirements["calibration_override_clusters"],
+    )
+    minimum(
+        "held_out_overrides",
+        args.policy_min_held_out_overrides,
+        requirements["held_out_overrides"],
+    )
+    minimum(
+        "held_out_override_clusters",
+        args.policy_min_held_out_override_clusters,
+        requirements["held_out_override_clusters"],
+    )
+    minimum(
+        "bootstrap_samples",
+        args.policy_bootstrap_samples,
+        requirements["bootstrap_samples"],
+    )
+    if args.policy_min_override_hand_mean < 0:
+        errors.append("selection_override_hand_mean<0")
+    if args.policy_min_selection_ci_lower < 0:
+        errors.append("selection_ci_lower_threshold<0")
+    if args.policy_min_calibration_ci_lower < 0:
+        errors.append("calibration_ci_lower_threshold<0")
+    if args.policy_min_held_out_ci_lower < 0:
+        errors.append("held_out_ci_lower_threshold<0")
+    if args.policy_allow_negative_opponent:
+        errors.append("negative_selection_opponent_allowed")
+    if args.allow_missing_cross_hand_sequence:
+        errors.append("cross_hand_sequence_not_required")
+
+    freeze_manifest_path = data_dir / "freeze_manifest.json"
+    freeze_manifest = None
+    if not freeze_manifest_path.exists():
+        errors.append("freeze_manifest_missing")
+    else:
+        try:
+            freeze_manifest = json.loads(
+                freeze_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, TypeError, json.JSONDecodeError):
+            errors.append("freeze_manifest_invalid")
+        if freeze_manifest is not None:
+            if freeze_manifest.get("allow_incomplete") is not False:
+                errors.append("dataset_freeze_incomplete")
+            try:
+                completed_passes = int(
+                    freeze_manifest["source_completed_passes"]
+                )
+                requested_passes = int(
+                    freeze_manifest["source_requested_passes"]
+                )
+            except (KeyError, TypeError, ValueError):
+                completed_passes = -1
+                requested_passes = -2
+                errors.append("dataset_pass_count_invalid")
+            if completed_passes != requested_passes:
+                errors.append("dataset_pass_count_incomplete")
+
+    return {
+        "passed": not errors,
+        "errors": errors,
+        "requirements": requirements,
+        "freeze_manifest": (
+            None if freeze_manifest is None else {
+                "path": str(freeze_manifest_path),
+                "sha256": _sha256(freeze_manifest_path),
+                "source_completed_passes": freeze_manifest.get(
+                    "source_completed_passes"
+                ),
+                "source_requested_passes": freeze_manifest.get(
+                    "source_requested_passes"
+                ),
+                "allow_incomplete": freeze_manifest.get("allow_incomplete"),
+            }
+        ),
+    }
 
 
 def _run_policy_selection(
@@ -536,6 +698,37 @@ def _run_training(
     return json.loads(output.read_text(encoding="utf-8"))
 
 
+def _run_candidate_experiment(
+    *,
+    config: dict[str, Any],
+    seed: int,
+    data_paths: dict[str, Path],
+    out_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    stem = f"{config['name']}_seed{seed}"
+    output = out_dir / f"{stem}.json"
+    payload = _run_training(
+        config=config,
+        seed=seed,
+        data_paths=data_paths,
+        output=output,
+        log_path=out_dir / f"{stem}.log",
+        args=args,
+    )
+    return {
+        "config": config,
+        "seed": seed,
+        "model": str(output),
+        "model_sha256": _sha256(output),
+        "parameters": payload["meta"]["model"]["parameters"],
+        "validation": payload["meta"]["validation"],
+        "stdlib_runtime": _benchmark_runtime(
+            output, repeats=args.runtime_benchmark_repeats
+        ),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", required=True, type=Path)
@@ -546,6 +739,7 @@ def main() -> int:
     parser.add_argument("--patience", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--training-workers", type=int, default=1)
     parser.add_argument("--cross-transformer-heads", type=int, default=4)
     parser.add_argument("--cross-moe-experts", type=int, default=4)
     parser.add_argument("--match-ranking-weight", type=float, default=0.5)
@@ -591,6 +785,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.runtime_benchmark_repeats <= 0:
         raise SystemExit("runtime-benchmark-repeats must be positive")
+    if args.training_workers <= 0:
+        raise SystemExit("training-workers must be positive")
     if args.max_stdlib_runtime_ms <= 0:
         raise SystemExit("max-stdlib-runtime-ms must be positive")
     if args.match_ranking_weight < 0 or args.direction_score_weight < 0:
@@ -648,6 +844,9 @@ def main() -> int:
         args.match_ranking_weight_grid,
         default=args.match_ranking_weight,
     )
+    config_names = [config["name"] for config in configs]
+    if len(set(config_names)) != len(config_names):
+        raise SystemExit("expanded config names must be unique")
     seeds = [int(value) for value in args.seeds.split(",") if value.strip()]
     if not seeds:
         raise SystemExit("at least one seed is required")
@@ -682,30 +881,37 @@ def main() -> int:
     candidate_data = dict(selection_data)
     if all(calibration_exists):
         candidate_data.update(calibration_paths)
+    jobs = [(config, seed) for config in configs for seed in seeds]
     experiments = []
-    for config in configs:
-        for seed in seeds:
-            stem = f"{config['name']}_seed{seed}"
-            output = out_dir / f"{stem}.json"
-            payload = _run_training(
+    if args.training_workers == 1:
+        for config, seed in jobs:
+            experiments.append(_run_candidate_experiment(
                 config=config,
                 seed=seed,
                 data_paths=candidate_data,
-                output=output,
-                log_path=out_dir / f"{stem}.log",
+                out_dir=out_dir,
                 args=args,
-            )
-            experiments.append({
-                "config": config,
-                "seed": seed,
-                "model": str(output),
-                "model_sha256": _sha256(output),
-                "parameters": payload["meta"]["model"]["parameters"],
-                "validation": payload["meta"]["validation"],
-                "stdlib_runtime": _benchmark_runtime(
-                    output, repeats=args.runtime_benchmark_repeats
-                ),
-            })
+            ))
+    else:
+        with ThreadPoolExecutor(max_workers=args.training_workers) as executor:
+            futures = {
+                executor.submit(
+                    _run_candidate_experiment,
+                    config=config,
+                    seed=seed,
+                    data_paths=candidate_data,
+                    out_dir=out_dir,
+                    args=args,
+                ): (config["name"], seed)
+                for config, seed in jobs
+            }
+            for future in as_completed(futures):
+                experiments.append(future.result())
+    config_order = {config["name"]: index for index, config in enumerate(configs)}
+    seed_order = {seed: index for index, seed in enumerate(seeds)}
+    experiments.sort(key=lambda row: (
+        config_order[row["config"]["name"]], seed_order[row["seed"]]
+    ))
 
     config_summaries = []
     for config in configs:
@@ -752,6 +958,7 @@ def main() -> int:
             "selection_used_held_out": False,
             "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
             "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
+            "training_workers": args.training_workers,
             "training_recipe_defaults": _training_recipe(args),
             "match_ranking_weight_grid": ranking_weight_grid,
             "selection_mode": args.selection_mode,
@@ -857,15 +1064,28 @@ def main() -> int:
             out_dir=out_dir,
             args=args,
         )
-    deployment_eligible = bool(
-        args.selection_mode == "policy"
-        and post_selection_policy is not None
-        and post_selection_policy["passed"]
+    offline_candidate_gate = _offline_candidate_gate(
+        args=args,
+        audit_report=audit_report,
+        data_dir=data_dir,
+        seeds=seeds,
+        post_selection_policy=post_selection_policy,
     )
+    offline_candidate_eligible = offline_candidate_gate["passed"]
+    deployment_eligible = False
+    deployment_blockers = [
+        "native_tcp_paired_evaluation_required",
+        "official_exe_acceptance_required",
+    ]
+    if not offline_candidate_eligible:
+        deployment_blockers.insert(0, "offline_candidate_gate_failed")
     ensemble_manifest = {
         "format": "opp_multitask_ensemble_v1",
         "selection_used_held_out": False,
         "deployment_eligible": deployment_eligible,
+        "deployment_blockers": deployment_blockers,
+        "offline_candidate_eligible": offline_candidate_eligible,
+        "offline_candidate_gate": offline_candidate_gate,
         "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
         "training_recipe": _training_recipe(args, selected_config),
         "estimated_ensemble_stdlib_runtime_ms": final_ensemble_runtime_ms,
@@ -891,11 +1111,15 @@ def main() -> int:
         json.dumps(ensemble_manifest, indent=2, sort_keys=True), encoding="utf-8"
     )
     summary = {
-        "schema_version": 4,
+        "schema_version": 5,
         "selection_used_held_out": False,
         "deployment_eligible": deployment_eligible,
+        "deployment_blockers": deployment_blockers,
+        "offline_candidate_eligible": offline_candidate_eligible,
+        "offline_candidate_gate": offline_candidate_gate,
         "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
         "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
+        "training_workers": args.training_workers,
         "training_recipe": _training_recipe(args, selected_config),
         "match_ranking_weight_grid": ranking_weight_grid,
         "selection_mode": args.selection_mode,
@@ -915,6 +1139,9 @@ def main() -> int:
             "offline_policy": selected_summary.get("offline_policy"),
             "post_selection_policy": post_selection_policy,
             "deployment_eligible": deployment_eligible,
+            "deployment_blockers": deployment_blockers,
+            "offline_candidate_eligible": offline_candidate_eligible,
+            "offline_candidate_gate": offline_candidate_gate,
             "held_out": representative["held_out"],
             "ensemble_manifest": str(ensemble_manifest_path),
             "members": final_members,

@@ -124,9 +124,15 @@ then evaluated on calibration and held-out data. Both post-selection gates
 require override coverage, positive ordinary and opponent-stratified cluster CI
 lower bounds, and nonnegative means for every opponent. The runner writes
 `post_selection_policy.json`, embeds its hash and result in the ensemble
-manifest and sweep summary, and marks `deployment_eligible` true only when both
-gates pass. It exits nonzero on failure unless an explicit diagnostic override
-is supplied; that override never changes deployment eligibility.
+manifest and sweep summary, and exits nonzero on failure unless an explicit
+diagnostic override is supplied.
+
+Passing a relaxed diagnostic gate is not deployment evidence. The runner now
+reports a separate `offline_candidate_eligible` state that additionally
+requires a complete frozen dataset, minimum train rows, at least three seeds,
+multiple opponents in every split, and no weakening of the default coverage or
+CI thresholds. `deployment_eligible` remains false because native paired
+classic-pool evaluation and official EXE acceptance occur after this sweep.
 
 A two-architecture CUDA smoke exercised the complete
 train -> calibration -> validation selection -> held-out path. A second run
@@ -134,6 +140,11 @@ required one post-selection override where the tiny smoke model made none: it
 returned exit code 1 while preserving all model, manifest, summary, and gate
 failure artifacts. This verifies pipeline semantics only; the synthetic smoke
 data and relaxed selection thresholds are not strength evidence.
+
+Candidate training can now use multiple subprocess workers while preserving a
+fixed architecture/seed result order. The default remains one worker for
+large-model memory safety; the pass-10 small/medium diagnostic uses three
+workers after a two-worker CUDA smoke verified concurrent execution.
 
 The live 70-hand collector had completed 10 of 160 passes at the time of this
 update, with 460 train, 120 validation, and 115 held-out value rows plus 2,943

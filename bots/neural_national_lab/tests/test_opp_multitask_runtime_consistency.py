@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -117,6 +119,91 @@ def test_scaling_expands_ranking_weight_as_selection_dimension() -> None:
         "tiny_rw0", "tiny_rw0p5", "tiny_rw1"
     ]
     assert [config["match_ranking_weight"] for config in configs] == weights
+
+
+def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
+    tmp_path: Path,
+) -> None:
+    requirements = scaling.OFFLINE_CANDIDATE_REQUIREMENTS
+    args = SimpleNamespace(
+        selection_mode="policy",
+        policy_min_overrides=0,
+        policy_min_selection_clusters=requirements["selection_clusters"],
+        policy_min_override_clusters=requirements[
+            "selection_override_clusters"
+        ],
+        policy_min_overrides_per_opponent=requirements[
+            "selection_overrides_per_opponent"
+        ],
+        policy_min_calibration_overrides=requirements[
+            "calibration_overrides"
+        ],
+        policy_min_calibration_override_clusters=requirements[
+            "calibration_override_clusters"
+        ],
+        policy_min_held_out_overrides=requirements["held_out_overrides"],
+        policy_min_held_out_override_clusters=requirements[
+            "held_out_override_clusters"
+        ],
+        policy_bootstrap_samples=requirements["bootstrap_samples"],
+        policy_min_override_hand_mean=0.0,
+        policy_min_selection_ci_lower=-1.0,
+        policy_min_calibration_ci_lower=0.0,
+        policy_min_held_out_ci_lower=0.0,
+        policy_allow_negative_opponent=False,
+        allow_missing_cross_hand_sequence=False,
+    )
+    audit = {
+        "value_rows": {"train": requirements["value_train_rows"]},
+        "behavior_rows": {"train": requirements["behavior_train_rows"]},
+        "opponents": {
+            split: [f"{split}-{index}" for index in range(requirements[f"{split}_opponents"])]
+            for split in ("train", "val", "calibration", "held_out")
+        },
+    }
+    (tmp_path / "freeze_manifest.json").write_text(
+        json.dumps({
+            "allow_incomplete": True,
+            "source_completed_passes": 10,
+            "source_requested_passes": 160,
+        }),
+        encoding="utf-8",
+    )
+
+    gate = scaling._offline_candidate_gate(
+        args=args,
+        audit_report=audit,
+        data_dir=tmp_path,
+        seeds=[101, 211, 307],
+        post_selection_policy={"passed": True},
+    )
+
+    assert gate["passed"] is False
+    assert "selection_overrides<10" in gate["errors"]
+    assert "selection_ci_lower_threshold<0" in gate["errors"]
+    assert "dataset_freeze_incomplete" in gate["errors"]
+    assert "dataset_pass_count_incomplete" in gate["errors"]
+
+    args.policy_min_overrides = requirements["selection_overrides"]
+    args.policy_min_selection_ci_lower = 0.0
+    (tmp_path / "freeze_manifest.json").write_text(
+        json.dumps({
+            "allow_incomplete": False,
+            "source_completed_passes": 160,
+            "source_requested_passes": 160,
+        }),
+        encoding="utf-8",
+    )
+    passing = scaling._offline_candidate_gate(
+        args=args,
+        audit_report=audit,
+        data_dir=tmp_path,
+        seeds=[101, 211, 307],
+        post_selection_policy={"passed": True},
+    )
+
+    assert passing["passed"] is True
+    assert passing["errors"] == []
 
 
 @pytest.mark.parametrize(
