@@ -1,0 +1,27 @@
+{
+  "events_seen": 135,
+  "hands_started_min": 10,
+  "settlements_min": 9,
+  "seats": {
+    "A": {
+      "name": "BotA",
+      "hands_started": 10,
+      "settlements": 9,
+      "max_response_sec": 0.301,
+      "pending_expected_action": false,
+      "expected_reason": ""
+    },
+    "B": {
+      "name": "BotB",
+      "hands_started": 10,
+      "settlements": 9,
+      "max_response_sec": 0.301,
+      "pending_expected_action": false,
+      "expected_reason": ""
+    }
+  },
+  "issues": [],
+  "warnings": [],
+  "pending_expected_actions": [],
+  "max_platform_silent_gap_sec": 4.715
+}

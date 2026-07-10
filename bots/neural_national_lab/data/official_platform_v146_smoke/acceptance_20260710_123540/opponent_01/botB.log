@@ -1,0 +1,208 @@
+[12:36:54] START name=Opponent seat=lower host=127.0.0.1 port=34981 log=/home/zzx/project/pok/.codex_worktrees/neural-large-oppmodel/bots/neural_national_lab/data/official_platform_v146_smoke/acceptance_20260710_123540/opponent_01/botB.log
+[12:36:54] RECV raw='name' buffer='name'
+[12:36:54] DISPATCH line='name'
+[12:36:54] SEND name_handshake name='Opponent'
+[12:36:54] RECV raw='preflop|SMALLBLIND|<3,9><3,1>' buffer='preflop|SMALLBLIND|<3,9><3,1>'
+[12:36:54] DISPATCH line='preflop|SMALLBLIND|<3,9><3,1>'
+[12:36:54] DECIDE start name=Opponent hand=1 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True
+[12:36:55] DECIDE done action=0 elapsed=0.062s
+[12:36:55] OFFICIAL_ACTION_DELAY wait=0.238s target=0.300s
+[12:36:55] SEND name=Opponent hand=1 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='call'
+[12:36:55] RECV raw='flop|<3,11><1,9><1,2>' buffer='flop|<3,11><1,9><1,2>'
+[12:36:55] DISPATCH line='flop|<3,11><1,9><1,2>'
+[12:36:55] RECV raw='raise 151' buffer='raise 151'
+[12:36:55] DISPATCH line='raise 151'
+[12:36:55] DECIDE start name=Opponent hand=1 stage=flop act_cnt=0 my_sb=0 opp_sb=151 my_chips=19900 opp_chips=19749 is_sb=True
+[12:36:55] DECIDE done action=-1 elapsed=0.097s
+[12:36:55] OFFICIAL_ACTION_DELAY wait=0.203s target=0.300s
+[12:36:56] SEND name=Opponent hand=1 stage=flop act_cnt=0 my_sb=0 opp_sb=151 my_chips=19900 opp_chips=19749 is_sb=True msg='fold'
+[12:37:00] RECV raw='earnChips -100' buffer='earnChips -100'
+[12:37:00] DISPATCH line='earnChips -100'
+[12:37:00] RECV raw='preflop|BIGBLIND|<3,12><1,2>' buffer='preflop|BIGBLIND|<3,12><1,2>'
+[12:37:00] DISPATCH line='preflop|BIGBLIND|<3,12><1,2>'
+[12:37:00] RECV raw='call' buffer='call'
+[12:37:00] DISPATCH line='call'
+[12:37:00] DECIDE start name=Opponent hand=2 stage=preflop act_cnt=0 my_sb=100 opp_sb=100 my_chips=19900 opp_chips=19900 is_sb=False
+[12:37:00] DECIDE done action=320 elapsed=0.045s
+[12:37:00] OFFICIAL_ACTION_DELAY wait=0.255s target=0.300s
+[12:37:00] SEND name=Opponent hand=2 stage=preflop act_cnt=0 my_sb=100 opp_sb=100 my_chips=19900 opp_chips=19900 is_sb=False msg='raise 320'
+[12:37:01] RECV raw='fold' buffer='fold'
+[12:37:01] DISPATCH line='fold'
+[12:37:04] RECV raw='earnChips 100' buffer='earnChips 100'
+[12:37:04] DISPATCH line='earnChips 100'
+[12:37:04] RECV raw='preflop|SMALLBLIND|<1,8><1,2>' buffer='preflop|SMALLBLIND|<1,8><1,2>'
+[12:37:04] DISPATCH line='preflop|SMALLBLIND|<1,8><1,2>'
+[12:37:04] DECIDE start name=Opponent hand=3 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True
+[12:37:04] DECIDE done action=0 elapsed=0.060s
+[12:37:04] OFFICIAL_ACTION_DELAY wait=0.240s target=0.300s
+[12:37:04] SEND name=Opponent hand=3 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='call'
+[12:37:04] RECV raw='raise 320' buffer='raise 320'
+[12:37:04] DISPATCH line='raise 320'
+[12:37:04] DECIDE start name=Opponent hand=3 stage=preflop act_cnt=1 my_sb=100 opp_sb=320 my_chips=19900 opp_chips=19680 is_sb=True
+[12:37:04] DECIDE done action=-1 elapsed=0.060s
+[12:37:04] OFFICIAL_ACTION_DELAY wait=0.240s target=0.300s
+[12:37:05] SEND name=Opponent hand=3 stage=preflop act_cnt=1 my_sb=100 opp_sb=320 my_chips=19900 opp_chips=19680 is_sb=True msg='fold'
+[12:37:08] RECV raw='earnChips -100' buffer='earnChips -100'
+[12:37:08] DISPATCH line='earnChips -100'
+[12:37:08] RECV raw='preflop|BIGBLIND|<3,3><3,1>' buffer='preflop|BIGBLIND|<3,3><3,1>'
+[12:37:08] DISPATCH line='preflop|BIGBLIND|<3,3><3,1>'
+[12:37:08] RECV raw='raise 260' buffer='raise 260'
+[12:37:08] DISPATCH line='raise 260'
+[12:37:08] DECIDE start name=Opponent hand=4 stage=preflop act_cnt=0 my_sb=100 opp_sb=260 my_chips=19900 opp_chips=19740 is_sb=False
+[12:37:08] DECIDE done action=0 elapsed=0.060s
+[12:37:08] OFFICIAL_ACTION_DELAY wait=0.240s target=0.300s
+[12:37:09] SEND name=Opponent hand=4 stage=preflop act_cnt=0 my_sb=100 opp_sb=260 my_chips=19900 opp_chips=19740 is_sb=False msg='call'
+[12:37:09] RECV raw='flop|<1,8><3,12><2,4>' buffer='flop|<1,8><3,12><2,4>'
+[12:37:09] DISPATCH line='flop|<1,8><3,12><2,4>'
+[12:37:09] DECIDE start name=Opponent hand=4 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19740 opp_chips=19740 is_sb=False
+[12:37:09] DECIDE done action=0 elapsed=0.071s
+[12:37:09] OFFICIAL_ACTION_DELAY wait=0.229s target=0.300s
+[12:37:09] SEND name=Opponent hand=4 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19740 opp_chips=19740 is_sb=False msg='check'
+[12:37:09] RECV raw='turn|<0,12>' buffer='turn|<0,12>'
+[12:37:09] DISPATCH line='turn|<0,12>'
+[12:37:09] DECIDE start name=Opponent hand=4 stage=turn act_cnt=0 my_sb=0 opp_sb=0 my_chips=19740 opp_chips=19740 is_sb=False
+[12:37:09] DECIDE done action=0 elapsed=0.096s
+[12:37:09] OFFICIAL_ACTION_DELAY wait=0.204s target=0.300s
+[12:37:09] SEND name=Opponent hand=4 stage=turn act_cnt=0 my_sb=0 opp_sb=0 my_chips=19740 opp_chips=19740 is_sb=False msg='check'
+[12:37:10] RECV raw='raise 360' buffer='raise 360'
+[12:37:10] DISPATCH line='raise 360'
+[12:37:10] DECIDE start name=Opponent hand=4 stage=turn act_cnt=1 my_sb=0 opp_sb=360 my_chips=19740 opp_chips=19380 is_sb=False
+[12:37:10] DECIDE done action=-1 elapsed=0.130s
+[12:37:10] OFFICIAL_ACTION_DELAY wait=0.170s target=0.300s
+[12:37:10] SEND name=Opponent hand=4 stage=turn act_cnt=1 my_sb=0 opp_sb=360 my_chips=19740 opp_chips=19380 is_sb=False msg='fold'
+[12:37:13] RECV raw='earnChips -260' buffer='earnChips -260'
+[12:37:13] DISPATCH line='earnChips -260'
+[12:37:13] RECV raw='preflop|SMALLBLIND|<0,7><1,3>' buffer='preflop|SMALLBLIND|<0,7><1,3>'
+[12:37:13] DISPATCH line='preflop|SMALLBLIND|<0,7><1,3>'
+[12:37:13] DECIDE start name=Opponent hand=5 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True
+[12:37:13] DECIDE done action=0 elapsed=0.059s
+[12:37:13] OFFICIAL_ACTION_DELAY wait=0.241s target=0.300s
+[12:37:14] SEND name=Opponent hand=5 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='call'
+[12:37:14] RECV raw='flop|<1,5><2,1><3,0>' buffer='flop|<1,5><2,1><3,0>'
+[12:37:14] DISPATCH line='flop|<1,5><2,1><3,0>'
+[12:37:14] RECV raw='check' buffer='check'
+[12:37:14] DISPATCH line='check'
+[12:37:14] DECIDE start name=Opponent hand=5 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=True
+[12:37:14] DECIDE done action=0 elapsed=0.069s
+[12:37:14] OFFICIAL_ACTION_DELAY wait=0.231s target=0.300s
+[12:37:14] SEND name=Opponent hand=5 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=True msg='call'
+[12:37:14] RECV raw='turn|<3,11>' buffer='turn|<3,11>'
+[12:37:14] DISPATCH line='turn|<3,11>'
+[12:37:15] RECV raw='check' buffer='check'
+[12:37:15] DISPATCH line='check'
+[12:37:15] DECIDE start name=Opponent hand=5 stage=turn act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=True
+[12:37:15] DECIDE done action=101 elapsed=0.098s
+[12:37:15] OFFICIAL_ACTION_DELAY wait=0.202s target=0.300s
+[12:37:15] SEND name=Opponent hand=5 stage=turn act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=True msg='raise 101'
+[12:37:15] RECV raw='fold' buffer='fold'
+[12:37:15] DISPATCH line='fold'
+[12:37:18] RECV raw='earnChips 100' buffer='earnChips 100'
+[12:37:18] DISPATCH line='earnChips 100'
+[12:37:19] RECV raw='preflop|BIGBLIND|<3,3><0,10>' buffer='preflop|BIGBLIND|<3,3><0,10>'
+[12:37:19] DISPATCH line='preflop|BIGBLIND|<3,3><0,10>'
+[12:37:19] RECV raw='call' buffer='call'
+[12:37:19] DISPATCH line='call'
+[12:37:19] DECIDE start name=Opponent hand=6 stage=preflop act_cnt=0 my_sb=100 opp_sb=100 my_chips=19900 opp_chips=19900 is_sb=False
+[12:37:19] DECIDE done action=0 elapsed=0.043s
+[12:37:19] OFFICIAL_ACTION_DELAY wait=0.257s target=0.300s
+[12:37:19] SEND name=Opponent hand=6 stage=preflop act_cnt=0 my_sb=100 opp_sb=100 my_chips=19900 opp_chips=19900 is_sb=False msg='check'
+[12:37:19] RECV raw='flop|<1,0><3,10><0,6>' buffer='flop|<1,0><3,10><0,6>'
+[12:37:19] DISPATCH line='flop|<1,0><3,10><0,6>'
+[12:37:19] DECIDE start name=Opponent hand=6 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=False
+[12:37:19] DECIDE done action=101 elapsed=0.069s
+[12:37:19] OFFICIAL_ACTION_DELAY wait=0.231s target=0.300s
+[12:37:19] SEND name=Opponent hand=6 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=False msg='raise 101'
+[12:37:20] RECV raw='fold' buffer='fold'
+[12:37:20] DISPATCH line='fold'
+[12:37:23] RECV raw='earnChips 100' buffer='earnChips 100'
+[12:37:23] DISPATCH line='earnChips 100'
+[12:37:23] RECV raw='preflop|SMALLBLIND|<2,6><3,11>' buffer='preflop|SMALLBLIND|<2,6><3,11>'
+[12:37:23] DISPATCH line='preflop|SMALLBLIND|<2,6><3,11>'
+[12:37:23] DECIDE start name=Opponent hand=7 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True
+[12:37:23] DECIDE done action=260 elapsed=0.060s
+[12:37:23] OFFICIAL_ACTION_DELAY wait=0.240s target=0.300s
+[12:37:23] SEND name=Opponent hand=7 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='raise 260'
+[12:37:24] RECV raw='flop|<2,7><0,7><2,12>' buffer='flop|<2,7><0,7><2,12>'
+[12:37:24] DISPATCH line='flop|<2,7><0,7><2,12>'
+[12:37:24] RECV raw='raise 520' buffer='raise 520'
+[12:37:24] DISPATCH line='raise 520'
+[12:37:24] DECIDE start name=Opponent hand=7 stage=flop act_cnt=0 my_sb=0 opp_sb=520 my_chips=19740 opp_chips=19380 is_sb=True
+[12:37:24] DECIDE done action=-1 elapsed=0.099s
+[12:37:24] OFFICIAL_ACTION_DELAY wait=0.201s target=0.300s
+[12:37:24] SEND name=Opponent hand=7 stage=flop act_cnt=0 my_sb=0 opp_sb=520 my_chips=19740 opp_chips=19380 is_sb=True msg='fold'
+[12:37:27] RECV raw='earnChips -260' buffer='earnChips -260'
+[12:37:27] DISPATCH line='earnChips -260'
+[12:37:27] RECV raw='preflop|BIGBLIND|<0,1><0,5>' buffer='preflop|BIGBLIND|<0,1><0,5>'
+[12:37:27] DISPATCH line='preflop|BIGBLIND|<0,1><0,5>'
+[12:37:28] RECV raw='raise 272' buffer='raise 272'
+[12:37:28] DISPATCH line='raise 272'
+[12:37:28] DECIDE start name=Opponent hand=8 stage=preflop act_cnt=0 my_sb=100 opp_sb=272 my_chips=19900 opp_chips=19728 is_sb=False
+[12:37:28] DECIDE done action=0 elapsed=0.061s
+[12:37:28] OFFICIAL_ACTION_DELAY wait=0.239s target=0.300s
+[12:37:28] SEND name=Opponent hand=8 stage=preflop act_cnt=0 my_sb=100 opp_sb=272 my_chips=19900 opp_chips=19728 is_sb=False msg='call'
+[12:37:28] RECV raw='flop|<3,1><3,10><2,2>' buffer='flop|<3,1><3,10><2,2>'
+[12:37:28] DISPATCH line='flop|<3,1><3,10><2,2>'
+[12:37:28] DECIDE start name=Opponent hand=8 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19728 opp_chips=19728 is_sb=False
+[12:37:28] DECIDE done action=0 elapsed=0.073s
+[12:37:28] OFFICIAL_ACTION_DELAY wait=0.227s target=0.300s
+[12:37:28] SEND name=Opponent hand=8 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19728 opp_chips=19728 is_sb=False msg='check'
+[12:37:29] RECV raw='raise 220' buffer='raise 220'
+[12:37:29] DISPATCH line='raise 220'
+[12:37:29] DECIDE start name=Opponent hand=8 stage=flop act_cnt=1 my_sb=0 opp_sb=220 my_chips=19728 opp_chips=19508 is_sb=False
+[12:37:29] DECIDE done action=-1 elapsed=0.108s
+[12:37:29] OFFICIAL_ACTION_DELAY wait=0.192s target=0.300s
+[12:37:29] SEND name=Opponent hand=8 stage=flop act_cnt=1 my_sb=0 opp_sb=220 my_chips=19728 opp_chips=19508 is_sb=False msg='fold'
+[12:37:32] RECV raw='earnChips -272' buffer='earnChips -272'
+[12:37:32] DISPATCH line='earnChips -272'
+[12:37:32] RECV raw='preflop|SMALLBLIND|<1,4><2,2>' buffer='preflop|SMALLBLIND|<1,4><2,2>'
+[12:37:32] DISPATCH line='preflop|SMALLBLIND|<1,4><2,2>'
+[12:37:32] DECIDE start name=Opponent hand=9 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True
+[12:37:32] DECIDE done action=0 elapsed=0.061s
+[12:37:32] OFFICIAL_ACTION_DELAY wait=0.239s target=0.300s
+[12:37:32] SEND name=Opponent hand=9 stage=preflop act_cnt=0 my_sb=50 opp_sb=100 my_chips=19950 opp_chips=19900 is_sb=True msg='call'
+[12:37:33] RECV raw='flop|<3,12><0,5><3,10>' buffer='flop|<3,12><0,5><3,10>'
+[12:37:33] DISPATCH line='flop|<3,12><0,5><3,10>'
+[12:37:33] RECV raw='check' buffer='check'
+[12:37:33] DISPATCH line='check'
+[12:37:33] DECIDE start name=Opponent hand=9 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=True
+[12:37:33] DECIDE done action=0 elapsed=0.069s
+[12:37:33] OFFICIAL_ACTION_DELAY wait=0.231s target=0.300s
+[12:37:33] SEND name=Opponent hand=9 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=True msg='call'
+[12:37:33] RECV raw='turn|<2,0>' buffer='turn|<2,0>'
+[12:37:33] DISPATCH line='turn|<2,0>'
+[12:37:34] RECV raw='check' buffer='check'
+[12:37:34] DISPATCH line='check'
+[12:37:34] DECIDE start name=Opponent hand=9 stage=turn act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=True
+[12:37:34] DECIDE done action=101 elapsed=0.101s
+[12:37:34] OFFICIAL_ACTION_DELAY wait=0.199s target=0.300s
+[12:37:34] SEND name=Opponent hand=9 stage=turn act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=True msg='raise 101'
+[12:37:34] RECV raw='fold' buffer='fold'
+[12:37:34] DISPATCH line='fold'
+[12:37:37] RECV raw='earnChips 100' buffer='earnChips 100'
+[12:37:37] DISPATCH line='earnChips 100'
+[12:37:37] RECV raw='preflop|BIGBLIND|<2,0><0,3>' buffer='preflop|BIGBLIND|<2,0><0,3>'
+[12:37:37] DISPATCH line='preflop|BIGBLIND|<2,0><0,3>'
+[12:37:38] RECV raw='call' buffer='call'
+[12:37:38] DISPATCH line='call'
+[12:37:38] DECIDE start name=Opponent hand=10 stage=preflop act_cnt=0 my_sb=100 opp_sb=100 my_chips=19900 opp_chips=19900 is_sb=False
+[12:37:38] DECIDE done action=0 elapsed=0.042s
+[12:37:38] OFFICIAL_ACTION_DELAY wait=0.258s target=0.300s
+[12:37:38] SEND name=Opponent hand=10 stage=preflop act_cnt=0 my_sb=100 opp_sb=100 my_chips=19900 opp_chips=19900 is_sb=False msg='check'
+[12:37:38] RECV raw='flop|<0,1><1,1><1,10>' buffer='flop|<0,1><1,1><1,10>'
+[12:37:38] DISPATCH line='flop|<0,1><1,1><1,10>'
+[12:37:38] DECIDE start name=Opponent hand=10 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=False
+[12:37:38] DECIDE done action=0 elapsed=0.068s
+[12:37:38] OFFICIAL_ACTION_DELAY wait=0.232s target=0.300s
+[12:37:38] SEND name=Opponent hand=10 stage=flop act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=False msg='check'
+[12:37:39] RECV raw='turn|<3,6>' buffer='turn|<3,6>'
+[12:37:39] DISPATCH line='turn|<3,6>'
+[12:37:39] DECIDE start name=Opponent hand=10 stage=turn act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=False
+[12:37:39] DECIDE done action=0 elapsed=0.095s
+[12:37:39] OFFICIAL_ACTION_DELAY wait=0.205s target=0.300s
+[12:37:39] SEND name=Opponent hand=10 stage=turn act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=False msg='check'
+[12:37:39] RECV raw='river|<3,2>' buffer='river|<3,2>'
+[12:37:39] DISPATCH line='river|<3,2>'
+[12:37:39] DECIDE start name=Opponent hand=10 stage=river act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=False
+[12:37:39] DECIDE done action=0 elapsed=0.082s
+[12:37:39] OFFICIAL_ACTION_DELAY wait=0.218s target=0.300s
+[12:37:39] SEND name=Opponent hand=10 stage=river act_cnt=0 my_sb=0 opp_sb=0 my_chips=19900 opp_chips=19900 is_sb=False msg='check'
