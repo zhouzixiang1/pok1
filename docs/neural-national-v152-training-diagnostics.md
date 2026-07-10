@@ -188,6 +188,22 @@ model's match-value lower bound was strongly negative. The policy grid now
 models hand, tail, and match value on a simplex and reserves at least 25% weight
 for match value. Pure single-hand policies are not eligible for formal scaling.
 
+The deployment policy reads the lower-quantile head, while the original
+pairwise ranking loss trained only the mean head. A new independent lower-head
+ranking weight and lower-direction validation metric expose and address this
+objective mismatch. On small GRU, lower-ranking weight 0.5 improved median
+match lower-direction balanced accuracy from 49.4% to 59.1% and raised raw
+positive lower predictions from 0.7% to 12.8%. Lower-quantile coverage remained
+observable rather than being hidden by the direction metric.
+
+The pass-10 3-seed policy still rejected every lower-ranking configuration.
+After per-model calibration, seed disagreement made the conservative ensemble
+lower bound negative for every long-horizon policy point. Calibrated mean-lower
+aggregation produced only 5 positive match bounds among 237 validation
+alternatives, still below the required override and cluster coverage. This is
+useful learning-head progress, not a bot candidate; the experiment must be
+repeated as independent match clusters accumulate.
+
 ## Next Evidence
 
 1. Run validation-only ranking-weight ablations on larger match-cluster counts.

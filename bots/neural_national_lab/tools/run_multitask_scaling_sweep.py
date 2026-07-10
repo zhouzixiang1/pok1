@@ -131,9 +131,18 @@ def _training_recipe(
                 "match_ranking_weight", args.match_ranking_weight
             )
         ),
+        "match_lower_ranking_weight": float(
+            (config or {}).get(
+                "match_lower_ranking_weight",
+                args.match_lower_ranking_weight,
+            )
+        ),
         "ranking_margin": float(args.ranking_margin),
         "ranking_temperature": float(args.ranking_temperature),
         "direction_score_weight": float(args.direction_score_weight),
+        "lower_direction_score_weight": float(
+            args.lower_direction_score_weight
+        ),
     }
 
 
@@ -162,6 +171,34 @@ def _expand_ranking_weights(
             if len(weights) > 1:
                 suffix = f"{weight:g}".replace("-", "m").replace(".", "p")
                 item["name"] = f"{config['name']}_rw{suffix}"
+            expanded.append(item)
+    return expanded, weights
+
+
+def _expand_lower_ranking_weights(
+    configs: list[dict[str, Any]], raw_grid: str, *, default: float
+) -> tuple[list[dict[str, Any]], list[float]]:
+    try:
+        weights = (
+            [float(value) for value in raw_grid.split(",") if value.strip()]
+            if raw_grid.strip()
+            else [float(default)]
+        )
+    except ValueError as exc:
+        raise SystemExit("invalid match lower ranking weight grid") from exc
+    if not weights or any(
+        not math.isfinite(weight) or weight < 0 for weight in weights
+    ):
+        raise SystemExit("match lower ranking weights must be non-negative")
+    weights = list(dict.fromkeys(weights))
+    expanded = []
+    for config in configs:
+        for weight in weights:
+            item = dict(config)
+            item["match_lower_ranking_weight"] = weight
+            if len(weights) > 1:
+                suffix = f"{weight:g}".replace("-", "m").replace(".", "p")
+                item["name"] = f"{config['name']}_lrw{suffix}"
             expanded.append(item)
     return expanded, weights
 
@@ -688,9 +725,15 @@ def _run_training(
         "--cross-transformer-heads", str(config["cross_transformer_heads"]),
         "--cross-moe-experts", str(config["cross_moe_experts"]),
         "--match-ranking-weight", str(config["match_ranking_weight"]),
+        "--match-lower-ranking-weight", str(
+            config["match_lower_ranking_weight"]
+        ),
         "--ranking-margin", str(args.ranking_margin),
         "--ranking-temperature", str(args.ranking_temperature),
         "--direction-score-weight", str(args.direction_score_weight),
+        "--lower-direction-score-weight", str(
+            args.lower_direction_score_weight
+        ),
         "--head-hidden", str(config["head_hidden"]),
         "--epochs", str(args.epochs),
         "--patience", str(args.patience),
@@ -771,9 +814,12 @@ def main() -> int:
     parser.add_argument("--cross-moe-experts", type=int, default=4)
     parser.add_argument("--match-ranking-weight", type=float, default=0.5)
     parser.add_argument("--match-ranking-weight-grid", default="")
+    parser.add_argument("--match-lower-ranking-weight", type=float, default=0.0)
+    parser.add_argument("--match-lower-ranking-weight-grid", default="")
     parser.add_argument("--ranking-margin", type=float, default=100.0)
     parser.add_argument("--ranking-temperature", type=float, default=0.1)
     parser.add_argument("--direction-score-weight", type=float, default=0.5)
+    parser.add_argument("--lower-direction-score-weight", type=float, default=0.5)
     parser.add_argument("--runtime-benchmark-repeats", type=int, default=3)
     parser.add_argument("--max-stdlib-runtime-ms", type=float, default=5000.0)
     parser.add_argument("--min-value-train", type=int, default=500)
@@ -818,7 +864,12 @@ def main() -> int:
         raise SystemExit("training-workers must be positive")
     if args.max_stdlib_runtime_ms <= 0:
         raise SystemExit("max-stdlib-runtime-ms must be positive")
-    if args.match_ranking_weight < 0 or args.direction_score_weight < 0:
+    if (
+        args.match_ranking_weight < 0
+        or args.match_lower_ranking_weight < 0
+        or args.direction_score_weight < 0
+        or args.lower_direction_score_weight < 0
+    ):
         raise SystemExit("ranking and direction score weights must be non-negative")
     if args.ranking_margin < 0 or args.ranking_temperature <= 0:
         raise SystemExit("ranking margin must be non-negative and temperature positive")
@@ -874,6 +925,11 @@ def main() -> int:
         base_configs,
         args.match_ranking_weight_grid,
         default=args.match_ranking_weight,
+    )
+    configs, lower_ranking_weight_grid = _expand_lower_ranking_weights(
+        configs,
+        args.match_lower_ranking_weight_grid,
+        default=args.match_lower_ranking_weight,
     )
     config_names = [config["name"] for config in configs]
     if len(set(config_names)) != len(config_names):
@@ -992,6 +1048,7 @@ def main() -> int:
             "training_workers": args.training_workers,
             "training_recipe_defaults": _training_recipe(args),
             "match_ranking_weight_grid": ranking_weight_grid,
+            "match_lower_ranking_weight_grid": lower_ranking_weight_grid,
             "selection_mode": args.selection_mode,
             "dataset_audit": str(out_dir / "dataset_audit.json"),
             "experiments": experiments,
@@ -1153,6 +1210,7 @@ def main() -> int:
         "training_workers": args.training_workers,
         "training_recipe": _training_recipe(args, selected_config),
         "match_ranking_weight_grid": ranking_weight_grid,
+        "match_lower_ranking_weight_grid": lower_ranking_weight_grid,
         "selection_mode": args.selection_mode,
         "post_selection_gate_enforced": (
             not args.allow_post_selection_policy_failure

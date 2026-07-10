@@ -78,6 +78,22 @@ def test_pairwise_ranking_loss_prefers_rule_relative_direction() -> None:
     assert count == 2
     assert good.item() < bad.item()
 
+    good_lower, _ = trainer._pairwise_ranking_loss(
+        torch.cat([lower, good_mean], dim=1),
+        target,
+        rule_ids,
+        head="lower",
+        **kwargs,
+    )
+    bad_lower, _ = trainer._pairwise_ranking_loss(
+        torch.cat([lower, bad_mean], dim=1),
+        target,
+        rule_ids,
+        head="lower",
+        **kwargs,
+    )
+    assert good_lower.item() < bad_lower.item()
+
 
 @pytest.mark.parametrize(
     "encoder", ["gru", "gru_moe", "deep_set", "transformer"]
@@ -119,6 +135,19 @@ def test_scaling_expands_ranking_weight_as_selection_dimension() -> None:
         "tiny_rw0", "tiny_rw0p5", "tiny_rw1"
     ]
     assert [config["match_ranking_weight"] for config in configs] == weights
+
+    lower_configs, lower_weights = scaling._expand_lower_ranking_weights(
+        configs, "0,0.25", default=0.0
+    )
+    assert lower_weights == [0.0, 0.25]
+    assert [config["name"] for config in lower_configs] == [
+        "tiny_rw0_lrw0",
+        "tiny_rw0_lrw0p25",
+        "tiny_rw0p5_lrw0",
+        "tiny_rw0p5_lrw0p25",
+        "tiny_rw1_lrw0",
+        "tiny_rw1_lrw0p25",
+    ]
 
 
 def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(

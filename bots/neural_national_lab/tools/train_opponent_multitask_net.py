@@ -526,16 +526,22 @@ def _pairwise_ranking_loss(
     temperature: float,
     positive_weight: torch.Tensor,
     action_weights: torch.Tensor,
+    head: str = "mean",
 ) -> tuple[torch.Tensor, int]:
-    mean = output[:, :NUM_ACTIONS]
+    if head == "mean":
+        values = output[:, :NUM_ACTIONS]
+    elif head == "lower":
+        values = output[:, NUM_ACTIONS:]
+    else:
+        raise ValueError(f"unknown ranking head: {head}")
     valid = ~torch.isnan(target)
     valid &= target.abs() > margin
     action_ids = torch.arange(NUM_ACTIONS, device=target.device).unsqueeze(0)
     valid &= action_ids != rule_ids.unsqueeze(1)
     if not bool(valid.any()):
         return output.sum() * 0.0, 0
-    rule_mean = mean.gather(1, rule_ids.unsqueeze(1))
-    logits = (mean - rule_mean) / max(1e-6, float(temperature))
+    rule_value = values.gather(1, rule_ids.unsqueeze(1))
+    logits = (values - rule_value) / max(1e-6, float(temperature))
     labels = (target > 0).float()
     raw = F.binary_cross_entropy_with_logits(
         logits[valid],
@@ -617,6 +623,50 @@ def _direction_report(counts: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _new_direction_counts() -> dict[str, Any]:
+    return {
+        "total": 0,
+        "correct": 0,
+        "positive": 0,
+        "negative": 0,
+        "positive_correct": 0,
+        "negative_correct": 0,
+        "predicted_positive": 0,
+        "actions": [
+            {"total": 0, "correct": 0} for _ in range(NUM_ACTIONS)
+        ],
+    }
+
+
+def _update_direction_counts(
+    counts: dict[str, Any],
+    *,
+    predicted_positive: torch.Tensor,
+    target_positive: torch.Tensor,
+    valid: torch.Tensor,
+) -> None:
+    correct = predicted_positive == target_positive
+    counts["total"] += int(valid.sum().item())
+    counts["correct"] += int((correct & valid).sum().item())
+    counts["positive"] += int((target_positive & valid).sum().item())
+    counts["negative"] += int(((~target_positive) & valid).sum().item())
+    counts["positive_correct"] += int(
+        (correct & target_positive & valid).sum().item()
+    )
+    counts["negative_correct"] += int(
+        (correct & (~target_positive) & valid).sum().item()
+    )
+    counts["predicted_positive"] += int(
+        (predicted_positive & valid).sum().item()
+    )
+    for action in range(NUM_ACTIONS):
+        action_valid = valid[:, action]
+        counts["actions"][action]["total"] += int(action_valid.sum().item())
+        counts["actions"][action]["correct"] += int(
+            (correct[:, action] & action_valid).sum().item()
+        )
+
+
 def _evaluate(
     model: OpponentAwareMultiTaskNet,
     value_samples: list[dict[str, Any]],
@@ -630,24 +680,16 @@ def _evaluate(
     response_temperature: float = 1.0,
     ranking_margin: float = 100.0,
     direction_score_weight: float = 0.5,
+    lower_direction_score_weight: float = 0.5,
 ) -> dict[str, Any]:
     model.eval()
     abs_errors = {field: [] for field in VALUE_FIELDS}
     lower_coverage = {field: [] for field in VALUE_FIELDS}
     direction_counts = {
-        field: {
-            "total": 0,
-            "correct": 0,
-            "positive": 0,
-            "negative": 0,
-            "positive_correct": 0,
-            "negative_correct": 0,
-            "predicted_positive": 0,
-            "actions": [
-                {"total": 0, "correct": 0} for _ in range(NUM_ACTIONS)
-            ],
-        }
-        for field in VALUE_FIELDS
+        field: _new_direction_counts() for field in VALUE_FIELDS
+    }
+    lower_direction_counts = {
+        field: _new_direction_counts() for field in VALUE_FIELDS
     }
     response_total = response_correct = 0
     class_total = [0] * len(OPPONENT_ACTION_LABELS)
@@ -697,35 +739,21 @@ def _evaluate(
                 rule_ids = _rule_ids_tensor(batch, device)
                 rule_mean = mean.gather(1, rule_ids.unsqueeze(1))
                 predicted_positive = (mean - rule_mean) > 0
+                lower_predicted_positive = lower > 0
                 target_positive = target > 0
                 direction_valid = valid & (target.abs() > ranking_margin)
-                correct = predicted_positive == target_positive
-                counts = direction_counts[field]
-                counts["total"] += int(direction_valid.sum().item())
-                counts["correct"] += int((correct & direction_valid).sum().item())
-                counts["positive"] += int(
-                    (target_positive & direction_valid).sum().item()
+                _update_direction_counts(
+                    direction_counts[field],
+                    predicted_positive=predicted_positive,
+                    target_positive=target_positive,
+                    valid=direction_valid,
                 )
-                counts["negative"] += int(
-                    ((~target_positive) & direction_valid).sum().item()
+                _update_direction_counts(
+                    lower_direction_counts[field],
+                    predicted_positive=lower_predicted_positive,
+                    target_positive=target_positive,
+                    valid=direction_valid,
                 )
-                counts["positive_correct"] += int(
-                    (correct & target_positive & direction_valid).sum().item()
-                )
-                counts["negative_correct"] += int(
-                    (correct & (~target_positive) & direction_valid).sum().item()
-                )
-                counts["predicted_positive"] += int(
-                    (predicted_positive & direction_valid).sum().item()
-                )
-                for action in range(NUM_ACTIONS):
-                    action_valid = direction_valid[:, action]
-                    counts["actions"][action]["total"] += int(
-                        action_valid.sum().item()
-                    )
-                    counts["actions"][action]["correct"] += int(
-                        (correct[:, action] & action_valid).sum().item()
-                    )
         for indices in _chunks(list(range(len(behavior_samples))), batch_size):
             batch = [behavior_samples[idx] for idx in indices]
             (
@@ -794,6 +822,12 @@ def _evaluate(
                 "lower_quantile_coverage": float(np.mean(lower_coverage[field]))
                 if lower_coverage[field] else None,
                 **_direction_report(direction_counts[field]),
+                **{
+                    f"lower_{key}": value
+                    for key, value in _direction_report(
+                        lower_direction_counts[field]
+                    ).items()
+                },
             }
             for field in VALUE_FIELDS
         },
@@ -813,6 +847,9 @@ def _evaluate(
     match_direction = result["value"]["match_delta_vs_rule"][
         "direction_balanced_accuracy"
     ]
+    lower_match_direction = result["value"]["match_delta_vs_rule"][
+        "lower_direction_balanced_accuracy"
+    ]
     score = 0.0
     score += hand_mae / clips["delta_vs_rule"] if hand_mae is not None else 2.0
     score += 0.5 * tail_mae / clips["tail_delta_vs_rule"] if tail_mae is not None else 1.0
@@ -820,6 +857,10 @@ def _evaluate(
     score += 1.0 - balanced if balanced is not None else 1.0
     score += direction_score_weight * (
         1.0 - match_direction if match_direction is not None else 1.0
+    )
+    score += lower_direction_score_weight * (
+        1.0 - lower_match_direction
+        if lower_match_direction is not None else 1.0
     )
     result["selection_score"] = float(score)
     return result
@@ -988,15 +1029,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--match-clip", type=float, default=2000.0)
     parser.add_argument("--lower-quantile", type=float, default=0.2)
     parser.add_argument("--match-ranking-weight", type=float, default=0.5)
+    parser.add_argument("--match-lower-ranking-weight", type=float, default=0.0)
     parser.add_argument("--ranking-margin", type=float, default=100.0)
     parser.add_argument("--ranking-temperature", type=float, default=0.1)
     parser.add_argument("--direction-score-weight", type=float, default=0.5)
+    parser.add_argument("--lower-direction-score-weight", type=float, default=0.5)
     parser.add_argument("--min-calibration-per-action", type=int, default=20)
     parser.add_argument("--require-cross-hand-sequence", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args(argv)
-    if args.match_ranking_weight < 0 or args.direction_score_weight < 0:
+    if (
+        args.match_ranking_weight < 0
+        or args.match_lower_ranking_weight < 0
+        or args.direction_score_weight < 0
+        or args.lower_direction_score_weight < 0
+    ):
         raise SystemExit("ranking and direction score weights must be non-negative")
     if args.ranking_margin < 0 or args.ranking_temperature <= 0:
         raise SystemExit("ranking margin must be non-negative and temperature positive")
@@ -1173,8 +1221,20 @@ def main(argv: list[str] | None = None) -> int:
                     positive_weight=ranking_positive_weight,
                     action_weights=ranking_action_weights,
                 )
+                lower_ranking_loss, _ = _pairwise_ranking_loss(
+                    outputs["match_delta_vs_rule"],
+                    targets["match_delta_vs_rule"],
+                    rule_ids,
+                    margin=args.ranking_margin,
+                    temperature=args.ranking_temperature,
+                    positive_weight=ranking_positive_weight,
+                    action_weights=ranking_action_weights,
+                    head="lower",
+                )
                 value_loss = (
-                    value_loss + args.match_ranking_weight * ranking_loss
+                    value_loss
+                    + args.match_ranking_weight * ranking_loss
+                    + args.match_lower_ranking_weight * lower_ranking_loss
                 )
                 losses.append(value_loss)
             if behavior_batches:
@@ -1236,6 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
             device=device,
             ranking_margin=args.ranking_margin,
             direction_score_weight=args.direction_score_weight,
+            lower_direction_score_weight=args.lower_direction_score_weight,
         )
         score = float(validation["selection_score"])
         improved = score < best_score
@@ -1256,6 +1317,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"{validation['response']['balanced_accuracy']}"
                 " match_dir_bal_acc="
                 f"{validation['value']['match_delta_vs_rule']['direction_balanced_accuracy']}"
+                " lower_match_dir_bal_acc="
+                f"{validation['value']['match_delta_vs_rule']['lower_direction_balanced_accuracy']}"
                 f"{' *best' if improved else ''}",
                 flush=True,
             )
@@ -1270,6 +1333,7 @@ def main(argv: list[str] | None = None) -> int:
         max_hist=args.max_hist, batch_size=args.batch_size, device=device,
         ranking_margin=args.ranking_margin,
         direction_score_weight=args.direction_score_weight,
+        lower_direction_score_weight=args.lower_direction_score_weight,
     )
     lower_calibration = _calibrate_lower_bounds(
         model,
@@ -1310,6 +1374,7 @@ def main(argv: list[str] | None = None) -> int:
         response_temperature=response_calibration["temperature"],
         ranking_margin=args.ranking_margin,
         direction_score_weight=args.direction_score_weight,
+        lower_direction_score_weight=args.lower_direction_score_weight,
     ) if value["calibration"] or behavior["calibration"] else None
     held_out = _evaluate(
         model, value["held_out"], behavior["held_out"], clips=clips,
@@ -1318,6 +1383,7 @@ def main(argv: list[str] | None = None) -> int:
         response_temperature=response_calibration["temperature"],
         ranking_margin=args.ranking_margin,
         direction_score_weight=args.direction_score_weight,
+        lower_direction_score_weight=args.lower_direction_score_weight,
     ) if value["held_out"] or behavior["held_out"] else None
     manifests = {
         name: _manifest(path, raw[name]) for name, path in paths.items()
@@ -1366,9 +1432,13 @@ def main(argv: list[str] | None = None) -> int:
                 "weight_decay": args.weight_decay,
                 "lower_quantile": args.lower_quantile,
                 "match_ranking_weight": args.match_ranking_weight,
+                "match_lower_ranking_weight": args.match_lower_ranking_weight,
                 "ranking_margin": args.ranking_margin,
                 "ranking_temperature": args.ranking_temperature,
                 "direction_score_weight": args.direction_score_weight,
+                "lower_direction_score_weight": (
+                    args.lower_direction_score_weight
+                ),
                 "ranking_statistics": ranking_stats,
                 "trainer_sha256": hashlib.sha256(
                     Path(__file__).read_bytes()
