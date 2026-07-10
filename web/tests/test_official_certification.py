@@ -111,6 +111,25 @@ def _full_report(
                 json.dumps({"events_seen": 1, "issues": [], "warnings": []}),
                 encoding="utf-8",
             )
+            artifact_paths = {}
+            for artifact_name in (
+                "receipt",
+                "platform_log",
+                "bot_a_log",
+                "bot_b_log",
+                "bot_a_stdout",
+                "bot_a_stderr",
+                "bot_b_stdout",
+                "bot_b_stderr",
+            ):
+                suffix = ".json" if artifact_name == "receipt" else ".log"
+                artifact_path = round_dir / f"{artifact_name}{suffix}"
+                artifact_path.write_text("{}\n", encoding="utf-8")
+                artifact_paths[artifact_name] = str(artifact_path)
+            thp_path = round_dir / "match.txt"
+            screenshot_path = round_dir / "platform.png"
+            thp_path.write_text("STATE:0:::", encoding="gb2312")
+            screenshot_path.write_bytes(b"fake-png")
             bot_b_path = candidate if kind == "self_play" else opponent
             receipts.append({
                 "round_id": f"{kind}_{round_index:02d}",
@@ -124,8 +143,11 @@ def _full_report(
                 "wire_probe": {"enabled": True, "issues": []},
                 "artifacts": {
                     "round_dir": str(round_dir),
+                    **artifact_paths,
                     "wire_events": str(wire_events),
                     "replay_summary": str(replay_summary),
+                    "thp_files": [str(thp_path)],
+                    "screenshots": [str(screenshot_path)],
                     "thp_summaries": [{"hand_records": thp_hands}],
                 },
             })
@@ -440,6 +462,34 @@ def test_full_certification_persists_llm_repair_feedback(tmp_path, monkeypatch):
     assert result["official_llm_prompt_feedback"] == "Require wire send checks in worker tasks."
     assert "compliance-only" in feedback
     assert "pending-action validation" in feedback
+
+    analysis_path = Path(result["official_llm_analysis_path"])
+    analysis_bytes = analysis_path.read_bytes()
+    analysis_path.unlink()
+    validation = certificate_validation(result, candidate=candidate, config=cfg)
+    assert validation["valid"] is False
+    assert "certificate_llm_analysis_missing" in validation["issues"]
+    analysis_path.write_bytes(analysis_bytes)
+
+    evidence_path = Path(result["official_evidence_path"])
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    retained_path = Path(evidence["rounds"][0]["artifacts"]["wire_events"]["path"])
+    retained_bytes = retained_path.read_bytes()
+    retained_path.unlink()
+    validation = certificate_validation(result, candidate=candidate, config=cfg)
+    assert validation["valid"] is False
+    assert any(
+        issue.startswith("certificate_retained_artifact_") and "wire_events" in issue
+        for issue in validation["issues"]
+    )
+    retained_path.write_bytes(retained_bytes)
+
+    evidence_bytes = evidence_path.read_bytes()
+    evidence_path.unlink()
+    validation = certificate_validation(result, candidate=candidate, config=cfg)
+    assert validation["valid"] is False
+    assert "certificate_evidence_missing" in validation["issues"]
+    evidence_path.write_bytes(evidence_bytes)
 
     (candidate / "main.py").write_text("def act():\n    return -1\n", encoding="utf-8")
     validation = certificate_validation(result, candidate=candidate, config=cfg)

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 from official_certification import STATUS_CERTIFIED, STATUS_INCONCLUSIVE
@@ -129,7 +130,7 @@ def test_official_full_commit_gate_blocks_inconclusive_result(tmp_path, monkeypa
     assert result["issues"] == ["thp_incomplete_for_full_certification: hands=69 target=70"]
 
 
-def test_official_full_commit_gate_skips_non_native_workflow(monkeypatch, tmp_path):
+def test_official_full_commit_gate_blocks_non_native_workflow(monkeypatch, tmp_path):
     import official_certification
     import tool_commit
 
@@ -149,9 +150,26 @@ def test_official_full_commit_gate_skips_non_native_workflow(monkeypatch, tmp_pa
         )
     )
 
-    assert result["passed"] is True
-    assert result["skipped"] is True
-    assert result["reason"] == "non_native_tcp_workflow"
+    assert result["passed"] is False
+    assert result["reason"] == "formal_submission_requires_native_tcp"
+    assert "only national_native/native_tcp" in result["error"]
+
+
+def test_git_commit_bot_rejects_missing_official_certificate_before_git(monkeypatch):
+    import evolution_infra
+
+    git_calls = []
+    monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: git_calls.append(args) or "")
+
+    with __import__("pytest").raises(RuntimeError, match="official full certificate is required"):
+        evolution_infra.git_commit_bot(
+            143,
+            142,
+            "test",
+            official_certificate=None,
+        )
+
+    assert git_calls == []
 
 
 def test_official_full_gate_records_repairable_checkpoint_stage(monkeypatch, tmp_path):
@@ -255,3 +273,125 @@ def test_official_full_pass_is_persisted_in_verified_gate_ledger(monkeypatch, tm
     assert args[:3] == (143, 142, "verified")
     assert kwargs["gate_results"]["official_full"]["passed"] is True
     assert kwargs["gate_results"]["official_full"]["certificate_digest"] == "cert-digest"
+
+
+def test_commit_bot_never_invokes_git_when_official_gate_fails(monkeypatch, tmp_path):
+    import tool_commit
+
+    candidate = _native_bot(tmp_path / "bots" / "national_v143")
+    checkpoint = {"next_v": 143, "source_v": 142, "stage": "verified"}
+    monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tool_commit, "_matching_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(
+        tool_commit,
+        "validate_commit_gate_ledger",
+        lambda *_args, **_kwargs: {
+            "missing_gates": [],
+            "failed_gates": [],
+            "gate_results": {},
+            "checkpoint_stage": "verified",
+        },
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "_run_official_full_commit_gate",
+        lambda *_args, **_kwargs: asyncio.sleep(
+            0,
+            result={
+                "passed": False,
+                "status": {"status": STATUS_INCONCLUSIVE, "mode": "full"},
+                "verdict": {"blocking": False, "inconclusive": True},
+                "issues": ["official_full_round_no_game_progress: target=70"],
+            },
+        ),
+    )
+    monkeypatch.setattr(tool_commit, "_record_official_full_gate_checkpoint", lambda *_args: "official_inconclusive")
+    monkeypatch.setattr(tool_commit, "log_system_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tool_commit,
+        "git_commit_bot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("git_commit_bot must not run after official gate failure")
+        ),
+    )
+
+    result = asyncio.run(
+        tool_commit.commit_bot.handler(
+            {
+                "version": 143,
+                "source_v": 142,
+                "strategy": "test",
+                "review_approved": True,
+            }
+        )
+    )
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["checkpoint_stage"] == "official_inconclusive"
+    assert payload["official_full_gate"]["passed"] is False
+
+
+def test_git_commit_bot_rejects_certificate_drift_before_staging(monkeypatch, tmp_path):
+    import bot_artifact
+    import evolution_infra
+
+    candidate = _native_bot(tmp_path / "bots" / "national_v143")
+    git_calls = []
+    monkeypatch.setattr(evolution_infra, "_git_ensure_main_branch", lambda: None)
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(evolution_infra, "_git", lambda *args, **_kwargs: git_calls.append(args) or "")
+    monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "changed-hash")
+
+    with __import__("pytest").raises(RuntimeError, match="changed after official certification"):
+        evolution_infra.git_commit_bot(
+            143,
+            142,
+            "test",
+            official_certificate={
+                "certificate_digest": "cert-digest",
+                "candidate_hash": "certified-hash",
+                "policy_id": "official-full-v2",
+            },
+        )
+
+    assert not any(call and call[0] in {"add", "commit", "tag"} for call in git_calls)
+
+
+def test_git_commit_bot_rejects_certificate_drift_while_staging(monkeypatch, tmp_path):
+    import bot_artifact
+    import evolution_infra
+
+    candidate = _native_bot(tmp_path / "bots" / "national_v143")
+    git_calls = []
+    staged = []
+
+    def fake_git(*args, **_kwargs):
+        git_calls.append(args)
+        if args == ("diff", "--cached", "--name-only"):
+            return "\n".join(staged)
+        if args == ("add", "--", "bots/national_v143"):
+            staged.append("bots/national_v143/national_bot.py")
+        if args == ("restore", "--staged", "--", "bots/national_v143"):
+            staged.clear()
+        return ""
+
+    hashes = iter(["certified-hash", "changed-hash"])
+    monkeypatch.setattr(evolution_infra, "_git_ensure_main_branch", lambda: None)
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(evolution_infra, "_git", fake_git)
+    monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: next(hashes))
+
+    with __import__("pytest").raises(RuntimeError, match="changed while staging"):
+        evolution_infra.git_commit_bot(
+            143,
+            142,
+            "test",
+            official_certificate={
+                "certificate_digest": "cert-digest",
+                "candidate_hash": "certified-hash",
+                "policy_id": "official-full-v2",
+            },
+        )
+
+    assert ("restore", "--staged", "--", "bots/national_v143") in git_calls
+    assert not any(call and call[0] in {"commit", "tag"} for call in git_calls)

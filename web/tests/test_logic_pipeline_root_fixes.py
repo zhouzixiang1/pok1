@@ -1850,6 +1850,7 @@ def test_git_push_refs_blocks_remote_contract_change(monkeypatch):
 
 
 def test_git_commit_bot_refuses_preexisting_blocking_staged_files(monkeypatch):
+    import bot_artifact
     import evolution_infra
 
     calls = []
@@ -1863,15 +1864,26 @@ def test_git_commit_bot_refuses_preexisting_blocking_staged_files(monkeypatch):
         raise AssertionError(args)
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
+    monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
 
     with __import__("pytest").raises(RuntimeError, match="pre-existing blocking staged"):
-        evolution_infra.git_commit_bot(999, 998, "test")
+        evolution_infra.git_commit_bot(
+            999,
+            998,
+            "test",
+            official_certificate={
+                "certificate_digest": "cert-digest",
+                "candidate_hash": "candidate-hash",
+                "policy_id": "official-full-v2",
+            },
+        )
 
     assert not any(call[:1] == ("add",) for call in calls)
     assert not any(call[:1] == ("commit",) for call in calls)
 
 
 def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
+    import bot_artifact
     import evolution_infra
 
     calls = []
@@ -1895,13 +1907,24 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
             return "abc123456789\n"
         if args == ("tag", "-d", "national-bot-v999"):
             return ""
-        if args == ("tag", "national-bot-v999", "-m", "National bot v999: test"):
+        if args[:3] == ("tag", "national-bot-v999", "-m"):
+            assert "official-certificate: cert-digest" in args[3]
             return ""
         raise AssertionError(args)
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
+    monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
 
-    push_ok = evolution_infra.git_commit_bot(999, 998, "test")
+    push_ok = evolution_infra.git_commit_bot(
+        999,
+        998,
+        "test",
+        official_certificate={
+            "certificate_digest": "cert-digest",
+            "candidate_hash": "candidate-hash",
+            "policy_id": "official-full-v2",
+        },
+    )
 
     assert push_ok is False
     assert ("add", "--", "bots/national_v999") in calls

@@ -225,6 +225,83 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _certificate_file_manifest(path: Path, *, label: str) -> dict[str, Any]:
+    if path.is_symlink():
+        raise ValueError(f"{label} must not be a symlink: {path}")
+    if not path.is_file():
+        raise ValueError(f"{label} is missing or not a regular file: {path}")
+    resolved = path.resolve()
+    return {
+        "path": str(resolved),
+        "sha256": _file_sha256(resolved),
+        "size_bytes": resolved.stat().st_size,
+    }
+
+
+def _validate_certificate_file_manifest(
+    manifest: Any,
+    *,
+    label: str,
+) -> tuple[Path | None, list[str]]:
+    if not isinstance(manifest, dict):
+        return None, [f"certificate_{label}_manifest_missing"]
+    path_value = str(manifest.get("path") or "").strip()
+    expected_hash = str(manifest.get("sha256") or "").strip()
+    if not path_value or not expected_hash or expected_hash == "missing":
+        return None, [f"certificate_{label}_manifest_incomplete"]
+    path = Path(path_value)
+    if path.is_symlink():
+        return None, [f"certificate_{label}_symlink"]
+    if not path.is_file():
+        return None, [f"certificate_{label}_missing"]
+    issues: list[str] = []
+    try:
+        if _file_sha256(path) != expected_hash:
+            issues.append(f"certificate_{label}_sha256_mismatch")
+        expected_size = manifest.get("size_bytes")
+        if expected_size is not None and path.stat().st_size != int(expected_size):
+            issues.append(f"certificate_{label}_size_mismatch")
+    except Exception as exc:
+        issues.append(
+            f"certificate_{label}_read_error:{type(exc).__name__}:{str(exc)[:160]}"
+        )
+    return path, issues
+
+
+def _iter_evidence_artifact_manifests(evidence: dict[str, Any]):
+    for round_index, round_item in enumerate(evidence.get("rounds") or [], start=1):
+        if not isinstance(round_item, dict):
+            continue
+        artifacts = round_item.get("artifacts") or {}
+        if not isinstance(artifacts, dict):
+            continue
+        for key, value in artifacts.items():
+            items = value if isinstance(value, list) else [value]
+            for item_index, item in enumerate(items, start=1):
+                if isinstance(item, dict) and item.get("path"):
+                    yield f"round_{round_index}_{key}_{item_index}", item
+
+
+def _validate_retained_evidence_artifacts(evidence_path: Path) -> list[str]:
+    evidence = _read_json(evidence_path)
+    if not isinstance(evidence, dict):
+        return ["certificate_evidence_json_invalid"]
+    issues: list[str] = []
+    manifests = list(_iter_evidence_artifact_manifests(evidence))
+    if not manifests:
+        return ["certificate_evidence_artifact_manifest_missing"]
+    for label, manifest in manifests:
+        if manifest.get("exists") is not True:
+            issues.append(f"certificate_retained_artifact_missing:{label}")
+            continue
+        _path, item_issues = _validate_certificate_file_manifest(
+            manifest,
+            label=f"retained_artifact_{label}",
+        )
+        issues.extend(item_issues)
+    return issues
+
+
 def _mode_defaults(mode: CertificationMode) -> dict[str, Any]:
     return dict(MODE_CONFIG[mode])
 
@@ -387,20 +464,47 @@ def _same_resolved_path(left: Any, right: str | None) -> bool:
         return False
 
 
-def _full_wire_evidence_issues(receipt: dict[str, Any]) -> list[str]:
+def _full_evidence_artifact_issues(receipt: dict[str, Any]) -> list[str]:
     probe = receipt.get("wire_probe")
     if not isinstance(probe, dict) or not bool(probe.get("enabled")):
         return ["full_wire_probe_missing_or_disabled"]
     artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
     issues: list[str] = []
-    for key in ("wire_events", "replay_summary"):
+    required_files = (
+        "receipt",
+        "platform_log",
+        "bot_a_log",
+        "bot_b_log",
+        "bot_a_stdout",
+        "bot_a_stderr",
+        "bot_b_stdout",
+        "bot_b_stderr",
+        "wire_events",
+        "replay_summary",
+    )
+    for key in required_files:
         value = artifacts.get(key)
         try:
-            exists = bool(value) and Path(str(value)).exists()
+            path = Path(str(value)) if value else None
+            exists = bool(path) and path.is_file() and not path.is_symlink()
         except Exception:
             exists = False
         if not exists:
-            issues.append(f"full_wire_artifact_missing:{key}")
+            issues.append(f"full_evidence_artifact_missing:{key}")
+    for key in ("thp_files", "screenshots"):
+        values = artifacts.get(key) or []
+        if not isinstance(values, list):
+            values = [values]
+        try:
+            retained = any(
+                Path(str(value)).is_file() and not Path(str(value)).is_symlink()
+                for value in values
+                if value
+            )
+        except Exception:
+            retained = False
+        if not retained:
+            issues.append(f"full_evidence_artifact_missing:{key}")
     return issues
 
 
@@ -453,7 +557,7 @@ def receipt_validation_issues(
 
     thp_hands = _max_thp_hands(receipt)
     if spec.mode == "full" or spec.target_hands >= 70:
-        issues.extend(_full_wire_evidence_issues(receipt))
+        issues.extend(_full_evidence_artifact_issues(receipt))
         if thp_hands < spec.target_hands:
             issues.append(f"thp_incomplete_for_full_certification: hands={thp_hands} target={spec.target_hands}")
             summary = receipt.get("log_summary") or {}
@@ -858,8 +962,25 @@ def certificate_validation(
     if status_identity != current_identity:
         issues.append("status_identity_stale")
     candidate_path = Path(candidate).expanduser().resolve() if candidate is not None else Path(spec.candidate)
-    if hash_path(candidate_path) != current_identity.get("candidate_hash"):
-        issues.append("candidate_artifact_hash_mismatch")
+    try:
+        if hash_path(candidate_path) != current_identity.get("candidate_hash"):
+            issues.append("candidate_artifact_hash_mismatch")
+    except Exception as exc:
+        issues.append(
+            f"candidate_artifact_integrity_error:{type(exc).__name__}:{str(exc)[:160]}"
+        )
+    evidence_path, evidence_issues = _validate_certificate_file_manifest(
+        record.get("evidence"),
+        label="evidence",
+    )
+    issues.extend(evidence_issues)
+    if evidence_path is not None and not evidence_issues:
+        issues.extend(_validate_retained_evidence_artifacts(evidence_path))
+    _analysis_path, analysis_issues = _validate_certificate_file_manifest(
+        record.get("llm_analysis"),
+        label="llm_analysis",
+    )
+    issues.extend(analysis_issues)
     llm_summary = (record.get("llm_analysis") or {}).get("summary") or {}
     try:
         llm_confidence = float(llm_summary.get("confidence", 0.0) or 0.0)
@@ -1281,11 +1402,11 @@ def _write_certificate_record(
         "identity": identity,
         "cache_key": cache_key_value,
         "evidence": {
-            "sha256": _file_sha256(evidence_path) if evidence_path.is_file() else "missing",
+            **_certificate_file_manifest(evidence_path, label="official evidence"),
             "summary": evidence_extra.get("official_evidence_summary") or {},
         },
         "llm_analysis": {
-            "sha256": _file_sha256(analysis_path) if analysis_path.is_file() else "missing",
+            **_certificate_file_manifest(analysis_path, label="official LLM analysis"),
             "summary": evidence_extra.get("official_llm_analysis_summary") or {},
         },
         "strength_evaluation": "not_applicable",
@@ -1502,17 +1623,24 @@ def _status_for_result(
         }
     certificate_extra: dict[str, Any] = {}
     if status == STATUS_CERTIFIED and spec.mode == "full":
-        record = _write_certificate_record(
-            spec,
-            identity,
-            evidence_extra,
-            cache_key_value,
-        )
-        certificate_extra = {
-            "certificate_schema_version": record.get("schema_version"),
-            "certificate_digest": record.get("certificate_digest"),
-            "certificate_path": record.get("certificate_path"),
-        }
+        try:
+            record = _write_certificate_record(
+                spec,
+                identity,
+                evidence_extra,
+                cache_key_value,
+            )
+            certificate_extra = {
+                "certificate_schema_version": record.get("schema_version"),
+                "certificate_digest": record.get("certificate_digest"),
+                "certificate_path": record.get("certificate_path"),
+            }
+        except Exception as exc:
+            issues = list(dict.fromkeys([
+                *issues,
+                f"official_certificate_artifact_error:{type(exc).__name__}:{str(exc)[:240]}",
+            ]))
+            status = STATUS_INCONCLUSIVE
     return write_status(
         spec.candidate,
         status,

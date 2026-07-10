@@ -422,9 +422,12 @@ async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, g
     execution_mode = _checkpoint_execution_mode(ckpt, gate_results)
     if execution_mode != "native_tcp":
         return {
-            "passed": True,
-            "skipped": True,
-            "reason": "non_native_tcp_workflow",
+            "passed": False,
+            "error": (
+                "OFFICIAL FULL CERTIFICATION BLOCKED: only national_native/native_tcp "
+                "candidates may enter the national-bot completion namespace."
+            ),
+            "reason": "formal_submission_requires_native_tcp",
             "national_execution_mode": execution_mode,
         }
 
@@ -553,20 +556,19 @@ async def commit_bot(args):
             "checkpoint_stage": official_stage,
             "official_full_gate": official_full_gate,
         })
-    if not official_full_gate.get("skipped"):
-        official_certification_status = official_full_gate.get("status") or {}
-        if not _record_official_full_pass_checkpoint(
-            v,
-            source_v,
-            ckpt,
-            official_full_gate,
-        ):
-            return _json_tool_result({
-                "error": "COMMIT BLOCKED: failed to persist official full certificate in checkpoint ledger.",
-                "version": v,
-                "source_v": source_v,
-            })
-        ckpt = read_pipeline_checkpoint() or ckpt
+    official_certification_status = official_full_gate.get("status") or {}
+    if not _record_official_full_pass_checkpoint(
+        v,
+        source_v,
+        ckpt,
+        official_full_gate,
+    ):
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: failed to persist official full certificate in checkpoint ledger.",
+            "version": v,
+            "source_v": source_v,
+        })
+    ckpt = read_pipeline_checkpoint() or ckpt
 
     # fix-6: novelty gate — warn (advisory) if new bot doesn't add behavioral
     # diversity. This is advisory-only: it does NOT block the commit, because
@@ -773,7 +775,7 @@ async def commit_bot(args):
         pass  # non-blocking enrichment
 
     result = {"committed": True, "version": v, "source_v": source_v, "push_ok": push_ok}
-    if official_full_gate and not official_full_gate.get("skipped"):
+    if official_full_gate:
         result["official_full_gate"] = {
             "status": official_certification_status.get("status"),
             "mode": official_certification_status.get("mode"),

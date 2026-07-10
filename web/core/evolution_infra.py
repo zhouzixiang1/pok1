@@ -1688,7 +1688,8 @@ def git_commit_bot(
     strategy_tag,
     rating_info="",
     parent2_v=None,
-    official_certificate=None,
+    *,
+    official_certificate,
 ):
     """Commit a completed bot generation.
 
@@ -1697,37 +1698,45 @@ def git_commit_bot(
     Stage only the evolved bot and curated learning notes; daemon/result churn
     must not leak into evolution commits.
     """
-    _git_ensure_main_branch()
-    parent_line = f"parent: {bot_name(source_v)}"
-    if parent2_v is not None:
-        parent_line += f"\nparent2: {bot_name(parent2_v)}"
     certificate = dict(official_certificate or {})
     certificate_digest = str(certificate.get("certificate_digest") or "")
     expected_bot_hash = str(certificate.get("candidate_hash") or "")
     certificate_policy = str(certificate.get("policy_id") or "")
-    if certificate and not (certificate_digest and expected_bot_hash and certificate_policy):
+    if not certificate:
+        raise RuntimeError(
+            "official full certificate is required for national-bot commit/tag"
+        )
+    if not (certificate_digest and expected_bot_hash and certificate_policy):
         raise RuntimeError("official certificate metadata is incomplete")
-    if certificate:
-        from bot_artifact import hash_path
+    if certificate_policy != "official-full-v2":
+        raise RuntimeError(
+            f"unsupported official certificate policy: {certificate_policy or '<missing>'}"
+        )
 
-        current_bot_hash = hash_path(get_bot_dir(version))
-        if current_bot_hash != expected_bot_hash:
-            raise RuntimeError(
-                "candidate changed after official certification: "
-                f"expected {expected_bot_hash}, current {current_bot_hash}"
-            )
+    from bot_artifact import hash_path
+
+    current_bot_hash = hash_path(get_bot_dir(version))
+    if current_bot_hash != expected_bot_hash:
+        raise RuntimeError(
+            "candidate changed after official certification: "
+            f"expected {expected_bot_hash}, current {current_bot_hash}"
+        )
+
+    _git_ensure_main_branch()
+    parent_line = f"parent: {bot_name(source_v)}"
+    if parent2_v is not None:
+        parent_line += f"\nparent2: {bot_name(parent2_v)}"
     msg = (
         f"evolve: v{source_v} → v{version}\n\n"
         f"{parent_line}\n"
         f"strategy: {strategy_tag}\n"
         f"{rating_info}"
     )
-    if certificate:
-        msg += (
-            f"\nofficial-certificate: {certificate_digest}"
-            f"\nofficial-candidate-hash: {expected_bot_hash}"
-            f"\nofficial-policy: {certificate_policy}"
-        )
+    msg += (
+        f"\nofficial-certificate: {certificate_digest}"
+        f"\nofficial-candidate-hash: {expected_bot_hash}"
+        f"\nofficial-policy: {certificate_policy}"
+    )
     bot_path = bot_relpath(version)
     preexisting_staged = [
         p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
@@ -1764,16 +1773,13 @@ def git_commit_bot(
     # LOG GAP FIX (2026-06-29): record what gets staged so a hand-edit bypass
     # (orchestrator LLM mutating bot code outside execute_workers) is visible.
     _staged = _git("add", "--", bot_path, check=False)
-    if certificate:
-        from bot_artifact import hash_path
-
-        staged_bot_hash = hash_path(get_bot_dir(version))
-        if staged_bot_hash != expected_bot_hash:
-            _git("restore", "--staged", "--", bot_path, check=False)
-            raise RuntimeError(
-                "candidate changed while staging official-certified artifact: "
-                f"expected {expected_bot_hash}, current {staged_bot_hash}"
-            )
+    staged_bot_hash = hash_path(get_bot_dir(version))
+    if staged_bot_hash != expected_bot_hash:
+        _git("restore", "--staged", "--", bot_path, check=False)
+        raise RuntimeError(
+            "candidate changed while staging official-certified artifact: "
+            f"expected {expected_bot_hash}, current {staged_bot_hash}"
+        )
     allowed_paths = [bot_path]
     # Capture the staged file list right before commit for auditability.
     _staged_files = _git("diff", "--cached", "--name-only", check=False).strip().splitlines()
@@ -1834,12 +1840,11 @@ def git_commit_bot(
     tag = bot_tag(version)
     _git("tag", "-d", tag, check=False)
     tag_message = f"National bot v{format_version(version)}: {strategy_tag}"
-    if certificate:
-        tag_message += (
-            f"\n\nofficial-certificate: {certificate_digest}"
-            f"\nofficial-candidate-hash: {expected_bot_hash}"
-            f"\nofficial-policy: {certificate_policy}"
-        )
+    tag_message += (
+        f"\n\nofficial-certificate: {certificate_digest}"
+        f"\nofficial-candidate-hash: {expected_bot_hash}"
+        f"\nofficial-policy: {certificate_policy}"
+    )
     _git("tag", tag, "-m", tag_message)
     try:
         from system_log import log_system_event
