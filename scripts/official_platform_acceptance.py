@@ -28,7 +28,7 @@ from official_llm_analysis import run_official_llm_analysis_sync, safe_default_a
 def _official_llm_analysis_enabled() -> bool:
     import os
 
-    return os.environ.get("POK_OFFICIAL_LLM_ANALYSIS", "0").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("POK_OFFICIAL_LLM_ANALYSIS", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _write_json(path: Path, payload: dict) -> None:

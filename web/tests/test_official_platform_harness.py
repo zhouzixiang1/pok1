@@ -118,6 +118,23 @@ def test_official_platform_cli_writes_evidence_and_default_llm_analysis(tmp_path
 
     monkeypatch.setattr(cli, "check_environment", lambda _config: {"ok": True, "issues": [], "warnings": []})
     monkeypatch.setattr(cli, "run_official_acceptance_sync", fake_acceptance)
+    calls = {"llm": 0}
+
+    def fake_llm(evidence, *, output_path=None, **_kwargs):
+        calls["llm"] += 1
+        payload = {
+            "analysis_source": "llm",
+            "compliance_verdict": "pass",
+            "failure_class": "none",
+            "blocking": False,
+            "confidence": 0.9,
+            "strength_evaluation": "not_applicable",
+        }
+        if output_path:
+            Path(output_path).write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    monkeypatch.setattr(cli, "run_official_llm_analysis_sync", fake_llm)
     monkeypatch.delenv("POK_OFFICIAL_LLM_ANALYSIS", raising=False)
 
     rc = cli.main([
@@ -139,7 +156,8 @@ def test_official_platform_cli_writes_evidence_and_default_llm_analysis(tmp_path
     assert "llm_official_analysis_json=" in out
     assert (suite / "official_evidence.json").exists()
     analysis = json.loads((suite / "llm_official_analysis.json").read_text(encoding="utf-8"))
-    assert analysis["analysis_source"] == "default"
+    assert calls["llm"] == 1
+    assert analysis["analysis_source"] == "llm"
     assert analysis["strength_evaluation"] == "not_applicable"
 
 

@@ -151,6 +151,16 @@ official EXE's 60 second timeout path.
   represented by the local server.
 - Existing native bots produced without the throttle should be considered
   official-risk until retested through the real EXE.
+- Full 70-hand official certification must preserve raw wire evidence:
+  `wire_events.jsonl` plus `replay_summary.json`. If the harness declares the
+  wire probe enabled but either artifact is missing, the evidence bundle is
+  inconclusive and the bot cannot be certified.
+- `llm_official_analysis.json` is part of the official evidence bundle by
+  default. The LLM analysis is evidence-grounded and compliance-only: it may
+  explain protocol, communication, timing, state-machine, and obvious
+  decision-state errors, but it must not turn EXE win/loss into strength rating.
+  Set `POK_OFFICIAL_LLM_ANALYSIS=0` only for explicit offline/test runs where a
+  deterministic-only placeholder is intended.
 
 ## Open Questions
 

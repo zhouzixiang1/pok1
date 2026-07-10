@@ -2,6 +2,8 @@ import fcntl
 import json
 from pathlib import Path
 
+import pytest
+
 from official_platform_harness import OfficialPlatformConfig
 from official_certification import (
     STATUS_COMPLIANCE_PASS,
@@ -31,6 +33,11 @@ from official_certification import (
     select_official_opponent,
     write_status,
 )
+
+
+@pytest.fixture(autouse=True)
+def _disable_live_official_llm(monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_LLM_ANALYSIS", "0")
 
 
 class FakeResult:
@@ -479,6 +486,46 @@ def test_run_certification_optional_llm_analysis_is_advisory(tmp_path, monkeypat
     assert Path(result["official_llm_analysis_path"]).exists()
     assert result["official_llm_analysis_summary"]["compliance_verdict"] == "pass"
     assert result["official_llm_analysis_summary"]["strength_evaluation"] == "not_applicable"
+
+
+def test_run_certification_runs_llm_analysis_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    monkeypatch.delenv("POK_OFFICIAL_LLM_ANALYSIS", raising=False)
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("smoke", candidate, opponent=opponent)
+    calls = {"count": 0}
+
+    def fake_llm_analysis(evidence, *, output_path=None, **_kwargs):
+        calls["count"] += 1
+        payload = {
+            "analysis_source": "llm",
+            "compliance_verdict": "pass",
+            "failure_class": "none",
+            "blocking": False,
+            "confidence": 0.88,
+            "strength_evaluation": "not_applicable",
+        }
+        if output_path:
+            Path(output_path).write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    import official_llm_analysis
+
+    monkeypatch.setattr(official_llm_analysis, "run_official_llm_analysis_sync", fake_llm_analysis)
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=10, rounds=2)),
+        queue_on_busy=False,
+    )
+
+    assert calls["count"] == 1
+    assert result["status"] == STATUS_SMOKE_PASS
+    assert result["official_llm_analysis_summary"]["analysis_source"] == "llm"
+    assert result["official_llm_analysis_summary"]["confidence"] == 0.88
 
 
 def test_inconclusive_status_includes_non_violation_validation_issues(tmp_path, monkeypatch):

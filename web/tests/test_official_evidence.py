@@ -123,6 +123,51 @@ def test_evidence_from_raw_summary_infers_pass_without_strength_rating(tmp_path)
     assert "rating" not in json.dumps(bundle, ensure_ascii=False).lower()
 
 
+def test_full_evidence_requires_wire_probe_artifacts_when_probe_enabled(tmp_path):
+    suite = tmp_path / "suite"
+    round_dir = suite / "self_play_01"
+    round_dir.mkdir(parents=True)
+    report = {
+        "candidate": "/tmp/national_v1",
+        "opponent": None,
+        "passed": True,
+        "summary": {
+            "suite_dir": str(suite),
+            "rounds_requested": 1,
+            "rounds_run": 1,
+            "target_hands": 70,
+        },
+        "rounds": [
+            {
+                "round_id": "self_play_01",
+                "round_kind": "self_play",
+                "round_index": 1,
+                "target_hands": 70,
+                "passed": True,
+                "issues": [],
+                "wire_probe": {"enabled": True, "issues": []},
+                "log_summary": {"hands_started_min": 70, "settlements_min": 69, "issues": []},
+                "artifacts": {
+                    "round_dir": str(round_dir),
+                    "thp_summaries": [{"path": "fake.thp", "hand_records": 70}],
+                },
+            }
+        ],
+        "issues": [],
+    }
+
+    bundle = build_official_evidence_bundle(report)
+
+    assert bundle["summary"]["raw_passed"] is True
+    assert bundle["summary"]["passed"] is False
+    assert bundle["summary"]["wire_evidence_required_rounds"] == 1
+    assert bundle["summary"]["wire_evidence_complete_rounds"] == 0
+    assert bundle["deterministic"]["classification"] == "harness"
+    assert bundle["deterministic"]["inconclusive"] is True
+    assert any("wire_probe_missing_wire_events_artifact" in issue for issue in bundle["deterministic"]["issues"])
+    assert any("wire_probe_missing_replay_summary_artifact" in issue for issue in bundle["rounds"][0]["issues"])
+
+
 def test_evidence_classifies_full_incomplete_after_progress_as_obvious_decision_blocker(tmp_path):
     report = {
         "candidate": "/tmp/national_v134",

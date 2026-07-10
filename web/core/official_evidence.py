@@ -178,6 +178,52 @@ def _suite_summary(payload: dict[str, Any], report: dict[str, Any]) -> dict[str,
     return dict(summary) if isinstance(summary, dict) else {}
 
 
+def _round_target_hands(receipt: dict[str, Any]) -> int:
+    try:
+        return int(receipt.get("target_hands", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _wire_evidence_required(receipt: dict[str, Any]) -> bool:
+    """Return whether this official round must carry raw wire evidence."""
+    return _round_target_hands(receipt) >= 70
+
+
+def _path_exists(path_value: Any) -> bool:
+    if not path_value:
+        return False
+    try:
+        return Path(str(path_value)).exists()
+    except Exception:
+        return False
+
+
+def _wire_artifact_issues(receipt: dict[str, Any]) -> list[str]:
+    """Return evidence-completeness issues for the official wire probe.
+
+    Current harness receipts include ``wire_probe``.  Older cached or fake
+    reports may not; those are left alone so historical statuses are not
+    reinterpreted.  For new full 70-hand rounds, raw wire events and their replay
+    summary are mandatory evidence because bot logs alone cannot prove
+    sticky-packet and pending-action behavior.
+    """
+    if not _wire_evidence_required(receipt):
+        return []
+    wire_probe = receipt.get("wire_probe")
+    if not isinstance(wire_probe, dict):
+        return []
+    if not bool(wire_probe.get("enabled")):
+        return ["wire_probe_disabled_for_full_round"]
+    artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
+    issues: list[str] = []
+    if not _path_exists(artifacts.get("wire_events")):
+        issues.append("wire_probe_missing_wire_events_artifact")
+    if not _path_exists(artifacts.get("replay_summary")):
+        issues.append("wire_probe_missing_replay_summary_artifact")
+    return issues
+
+
 def _all_issues(payload: dict[str, Any], report: dict[str, Any], rounds: list[dict[str, Any]]) -> list[str]:
     issues: list[str] = []
     for source in (payload.get("issues"), report.get("issues")):
@@ -185,6 +231,8 @@ def _all_issues(payload: dict[str, Any], report: dict[str, Any], rounds: list[di
             issues.extend(str(issue) for issue in source)
     for index, receipt in enumerate(rounds, start=1):
         prefix = receipt.get("round_id") or receipt.get("round_kind") or f"round_{index}"
+        for issue in _wire_artifact_issues(receipt):
+            issues.append(f"{prefix}: {issue}")
         for issue in receipt.get("issues") or []:
             issues.append(f"{prefix}: {issue}")
         replay = _extract_replay_summary(receipt)
@@ -379,7 +427,10 @@ def _log_excerpt(path_value: Any, *, max_chars: int) -> str:
 def _round_evidence(receipt: dict[str, Any], *, max_log_chars: int) -> dict[str, Any]:
     artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
     replay_summary = _extract_replay_summary(receipt)
-    issues = [str(issue) for issue in receipt.get("issues") or []]
+    issues = [
+        *_wire_artifact_issues(receipt),
+        *[str(issue) for issue in receipt.get("issues") or []],
+    ]
     if replay_summary:
         for issue in replay_summary.get("issues") or []:
             kind = issue.get("kind") if isinstance(issue, dict) else str(issue)
@@ -433,6 +484,12 @@ def build_official_evidence_bundle(
         classify_round_receipt({**receipt, "issues": round_item.get("issues") or receipt.get("issues") or []})
         for receipt, round_item in zip(rounds, evidence_rounds)
     ]
+    wire_required_rounds = sum(1 for receipt in rounds if _wire_evidence_required(receipt))
+    wire_complete_rounds = sum(
+        1
+        for receipt in rounds
+        if _wire_evidence_required(receipt) and not _wire_artifact_issues(receipt)
+    )
     verdict = classify_issues(issues)
     if any(item.get("blocking") for item in round_verdicts):
         blocking_round = next(item for item in round_verdicts if item.get("blocking"))
@@ -464,7 +521,7 @@ def build_official_evidence_bundle(
         if raw_passed_value is not None
         else bool(rounds) and not issues and all(bool(receipt.get("passed")) for receipt in rounds)
     )
-    passed = raw_passed and not verdict["blocking"]
+    passed = raw_passed and not verdict["blocking"] and not verdict.get("inconclusive")
     suite_dir = summary.get("suite_dir")
     bundle = {
         "schema_version": SCHEMA_VERSION,
@@ -477,6 +534,8 @@ def build_official_evidence_bundle(
             **summary,
             "passed": passed,
             "raw_passed": raw_passed,
+            "wire_evidence_required_rounds": wire_required_rounds,
+            "wire_evidence_complete_rounds": wire_complete_rounds,
         },
         "deterministic": {
             "passed": passed,
