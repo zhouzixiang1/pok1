@@ -71,6 +71,8 @@ def test_policy_eligibility_requires_override_cluster_coverage() -> None:
         "match_clusters": 4,
         "override_clusters": 1,
         "override_hand_mean": 100.0,
+        "match_cluster_bootstrap_mean_ci": {"lower": 10.0},
+        "match_opponent_stratified_cluster_ci": {"lower": 10.0},
         "by_opponent": {
             "national_v1": {"overrides": 4, "mean": 100.0},
         },
@@ -94,6 +96,7 @@ def test_calibration_gate_rejects_zero_override_evidence() -> None:
     result = {
         "overrides": 0,
         "override_clusters": 0,
+        "match_cluster_bootstrap_mean_ci": {"lower": 0.0},
         "match_opponent_stratified_cluster_ci": {"lower": 0.0},
         "by_opponent": {"national_v1": {"mean": 0.0}},
     }
@@ -107,8 +110,85 @@ def test_calibration_gate_rejects_zero_override_evidence() -> None:
 
     assert gate == {
         "passed": False,
-        "errors": ["overrides<2", "override_clusters<2"],
+        "errors": [
+            "overrides<2",
+            "override_clusters<2",
+            "cluster_ci_lower<=0.0",
+            "opponent_stratified_cluster_ci_lower<=0.0",
+        ],
     }
+
+
+def test_calibration_gate_requires_both_cluster_confidence_bounds() -> None:
+    tool = _load_tool()
+    result = {
+        "overrides": 4,
+        "override_clusters": 4,
+        "match_cluster_bootstrap_mean_ci": {"lower": -1.0},
+        "match_opponent_stratified_cluster_ci": {"lower": 10.0},
+        "by_opponent": {"national_v1": {"mean": 10.0}},
+    }
+
+    gate = tool._calibration_gate(
+        result,
+        min_overrides=2,
+        min_override_clusters=2,
+        require_nonnegative_opponent_mean=True,
+    )
+
+    assert gate == {
+        "passed": False,
+        "errors": ["cluster_ci_lower<=0.0"],
+    }
+
+
+def test_policy_selection_rejects_negative_cluster_confidence_bound() -> None:
+    tool = _load_tool()
+    values = {
+        field: {
+            "lower": [0.0, 0.0, 100.0, 0.0, 0.0, 0.0],
+            "mean": [0.0, 0.0, 100.0, 0.0, 0.0, 0.0],
+        }
+        for field in ("delta_vs_rule", "tail_delta_vs_rule", "match_delta_vs_rule")
+    }
+    rows = []
+    for index, delta in enumerate((100.0, 100.0, 100.0, -250.0)):
+        rows.append({
+            "opponent": f"national_v{index % 2 + 1}",
+            "cluster": f"match-{index}",
+            "rule_id": 1,
+            "values": values,
+            "candidates": [{
+                "label_id": 2,
+                "label": "raise_small",
+                "response_signal": 0.0,
+                "hand_delta": 100.0,
+                "tail_delta": delta,
+                "match_delta": delta,
+            }],
+        })
+
+    selection = tool.select_offline_policy(
+        rows,
+        margins=[0.0],
+        hand_weights=[1.0],
+        response_weights=[0.0],
+        min_overrides=4,
+        min_selection_clusters=4,
+        min_override_clusters=4,
+        min_overrides_per_opponent=2,
+        min_override_hand_mean=0.0,
+        require_nonnegative_opponent_mean=False,
+        bootstrap_samples=200,
+        bootstrap_seed=7,
+        min_cluster_ci_lower=0.0,
+        min_opponent_stratified_ci_lower=0.0,
+    )
+
+    assert selection["selected"] is None
+    assert selection["selection_failure"] is not None
+    errors = selection["grid"][0]["eligibility_errors"]
+    assert "cluster_ci_lower<=0.0" in errors
 
 
 def test_cluster_bootstrap_resamples_whole_matches() -> None:

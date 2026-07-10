@@ -95,16 +95,58 @@ The offline evaluator now distinguishes total observed clusters from clusters
 that actually receive overrides. Selection requires minimum override-cluster
 coverage, minimum overrides against every validation opponent, and nonnegative
 per-opponent means. A separately reported calibration gate requires override
-coverage and a nonnegative opponent-stratified cluster CI. Failed selection and
-calibration reports are still written with model/data hashes. Under these strict
+coverage and positive ordinary and opponent-stratified cluster CI lower bounds.
+Failed selection and calibration reports are still written with model/data
+hashes. Under these strict
 defaults the pass-5 policy is correctly rejected before any active bot is made.
+
+## Policy-First Scaling Gate
+
+The scaling runner now defaults to policy-level selection. For every
+architecture, size, ranking weight, and seed ensemble it freezes an override
+policy on validation rows, then ranks eligible configurations by:
+
+1. opponent-stratified whole-match cluster CI lower bound;
+2. ordinary whole-match cluster CI lower bound;
+3. match delta per decision opportunity;
+4. override-cluster coverage;
+5. supervised validation score only as a final tie-break.
+
+Eligibility requires both cluster CI lower bounds to be positive, enough
+independent override clusters, enough overrides against every validation
+opponent, and no negative validation-opponent mean. Thus a sweep where every
+configuration has an uncertain policy now fails instead of selecting the least
+bad supervised model.
+
+After architecture and policy hyperparameters are frozen, the complete seed
+ensemble is rerun without changing its validation score. The fixed policy is
+then evaluated on calibration and held-out data. Both post-selection gates
+require override coverage, positive ordinary and opponent-stratified cluster CI
+lower bounds, and nonnegative means for every opponent. The runner writes
+`post_selection_policy.json`, embeds its hash and result in the ensemble
+manifest and sweep summary, and marks `deployment_eligible` true only when both
+gates pass. It exits nonzero on failure unless an explicit diagnostic override
+is supplied; that override never changes deployment eligibility.
+
+A two-architecture CUDA smoke exercised the complete
+train -> calibration -> validation selection -> held-out path. A second run
+required one post-selection override where the tiny smoke model made none: it
+returned exit code 1 while preserving all model, manifest, summary, and gate
+failure artifacts. This verifies pipeline semantics only; the synthetic smoke
+data and relaxed selection thresholds are not strength evidence.
+
+The live 70-hand collector had completed 9 of 160 passes at the time of this
+update, with 412 train, 108 validation, and 108 held-out value rows plus 2,604
+opponent-action rows. Collection remains active, and these append-only files
+must not be treated as a frozen training dataset.
 
 ## Next Evidence
 
 1. Run validation-only ranking-weight ablations on larger match-cluster counts.
 2. Repeat the full GRU, GRU+MoE, Deep Sets, and Transformer scaling grid after
    the 160-pass dataset is frozen.
-3. Keep calibration and held-out out of architecture and recipe selection.
+3. Use calibration only for output calibration and coverage diagnostics; keep
+   held-out completely outside architecture, recipe, and policy selection.
 4. Use offline clustered policy selection before creating an active TCP bot.
 5. Treat native paired classic-pool EV, not these supervised metrics, as the
    eventual strength criterion.

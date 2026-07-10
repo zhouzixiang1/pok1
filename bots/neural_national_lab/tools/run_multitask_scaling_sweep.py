@@ -20,6 +20,14 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from audit_oppmodel_dataset import audit  # noqa: E402
+from evaluate_multitask_offline_policy import (  # noqa: E402
+    _calibration_gate as policy_safety_gate,
+    _evaluate_config as evaluate_policy_config,
+    _prepare_rows as prepare_policy_rows,
+    _read as read_policy_rows,
+    select_offline_policy,
+)
+from opp_multitask_ensemble_runtime import OpponentMultiTaskEnsemble  # noqa: E402
 from opp_multitask_runtime import OpponentMultiTaskRuntime  # noqa: E402
 
 
@@ -135,6 +143,241 @@ def _expand_ranking_weights(
                 item["name"] = f"{config['name']}_rw{suffix}"
             expanded.append(item)
     return expanded, weights
+
+
+def _float_grid(
+    raw: str,
+    *,
+    name: str,
+    minimum: float = 0.0,
+    maximum: float | None = None,
+) -> list[float]:
+    try:
+        values = [float(value) for value in raw.split(",") if value.strip()]
+    except ValueError as exc:
+        raise SystemExit(f"invalid {name} grid") from exc
+    if not values or any(
+        not math.isfinite(value)
+        or value < minimum
+        or (maximum is not None and value > maximum)
+        for value in values
+    ):
+        raise SystemExit(f"invalid {name} grid")
+    return list(dict.fromkeys(values))
+
+
+def _run_policy_selection(
+    *,
+    config: dict[str, Any],
+    experiments: list[dict[str, Any]],
+    raw_selection_rows: list[dict[str, Any]],
+    selection_path: Path,
+    out_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    members = [
+        row for row in experiments if row["config"]["name"] == config["name"]
+    ]
+    model_paths = [Path(row["model"]) for row in members]
+    ensemble = OpponentMultiTaskEnsemble.load(model_paths)
+    if ensemble is None:
+        raise SystemExit(f"failed to load selection ensemble for {config['name']}")
+    prepared = prepare_policy_rows(raw_selection_rows, ensemble)
+    result = select_offline_policy(
+        prepared,
+        margins=_float_grid(args.policy_margin_grid, name="policy margin"),
+        hand_weights=_float_grid(
+            args.policy_hand_weight_grid,
+            name="policy hand weight",
+            maximum=1.0,
+        ),
+        response_weights=_float_grid(
+            args.policy_response_weight_grid, name="policy response weight"
+        ),
+        min_overrides=args.policy_min_overrides,
+        min_selection_clusters=args.policy_min_selection_clusters,
+        min_override_clusters=args.policy_min_override_clusters,
+        min_overrides_per_opponent=args.policy_min_overrides_per_opponent,
+        min_override_hand_mean=args.policy_min_override_hand_mean,
+        require_nonnegative_opponent_mean=(
+            not args.policy_allow_negative_opponent
+        ),
+        bootstrap_samples=args.policy_bootstrap_samples,
+        bootstrap_seed=args.policy_bootstrap_seed,
+        min_cluster_ci_lower=args.policy_min_selection_ci_lower,
+        min_opponent_stratified_ci_lower=(
+            args.policy_min_selection_ci_lower
+        ),
+    )
+    path = out_dir / f"policy_selection_{config['name']}.json"
+    payload = {
+        "schema_version": 1,
+        "selection_used_held_out": False,
+        "config": config,
+        "models": [
+            {
+                "path": str(model_path),
+                "sha256": _sha256(model_path),
+            }
+            for model_path in model_paths
+        ],
+        "selection_data": {
+            "path": str(selection_path.resolve()),
+            "sha256": _sha256(selection_path),
+            "rows": len(raw_selection_rows),
+        },
+        "selection_criteria": {
+            "min_overrides": args.policy_min_overrides,
+            "min_selection_clusters": args.policy_min_selection_clusters,
+            "min_override_clusters": args.policy_min_override_clusters,
+            "min_overrides_per_opponent": (
+                args.policy_min_overrides_per_opponent
+            ),
+            "min_override_hand_mean": args.policy_min_override_hand_mean,
+            "require_nonnegative_opponent_mean": (
+                not args.policy_allow_negative_opponent
+            ),
+            "bootstrap_samples": args.policy_bootstrap_samples,
+            "bootstrap_seed": args.policy_bootstrap_seed,
+            "min_cluster_ci_lower": args.policy_min_selection_ci_lower,
+            "min_opponent_stratified_ci_lower": (
+                args.policy_min_selection_ci_lower
+            ),
+        },
+        **result,
+    }
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return {
+        "path": str(path),
+        "sha256": _sha256(path),
+        "prepared_rows": result["rows"],
+        "selected": result["selected"],
+        "selection_failure": result["selection_failure"],
+    }
+
+
+def _run_post_selection_policy(
+    *,
+    model_paths: list[Path],
+    policy_config: dict[str, Any],
+    calibration_path: Path,
+    held_out_path: Path,
+    out_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    ensemble = OpponentMultiTaskEnsemble.load(model_paths)
+    if ensemble is None:
+        raise SystemExit("failed to load final policy ensemble")
+
+    def evaluate(path: Path) -> tuple[dict[str, Any], int]:
+        raw_rows = read_policy_rows(path)
+        prepared = prepare_policy_rows(raw_rows, ensemble)
+        result = evaluate_policy_config(
+            prepared,
+            policy_config,
+            bootstrap_samples=args.policy_bootstrap_samples,
+            bootstrap_seed=args.policy_bootstrap_seed,
+        )
+        return result, len(raw_rows)
+
+    calibration, calibration_rows = evaluate(calibration_path)
+    held_out, held_out_rows = evaluate(held_out_path)
+    calibration_gate = policy_safety_gate(
+        calibration,
+        min_overrides=args.policy_min_calibration_overrides,
+        min_override_clusters=args.policy_min_calibration_override_clusters,
+        require_nonnegative_opponent_mean=True,
+        min_cluster_ci_lower=args.policy_min_calibration_ci_lower,
+        min_opponent_stratified_ci_lower=(
+            args.policy_min_calibration_ci_lower
+        ),
+    )
+    held_out_gate = policy_safety_gate(
+        held_out,
+        min_overrides=args.policy_min_held_out_overrides,
+        min_override_clusters=args.policy_min_held_out_override_clusters,
+        require_nonnegative_opponent_mean=True,
+        min_cluster_ci_lower=args.policy_min_held_out_ci_lower,
+        min_opponent_stratified_ci_lower=args.policy_min_held_out_ci_lower,
+    )
+    passed = bool(
+        calibration_gate
+        and calibration_gate["passed"]
+        and held_out_gate
+        and held_out_gate["passed"]
+    )
+    path = out_dir / "post_selection_policy.json"
+    payload = {
+        "schema_version": 1,
+        "selection_used_held_out": False,
+        "policy_config_frozen_before_post_selection": policy_config,
+        "models": [
+            {
+                "path": str(model_path),
+                "sha256": _sha256(model_path),
+            }
+            for model_path in model_paths
+        ],
+        "data": {
+            "calibration": {
+                "path": str(calibration_path.resolve()),
+                "sha256": _sha256(calibration_path),
+                "rows": calibration_rows,
+            },
+            "held_out": {
+                "path": str(held_out_path.resolve()),
+                "sha256": _sha256(held_out_path),
+                "rows": held_out_rows,
+            },
+        },
+        "gate_criteria": {
+            "calibration": {
+                "min_overrides": args.policy_min_calibration_overrides,
+                "min_override_clusters": (
+                    args.policy_min_calibration_override_clusters
+                ),
+                "cluster_ci_lower": args.policy_min_calibration_ci_lower,
+                "opponent_stratified_cluster_ci_lower": (
+                    args.policy_min_calibration_ci_lower
+                ),
+                "require_nonnegative_opponent_mean": True,
+            },
+            "held_out": {
+                "min_overrides": args.policy_min_held_out_overrides,
+                "min_override_clusters": (
+                    args.policy_min_held_out_override_clusters
+                ),
+                "cluster_ci_lower": args.policy_min_held_out_ci_lower,
+                "opponent_stratified_cluster_ci_lower": (
+                    args.policy_min_held_out_ci_lower
+                ),
+                "require_nonnegative_opponent_mean": True,
+            },
+        },
+        "calibration": calibration,
+        "calibration_gate": calibration_gate,
+        "held_out": held_out,
+        "held_out_gate": held_out_gate,
+        "passed": passed,
+    }
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return {
+        "path": str(path),
+        "sha256": _sha256(path),
+        "passed": passed,
+        "calibration_gate": calibration_gate,
+        "held_out_gate": held_out_gate,
+        "calibration_match_mean_per_opportunity": calibration[
+            "match_mean_per_opportunity"
+        ],
+        "held_out_match_mean_per_opportunity": held_out[
+            "match_mean_per_opportunity"
+        ],
+    }
 
 
 def _benchmark_runtime(path: Path, *, repeats: int) -> dict[str, Any]:
@@ -317,6 +560,34 @@ def main() -> int:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--allow-missing-cross-hand-sequence", action="store_true")
     parser.add_argument("--allow-missing-calibration", action="store_true")
+    parser.add_argument(
+        "--selection-mode", choices=("policy", "supervised"), default="policy"
+    )
+    parser.add_argument("--policy-margin-grid", default="0,25,50,100,200,400")
+    parser.add_argument("--policy-hand-weight-grid", default="0.25,0.5,0.75,1")
+    parser.add_argument("--policy-response-weight-grid", default="0,0.05,0.1")
+    parser.add_argument("--policy-min-overrides", type=int, default=10)
+    parser.add_argument("--policy-min-selection-clusters", type=int, default=8)
+    parser.add_argument("--policy-min-override-clusters", type=int, default=8)
+    parser.add_argument("--policy-min-overrides-per-opponent", type=int, default=2)
+    parser.add_argument("--policy-min-override-hand-mean", type=float, default=0.0)
+    parser.add_argument("--policy-min-selection-ci-lower", type=float, default=0.0)
+    parser.add_argument("--policy-allow-negative-opponent", action="store_true")
+    parser.add_argument("--policy-bootstrap-samples", type=int, default=500)
+    parser.add_argument("--policy-bootstrap-seed", type=int, default=20260710)
+    parser.add_argument("--policy-min-calibration-overrides", type=int, default=5)
+    parser.add_argument(
+        "--policy-min-calibration-override-clusters", type=int, default=3
+    )
+    parser.add_argument(
+        "--policy-min-calibration-ci-lower", type=float, default=0.0
+    )
+    parser.add_argument("--policy-min-held-out-overrides", type=int, default=10)
+    parser.add_argument(
+        "--policy-min-held-out-override-clusters", type=int, default=8
+    )
+    parser.add_argument("--policy-min-held-out-ci-lower", type=float, default=0.0)
+    parser.add_argument("--allow-post-selection-policy-failure", action="store_true")
     args = parser.parse_args()
     if args.runtime_benchmark_repeats <= 0:
         raise SystemExit("runtime-benchmark-repeats must be positive")
@@ -326,6 +597,28 @@ def main() -> int:
         raise SystemExit("ranking and direction score weights must be non-negative")
     if args.ranking_margin < 0 or args.ranking_temperature <= 0:
         raise SystemExit("ranking margin must be non-negative and temperature positive")
+    if args.policy_bootstrap_samples <= 0:
+        raise SystemExit("policy-bootstrap-samples must be positive")
+    for name in (
+        "policy_min_overrides",
+        "policy_min_selection_clusters",
+        "policy_min_override_clusters",
+        "policy_min_overrides_per_opponent",
+        "policy_min_calibration_overrides",
+        "policy_min_calibration_override_clusters",
+        "policy_min_held_out_overrides",
+        "policy_min_held_out_override_clusters",
+    ):
+        if getattr(args, name) < 0:
+            raise SystemExit(f"{name.replace('_', '-')} must be non-negative")
+    for name in (
+        "policy_min_override_hand_mean",
+        "policy_min_selection_ci_lower",
+        "policy_min_calibration_ci_lower",
+        "policy_min_held_out_ci_lower",
+    ):
+        if not math.isfinite(getattr(args, name)):
+            raise SystemExit(f"{name.replace('_', '-')} must be finite")
 
     data_dir = args.data_dir.resolve()
     out_dir = args.out_dir.resolve()
@@ -380,8 +673,15 @@ def main() -> int:
             "calibration split is required; freeze the collection first or use "
             "--allow-missing-calibration for a legacy diagnostic"
         )
+    if args.selection_mode == "policy" and not all(calibration_exists):
+        raise SystemExit(
+            "policy selection requires a complete calibration split; "
+            "--allow-missing-calibration is only supported in supervised "
+            "legacy diagnostics"
+        )
+    candidate_data = dict(selection_data)
     if all(calibration_exists):
-        held_out_data.update(calibration_paths)
+        candidate_data.update(calibration_paths)
     experiments = []
     for config in configs:
         for seed in seeds:
@@ -390,7 +690,7 @@ def main() -> int:
             payload = _run_training(
                 config=config,
                 seed=seed,
-                data_paths=selection_data,
+                data_paths=candidate_data,
                 output=output,
                 log_path=out_dir / f"{stem}.log",
                 args=args,
@@ -434,6 +734,17 @@ def main() -> int:
                 estimated_ensemble_runtime <= args.max_stdlib_runtime_ms
             ),
         })
+    if args.selection_mode == "policy":
+        raw_selection_rows = read_policy_rows(selection_data["value_val"])
+        for row in config_summaries:
+            row["offline_policy"] = _run_policy_selection(
+                config=row["config"],
+                experiments=experiments,
+                raw_selection_rows=raw_selection_rows,
+                selection_path=selection_data["value_val"],
+                out_dir=out_dir,
+                args=args,
+            )
     candidate_summary_path = out_dir / "architecture_candidates.json"
     candidate_summary_path.write_text(
         json.dumps({
@@ -443,6 +754,7 @@ def main() -> int:
             "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
             "training_recipe_defaults": _training_recipe(args),
             "match_ranking_weight_grid": ranking_weight_grid,
+            "selection_mode": args.selection_mode,
             "dataset_audit": str(out_dir / "dataset_audit.json"),
             "experiments": experiments,
             "config_summaries": config_summaries,
@@ -451,30 +763,41 @@ def main() -> int:
     )
     eligible_summaries = [
         row for row in config_summaries
-        if row["runtime_eligible"]
+        if row["runtime_eligible"] and (
+            args.selection_mode == "supervised"
+            or row["offline_policy"]["selected"] is not None
+        )
     ]
     if not eligible_summaries:
         raise SystemExit(
-            "no architecture satisfies the stdlib runtime budget; "
+            "no architecture satisfies the policy/runtime selection gates; "
             "see architecture_candidates.json"
         )
-    eligible_summaries.sort(key=lambda row: (
-        row["median_validation_score"],
-        row["stdev_validation_score"],
-        row["parameters"],
-    ))
-    config_summaries.sort(key=lambda row: (
-        not row["runtime_eligible"],
-        row["median_validation_score"],
-        row["stdev_validation_score"],
-        row["parameters"],
-    ))
-    selected_config = eligible_summaries[0]["config"]
+    if args.selection_mode == "policy":
+        def policy_key(row: dict[str, Any]) -> tuple[float, ...]:
+            selected = row["offline_policy"]["selected"]
+            return (
+                selected["match_opponent_stratified_cluster_ci"]["lower"],
+                selected["match_cluster_bootstrap_mean_ci"]["lower"],
+                selected["match_mean_per_opportunity"],
+                float(selected["override_clusters"]),
+                -row["median_validation_score"],
+            )
+
+        eligible_summaries.sort(key=policy_key, reverse=True)
+    else:
+        eligible_summaries.sort(key=lambda row: (
+            row["median_validation_score"],
+            row["stdev_validation_score"],
+            row["parameters"],
+        ))
+    selected_summary = eligible_summaries[0]
+    selected_config = selected_summary["config"]
     selected_rows = [
         row for row in experiments
         if row["config"]["name"] == selected_config["name"]
     ]
-    selected_median = eligible_summaries[0]["median_validation_score"]
+    selected_median = selected_summary["median_validation_score"]
     selected_row = min(
         selected_rows,
         key=lambda row: abs(float(row["validation"]["selection_score"]) - selected_median),
@@ -491,7 +814,7 @@ def main() -> int:
         final_payload = _run_training(
             config=selected_config,
             seed=seed,
-            data_paths={**selection_data, **held_out_data},
+            data_paths={**candidate_data, **held_out_data},
             output=final_path,
             log_path=out_dir / f"selected_{selected_config['name']}_seed{seed}.log",
             args=args,
@@ -523,13 +846,36 @@ def main() -> int:
         raise SystemExit(
             "selected final ensemble exceeds the stdlib runtime budget"
         )
+    post_selection_policy = None
+    if args.selection_mode == "policy":
+        selected_policy = selected_summary["offline_policy"]["selected"]
+        post_selection_policy = _run_post_selection_policy(
+            model_paths=[Path(member["model"]) for member in final_members],
+            policy_config=dict(selected_policy["config"]),
+            calibration_path=calibration_paths["value_calibration"],
+            held_out_path=held_out_data["value_held_out"],
+            out_dir=out_dir,
+            args=args,
+        )
+    deployment_eligible = bool(
+        args.selection_mode == "policy"
+        and post_selection_policy is not None
+        and post_selection_policy["passed"]
+    )
     ensemble_manifest = {
         "format": "opp_multitask_ensemble_v1",
         "selection_used_held_out": False,
+        "deployment_eligible": deployment_eligible,
         "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
         "training_recipe": _training_recipe(args, selected_config),
         "estimated_ensemble_stdlib_runtime_ms": final_ensemble_runtime_ms,
         "config": selected_config,
+        "selection_mode": args.selection_mode,
+        "offline_policy": selected_summary.get("offline_policy"),
+        "post_selection_policy": post_selection_policy,
+        "post_selection_gate_enforced": (
+            not args.allow_post_selection_policy_failure
+        ),
         "std_multiplier": 1.0,
         "members": [
             {
@@ -545,12 +891,17 @@ def main() -> int:
         json.dumps(ensemble_manifest, indent=2, sort_keys=True), encoding="utf-8"
     )
     summary = {
-        "schema_version": 3,
+        "schema_version": 4,
         "selection_used_held_out": False,
+        "deployment_eligible": deployment_eligible,
         "max_stdlib_runtime_ms": args.max_stdlib_runtime_ms,
         "runtime_benchmark_repeats": args.runtime_benchmark_repeats,
         "training_recipe": _training_recipe(args, selected_config),
         "match_ranking_weight_grid": ranking_weight_grid,
+        "selection_mode": args.selection_mode,
+        "post_selection_gate_enforced": (
+            not args.allow_post_selection_policy_failure
+        ),
         "dataset_audit": str(out_dir / "dataset_audit.json"),
         "architecture_candidates": str(candidate_summary_path),
         "experiments": experiments,
@@ -561,6 +912,9 @@ def main() -> int:
             "model": representative["model"],
             "model_sha256": representative["model_sha256"],
             "validation": representative["validation"],
+            "offline_policy": selected_summary.get("offline_policy"),
+            "post_selection_policy": post_selection_policy,
+            "deployment_eligible": deployment_eligible,
             "held_out": representative["held_out"],
             "ensemble_manifest": str(ensemble_manifest_path),
             "members": final_members,
@@ -571,6 +925,12 @@ def main() -> int:
         json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
     )
     print(json.dumps(summary["selected"], indent=2, sort_keys=True))
+    if (
+        post_selection_policy is not None
+        and not post_selection_policy["passed"]
+        and not args.allow_post_selection_policy_failure
+    ):
+        return 1
     return 0
 
 

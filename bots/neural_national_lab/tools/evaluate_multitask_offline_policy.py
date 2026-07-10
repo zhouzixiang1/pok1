@@ -339,6 +339,8 @@ def _selection_eligibility(
     min_overrides_per_opponent: int,
     min_override_hand_mean: float,
     require_nonnegative_opponent_mean: bool,
+    min_cluster_ci_lower: float = 0.0,
+    min_opponent_stratified_ci_lower: float = 0.0,
 ) -> list[str]:
     errors = []
     if result["overrides"] < min_overrides:
@@ -349,6 +351,17 @@ def _selection_eligibility(
         errors.append(f"override_clusters<{min_override_clusters}")
     if result["override_hand_mean"] < min_override_hand_mean:
         errors.append(f"override_hand_mean<{min_override_hand_mean}")
+    cluster_lower = result["match_cluster_bootstrap_mean_ci"]["lower"]
+    if cluster_lower <= min_cluster_ci_lower:
+        errors.append(f"cluster_ci_lower<={min_cluster_ci_lower}")
+    stratified_lower = result[
+        "match_opponent_stratified_cluster_ci"
+    ]["lower"]
+    if stratified_lower <= min_opponent_stratified_ci_lower:
+        errors.append(
+            "opponent_stratified_cluster_ci_lower"
+            f"<={min_opponent_stratified_ci_lower}"
+        )
     for opponent, row in result["by_opponent"].items():
         if row["overrides"] < min_overrides_per_opponent:
             errors.append(
@@ -365,6 +378,8 @@ def _calibration_gate(
     min_overrides: int,
     min_override_clusters: int,
     require_nonnegative_opponent_mean: bool,
+    min_cluster_ci_lower: float = 0.0,
+    min_opponent_stratified_ci_lower: float = 0.0,
 ) -> dict[str, Any] | None:
     if result is None:
         return None
@@ -373,9 +388,17 @@ def _calibration_gate(
         errors.append(f"overrides<{min_overrides}")
     if result["override_clusters"] < min_override_clusters:
         errors.append(f"override_clusters<{min_override_clusters}")
-    lower = result["match_opponent_stratified_cluster_ci"]["lower"]
-    if lower < 0:
-        errors.append("opponent_stratified_cluster_ci_lower<0")
+    cluster_lower = result["match_cluster_bootstrap_mean_ci"]["lower"]
+    if cluster_lower <= min_cluster_ci_lower:
+        errors.append(f"cluster_ci_lower<={min_cluster_ci_lower}")
+    stratified_lower = result[
+        "match_opponent_stratified_cluster_ci"
+    ]["lower"]
+    if stratified_lower <= min_opponent_stratified_ci_lower:
+        errors.append(
+            "opponent_stratified_cluster_ci_lower"
+            f"<={min_opponent_stratified_ci_lower}"
+        )
     if require_nonnegative_opponent_mean:
         for opponent, row in result["by_opponent"].items():
             if row["mean"] < 0:
@@ -400,6 +423,79 @@ def _write_payload(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def select_offline_policy(
+    rows: list[dict[str, Any]],
+    *,
+    margins: list[float],
+    hand_weights: list[float],
+    response_weights: list[float],
+    min_overrides: int,
+    min_selection_clusters: int,
+    min_override_clusters: int,
+    min_overrides_per_opponent: int,
+    min_override_hand_mean: float,
+    require_nonnegative_opponent_mean: bool,
+    bootstrap_samples: int,
+    bootstrap_seed: int,
+    min_cluster_ci_lower: float = 0.0,
+    min_opponent_stratified_ci_lower: float = 0.0,
+) -> dict[str, Any]:
+    grid = []
+    for margin in margins:
+        for hand_weight in hand_weights:
+            for response_weight in response_weights:
+                config = {
+                    "margin": float(margin),
+                    "hand_weight": float(hand_weight),
+                    "response_weight": float(response_weight),
+                    "use_lower": True,
+                }
+                result = _evaluate_config(
+                    rows,
+                    config,
+                    bootstrap_samples=bootstrap_samples,
+                    bootstrap_seed=bootstrap_seed,
+                )
+                result["eligibility_errors"] = _selection_eligibility(
+                    result,
+                    min_overrides=min_overrides,
+                    min_selection_clusters=min_selection_clusters,
+                    min_override_clusters=min_override_clusters,
+                    min_overrides_per_opponent=min_overrides_per_opponent,
+                    min_override_hand_mean=min_override_hand_mean,
+                    require_nonnegative_opponent_mean=(
+                        require_nonnegative_opponent_mean
+                    ),
+                    min_cluster_ci_lower=min_cluster_ci_lower,
+                    min_opponent_stratified_ci_lower=(
+                        min_opponent_stratified_ci_lower
+                    ),
+                )
+                result["eligible"] = not result["eligibility_errors"]
+                grid.append(result)
+    eligible = [result for result in grid if result["eligible"]]
+    selected = max(
+        eligible,
+        key=lambda result: (
+            result["match_opponent_stratified_cluster_ci"]["lower"],
+            result["match_cluster_bootstrap_mean_ci"]["lower"],
+            result["match_mean_per_opportunity"],
+            result["override_clusters"],
+            -result["negative_override_rate"],
+            -result["config"]["margin"],
+        ),
+    ) if eligible else None
+    return {
+        "rows": len(rows),
+        "grid": grid,
+        "selected": selected,
+        "selection_failure": (
+            None if selected is not None else
+            "no offline policy config met override coverage/safety constraints"
+        ),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", action="append", required=True)
@@ -415,11 +511,13 @@ def main() -> int:
     parser.add_argument("--min-override-clusters", type=int, default=8)
     parser.add_argument("--min-overrides-per-opponent", type=int, default=2)
     parser.add_argument("--min-override-hand-mean", type=float, default=0.0)
+    parser.add_argument("--min-selection-ci-lower", type=float, default=0.0)
     parser.add_argument("--allow-negative-selection-opponent", action="store_true")
     parser.add_argument("--min-calibration-overrides", type=int, default=5)
     parser.add_argument(
         "--min-calibration-override-clusters", type=int, default=3
     )
+    parser.add_argument("--min-calibration-ci-lower", type=float, default=0.0)
     parser.add_argument("--allow-negative-calibration-opponent", action="store_true")
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--bootstrap-seed", type=int, default=20260710)
@@ -430,40 +528,35 @@ def main() -> int:
     if ensemble is None:
         raise SystemExit("failed to load multi-task model ensemble")
     selection_rows = _prepare_rows(_read(args.selection_data), ensemble)
-    grid = []
-    for margin in (float(value) for value in args.margin_grid.split(",") if value.strip()):
-        for hand_weight in (
-            float(value) for value in args.hand_weight_grid.split(",") if value.strip()
-        ):
-            for response_weight in (
-                float(value) for value in args.response_weight_grid.split(",") if value.strip()
-            ):
-                config = {
-                    "margin": margin,
-                    "hand_weight": hand_weight,
-                    "response_weight": response_weight,
-                    "use_lower": True,
-                }
-                result = _evaluate_config(
-                    selection_rows,
-                    config,
-                    bootstrap_samples=args.bootstrap_samples,
-                    bootstrap_seed=args.bootstrap_seed,
-                )
-                result["eligibility_errors"] = _selection_eligibility(
-                    result,
-                    min_overrides=args.min_overrides,
-                    min_selection_clusters=args.min_selection_clusters,
-                    min_override_clusters=args.min_override_clusters,
-                    min_overrides_per_opponent=args.min_overrides_per_opponent,
-                    min_override_hand_mean=args.min_override_hand_mean,
-                    require_nonnegative_opponent_mean=(
-                        not args.allow_negative_selection_opponent
-                    ),
-                )
-                result["eligible"] = not result["eligibility_errors"]
-                grid.append(result)
-    eligible = [result for result in grid if result["eligible"]]
+    policy_selection = select_offline_policy(
+        selection_rows,
+        margins=[
+            float(value) for value in args.margin_grid.split(",") if value.strip()
+        ],
+        hand_weights=[
+            float(value)
+            for value in args.hand_weight_grid.split(",")
+            if value.strip()
+        ],
+        response_weights=[
+            float(value)
+            for value in args.response_weight_grid.split(",")
+            if value.strip()
+        ],
+        min_overrides=args.min_overrides,
+        min_selection_clusters=args.min_selection_clusters,
+        min_override_clusters=args.min_override_clusters,
+        min_overrides_per_opponent=args.min_overrides_per_opponent,
+        min_override_hand_mean=args.min_override_hand_mean,
+        require_nonnegative_opponent_mean=(
+            not args.allow_negative_selection_opponent
+        ),
+        bootstrap_samples=args.bootstrap_samples,
+        bootstrap_seed=args.bootstrap_seed,
+        min_cluster_ci_lower=args.min_selection_ci_lower,
+        min_opponent_stratified_ci_lower=args.min_selection_ci_lower,
+    )
+    grid = policy_selection["grid"]
     model_manifests = [_file_manifest(path) for path in model_paths]
     data_manifests = {
         "selection": _file_manifest(args.selection_data),
@@ -479,10 +572,12 @@ def main() -> int:
         "require_nonnegative_opponent_mean": (
             not args.allow_negative_selection_opponent
         ),
+        "min_cluster_ci_lower": args.min_selection_ci_lower,
+        "min_opponent_stratified_ci_lower": args.min_selection_ci_lower,
     }
-    if not eligible:
+    if policy_selection["selected"] is None:
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "selection_used_held_out": False,
             "models": model_manifests,
             "selection_data": str(args.selection_data.resolve()),
@@ -490,9 +585,7 @@ def main() -> int:
             "selection_criteria": selection_criteria,
             "grid": grid,
             "selected": None,
-            "selection_failure": (
-                "no offline policy config met override coverage/safety constraints"
-            ),
+            "selection_failure": policy_selection["selection_failure"],
             "calibration": None,
             "calibration_gate": None,
             "held_out": None,
@@ -501,17 +594,7 @@ def main() -> int:
         _write_payload(args.output, payload)
         print(json.dumps({"selection_failure": payload["selection_failure"]}, indent=2))
         return 1
-    selected = max(
-        eligible,
-        key=lambda result: (
-            result["match_opponent_stratified_cluster_ci"]["lower"],
-            result["match_cluster_bootstrap_mean_ci"]["lower"],
-            result["match_mean_per_opportunity"],
-            result["override_clusters"],
-            -result["negative_override_rate"],
-            -result["config"]["margin"],
-        ),
-    )
+    selected = policy_selection["selected"]
 
     def evaluate_optional(path: Path | None, config: dict[str, Any]):
         if path is None:
@@ -533,11 +616,13 @@ def main() -> int:
         require_nonnegative_opponent_mean=(
             not args.allow_negative_calibration_opponent
         ),
+        min_cluster_ci_lower=args.min_calibration_ci_lower,
+        min_opponent_stratified_ci_lower=args.min_calibration_ci_lower,
     )
     no_response_config = dict(selected["config"], response_weight=0.0)
     mean_only_config = dict(selected["config"], use_lower=False)
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "selection_used_held_out": False,
         "models": model_manifests,
         "selection_data": str(args.selection_data.resolve()),
