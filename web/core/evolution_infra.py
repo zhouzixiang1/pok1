@@ -786,6 +786,18 @@ class BaseUI:
     def emit_tool_call(self, tool_name: str, args: dict, role: str = ""): pass
 
 
+class NullUI(BaseUI):
+    """Explicit no-op UI for headless infrastructure entry points."""
+
+
+_NULL_UI = NullUI()
+
+
+def resolve_ui(ui=None):
+    """Return a concrete UI object while preserving an injected UI unchanged."""
+    return _NULL_UI if ui is None else ui
+
+
 # ──────────────────────────────────────────────
 # Bot Directory & Status
 # ──────────────────────────────────────────────

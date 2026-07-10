@@ -356,6 +356,53 @@ def test_run_official_llm_analysis_sync_uses_fake_runner(tmp_path):
     assert analysis["strength_evaluation"] == "not_applicable"
 
 
+def test_default_official_analysis_runner_supports_headless_ui(monkeypatch, tmp_path):
+    import llm_query
+    from evolution_infra import NullUI
+
+    seen = {}
+
+    async def fake_stream(full_prompt, options, log_file_path, ui, role_name):
+        seen.update({
+            "full_prompt": full_prompt,
+            "tools": options.tools,
+            "log_file_path": log_file_path,
+            "ui": ui,
+            "role_name": role_name,
+        })
+        return [json.dumps({
+            "compliance_verdict": "pass",
+            "failure_class": "none",
+            "blocking": False,
+            "confidence": 0.91,
+            "evidence": [],
+            "root_cause": "No compliance problem.",
+            "repair_guidance": "",
+            "prompt_feedback": "",
+        })], 0.01, {"input_tokens": 10, "output_tokens": 20}
+
+    monkeypatch.setattr(llm_query, "_run_stream_with_signature_retry", fake_stream)
+    monkeypatch.setattr(llm_query, "_emit_llm_event", lambda *_args, **_kwargs: None)
+
+    output_path = tmp_path / "llm_official_analysis.json"
+    log_path = tmp_path / "llm_official_analysis.log"
+    analysis = asyncio.run(run_official_llm_analysis(
+        _clean_evidence(),
+        output_path=output_path,
+        log_file=log_path,
+    ))
+
+    assert analysis["analysis_source"] == "llm"
+    assert analysis["compliance_verdict"] == "pass"
+    assert analysis["confidence"] == 0.91
+    assert isinstance(seen["ui"], NullUI)
+    assert seen["role_name"] == "OFFICIAL PLATFORM COMPLIANCE ANALYST"
+    assert seen["tools"] == []
+    assert seen["log_file_path"] == log_path
+    assert "Official National Platform Compliance Analyst" in seen["full_prompt"]
+    assert output_path.exists()
+
+
 def test_safe_default_analysis_never_evaluates_strength():
     analysis = safe_default_analysis(_blocking_evidence(), reason="llm_not_run")
 
