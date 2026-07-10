@@ -69,6 +69,7 @@ OFFLINE_CANDIDATE_REQUIREMENTS = {
     "held_out_override_clusters": 8,
     "bootstrap_samples": 500,
     "minimum_match_weight": 0.25,
+    "minimum_hand_lcb": 0.0,
 }
 
 
@@ -317,6 +318,10 @@ def _offline_candidate_gate(
         errors.append(
             f"minimum_match_weight<{requirements['minimum_match_weight']}"
         )
+    if args.policy_min_hand_lcb < requirements["minimum_hand_lcb"]:
+        errors.append(
+            f"minimum_hand_lcb<{requirements['minimum_hand_lcb']}"
+        )
     if post_selection_policy is not None:
         policy_config = post_selection_policy.get("policy_config") or {}
         selected_match_weight = float(policy_config.get(
@@ -329,6 +334,14 @@ def _offline_candidate_gate(
             errors.append(
                 "selected_match_weight"
                 f"<{requirements['minimum_match_weight']}"
+            )
+        selected_hand_lcb = float(policy_config.get(
+            "min_hand_lcb", float("-inf")
+        ))
+        if selected_hand_lcb < requirements["minimum_hand_lcb"]:
+            errors.append(
+                "selected_hand_lcb"
+                f"<{requirements['minimum_hand_lcb']}"
             )
     if args.policy_allow_negative_opponent:
         errors.append("negative_selection_opponent_allowed")
@@ -414,6 +427,7 @@ def _run_policy_selection(
             maximum=1.0,
         ),
         min_match_weight=args.policy_min_match_weight,
+        min_hand_lcb=args.policy_min_hand_lcb,
         response_weights=_float_grid(
             args.policy_response_weight_grid, name="policy response weight"
         ),
@@ -458,6 +472,7 @@ def _run_policy_selection(
             ),
             "min_override_hand_mean": args.policy_min_override_hand_mean,
             "min_match_weight": args.policy_min_match_weight,
+            "min_hand_lcb": args.policy_min_hand_lcb,
             "require_nonnegative_opponent_mean": (
                 not args.policy_allow_negative_opponent
             ),
@@ -834,6 +849,7 @@ def main() -> int:
     parser.add_argument("--policy-hand-weight-grid", default="0.25,0.5,0.75,1")
     parser.add_argument("--policy-tail-weight-grid", default="0,0.25")
     parser.add_argument("--policy-min-match-weight", type=float, default=0.25)
+    parser.add_argument("--policy-min-hand-lcb", type=float, default=0.0)
     parser.add_argument("--policy-response-weight-grid", default="0,0.05,0.1")
     parser.add_argument("--policy-min-overrides", type=int, default=10)
     parser.add_argument("--policy-min-selection-clusters", type=int, default=8)
@@ -877,6 +893,8 @@ def main() -> int:
         raise SystemExit("policy-bootstrap-samples must be positive")
     if not 0.0 <= args.policy_min_match_weight <= 1.0:
         raise SystemExit("policy-min-match-weight must be in [0, 1]")
+    if not math.isfinite(args.policy_min_hand_lcb):
+        raise SystemExit("policy-min-hand-lcb must be finite")
     for name in (
         "policy_min_overrides",
         "policy_min_selection_clusters",

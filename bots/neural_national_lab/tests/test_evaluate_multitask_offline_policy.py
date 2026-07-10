@@ -88,6 +88,46 @@ def test_offline_policy_uses_lcb_and_response_signal() -> None:
     }]
 
 
+def test_offline_policy_applies_per_decision_hand_lcb_floor() -> None:
+    tool = _load_tool()
+    values = {
+        "delta_vs_rule": {
+            "lower": [0.0, 0.0, -10.0, 20.0, 0.0, 0.0],
+            "mean": [0.0, 0.0, 100.0, 80.0, 0.0, 0.0],
+        },
+        "tail_delta_vs_rule": {
+            "lower": [0.0] * 6,
+            "mean": [0.0] * 6,
+        },
+        "match_delta_vs_rule": {
+            "lower": [0.0, 0.0, 200.0, 100.0, 0.0, 0.0],
+            "mean": [0.0, 0.0, 200.0, 100.0, 0.0, 0.0],
+        },
+    }
+    rows = [{
+        "opponent": "national_v1",
+        "rule_id": 1,
+        "values": values,
+        "candidates": [
+            {"label_id": 2, "response_signal": 0.0, "hand_delta": -100.0,
+             "tail_delta": 0.0, "match_delta": 200.0},
+            {"label_id": 3, "response_signal": 0.0, "hand_delta": 20.0,
+             "tail_delta": 0.0, "match_delta": 100.0},
+        ],
+    }]
+
+    result = tool._evaluate_config(
+        rows,
+        {"margin": 0.0, "hand_weight": 0.25, "match_weight": 0.75,
+         "response_weight": 0.0, "use_lower": True, "min_hand_lcb": 0.0},
+        bootstrap_samples=10,
+        bootstrap_seed=1,
+    )
+
+    assert result["match_total"] == 100.0
+    assert result["override_trace"][0]["candidate"]["label_id"] == 3
+
+
 def test_policy_eligibility_requires_override_cluster_coverage() -> None:
     tool = _load_tool()
     result = {

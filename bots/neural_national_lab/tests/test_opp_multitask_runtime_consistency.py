@@ -201,6 +201,7 @@ def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
         policy_min_calibration_ci_lower=0.0,
         policy_min_held_out_ci_lower=0.0,
         policy_min_match_weight=requirements["minimum_match_weight"],
+        policy_min_hand_lcb=-1.0,
         policy_allow_negative_opponent=False,
         allow_missing_cross_hand_sequence=False,
     )
@@ -232,6 +233,7 @@ def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
                 "hand_weight": 0.5,
                 "tail_weight": 0.25,
                 "match_weight": 0.25,
+                "min_hand_lcb": 0.0,
             },
         },
     )
@@ -239,11 +241,13 @@ def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
     assert gate["passed"] is False
     assert "selection_overrides<10" in gate["errors"]
     assert "selection_ci_lower_threshold<0" in gate["errors"]
+    assert "minimum_hand_lcb<0.0" in gate["errors"]
     assert "dataset_freeze_incomplete" in gate["errors"]
     assert "dataset_pass_count_incomplete" in gate["errors"]
 
     args.policy_min_overrides = requirements["selection_overrides"]
     args.policy_min_selection_ci_lower = 0.0
+    args.policy_min_hand_lcb = requirements["minimum_hand_lcb"]
     (tmp_path / "freeze_manifest.json").write_text(
         json.dumps({
             "allow_incomplete": False,
@@ -263,6 +267,7 @@ def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
                 "hand_weight": 0.5,
                 "tail_weight": 0.25,
                 "match_weight": 0.25,
+                "min_hand_lcb": 0.0,
             },
         },
     )

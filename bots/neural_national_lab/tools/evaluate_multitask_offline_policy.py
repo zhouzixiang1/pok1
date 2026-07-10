@@ -258,6 +258,9 @@ def _evaluate_config(
         raise ValueError("policy value weights must be non-negative")
     response_weight = float(config["response_weight"])
     margin = float(config["margin"])
+    min_hand_lcb = config.get("min_hand_lcb")
+    if min_hand_lcb is not None:
+        min_hand_lcb = float(min_hand_lcb)
     use_lower = bool(config.get("use_lower", True))
     value_key = "lower" if use_lower else "mean"
     for row_index, row in enumerate(rows):
@@ -269,6 +272,8 @@ def _evaluate_config(
             hand = row["values"]["delta_vs_rule"][value_key][label_id]
             tail = row["values"]["tail_delta_vs_rule"][value_key][label_id]
             match = row["values"]["match_delta_vs_rule"][value_key][label_id]
+            if min_hand_lcb is not None and float(hand) < min_hand_lcb:
+                continue
             score = (
                 hand_weight * float(hand)
                 + tail_weight * float(tail)
@@ -496,6 +501,7 @@ def select_offline_policy(
     min_opponent_stratified_ci_lower: float = 0.0,
     tail_weights: list[float] | None = None,
     min_match_weight: float = 0.0,
+    min_hand_lcb: float | None = None,
 ) -> dict[str, Any]:
     grid = []
     tail_weights = list(tail_weights or [0.0])
@@ -514,6 +520,8 @@ def select_offline_policy(
                         "response_weight": float(response_weight),
                         "use_lower": True,
                     }
+                    if min_hand_lcb is not None:
+                        config["min_hand_lcb"] = float(min_hand_lcb)
                     result = _evaluate_config(
                         rows,
                         config,
@@ -571,6 +579,7 @@ def main() -> int:
     parser.add_argument("--hand-weight-grid", default="0.25,0.5,0.75,1.0")
     parser.add_argument("--tail-weight-grid", default="0,0.25")
     parser.add_argument("--min-match-weight", type=float, default=0.25)
+    parser.add_argument("--min-hand-lcb", type=float, default=0.0)
     parser.add_argument("--response-weight-grid", default="0,0.05,0.1")
     parser.add_argument("--min-overrides", type=int, default=10)
     parser.add_argument("--min-selection-clusters", type=int, default=8)
@@ -590,6 +599,8 @@ def main() -> int:
     args = parser.parse_args()
     if not 0.0 <= args.min_match_weight <= 1.0:
         raise SystemExit("min-match-weight must be in [0, 1]")
+    if not math.isfinite(args.min_hand_lcb):
+        raise SystemExit("min-hand-lcb must be finite")
 
     model_paths = [Path(path).resolve() for path in args.model]
     ensemble = OpponentMultiTaskEnsemble.load(model_paths)
@@ -612,6 +623,7 @@ def main() -> int:
             if value.strip()
         ],
         min_match_weight=args.min_match_weight,
+        min_hand_lcb=args.min_hand_lcb,
         response_weights=[
             float(value)
             for value in args.response_weight_grid.split(",")
@@ -644,6 +656,7 @@ def main() -> int:
         "min_overrides_per_opponent": args.min_overrides_per_opponent,
         "min_override_hand_mean": args.min_override_hand_mean,
         "min_match_weight": args.min_match_weight,
+        "min_hand_lcb": args.min_hand_lcb,
         "require_nonnegative_opponent_mean": (
             not args.allow_negative_selection_opponent
         ),

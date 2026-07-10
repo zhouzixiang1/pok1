@@ -293,6 +293,18 @@ the sparse weight-0 policy and the broad weight-0.5 policy on the pass-22
 snapshot. The intermediate-weight architecture summary SHA-256 was
 `340cdc0486146074c2b0b9f22ce94fbcaa82989b96e84b6db831ffd530d9f31e`.
 
+The broad policies also exposed a risk-composition flaw: a weighted sum could
+accept a candidate whose immediate-hand lower bound was negative because its
+noisy match-value prediction was positive. A component-level ablation now
+requires every candidate's calibrated hand LCB to be nonnegative before
+scoring. On the same GRU weight-0.5 ensemble this retained 10 overrides across
+7 clusters, produced no observed negative override, kept v142 and v98 positive,
+and yielded ordinary/stratified CI lower bounds of +4.89/+3.84. It remains
+rejected because formal evidence requires at least 8 override clusters. Adding
+a simultaneous nonnegative match-LCB floor reduced coverage to 6 overrides in
+5 clusters and was not adopted. The nonnegative hand-LCB floor is now part of
+the formal offline-candidate contract rather than a per-opponent threshold.
+
 ## Next Evidence
 
 1. Repeat the fixed `rule_relative_zero_v1` validation-only check at a
