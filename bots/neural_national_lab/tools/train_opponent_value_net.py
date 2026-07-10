@@ -272,6 +272,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dropout", type=float, default=0.1)
     ap.add_argument("--clip-target", type=float, default=5000.0,
                     help="Clip absolute chip-delta targets to this value.")
+    ap.add_argument("--task", choices=("regression", "classification"), default="regression",
+                    help="regression: predict chip-delta; classification: predict candidate>rule.")
+    ap.add_argument("--pos-margin", type=float, default=100.0,
+                    help="classification positive threshold: delta > pos_margin => label 1.")
+    ap.add_argument("--neg-margin", type=float, default=-100.0,
+                    help="classification: deltas in (neg_margin, pos_margin) are ignored (ambiguous).")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=1)
     args = ap.parse_args(argv)
@@ -311,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
         total_loss = 0.0
         total_n = 0
         all_err = []
+        all_prob = []  # for classification metrics
+        all_lbl = []
         for start in range(0, len(idx), args.batch_size):
             batch = [samples[i] for i in idx[start:start + args.batch_size]]
             state_t, profile_t, hist_t, hist_mask, target_t, _, _ = collate(
@@ -319,15 +327,30 @@ def main(argv: list[str] | None = None) -> int:
             valid = ~torch.isnan(target_t)
             if valid.sum() == 0:
                 continue
-            # Normalize targets to the clip range so the loss (and gradients)
-            # stay in a numerically safe range regardless of CUDA/CPU. The
-            # reported MAE is rescaled back to chips for interpretability.
             scale = float(args.clip_target)
-            target_norm = target_t / scale
-            target_clean = torch.where(valid, target_norm, torch.zeros_like(target_norm))
             pred = model(state_t, profile_t, hist_t, hist_mask)
-            err = (pred - target_clean) ** 2
-            loss = (err * valid).sum() / valid.sum().clamp(min=1)
+            if args.task == "regression":
+                target_norm = target_t / scale
+                target_clean = torch.where(valid, target_norm, torch.zeros_like(target_norm))
+                err = (pred - target_clean) ** 2
+                loss = (err * valid).sum() / valid.sum().clamp(min=1)
+                metric_val = ((pred[valid] - target_norm[valid]).abs() * scale).cpu().numpy()
+                with torch.no_grad():
+                    all_err.append(metric_val)
+            else:  # classification: label = 1 if delta > pos_margin, 0 if < neg_margin, skip otherwise
+                pos = float(args.pos_margin)
+                neg = float(args.neg_margin)
+                cls_mask = valid & (target_t > pos) | (valid & (target_t < neg))
+                if cls_mask.sum() == 0:
+                    continue
+                labels = (target_t > pos).float()
+                labels = torch.where(cls_mask, labels, torch.zeros_like(labels))
+                probs = torch.sigmoid(pred)
+                bce = torch.nn.functional.binary_cross_entropy(probs, labels, reduction="none")
+                loss = (bce * cls_mask).sum() / cls_mask.sum().clamp(min=1)
+                with torch.no_grad():
+                    all_prob.append(probs[cls_mask].cpu().numpy())
+                    all_lbl.append(labels[cls_mask].cpu().numpy())
             if torch.isnan(loss) or torch.isinf(loss):
                 continue
             if train:
@@ -335,39 +358,56 @@ def main(argv: list[str] | None = None) -> int:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 opt.step()
-            total_loss += float(loss.item()) * int(valid.sum().item())
-            total_n += int(valid.sum().item())
-            with torch.no_grad():
-                all_err.append(((pred[valid] - target_norm[valid]).abs() * scale).cpu().numpy())
-        mae = float(np.concatenate(all_err).mean()) if all_err else float("nan")
-        return total_loss / max(1, total_n), mae
+            total_loss += float(loss.item()) * int((valid if args.task == "regression" else cls_mask).sum().item())
+            total_n += int((valid if args.task == "regression" else cls_mask).sum().item())
+        if args.task == "regression":
+            mae = float(np.concatenate(all_err).mean()) if all_err else float("nan")
+            return total_loss / max(1, total_n), mae
+        # classification metrics: return (logloss, accuracy)
+        if all_prob:
+            probs = np.concatenate(all_prob)
+            lbls = np.concatenate(all_lbl)
+            eps = 1e-7
+            ll = float(-(lbls * np.log(probs.clip(eps, 1 - eps)) +
+                         (1 - lbls) * np.log((1 - probs).clip(eps, 1 - eps))).mean())
+            acc = float(((probs >= 0.5).astype(float) == lbls).mean())
+            return ll, acc
+        return float("nan"), float("nan")
 
-    best_val_mae = float("inf")
+    metric_name = "mae" if args.task == "regression" else "acc"
+    best_val_metric = float("inf") if args.task == "regression" else -1.0
+    better = (lambda v: v < best_val_metric) if args.task == "regression" else (lambda v: v > best_val_metric)
     for ep in range(1, args.epochs + 1):
-        tr_loss, tr_mae = run_epoch(train_samples, train=True)
-        va_loss, va_mae = run_epoch(val_samples, train=False) if val_samples else (float("nan"), float("nan"))
+        tr_m1, tr_m2 = run_epoch(train_samples, train=True)
+        va_m1, va_m2 = run_epoch(val_samples, train=False) if val_samples else (float("nan"), float("nan"))
         flag = ""
-        if val_samples and va_mae < best_val_mae:
-            best_val_mae = va_mae
+        if val_samples and better(va_m2):
+            best_val_metric = va_m2
             flag = " *best"
-        print(f"[opp_value] ep {ep:3d} train_mse={tr_loss:.1f} train_mae={tr_mae:.1f} "
-              f"val_mse={va_loss:.1f} val_mae={va_mae:.1f}{flag}", flush=True)
+        if args.task == "regression":
+            print(f"[opp_value] ep {ep:3d} train_mse={tr_m1:.1f} train_mae={tr_m2:.1f} "
+                  f"val_mse={va_m1:.1f} val_mae={va_m2:.1f}{flag}", flush=True)
+        else:
+            print(f"[opp_value] ep {ep:3d} train_logloss={tr_m1:.4f} train_acc={tr_m2:.3f} "
+                  f"val_logloss={va_m1:.4f} val_acc={va_m2:.3f}{flag}", flush=True)
 
     # Export to a deterministic JSON weight file for pure-Python runtime.
     _export_json(model, args.out, state_dim, profile_dim, args.gru_hidden,
-                 args.hidden, args.max_hist, best_val_mae, val_samples)
-    print(f"[opp_value] wrote {args.out} best_val_mae={best_val_mae:.1f}", flush=True)
+                 args.hidden, args.max_hist, best_val_metric, val_samples, task=args.task)
+    print(f"[opp_value] wrote {args.out} best_val_{metric_name}={best_val_metric}", flush=True)
     return 0
 
 
 def _export_json(model, out_path: str, state_dim: int, profile_dim: int,
                  gru_hidden: int, hidden: int, max_hist: int,
-                 best_val_mae: float, val_samples) -> None:
+                 best_val_mae: float, val_samples, *, task: str = "regression") -> None:
     model.eval()
     sd = model.state_dict()
     weights = {k: v.cpu().tolist() for k, v in sd.items()}
+    metric_key = "best_val_mae" if task == "regression" else "best_val_acc"
     meta = {
         "format": "opp_value_gru_v1",
+        "task": task,
         "labels": list(LABELS),
         "state_dim": state_dim,
         "profile_dim": profile_dim,
@@ -375,7 +415,7 @@ def _export_json(model, out_path: str, state_dim: int, profile_dim: int,
         "hist_feat_dim": HIST_FEAT_DIM,
         "hidden": hidden,
         "max_hist": max_hist,
-        "best_val_mae": float(best_val_mae) if best_val_mae == best_val_mae else None,
+        metric_key: float(best_val_mae) if best_val_mae == best_val_mae else None,
     }
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
