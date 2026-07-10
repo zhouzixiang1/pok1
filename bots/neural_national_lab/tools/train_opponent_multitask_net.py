@@ -87,6 +87,7 @@ def _attach_cross_hand_sequence(
 def build_value_sample(row: dict[str, Any], *, max_hist: int) -> dict[str, Any]:
     sample = build_sample(row, max_hist=max_hist, target_field="delta_vs_rule")
     _attach_cross_hand_sequence(sample, row)
+    sample["loss_weight"] = float(row.get("_training_loss_weight", 1.0))
     sample["value_targets"] = {
         field: _target_vector(row, field) for field in VALUE_FIELDS
     }
@@ -126,6 +127,7 @@ def build_behavior_sample(row: dict[str, Any], *, max_hist: int) -> dict[str, An
         sample["state"][index] = 0.0
     sample["hero_action_features"] = _hero_action_features(row)
     sample["response_target"] = target
+    sample["loss_weight"] = float(row.get("_training_loss_weight", 1.0))
     sample["response_amount"] = min(
         1.0, max(0.0, float(row.get("opponent_action_pot_ratio", 0.0) or 0.0) / 4.0)
     )
@@ -464,12 +466,27 @@ def _rule_action_tensor(samples: list[dict[str, Any]], device: str) -> torch.Ten
     return F.one_hot(labels, num_classes=NUM_ACTIONS).float()
 
 
+def _loss_weight_tensor(
+    samples: list[dict[str, Any]], device: str
+) -> torch.Tensor:
+    return torch.tensor(
+        [max(0.0, float(sample.get("loss_weight", 1.0))) for sample in samples],
+        dtype=torch.float32,
+        device=device,
+    )
+
+
+def _weighted_mean(values: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    return (values * weights).sum() / weights.sum().clamp(min=1e-6)
+
+
 def _value_loss(
     output: torch.Tensor,
     target: torch.Tensor,
     *,
     clip: float,
     quantile: float,
+    row_weights: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, int]:
     mean, lower = output[:, :NUM_ACTIONS], output[:, NUM_ACTIONS:]
     valid = ~torch.isnan(target)
@@ -477,10 +494,19 @@ def _value_loss(
         return output.sum() * 0.0, 0
     normalized = torch.clamp(target, -clip, clip) / clip
     clean = torch.where(valid, normalized, torch.zeros_like(normalized))
-    mean_loss = F.smooth_l1_loss(mean[valid], clean[valid])
+    if row_weights is None:
+        row_weights = torch.ones(target.shape[0], device=target.device)
+    weights = row_weights.unsqueeze(1).expand_as(target)[valid]
+    mean_loss = _weighted_mean(
+        F.smooth_l1_loss(mean[valid], clean[valid], reduction="none"),
+        weights,
+    )
     error = clean[valid] - lower[valid]
-    quantile_loss = torch.maximum(quantile * error, (quantile - 1.0) * error).mean()
-    order_penalty = F.relu(lower[valid] - mean[valid]).mean()
+    quantile_loss = _weighted_mean(
+        torch.maximum(quantile * error, (quantile - 1.0) * error),
+        weights,
+    )
+    order_penalty = _weighted_mean(F.relu(lower[valid] - mean[valid]), weights)
     return mean_loss + quantile_loss + 0.1 * order_penalty, int(valid.sum().item())
 
 
@@ -488,33 +514,45 @@ def _ranking_statistics(
     samples: list[dict[str, Any]], *, field: str, margin: float
 ) -> dict[str, Any]:
     action_counts = [0] * NUM_ACTIONS
+    weighted_action_counts = [0.0] * NUM_ACTIONS
     positive = negative = 0
+    weighted_positive = weighted_negative = 0.0
     for sample in samples:
+        sample_weight = max(0.0, float(sample.get("loss_weight", 1.0)))
         rule_id = int(sample.get("rule_id", -1) or 0)
         target = sample["value_targets"][field]
         for action, value in enumerate(target):
             if action == rule_id or math.isnan(value) or abs(value) <= margin:
                 continue
             action_counts[action] += 1
+            weighted_action_counts[action] += sample_weight
             if value > 0:
                 positive += 1
+                weighted_positive += sample_weight
             else:
                 negative += 1
-    present = sum(count > 0 for count in action_counts)
-    total = sum(action_counts)
+                weighted_negative += sample_weight
+    present = sum(count > 0 for count in weighted_action_counts)
+    weighted_total = sum(weighted_action_counts)
     action_weights = [
-        math.sqrt(total / (present * count)) if count and present else 0.0
-        for count in action_counts
+        math.sqrt(weighted_total / (present * count)) if count and present else 0.0
+        for count in weighted_action_counts
     ]
-    positive_weight = negative / positive if positive else 1.0
+    positive_weight = (
+        weighted_negative / weighted_positive if weighted_positive else 1.0
+    )
     return {
         "field": field,
         "margin": float(margin),
-        "samples": total,
+        "samples": sum(action_counts),
+        "weighted_samples": float(weighted_total),
         "positive": positive,
         "negative": negative,
+        "weighted_positive": float(weighted_positive),
+        "weighted_negative": float(weighted_negative),
         "positive_weight": float(positive_weight),
         "per_action_samples": action_counts,
+        "weighted_per_action_samples": weighted_action_counts,
         "per_action_weights": action_weights,
     }
 
@@ -528,6 +566,7 @@ def _pairwise_ranking_loss(
     temperature: float,
     positive_weight: torch.Tensor,
     action_weights: torch.Tensor,
+    row_weights: torch.Tensor | None = None,
     head: str = "mean",
 ) -> tuple[torch.Tensor, int]:
     if head == "mean":
@@ -552,7 +591,12 @@ def _pairwise_ranking_loss(
         pos_weight=positive_weight,
         reduction="none",
     )
-    weights = action_weights.unsqueeze(0).expand_as(target)[valid]
+    if row_weights is None:
+        row_weights = torch.ones(target.shape[0], device=target.device)
+    weights = (
+        action_weights.unsqueeze(0).expand_as(target)
+        * row_weights.unsqueeze(1)
+    )[valid]
     loss = (raw * weights).sum() / weights.sum().clamp(min=1e-6)
     return loss, int(valid.sum().item())
 
@@ -603,6 +647,56 @@ def _match_cluster_key(row: dict[str, Any]) -> tuple[str, int, int]:
     if not opponent:
         raise ValueError("training row is missing an opponent label")
     return opponent, deck_seed, bot_seed
+
+
+def _attach_training_row_weights(
+    rows: list[dict[str, Any]], *, scheme: str
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if scheme not in {"uniform", "opponent_balanced"}:
+        raise ValueError(f"unknown training row weighting scheme: {scheme}")
+    copied = [dict(row) for row in rows]
+    if not copied:
+        return copied, {
+            "scheme": scheme,
+            "rows": 0,
+            "opponents": 0,
+            "clusters": 0,
+            "min_row_weight": None,
+            "max_row_weight": None,
+        }
+    groups: dict[str, list[int]] = defaultdict(list)
+    clusters: dict[str, set[tuple[str, int, int]]] = defaultdict(set)
+    for index, row in enumerate(copied):
+        key = _match_cluster_key(row)
+        groups[key[0]].append(index)
+        clusters[key[0]].add(key)
+    raw_weights = [1.0] * len(copied)
+    if scheme == "opponent_balanced":
+        for indices in groups.values():
+            row_weight = 1.0 / len(indices)
+            for index in indices:
+                raw_weights[index] = row_weight
+    scale = len(raw_weights) / sum(raw_weights)
+    weights = [weight * scale for weight in raw_weights]
+    for row, weight in zip(copied, weights):
+        row["_training_loss_weight"] = float(weight)
+    per_opponent = {}
+    for opponent, indices in sorted(groups.items()):
+        per_opponent[opponent] = {
+            "rows": len(indices),
+            "clusters": len(clusters[opponent]),
+            "total_weight": float(sum(weights[index] for index in indices)),
+        }
+    return copied, {
+        "scheme": scheme,
+        "rows": len(copied),
+        "opponents": len(groups),
+        "clusters": sum(len(values) for values in clusters.values()),
+        "min_row_weight": float(min(weights)),
+        "max_row_weight": float(max(weights)),
+        "mean_row_weight": float(sum(weights) / len(weights)),
+        "per_opponent": per_opponent,
+    }
 
 
 def _stratified_cluster_bootstrap(
@@ -1125,6 +1219,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lower-direction-score-weight", type=float, default=0.5)
     parser.add_argument("--min-calibration-per-action", type=int, default=20)
     parser.add_argument("--cluster-bootstrap", action="store_true")
+    parser.add_argument(
+        "--training-row-weighting",
+        choices=("uniform", "opponent_balanced"),
+        default="uniform",
+    )
     parser.add_argument("--require-cross-hand-sequence", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=1)
@@ -1183,6 +1282,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         except ValueError as exc:
             raise SystemExit(f"cluster bootstrap failed: {exc}") from exc
+    training_row_weighting = {}
+    for name in ("value_train", "behavior_train"):
+        try:
+            raw[name], training_row_weighting[name] = (
+                _attach_training_row_weights(
+                    raw[name], scheme=args.training_row_weighting
+                )
+            )
+        except ValueError as exc:
+            raise SystemExit(f"training row weighting failed: {exc}") from exc
     if args.require_cross_hand_sequence:
         missing = {
             name: sum(row.get("cross_hand_sequence") is None for row in rows)
@@ -1215,10 +1324,16 @@ def main(argv: list[str] | None = None) -> int:
         [sample["response_target"] for sample in behavior["train"]],
         minlength=len(OPPONENT_ACTION_LABELS),
     )
+    weighted_response_counts = np.bincount(
+        [sample["response_target"] for sample in behavior["train"]],
+        weights=[sample["loss_weight"] for sample in behavior["train"]],
+        minlength=len(OPPONENT_ACTION_LABELS),
+    )
     response_weights = np.zeros(len(OPPONENT_ACTION_LABELS), dtype=np.float32)
-    present = response_counts > 0
+    present = weighted_response_counts > 0
     response_weights[present] = np.sqrt(
-        response_counts.sum() / (present.sum() * response_counts[present])
+        weighted_response_counts.sum()
+        / (present.sum() * weighted_response_counts[present])
     )
     response_weight_tensor = torch.tensor(
         response_weights, dtype=torch.float32, device=device
@@ -1289,6 +1404,20 @@ def main(argv: list[str] | None = None) -> int:
         }),
         flush=True,
     )
+    print(
+        "[multitask] training_row_weighting="
+        + str({
+            name: {
+                key: report.get(key)
+                for key in (
+                    "scheme", "rows", "opponents", "clusters",
+                    "min_row_weight", "max_row_weight",
+                )
+            }
+            for name, report in training_row_weighting.items()
+        }),
+        flush=True,
+    )
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -1327,6 +1456,7 @@ def main(argv: list[str] | None = None) -> int:
                 ))
                 targets = _value_batch_tensors(batch, device)
                 rule_ids = _rule_ids_tensor(batch, device)
+                loss_weights = _loss_weight_tensor(batch, device)
                 value_loss = torch.zeros((), device=device)
                 for field in VALUE_FIELDS:
                     field_loss, _ = _value_loss(
@@ -1334,6 +1464,7 @@ def main(argv: list[str] | None = None) -> int:
                         targets[field],
                         clip=clips[field],
                         quantile=args.lower_quantile,
+                        row_weights=loss_weights,
                     )
                     value_loss = value_loss + field_weights[field] * field_loss
                 ranking_loss, _ = _pairwise_ranking_loss(
@@ -1344,6 +1475,7 @@ def main(argv: list[str] | None = None) -> int:
                     temperature=args.ranking_temperature,
                     positive_weight=ranking_positive_weight,
                     action_weights=ranking_action_weights,
+                    row_weights=loss_weights,
                 )
                 lower_ranking_loss, _ = _pairwise_ranking_loss(
                     outputs["match_delta_vs_rule"],
@@ -1353,6 +1485,7 @@ def main(argv: list[str] | None = None) -> int:
                     temperature=args.ranking_temperature,
                     positive_weight=ranking_positive_weight,
                     action_weights=ranking_action_weights,
+                    row_weights=loss_weights,
                     head="lower",
                 )
                 value_loss = (
@@ -1385,11 +1518,13 @@ def main(argv: list[str] | None = None) -> int:
                     device=device,
                 )
                 output = model.response(latent, hero)
-                behavior_loss = F.cross_entropy(
+                loss_weights = _loss_weight_tensor(batch, device)
+                behavior_loss = _weighted_mean(F.cross_entropy(
                     output[:, :len(OPPONENT_ACTION_LABELS)],
                     target,
                     weight=response_weight_tensor,
-                )
+                    reduction="none",
+                ), loss_weights)
                 amount_mask = (target == OPPONENT_ACTION_LABELS.index("raise")) | (
                     target == OPPONENT_ACTION_LABELS.index("allin")
                 )
@@ -1399,8 +1534,13 @@ def main(argv: list[str] | None = None) -> int:
                         dtype=torch.float32,
                         device=device,
                     )
-                    behavior_loss = behavior_loss + 0.25 * F.smooth_l1_loss(
-                        torch.sigmoid(output[amount_mask, -1]), amount_target[amount_mask]
+                    behavior_loss = behavior_loss + 0.25 * _weighted_mean(
+                        F.smooth_l1_loss(
+                            torch.sigmoid(output[amount_mask, -1]),
+                            amount_target[amount_mask],
+                            reduction="none",
+                        ),
+                        loss_weights[amount_mask],
                     )
                 losses.append(args.behavior_weight * behavior_loss)
             loss = sum(losses)
@@ -1568,6 +1708,8 @@ def main(argv: list[str] | None = None) -> int:
                 "ranking_reference": VALUE_REFERENCE,
                 "cluster_bootstrap_enabled": bool(args.cluster_bootstrap),
                 "cluster_bootstrap": cluster_bootstrap,
+                "training_row_weighting": args.training_row_weighting,
+                "training_row_weighting_report": training_row_weighting,
                 "effective_rows": {
                     name: len(rows) for name, rows in raw.items()
                 },
@@ -1586,6 +1728,10 @@ def main(argv: list[str] | None = None) -> int:
                 "response_class_counts": dict(zip(
                     OPPONENT_ACTION_LABELS,
                     [int(value) for value in response_counts],
+                )),
+                "weighted_response_class_counts": dict(zip(
+                    OPPONENT_ACTION_LABELS,
+                    [float(value) for value in weighted_response_counts],
                 )),
                 "response_class_weights": dict(zip(
                     OPPONENT_ACTION_LABELS,

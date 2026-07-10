@@ -125,7 +125,7 @@ def _sha256(path: Path) -> str:
 
 def _training_recipe(
     args: argparse.Namespace, config: dict[str, Any] | None = None
-) -> dict[str, float | bool]:
+) -> dict[str, float | bool | str]:
     return {
         "match_ranking_weight": float(
             (config or {}).get(
@@ -145,6 +145,7 @@ def _training_recipe(
             args.lower_direction_score_weight
         ),
         "cluster_bootstrap_enabled": bool(args.cluster_bootstrap),
+        "training_row_weighting": str(args.training_row_weighting),
     }
 
 
@@ -699,6 +700,9 @@ def _model_matches(
         if isinstance(expected, bool):
             if actual is not expected:
                 return False
+        elif isinstance(expected, str):
+            if actual != expected:
+                return False
         elif float(actual if actual is not None else float("nan")) != expected:
             return False
     if meta.get("response_encoder") != "separate_public_v1":
@@ -754,6 +758,7 @@ def _run_training(
         "--lower-direction-score-weight", str(
             args.lower_direction_score_weight
         ),
+        "--training-row-weighting", args.training_row_weighting,
         "--head-hidden", str(config["head_hidden"]),
         "--epochs", str(args.epochs),
         "--patience", str(args.patience),
@@ -833,6 +838,11 @@ def main() -> int:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--training-workers", type=int, default=1)
     parser.add_argument("--cluster-bootstrap", action="store_true")
+    parser.add_argument(
+        "--training-row-weighting",
+        choices=("uniform", "opponent_balanced"),
+        default="uniform",
+    )
     parser.add_argument("--cross-transformer-heads", type=int, default=4)
     parser.add_argument("--cross-moe-experts", type=int, default=4)
     parser.add_argument("--match-ranking-weight", type=float, default=0.5)

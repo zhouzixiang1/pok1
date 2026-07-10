@@ -342,6 +342,62 @@ pass-22 result does not justify replacing the non-bootstrap recipe. Pass 40
 will therefore keep the full non-bootstrap sweep as its primary experiment and
 repeat a targeted bootstrap A/B on the same frozen prefix.
 
+## Opponent-Balanced Loss A/B
+
+The pass-22 behavior stream contained 69-320 rows per training opponent while
+the value stream contained 43-60. A first match-balanced smoke was rejected
+before the A/B because one-action short matches received up to 39.4x row
+weight. The retained optional mode equalizes total loss weight per opponent but
+preserves the observed event frequency inside each opponent. Its value weights
+ranged from 0.88x to 1.23x and behavior weights from 0.62x to 2.86x. Weighted
+class and action frequencies are used consistently by the response and ranking
+losses, and the complete weighting report is exported with each model.
+
+The same 12-model GRU/GRU+MoE, lower-weight 0/0.5 experiment did not improve
+policy selection:
+
+| Encoder | Lower rank weight | Match dir. balanced | Lower dir. balanced | Overrides/clusters | CI lower / stratified | Result |
+|---|---:|---:|---:|---:|---:|---|
+| GRU | 0.0 | 70.5% | 60.6% | 11 / 4 | +1.16 / +1.16 | reject: sparse clusters |
+| GRU | 0.5 | 71.0% | 71.1% | 10 / 6 | +3.12 / +3.12 | reject: sparse clusters |
+| GRU+MoE | 0.0 | 71.3% | 60.4% | 10 / 4 | +1.65 / +1.65 | reject: v98 uncovered |
+| GRU+MoE | 0.5 | 73.1% | 73.5% | 11 / 9 | -313.15 / -318.64 | reject: v142 negative |
+
+The unweighted GRU weight-0.5 reference covered seven clusters, so the closest
+balanced model regressed to six despite a positive point estimate. Its v142
+total was also dominated by one observed +20100 preflop all-in while the model
+predicted only about +397 chips of hand LCB. This is not sufficient evidence of
+a calibrated low-risk exploit. All runtimes remained below 100 ms, held-out was
+not opened by policy selection, and no bot was created. The architecture
+summary SHA-256 was
+`41a4f6ac74044467687c9ed781906a480e8706fbdcba88d71c7672525cc4bbd3`.
+Opponent balancing remains an explicit ablation but is not part of the pass-40
+primary recipe.
+
+## Long-Horizon Target Leverage
+
+Dataset audit schema 2 now reports target distributions and long-horizon
+leverage separately by split. Before policy selection, held-out target values,
+action classes, and leverage summaries are redacted; only structural counts,
+opponent isolation, integrity checks, and file hashes remain visible.
+
+On pass-22 train data, 134 of 1,784 alternative probes (7.51%) had absolute
+tail delta of at least 10000 chips. Thirty-one probes (1.74%) changed the
+current hand by at most 200 chips but changed the later match by at least 10000;
+large tails appeared in 31 of 78 train match clusters. Validation was more
+volatile: 87 of 515 probes (16.89%) crossed 10000 and 38 (7.38%) combined a
+small hand delta with a large tail, spread across 15 of 22 clusters.
+
+One train-only v141 cluster illustrates the leverage: the baseline finished at
++19922, while several different early single-decision branches finished near
+-18150. This can contain genuine opponent-profile cascade, Monte Carlo random
+stream divergence after a changed action path, or both; one rollout per branch
+cannot identify the components. Clipping, robust losses, hand-LCB gating, and
+whole-match bootstrap limit the damage but cannot create missing independent
+counterfactual evidence. A stable per-hand common-random-number probe and/or
+replicated branch rollouts must be evaluated as a new dataset recipe rather
+than mixed silently into the current collection.
+
 ## Next Evidence
 
 1. At pass 40, repeat the fixed `rule_relative_zero_v1` validation-only check
@@ -354,3 +410,9 @@ repeat a targeted bootstrap A/B on the same frozen prefix.
 4. Use offline clustered policy selection before creating an active TCP bot.
 5. Treat native paired classic-pool EV, not these supervised metrics, as the
    eventual strength criterion.
+6. Add a catastrophe-probability/CVaR-style hand-risk head before trusting
+   full-stack neural overrides; a positive 0.2-quantile LCB alone did not reject
+   the observed jackpot-driven all-in.
+7. Compare stable per-hand random streams or replicated rollouts on a separate
+   frozen collection before using match/tail labels as causal long-horizon
+   targets.

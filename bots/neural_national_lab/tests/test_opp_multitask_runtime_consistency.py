@@ -116,6 +116,76 @@ def test_pairwise_ranking_loss_prefers_rule_relative_direction() -> None:
     assert shifted_lower_loss.item() == pytest.approx(good_lower.item())
 
 
+def test_opponent_weighting_equalizes_opponents_without_flattening_events() -> None:
+    rows = []
+    rows.extend([
+        {
+            "opponent": "national_v1",
+            "deck_seed_base": 10,
+            "bot_seed_base": 11,
+            "row": index,
+        }
+        for index in range(2)
+    ])
+    rows.append({
+        "opponent": "national_v1",
+        "deck_seed_base": 20,
+        "bot_seed_base": 21,
+        "row": 0,
+    })
+    rows.extend([
+        {
+            "opponent": "national_v2",
+            "deck_seed_base": 30,
+            "bot_seed_base": 31,
+            "row": index,
+        }
+        for index in range(4)
+    ])
+
+    weighted, report = trainer._attach_training_row_weights(
+        rows, scheme="opponent_balanced"
+    )
+
+    assert report["mean_row_weight"] == pytest.approx(1.0)
+    assert report["per_opponent"]["national_v1"]["total_weight"] == pytest.approx(3.5)
+    assert report["per_opponent"]["national_v2"]["total_weight"] == pytest.approx(3.5)
+    v1_weights = [
+        row["_training_loss_weight"]
+        for row in weighted
+        if row["opponent"] == "national_v1"
+    ]
+    v2_weights = [
+        row["_training_loss_weight"]
+        for row in weighted
+        if row["opponent"] == "national_v2"
+    ]
+    assert len(set(v1_weights)) == 1
+    assert len(set(v2_weights)) == 1
+    assert v1_weights[0] == pytest.approx(3.5 / 3.0)
+    assert v2_weights[0] == pytest.approx(3.5 / 4.0)
+
+
+def test_value_loss_honors_row_weights() -> None:
+    output = torch.zeros(2, trainer.NUM_ACTIONS * 2)
+    target = torch.full((2, trainer.NUM_ACTIONS), float("nan"))
+    target[0, 2] = 500.0
+    target[1, 2] = -5000.0
+
+    weighted, _ = trainer._value_loss(
+        output,
+        target,
+        clip=5000.0,
+        quantile=0.2,
+        row_weights=torch.tensor([1.0, 0.0]),
+    )
+    first_only, _ = trainer._value_loss(
+        output[:1], target[:1], clip=5000.0, quantile=0.2
+    )
+
+    assert weighted.item() == pytest.approx(first_only.item())
+
+
 def test_cluster_bootstrap_resamples_shared_whole_match_groups() -> None:
     value_rows = []
     behavior_rows = []

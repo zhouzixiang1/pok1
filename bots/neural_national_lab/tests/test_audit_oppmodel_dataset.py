@@ -73,7 +73,17 @@ def test_audit_accepts_disjoint_protocol_clean_splits(tmp_path: Path) -> None:
     tool = _load_tool()
     for index, split in enumerate(tool.SPLITS):
         opponent = f"national_v{index + 1}"
-        _write(tmp_path / f"cf_{split}.jsonl", _value_row(opponent, index + 10))
+        value = _value_row(opponent, index + 10)
+        if split == "held_out":
+            value["delta_vs_rule"][2] = 100.0
+            value["tail_delta_vs_rule"][2] = 987_654_321.0
+            value["match_delta_vs_rule"][2] = 987_654_421.0
+            value["probes"][0].update({
+                "delta_vs_rule": 100.0,
+                "tail_delta_vs_rule": 987_654_321.0,
+                "match_delta_vs_rule": 987_654_421.0,
+            })
+        _write(tmp_path / f"cf_{split}.jsonl", value)
         _write(
             tmp_path / f"opponent_actions_{split}.jsonl",
             _behavior_row(opponent, index + 10),
@@ -88,6 +98,49 @@ def test_audit_accepts_disjoint_protocol_clean_splits(tmp_path: Path) -> None:
 
     assert report["passed"] is True
     assert report["valid_probes"] == len(tool.SPLITS)
+    for split in ("train", "val", "calibration"):
+        assert report["long_horizon_target_leverage"][split]["samples"] == 1
+    assert report["long_horizon_target_leverage"]["held_out"] == {
+        "redacted": True
+    }
+    assert report["targets"]["held_out"] == {"redacted": True}
+    assert "987654321" not in json.dumps(report)
+
+
+def test_long_horizon_leverage_reports_cluster_concentration() -> None:
+    tool = _load_tool()
+    probes = [
+        {
+            "opponent": "national_v1",
+            "deck_seed_base": 10,
+            "bot_seed_base": 20,
+            "hand_delta": 100.0,
+            "tail_delta": 12_000.0,
+        },
+        {
+            "opponent": "national_v1",
+            "deck_seed_base": 10,
+            "bot_seed_base": 20,
+            "hand_delta": 500.0,
+            "tail_delta": -15_000.0,
+        },
+        {
+            "opponent": "national_v2",
+            "deck_seed_base": 30,
+            "bot_seed_base": 40,
+            "hand_delta": 0.0,
+            "tail_delta": 50.0,
+        },
+    ]
+
+    report = tool._long_horizon_target_leverage(probes)
+
+    assert report["samples"] == 3
+    assert report["clusters"] == 2
+    assert report["large_tail_probes"] == 2
+    assert report["small_hand_large_tail_probes"] == 1
+    assert report["clusters_with_large_tail"] == 1
+    assert report["largest_clusters"][0]["large_tail_probes"] == 2
 
 
 def test_audit_rejects_opponent_leakage(tmp_path: Path) -> None:
