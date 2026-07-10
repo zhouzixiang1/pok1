@@ -419,11 +419,85 @@ The next risk model must separate catastrophe probability/severity from the
 ordinary hand-value lower bound instead of forcing one quantile to perform both
 jobs.
 
+## Pass-40 Catastrophe-Head Checkpoint
+
+The pass-40 atomic freeze contains 1,652 value and 6,086 behavior training
+rows after moving v121/v135 to calibration, plus 470/2,323 validation and
+475/1,323 held-out value/behavior rows. Train, calibration, validation, and
+held-out remain opponent-disjoint. The train value stream now covers 142
+whole-match clusters and validation covers 40. Held-out targets and action
+classes remained redacted. The freeze manifest and selection audit SHA-256
+values are `99f900e13416382bf28707018646380a056b8fb7fc7bbe9e445404cee3e4010f`
+and `6d4e50036dedba1b0c51c2f3c2ff76c845e676fef60b3dfc779a0c0cef24d848`.
+This is still an explicitly incomplete 40/160 checkpoint.
+
+A separate 4,940-parameter risk head now freezes each base model's exact
+opponent-aware latent and predicts per-action:
+
+- `P(delta_vs_rule <= -5000)`;
+- clipped loss severity conditional on that event;
+- expected catastrophic loss.
+
+Each head JSON is bound to the exact base-model SHA-256. The stdlib ensemble
+uses the mean plus one member standard deviation as its probability upper
+bound. Match-cluster bootstrap is applied independently to the risk-head
+members. A global Platt scale and bias are fit on calibration opponents only.
+The base value model is unchanged, making risk-head on/off a controlled
+ablation.
+
+Unweighted BCE immediately exposed a classifier-selection failure: NLL kept
+improving as validation AUROC fell below 0.3. The early-stop score now makes
+AUROC and average precision primary and treats NLL as a calibration-quality
+term. Unit coverage explicitly rejects the all-negative collapse. Even with
+the repaired score, unweighted heads selected epoch 1 and achieved only
+0.485-0.521 AUROC. Square-root positive weighting plus post-hoc Platt
+calibration improved the three GRU weight-0 heads to 0.759/0.762/0.782 AUROC
+and 0.080-0.099 average precision on validation, whose catastrophe prevalence
+was 2.99%. Their SHA-256 values are:
+
+- `fe41ce3a7c47bc34c098d48ee620a8e6a465358e5d3e253fbbc27848f7e540fb`;
+- `458734a087d77e7b7542d2c4c6741ae2aee681653f596099aa4665ab92153fe9`;
+- `680309b59c75fc735d89e3d6baeb97699384505838d916baffa243e56332eecf`.
+
+The improved supervised metric did not pass the offline policy gate. For GRU
+weight 0, a 0.05 probability-UCB ceiling retained 43 overrides over 15
+clusters, but 39 were all-ins, observed hand mean was -272, and ordinary and
+opponent-stratified cluster CI lower bounds were approximately -167/-171.
+Reducing the ceiling to 0.005 improved hand mean to +21.6 and removed one of
+two observed catastrophes, but the remaining rare preflop call left CI lower
+bounds near -82. The head assigned that event a probability upper bound of
+only 0.00015 before its observed `-19900` hand delta. The low-grid policy
+report SHA-256 is
+`5a5a673cd8c727321b08a326c05a876d2079862431ef21d977e5beee5cf5d09f`.
+
+GRU weight 0.5 was also rejected before the risk filter: its closest base
+policy had 10 overrides over 9 clusters, hand mean -1276, and ordinary/
+stratified CI lower bounds near -170/-176. Its base policy report SHA-256 is
+`cf78b38d9726ba83dec577caa5fa3d5e21c8c3490aebfe7c1f5dbc84fe8d3df7`.
+With a catastrophe ceiling of 0.01, only four overrides over four clusters
+remained and both CI lower bounds were near -84. At 0.001 there were no
+overrides; at 0.05 the unsafe base coverage returned. The risk-filter report
+SHA-256 is
+`702682c57a0fded81cd94a5a3036a68642d4c668f4925e78c1d276dccf9e5a94`.
+Held-out was not opened for either experiment and no bot was created.
+
+This rejects the hypothesis that an action-level catastrophe classifier can
+repair the current single-runout labels by threshold tuning alone. The head
+has useful ranking signal, but rare call and all-in false negatives still
+dominate clustered policy evidence. `native_tcp_conditional_runout_probe.py`
+therefore adds a separate native-TCP diagnostic: it fixes every card dealt
+before a selected decision, reshuffles only the unseen suffix of that hand,
+and gives the rule and forced branches the same suffix. It checks the complete
+pre-force request/state and sanitized rule action before accepting a replicate,
+then reports conditional catastrophe rate and bootstrap CI. Its deck-prefix,
+context-integrity, and statistical helpers pass unit tests. It has not yet run
+an end-to-end TCP replicate while the four-slot long-run collector is active,
+so it is tooling rather than evidence at this checkpoint.
+
 ## Next Evidence
 
-1. At pass 40, repeat the fixed `rule_relative_zero_v1` validation-only check
-   with the full non-bootstrap grid and a targeted match-cluster bootstrap
-   control; do not tune from held-out results.
+1. Finish the pass-40 fixed `rule_relative_zero_v1` non-bootstrap sweep and
+   targeted match-cluster bootstrap control; do not tune from held-out results.
 2. Repeat the full GRU, GRU+MoE, Deep Sets, and Transformer scaling grid after
    the 160-pass dataset is frozen.
 3. Use calibration only for output calibration and coverage diagnostics; keep
@@ -431,9 +505,8 @@ jobs.
 4. Use offline clustered policy selection before creating an active TCP bot.
 5. Treat native paired classic-pool EV, not these supervised metrics, as the
    eventual strength criterion.
-6. Add a catastrophe-probability/CVaR-style hand-risk head before trusting
-   full-stack neural overrides; a positive 0.2-quantile LCB alone did not reject
-   the observed jackpot-driven all-in.
-7. Compare stable per-hand random streams or replicated rollouts on a separate
-   frozen collection before using match/tail labels as causal long-horizon
-   targets.
+6. Use the catastrophe head as an ablation and uncertainty signal, not a
+   release gate, until targeted data closes its rare-action false negatives.
+7. Run conditional common-runout replication on the first-divergence failures,
+   then compare a separately frozen replicated-label dataset before treating
+   match/tail labels as causal long-horizon targets.
