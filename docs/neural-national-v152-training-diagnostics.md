@@ -398,6 +398,27 @@ counterfactual evidence. A stable per-hand common-random-number probe and/or
 replicated branch rollouts must be evaluated as a new dataset recipe rather
 than mixed silently into the current collection.
 
+## Five-Percent Risk Quantile A/B
+
+The train alternatives also explain why the existing 0.2 lower quantile can
+miss full-stack risk. Of 460 forced all-ins, 39 (8.48%) lost at least 5000
+chips. Their empirical hand-delta 5th, 10th, and 20th percentiles were -19900,
+0, and 0 respectively. A controlled three-seed GRU experiment therefore
+changed only `lower_quantile` from 0.20 to 0.05 while retaining lower-ranking
+weight 0.5 and the corrected rule-relative-zero contract.
+
+The median match/lower direction balanced accuracies remained 72.2%/72.0%, but
+the calibrated hand-lower positive rates for seeds 101/211/307 were 0%, 0%,
+and 1.2%. Every one of the 90 strict policy configurations produced zero
+override after the nonnegative hand-LCB floor. This rejects a global 5%
+quantile as the runtime risk mechanism on the current single-rollout data: it
+removes the jackpot-driven all-ins but collapses all useful action coverage as
+well. The policy report SHA-256 was
+`b1cb35e6c104a98b03c99c5dacbddd695281e2301a92055f823484656c176f43`.
+The next risk model must separate catastrophe probability/severity from the
+ordinary hand-value lower bound instead of forcing one quantile to perform both
+jobs.
+
 ## Next Evidence
 
 1. At pass 40, repeat the fixed `rule_relative_zero_v1` validation-only check
