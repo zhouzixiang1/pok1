@@ -875,6 +875,86 @@ def test_native_tcp_pair_parses_decision_trace(monkeypatch, tmp_path):
     assert result["passed_compliance"] is True
 
 
+def test_native_bot_log_parser_summarizes_decision_runtime():
+    report = national_native._parse_native_bot_log(
+        "[10:00:00] DECIDE start name=BotA hand=1 stage=preflop act_cnt=0\n"
+        "[10:00:00] DECIDE done action=0 elapsed=0.125s\n"
+        "[10:00:00] SEND name=BotA hand=1 stage=preflop act_cnt=0 msg='call'\n"
+        "[10:00:01] OFFICIAL_ACTION_DELAY wait=0.250s target=0.300s\n"
+        "[10:00:02] DECIDE start name=BotA hand=11 stage=flop act_cnt=0\n"
+        "[10:00:02] DECIDE done action=-1 elapsed=0.500s\n"
+    )
+
+    assert report["decision_latency"]["count"] == 2
+    assert report["decision_latency"]["max_sec"] == 0.5
+    assert report["decision_latency"]["by_stage"]["preflop"]["count"] == 1
+    assert report["decision_latency"]["by_hand_bucket"]["11-20"]["max_sec"] == 0.5
+    assert report["official_action_delay"]["count"] == 1
+    assert report["official_action_delay"]["target_sec"] == 0.3
+    assert report["send_count"] == 1
+
+
+def test_native_tcp_pair_captures_template_runtime_telemetry(tmp_path, monkeypatch):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_minimal_strategy_bot(bot_a)
+    _write_minimal_strategy_bot(bot_b)
+    ensure_native_entry(bot_a)
+    ensure_native_entry(bot_b)
+    runtime_log_dir = tmp_path / "runtime-logs"
+    real_mkdtemp = national_native.tempfile.mkdtemp
+
+    def controlled_mkdtemp(*args, **kwargs):
+        if kwargs.get("prefix") == "pok_native_logs_":
+            runtime_log_dir.mkdir()
+            return str(runtime_log_dir)
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(national_native.tempfile, "mkdtemp", controlled_mkdtemp)
+
+    result = asyncio.run(run_native_tcp_pair(
+        bot_a,
+        bot_b,
+        hands=2,
+        require_native_a=True,
+        require_native_b=True,
+        deck_seed_base=1234,
+        timeout_sec=30,
+    ))
+
+    assert result["passed_compliance"] is True
+    telemetry = result["per_player"]["BotA"]["runtime_telemetry"]
+    assert telemetry["bot_log_supported"] is True
+    assert telemetry["server_action_latency"]["count"] >= 1
+    assert telemetry["server_action_latency"]["budget_sec"] == 30.0
+    assert telemetry["bot_log"]["decision_latency"]["count"] >= 1
+    assert telemetry["bot_log"]["decision_latency"]["budget_sec"] == 60.0
+    assert "bot_log_tail" not in result["per_player"]["BotA"]["native"]
+    assert not runtime_log_dir.exists()
+
+
+def test_native_acceptance_summary_includes_runtime_telemetry(tmp_path):
+    candidate = tmp_path / "Candidate"
+    opponent = tmp_path / "Opponent"
+    _write_minimal_strategy_bot(candidate)
+    _write_minimal_strategy_bot(opponent)
+    ensure_native_entry(candidate)
+    ensure_native_entry(opponent)
+
+    result = asyncio.run(national_native.run_native_acceptance_for_candidate(
+        candidate,
+        opponent_tokens=[opponent],
+        hands=2,
+        timeout_sec=30,
+    ))
+
+    assert result.passed is True
+    runtime = result.summary["runtime_telemetry"]
+    assert runtime["server_action_latency"]["count"] >= 1
+    assert runtime["bot_decision_latency"]["count"] >= 1
+    assert runtime["matches_with_bot_log"] == 1
+
+
 def test_native_tcp_pair_reorders_clients_by_bot_label(tmp_path):
     bot_a = tmp_path / "BotA"
     bot_b = tmp_path / "BotB"

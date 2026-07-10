@@ -26,6 +26,13 @@ from typing import Any
 
 from eval_stats import paired_bootstrap_ci
 from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, parse_bot_version, version_sort_key
+from national_runtime_telemetry import (
+    empty_bot_log_summary as _empty_bot_log_summary,
+    empty_runtime_telemetry as _empty_runtime_telemetry,
+    merge_runtime_telemetry as _merge_runtime_telemetry,
+    parse_native_bot_log as _parse_native_bot_log,
+    server_action_latency as _server_action_latency,
+)
 from pipeline_schema import NationalAcceptanceResult
 
 
@@ -1004,6 +1011,22 @@ def _parse_decision_trace(stderr_text: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _native_entry_supports_log_arg(entry: Path) -> bool:
+    try:
+        text = entry.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return "--log" in text and ("add_argument(\"--log\"" in text or "add_argument('--log'" in text)
+
+
+def _safe_label_fragment(label: str) -> str:
+    safe = "".join(
+        char if char.isascii() and (char.isalnum() or char in "_.-") else "_"
+        for char in label
+    )
+    return safe[:80] or "bot"
+
+
 async def _run_tcp_server_with_processes(
     bot_a: NativeBotSpec,
     bot_b: NativeBotSpec,
@@ -1033,7 +1056,9 @@ async def _run_tcp_server_with_processes(
         run_labels = [f"{run_labels[0]}_A", f"{run_labels[1]}_B"]
     procs: list[subprocess.Popen] = []
     proc_streams = []
-    stdout_stderr: dict[str, dict[str, str | int | None]] = {}
+    stdout_stderr: dict[str, dict[str, Any]] = {}
+    log_temp_root = Path(tempfile.mkdtemp(prefix="pok_native_logs_"))
+    bot_log_paths: dict[str, Path] = {}
     engine = None
     run_error = ""
     connect_timeout = max(1.0, min(20.0, float(timeout_sec) / 3.0))
@@ -1074,18 +1099,28 @@ async def _run_tcp_server_with_processes(
                     "--name",
                     label,
                 ]
+            if _native_entry_supports_log_arg(spec.entry):
+                log_path = log_temp_root / f"{idx}_{_safe_label_fragment(label)}.log"
+                cmd.extend(["--log", str(log_path)])
+                bot_log_paths[label] = log_path
             stdout_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
             stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(spec.path),
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=True,
+                    env=env,
+                )
+            except Exception:
+                stdout_file.close()
+                stderr_file.close()
+                raise
             proc_streams.append((stdout_file, stderr_file))
-            procs.append(subprocess.Popen(
-                cmd,
-                cwd=str(spec.path),
-                stdin=subprocess.DEVNULL,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                text=True,
-                env=env,
-            ))
+            procs.append(proc)
         await asyncio.wait_for(connected.wait(), timeout=connect_timeout)
         await clients[0].send_line("name")
         await clients[1].send_line("name")
@@ -1115,37 +1150,51 @@ async def _run_tcp_server_with_processes(
     except Exception as exc:
         run_error = f"{type(exc).__name__}: {str(exc)[:500]}"
     finally:
-        server.close()
-        for client in clients:
-            await client.close(timeout=process_drain_timeout)
         try:
-            await asyncio.wait_for(server.wait_closed(), timeout=process_drain_timeout)
-        except asyncio.TimeoutError:
-            pass
-        for label, proc, streams in zip(run_labels, procs, proc_streams):
-            stdout_file, stderr_file = streams
-            stderr_note = ""
+            server.close()
+            for client in clients:
+                await client.close(timeout=process_drain_timeout)
             try:
-                proc.wait(timeout=process_drain_timeout)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+                await asyncio.wait_for(server.wait_closed(), timeout=process_drain_timeout)
+            except asyncio.TimeoutError:
+                pass
+            for label, proc, streams in zip(run_labels, procs, proc_streams):
+                stdout_file, stderr_file = streams
+                stderr_note = ""
                 try:
                     proc.wait(timeout=process_drain_timeout)
                 except subprocess.TimeoutExpired:
-                    stderr_note = "process did not exit after kill"
-            stdout_file.seek(0)
-            stderr_file.seek(0)
-            out = stdout_file.read() or ""
-            err = stderr_file.read() or ""
-            if stderr_note:
-                err = (err + "\n" + stderr_note).strip()
-            stdout_file.close()
-            stderr_file.close()
-            stdout_stderr[label] = {
-                "returncode": proc.returncode,
-                "stdout": out or "",
-                "stderr": err or "",
-            }
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=process_drain_timeout)
+                    except subprocess.TimeoutExpired:
+                        stderr_note = "process did not exit after kill"
+                stdout_file.seek(0)
+                stderr_file.seek(0)
+                out = stdout_file.read() or ""
+                err = stderr_file.read() or ""
+                if stderr_note:
+                    err = (err + "\n" + stderr_note).strip()
+                bot_log_text = ""
+                bot_log_path = bot_log_paths.get(label)
+                if bot_log_path is not None:
+                    try:
+                        bot_log_text = bot_log_path.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+                    except OSError as exc:
+                        err = (err + f"\nfailed to read bot log: {exc}").strip()
+                stdout_file.close()
+                stderr_file.close()
+                stdout_stderr[label] = {
+                    "returncode": proc.returncode,
+                    "stdout": out or "",
+                    "stderr": err or "",
+                    "bot_log": bot_log_text,
+                    "bot_log_supported": label in bot_log_paths,
+                }
+        finally:
+            shutil.rmtree(log_temp_root, ignore_errors=True)
 
     illegal = {
         0: sum(1 for e in events if e.get("type") == "action" and e.get("player_idx") == 0 and str(e.get("action", "")).startswith("illegal:")),
@@ -1178,16 +1227,31 @@ async def _run_tcp_server_with_processes(
         proc_failed = bool(proc_info.get("returncode") not in (0, None))
         stdout_text = str(proc_info.get("stdout") or "")
         stderr_text = str(proc_info.get("stderr") or "")
+        bot_log_text = str(proc_info.get("bot_log") or "")
         decision_trace = _parse_decision_trace(stderr_text)
+        bot_log_summary = (
+            _parse_native_bot_log(bot_log_text)
+            if bot_log_text
+            else _empty_bot_log_summary()
+        )
+        runtime_telemetry = {
+            "schema_version": 1,
+            "server_action_latency": _server_action_latency(events, idx),
+            "bot_log_supported": bool(proc_info.get("bot_log_supported")),
+            "bot_log": bot_log_summary,
+            "trace_decision_count": len(decision_trace),
+        }
         per_player[label] = {
             "earnings": int(earnings[idx]),
             "illegal_actions": illegal[idx],
             "timeouts": timeouts[idx],
+            "runtime_telemetry": runtime_telemetry,
             "native": {
                 "returncode": proc_info.get("returncode"),
                 "bot_seed": bot_seeds.get(label),
                 "stdout_tail": stdout_text[-2000:] if stdout_text else "",
                 "stderr_tail": stderr_text[-2000:] if stderr_text else "",
+                "bot_log_supported": bool(proc_info.get("bot_log_supported")),
                 "decision_trace": decision_trace,
                 "process_failures": 1 if proc_failed else 0,
                 "json_response_stdout": 1 if '"response"' in stdout_text or "'response'" in stdout_text else 0,
@@ -1343,6 +1407,7 @@ async def run_native_tcp_smoke(
 
 
 def _summary_from_results(bots: list[tuple[str, Path]], results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    runtime_rows: dict[str, list[dict[str, Any]]] = {label: [] for label, _ in bots}
     summary = {
         label: {
             "matches": 0,
@@ -1358,6 +1423,7 @@ def _summary_from_results(bots: list[tuple[str, Path]], results: list[dict[str, 
             "native_process_failures": 0,
             "json_response_stdout": 0,
             "passed_compliance": True,
+            "runtime_telemetry": _empty_runtime_telemetry(),
         }
         for label, _ in bots
     }
@@ -1368,10 +1434,14 @@ def _summary_from_results(bots: list[tuple[str, Path]], results: list[dict[str, 
             row["net_chips"] += int(pdata.get("earnings", 0) or 0)
             row["illegal_actions"] += int(pdata.get("illegal_actions", 0) or 0)
             row["timeouts"] += int(pdata.get("timeouts", 0) or 0)
+            runtime_rows.setdefault(label, []).append(pdata.get("runtime_telemetry", {}) or {})
             native = pdata.get("native", {}) or {}
             row["native_process_failures"] += int(native.get("process_failures", 0) or 0)
             row["json_response_stdout"] += int(native.get("json_response_stdout", 0) or 0)
             row["passed_compliance"] = row["passed_compliance"] and result.get("passed_compliance", False)
+    for label, rows in runtime_rows.items():
+        if label in summary:
+            summary[label]["runtime_telemetry"] = _merge_runtime_telemetry(rows)
     return summary
 
 
