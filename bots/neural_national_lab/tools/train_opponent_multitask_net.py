@@ -45,6 +45,7 @@ from train_opponent_value_net import (  # noqa: E402
 
 
 VALUE_FIELDS = ("delta_vs_rule", "tail_delta_vs_rule", "match_delta_vs_rule")
+VALUE_REFERENCE = "rule_relative_zero_v1"
 OPPONENT_ACTION_LABELS = ("fold", "check", "call", "raise", "allin")
 NUM_ACTIONS = len(LABELS)
 HERO_ACTION_DIM = NUM_ACTIONS + 4
@@ -540,8 +541,9 @@ def _pairwise_ranking_loss(
     valid &= action_ids != rule_ids.unsqueeze(1)
     if not bool(valid.any()):
         return output.sum() * 0.0, 0
-    rule_value = values.gather(1, rule_ids.unsqueeze(1))
-    logits = (values - rule_value) / max(1e-6, float(temperature))
+    # Every target is already candidate minus rule. Runtime uses the same zero
+    # reference and never consumes the model's rule-action output.
+    logits = values / max(1e-6, float(temperature))
     labels = (target > 0).float()
     raw = F.binary_cross_entropy_with_logits(
         logits[valid],
@@ -736,9 +738,7 @@ def _evaluate(
                 lower = lower + offset_tensor
                 abs_errors[field].extend((mean[valid] - clipped[valid]).abs().cpu().tolist())
                 lower_coverage[field].extend((clipped[valid] <= lower[valid]).cpu().tolist())
-                rule_ids = _rule_ids_tensor(batch, device)
-                rule_mean = mean.gather(1, rule_ids.unsqueeze(1))
-                predicted_positive = (mean - rule_mean) > 0
+                predicted_positive = mean > 0
                 lower_predicted_positive = lower > 0
                 target_positive = target > 0
                 direction_valid = valid & (target.abs() > ranking_margin)
@@ -1394,6 +1394,7 @@ def main(argv: list[str] | None = None) -> int:
             "labels": list(LABELS),
             "opponent_action_labels": list(OPPONENT_ACTION_LABELS),
             "value_fields": list(VALUE_FIELDS),
+            "value_reference": VALUE_REFERENCE,
             "state_dim": state_dim,
             "profile_dim": profile_dim,
             "hist_feat_dim": HIST_FEAT_DIM,
@@ -1440,6 +1441,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.lower_direction_score_weight
                 ),
                 "ranking_statistics": ranking_stats,
+                "ranking_reference": VALUE_REFERENCE,
                 "trainer_sha256": hashlib.sha256(
                     Path(__file__).read_bytes()
                 ).hexdigest(),

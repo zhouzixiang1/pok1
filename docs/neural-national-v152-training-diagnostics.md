@@ -247,10 +247,48 @@ is cross-match and cross-opponent evidence, not GPU utilization or protocol
 integration. Lowering the cluster gates would recreate the sparse-evidence
 failure that invalidated v146.
 
+## Rule-Relative Zero Contract A/B
+
+A post-sweep contract audit found that the ranking loss subtracted the model's
+predicted rule-action value from each candidate even though every training
+target was already `candidate - rule`. The stdlib runtime instead forces the
+rule action to exactly zero and uses each candidate value directly. Across 515
+validation alternatives, this changed the lower-head sign on 132-189 examples
+per model. Predicted rule lower values had roughly -700 to +750 chip 10th-90th
+percentile ranges despite their exact-zero targets, so the discrepancy was
+large enough to affect policy selection.
+
+The trainer now uses an explicit `rule_relative_zero_v1` reference for ranking,
+validation direction metrics, model metadata, and runtime policy semantics. A
+unit test varies the unused rule output by +/-1000 while requiring identical
+mean- and lower-head ranking loss.
+
+The same pass-22 data then trained a controlled 12-model A/B: GRU and GRU+MoE,
+lower-ranking weights 0 and 0.5, and the same three seeds. No new collection
+rows were used. The closest strict policy result for each ensemble was:
+
+| Encoder | Lower rank weight | Match dir. balanced | Lower dir. balanced | Overrides/clusters | CI lower / stratified | Remaining errors |
+|---|---:|---:|---:|---:|---:|---|
+| GRU | 0.0 | 71.3% | 57.0% | 14 / 5 | +3.41 / +2.46 | override clusters < 8 |
+| GRU | 0.5 | 72.3% | 71.5% | 20 / 12 | -137.10 / -132.70 | both CIs cross zero |
+| GRU+MoE | 0.0 | 72.6% | 58.7% | 15 / 5 | +3.83 / +3.88 | override clusters < 8 |
+| GRU+MoE | 0.5 | 72.7% | 72.2% | 16 / 10 | -293.87 / -239.75 | both CIs cross zero |
+
+Before the fix, the corresponding lower-ranking balanced accuracies were 63.4%
+for GRU and 62.8% for GRU+MoE. The repaired lower-ranking policies also used
+fold, call, half-pot, pot and all-in alternatives rather than collapsing to an
+all-in-only gate. Both validation opponents had positive point estimates, but
+individual match clusters still contained approximately -20000 to +39000 chip
+outcomes, so the cluster intervals correctly remained negative for the broad
+policies. The sweep exited nonzero, did not open held-out, and created no bot.
+The repaired architecture summary SHA-256 was
+`3203e14f0d847684fd619e3c7d97cdfc8c6bb982153828d576076ea3479fff87`.
+
 ## Next Evidence
 
-1. Repeat the validation-only lower-ranking check at a materially larger
-   match-cluster checkpoint; do not tune from held-out results.
+1. Repeat the fixed `rule_relative_zero_v1` validation-only check at a
+   materially larger match-cluster checkpoint; do not tune from held-out
+   results.
 2. Repeat the full GRU, GRU+MoE, Deep Sets, and Transformer scaling grid after
    the 160-pass dataset is frozen.
 3. Use calibration only for output calibration and coverage diagnostics; keep

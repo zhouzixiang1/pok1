@@ -78,6 +78,16 @@ def test_pairwise_ranking_loss_prefers_rule_relative_direction() -> None:
     assert count == 2
     assert good.item() < bad.item()
 
+    shifted_rule = good_mean.clone()
+    shifted_rule[0, 1] = 1000.0
+    shifted_rule_loss, _ = trainer._pairwise_ranking_loss(
+        torch.cat([shifted_rule, lower], dim=1),
+        target,
+        rule_ids,
+        **kwargs,
+    )
+    assert shifted_rule_loss.item() == pytest.approx(good.item())
+
     good_lower, _ = trainer._pairwise_ranking_loss(
         torch.cat([lower, good_mean], dim=1),
         target,
@@ -93,6 +103,17 @@ def test_pairwise_ranking_loss_prefers_rule_relative_direction() -> None:
         **kwargs,
     )
     assert good_lower.item() < bad_lower.item()
+
+    shifted_lower_rule = good_mean.clone()
+    shifted_lower_rule[0, 1] = -1000.0
+    shifted_lower_loss, _ = trainer._pairwise_ranking_loss(
+        torch.cat([lower, shifted_lower_rule], dim=1),
+        target,
+        rule_ids,
+        head="lower",
+        **kwargs,
+    )
+    assert shifted_lower_loss.item() == pytest.approx(good_lower.item())
 
 
 @pytest.mark.parametrize(
