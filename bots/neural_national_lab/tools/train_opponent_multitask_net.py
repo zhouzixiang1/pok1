@@ -28,6 +28,12 @@ TOOLS = Path(__file__).resolve().parent
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
+from cross_hand_sequence import (  # noqa: E402
+    CROSS_HAND_SEQUENCE_DIM,
+    CROSS_HAND_SEQUENCE_SCHEMA,
+    MAX_CROSS_HANDS,
+    normalize_cross_hand_sequence,
+)
 from feature_spec import LABELS  # noqa: E402
 from train_opponent_value_net import (  # noqa: E402
     CROSS_HAND_DIM,
@@ -66,8 +72,19 @@ def _target_vector(row: dict[str, Any], field: str) -> list[float]:
     return out
 
 
+def _attach_cross_hand_sequence(
+    sample: dict[str, Any], row: dict[str, Any]
+) -> None:
+    request = row.get("request") or {}
+    raw = row.get("cross_hand_sequence")
+    if raw is None and isinstance(request, dict):
+        raw = request.get("cross_hand_sequence")
+    sample["cross_hand_sequence"] = normalize_cross_hand_sequence(raw)
+
+
 def build_value_sample(row: dict[str, Any], *, max_hist: int) -> dict[str, Any]:
     sample = build_sample(row, max_hist=max_hist, target_field="delta_vs_rule")
+    _attach_cross_hand_sequence(sample, row)
     sample["value_targets"] = {
         field: _target_vector(row, field) for field in VALUE_FIELDS
     }
@@ -101,6 +118,7 @@ def build_behavior_sample(row: dict[str, Any], *, max_hist: int) -> dict[str, An
     if target < 0 or target >= len(OPPONENT_ACTION_LABELS):
         return None
     sample = build_sample(row, max_hist=max_hist, target_field="delta_vs_rule")
+    _attach_cross_hand_sequence(sample, row)
     sample["state"] = list(sample["state"])
     for index in PRIVATE_STATE_INDICES:
         sample["state"][index] = 0.0
@@ -110,6 +128,67 @@ def build_behavior_sample(row: dict[str, Any], *, max_hist: int) -> dict[str, An
         1.0, max(0.0, float(row.get("opponent_action_pot_ratio", 0.0) or 0.0) / 4.0)
     )
     return sample
+
+
+class CrossHandTransformer(nn.Module):
+    """Small public-history encoder with explicit exportable operations."""
+
+    def __init__(self, hidden: int, heads: int, max_hands: int) -> None:
+        super().__init__()
+        if hidden <= 0 or heads <= 0 or hidden % heads:
+            raise ValueError("transformer hidden size must be divisible by heads")
+        self.hidden = int(hidden)
+        self.heads = int(heads)
+        self.head_dim = self.hidden // self.heads
+        self.max_hands = int(max_hands)
+        self.input_proj = nn.Linear(CROSS_HAND_SEQUENCE_DIM, self.hidden)
+        self.position = nn.Parameter(torch.zeros(self.max_hands, self.hidden))
+        nn.init.normal_(self.position, mean=0.0, std=0.02)
+        self.q_proj = nn.Linear(self.hidden, self.hidden)
+        self.k_proj = nn.Linear(self.hidden, self.hidden)
+        self.v_proj = nn.Linear(self.hidden, self.hidden)
+        self.out_proj = nn.Linear(self.hidden, self.hidden)
+        self.norm1 = nn.LayerNorm(self.hidden)
+        self.ff = nn.Sequential(
+            nn.Linear(self.hidden, self.hidden * 2),
+            nn.ReLU(),
+            nn.Linear(self.hidden * 2, self.hidden),
+        )
+        self.norm2 = nn.LayerNorm(self.hidden)
+
+    def forward(
+        self, sequence: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
+        batch, width, _ = sequence.shape
+        width = min(width, self.max_hands)
+        sequence = sequence[:, :width]
+        lengths = lengths.clamp(min=0, max=width)
+        x = self.input_proj(sequence) + self.position[:width].unsqueeze(0)
+
+        def split_heads(value: torch.Tensor) -> torch.Tensor:
+            return value.reshape(
+                batch, width, self.heads, self.head_dim
+            ).transpose(1, 2)
+
+        query = split_heads(self.q_proj(x))
+        key = split_heads(self.k_proj(x))
+        value = split_heads(self.v_proj(x))
+        scores = torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(
+            self.head_dim
+        )
+        key_padding = torch.arange(width, device=sequence.device).unsqueeze(0) >= (
+            lengths.unsqueeze(1)
+        )
+        scores = scores.masked_fill(key_padding[:, None, None, :], -1e4)
+        attention = torch.softmax(scores, dim=-1)
+        attended = torch.matmul(attention, value).transpose(1, 2).reshape(
+            batch, width, self.hidden
+        )
+        x = self.norm1(x + self.out_proj(attended))
+        x = self.norm2(x + self.ff(x))
+        final_index = (lengths - 1).clamp(min=0)
+        embedding = x[torch.arange(batch, device=x.device), final_index]
+        return embedding * (lengths > 0).float().unsqueeze(1)
 
 
 class OpponentAwareMultiTaskNet(nn.Module):
@@ -124,9 +203,47 @@ class OpponentAwareMultiTaskNet(nn.Module):
         cross_hidden: int,
         head_hidden: int,
         dropout: float,
+        cross_sequence_hidden: int = 0,
+        cross_sequence_encoder: str = "gru",
+        cross_transformer_heads: int = 4,
     ) -> None:
         super().__init__()
         self.gru = nn.GRU(HIST_FEAT_DIM, gru_hidden, batch_first=True)
+        encoder = str(cross_sequence_encoder)
+        if encoder not in {"none", "gru", "deep_set", "transformer"}:
+            raise ValueError(f"unsupported cross-hand sequence encoder: {encoder}")
+        self.cross_sequence_encoder = encoder
+        self.cross_sequence_hidden = (
+            0 if encoder == "none" else max(1, int(cross_sequence_hidden))
+        )
+        self.cross_gru = (
+            nn.GRU(
+                CROSS_HAND_SEQUENCE_DIM,
+                self.cross_sequence_hidden,
+                batch_first=True,
+            )
+            if encoder == "gru" and self.cross_sequence_hidden > 0
+            else None
+        )
+        self.cross_set_encoder = (
+            nn.Sequential(
+                nn.Linear(CROSS_HAND_SEQUENCE_DIM, self.cross_sequence_hidden),
+                nn.ReLU(),
+                nn.Linear(self.cross_sequence_hidden, self.cross_sequence_hidden),
+                nn.ReLU(),
+            )
+            if encoder == "deep_set"
+            else None
+        )
+        self.cross_transformer = (
+            CrossHandTransformer(
+                self.cross_sequence_hidden,
+                int(cross_transformer_heads),
+                MAX_CROSS_HANDS,
+            )
+            if encoder == "transformer"
+            else None
+        )
         self.opponent_dropout = nn.Dropout(dropout)
         self.opp_encoder = nn.Sequential(
             nn.Linear(CROSS_HAND_DIM, cross_hidden),
@@ -134,7 +251,13 @@ class OpponentAwareMultiTaskNet(nn.Module):
             nn.Linear(cross_hidden, cross_hidden),
             nn.ReLU(),
         )
-        context_dim = state_dim + profile_dim + gru_hidden + cross_hidden
+        context_dim = (
+            state_dim
+            + profile_dim
+            + gru_hidden
+            + cross_hidden
+            + self.cross_sequence_hidden
+        )
         self.shared = nn.Sequential(
             nn.Linear(context_dim + RULE_ACTION_DIM, hidden),
             nn.ReLU(),
@@ -173,6 +296,8 @@ class OpponentAwareMultiTaskNet(nn.Module):
         *,
         response: bool = False,
         rule_action: torch.Tensor | None = None,
+        cross_sequence: torch.Tensor | None = None,
+        cross_lengths: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if history.size(1) > 0 and bool((lengths > 0).any()):
             packed = nn.utils.rnn.pack_padded_sequence(
@@ -189,9 +314,45 @@ class OpponentAwareMultiTaskNet(nn.Module):
             )
         profile = self.opponent_dropout(profile)
         opponent_embedding = self.opp_encoder(self.opponent_dropout(cross_hand))
-        context = torch.cat(
-            [state, profile, history_embedding, opponent_embedding], dim=1
-        )
+        context_parts = [state, profile, history_embedding, opponent_embedding]
+        if self.cross_sequence_hidden > 0:
+            if cross_sequence is None or cross_lengths is None:
+                cross_embedding = torch.zeros(
+                    state.size(0), self.cross_sequence_hidden, device=state.device
+                )
+            elif self.cross_gru is not None and bool((cross_lengths > 0).any()):
+                packed_cross = nn.utils.rnn.pack_padded_sequence(
+                    cross_sequence,
+                    cross_lengths.clamp(min=1).to("cpu"),
+                    batch_first=True,
+                    enforce_sorted=False,
+                )
+                _, cross_final = self.cross_gru(packed_cross)
+                cross_embedding = cross_final.squeeze(0) * (
+                    cross_lengths > 0
+                ).float().unsqueeze(1)
+            elif self.cross_set_encoder is not None:
+                encoded = self.cross_set_encoder(cross_sequence)
+                mask = (
+                    torch.arange(cross_sequence.size(1), device=state.device)
+                    .unsqueeze(0) < cross_lengths.unsqueeze(1)
+                ).float().unsqueeze(2)
+                cross_embedding = (encoded * mask).sum(dim=1) / (
+                    cross_lengths.clamp(min=1).float().unsqueeze(1)
+                )
+                cross_embedding = cross_embedding * (
+                    cross_lengths > 0
+                ).float().unsqueeze(1)
+            elif self.cross_transformer is not None:
+                cross_embedding = self.cross_transformer(
+                    cross_sequence, cross_lengths
+                )
+            else:
+                cross_embedding = torch.zeros(
+                    state.size(0), self.cross_sequence_hidden, device=state.device
+                )
+            context_parts.append(cross_embedding)
+        context = torch.cat(context_parts, dim=1)
         if response:
             return self.response_shared(context)
         if rule_action is None:
@@ -213,7 +374,27 @@ def _context_tensors(samples: list[dict[str, Any]], *, max_hist: int, device: st
     )
     if cross is None:
         cross = torch.zeros(len(samples), CROSS_HAND_DIM, device=device)
-    return state, profile, history, lengths, cross
+    sequences = [
+        normalize_cross_hand_sequence(sample.get("cross_hand_sequence"))
+        for sample in samples
+    ]
+    cross_lengths = torch.tensor(
+        [len(sequence) for sequence in sequences], dtype=torch.long, device=device
+    )
+    width = max(1, max((len(sequence) for sequence in sequences), default=0))
+    cross_sequence = torch.zeros(
+        len(samples), width, CROSS_HAND_SEQUENCE_DIM,
+        dtype=torch.float32, device=device,
+    )
+    for index, sequence in enumerate(sequences):
+        if sequence:
+            cross_sequence[index, :len(sequence)] = torch.tensor(
+                sequence, dtype=torch.float32, device=device
+            )
+    return (
+        state, profile, history, lengths, cross,
+        cross_sequence, cross_lengths,
+    )
 
 
 def _value_batch_tensors(samples: list[dict[str, Any]], device: str):
@@ -315,7 +496,10 @@ def _evaluate(
     with torch.no_grad():
         for indices in _chunks(list(range(len(value_samples))), batch_size):
             batch = [value_samples[idx] for idx in indices]
-            state, profile, history, lengths, cross = _context_tensors(
+            (
+                state, profile, history, lengths, cross,
+                cross_sequence, cross_lengths,
+            ) = _context_tensors(
                 batch, max_hist=max_hist, device=device
             )
             outputs = model.value(model.encode(
@@ -325,6 +509,8 @@ def _evaluate(
                 lengths,
                 cross,
                 rule_action=_rule_action_tensor(batch, device),
+                cross_sequence=cross_sequence,
+                cross_lengths=cross_lengths,
             ))
             targets = _value_batch_tensors(batch, device)
             for field in VALUE_FIELDS:
@@ -349,11 +535,15 @@ def _evaluate(
                 lower_coverage[field].extend((clipped[valid] <= lower[valid]).cpu().tolist())
         for indices in _chunks(list(range(len(behavior_samples))), batch_size):
             batch = [behavior_samples[idx] for idx in indices]
-            state, profile, history, lengths, cross = _context_tensors(
+            (
+                state, profile, history, lengths, cross,
+                cross_sequence, cross_lengths,
+            ) = _context_tensors(
                 batch, max_hist=max_hist, device=device
             )
             latent = model.encode(
-                state, profile, history, lengths, cross, response=True
+                state, profile, history, lengths, cross, response=True,
+                cross_sequence=cross_sequence, cross_lengths=cross_lengths,
             )
             hero = torch.tensor(
                 [sample["hero_action_features"] for sample in batch],
@@ -453,7 +643,10 @@ def _calibrate_lower_bounds(
     with torch.no_grad():
         for indices in _chunks(list(range(len(samples))), batch_size):
             batch = [samples[index] for index in indices]
-            state, profile, history, lengths, cross = _context_tensors(
+            (
+                state, profile, history, lengths, cross,
+                cross_sequence, cross_lengths,
+            ) = _context_tensors(
                 batch, max_hist=max_hist, device=device
             )
             outputs = model.value(model.encode(
@@ -463,6 +656,8 @@ def _calibrate_lower_bounds(
                 lengths,
                 cross,
                 rule_action=_rule_action_tensor(batch, device),
+                cross_sequence=cross_sequence,
+                cross_lengths=cross_lengths,
             ))
             targets = _value_batch_tensors(batch, device)
             for field in VALUE_FIELDS:
@@ -516,11 +711,15 @@ def _calibrate_response_temperature(
     with torch.no_grad():
         for indices in _chunks(list(range(len(samples))), batch_size):
             batch = [samples[index] for index in indices]
-            state, profile, history, lengths, cross = _context_tensors(
+            (
+                state, profile, history, lengths, cross,
+                cross_sequence, cross_lengths,
+            ) = _context_tensors(
                 batch, max_hist=max_hist, device=device
             )
             latent = model.encode(
-                state, profile, history, lengths, cross, response=True
+                state, profile, history, lengths, cross, response=True,
+                cross_sequence=cross_sequence, cross_lengths=cross_lengths,
             )
             hero = torch.tensor(
                 [sample["hero_action_features"] for sample in batch],
@@ -566,6 +765,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--latent", type=int, default=128)
     parser.add_argument("--gru-hidden", type=int, default=96)
     parser.add_argument("--cross-hidden", type=int, default=64)
+    parser.add_argument("--cross-sequence-hidden", type=int, default=64)
+    parser.add_argument(
+        "--cross-sequence-encoder",
+        choices=("none", "gru", "deep_set", "transformer"),
+        default="gru",
+    )
+    parser.add_argument("--cross-transformer-heads", type=int, default=4)
     parser.add_argument("--head-hidden", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max-hist", type=int, default=16)
@@ -581,6 +787,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--match-clip", type=float, default=2000.0)
     parser.add_argument("--lower-quantile", type=float, default=0.2)
     parser.add_argument("--min-calibration-per-action", type=int, default=20)
+    parser.add_argument("--require-cross-hand-sequence", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args(argv)
@@ -608,6 +815,14 @@ def main(argv: list[str] | None = None) -> int:
         "behavior_calibration": args.behavior_calibration,
     }
     raw = {name: load_jsonl(path) if path else [] for name, path in paths.items()}
+    if args.require_cross_hand_sequence:
+        missing = {
+            name: sum(row.get("cross_hand_sequence") is None for row in rows)
+            for name, rows in raw.items()
+        }
+        missing = {name: count for name, count in missing.items() if count}
+        if missing:
+            raise SystemExit(f"missing required cross-hand sequences: {missing}")
     split_rows = {
         "train": raw["value_train"] + raw["behavior_train"],
         "val": raw["value_val"] + raw["behavior_val"],
@@ -652,6 +867,9 @@ def main(argv: list[str] | None = None) -> int:
         cross_hidden=args.cross_hidden,
         head_hidden=args.head_hidden,
         dropout=args.dropout,
+        cross_sequence_hidden=args.cross_sequence_hidden,
+        cross_sequence_encoder=args.cross_sequence_encoder,
+        cross_transformer_heads=args.cross_transformer_heads,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -697,7 +915,10 @@ def main(argv: list[str] | None = None) -> int:
             if value_batches:
                 indices = value_batches[step % len(value_batches)]
                 batch = [value["train"][idx] for idx in indices]
-                state, profile, history, lengths, cross = _context_tensors(
+                (
+                    state, profile, history, lengths, cross,
+                    cross_sequence, cross_lengths,
+                ) = _context_tensors(
                     batch, max_hist=args.max_hist, device=device
                 )
                 outputs = model.value(model.encode(
@@ -707,6 +928,8 @@ def main(argv: list[str] | None = None) -> int:
                     lengths,
                     cross,
                     rule_action=_rule_action_tensor(batch, device),
+                    cross_sequence=cross_sequence,
+                    cross_lengths=cross_lengths,
                 ))
                 targets = _value_batch_tensors(batch, device)
                 value_loss = torch.zeros((), device=device)
@@ -722,11 +945,15 @@ def main(argv: list[str] | None = None) -> int:
             if behavior_batches:
                 indices = behavior_batches[step % len(behavior_batches)]
                 batch = [behavior["train"][idx] for idx in indices]
-                state, profile, history, lengths, cross = _context_tensors(
+                (
+                    state, profile, history, lengths, cross,
+                    cross_sequence, cross_lengths,
+                ) = _context_tensors(
                     batch, max_hist=args.max_hist, device=device
                 )
                 latent = model.encode(
-                    state, profile, history, lengths, cross, response=True
+                    state, profile, history, lengths, cross, response=True,
+                    cross_sequence=cross_sequence, cross_lengths=cross_lengths,
                 )
                 hero = torch.tensor(
                     [sample["hero_action_features"] for sample in batch],
@@ -852,7 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     payload = {
         "meta": {
-            "format": "opp_multitask_gru_v1",
+            "format": "opp_multitask_gru_v2",
             "labels": list(LABELS),
             "opponent_action_labels": list(OPPONENT_ACTION_LABELS),
             "value_fields": list(VALUE_FIELDS),
@@ -860,6 +1087,8 @@ def main(argv: list[str] | None = None) -> int:
             "profile_dim": profile_dim,
             "hist_feat_dim": HIST_FEAT_DIM,
             "cross_hand_dim": CROSS_HAND_DIM,
+            "cross_hand_sequence_dim": CROSS_HAND_SEQUENCE_DIM,
+            "cross_hand_sequence_schema": CROSS_HAND_SEQUENCE_SCHEMA,
             "hero_action_dim": HERO_ACTION_DIM,
             "rule_action_dim": RULE_ACTION_DIM,
             "response_private_state_masked": list(PRIVATE_STATE_INDICES),
@@ -871,9 +1100,14 @@ def main(argv: list[str] | None = None) -> int:
                 "latent": args.latent,
                 "gru_hidden": args.gru_hidden,
                 "cross_hidden": args.cross_hidden,
+                "cross_sequence_hidden": model.cross_sequence_hidden,
+                "cross_sequence_hidden_requested": args.cross_sequence_hidden,
+                "cross_sequence_encoder": args.cross_sequence_encoder,
+                "cross_transformer_heads": args.cross_transformer_heads,
                 "head_hidden": args.head_hidden,
                 "dropout": args.dropout,
                 "max_hist": args.max_hist,
+                "max_cross_hands": MAX_CROSS_HANDS,
                 "parameters": sum(parameter.numel() for parameter in model.parameters()),
             },
             "training": {
@@ -885,6 +1119,9 @@ def main(argv: list[str] | None = None) -> int:
                 "learning_rate": args.lr,
                 "weight_decay": args.weight_decay,
                 "lower_quantile": args.lower_quantile,
+                "required_cross_hand_sequence": bool(
+                    args.require_cross_hand_sequence
+                ),
                 "clips": clips,
                 "device_requested": args.device,
                 "device_effective": str(device),

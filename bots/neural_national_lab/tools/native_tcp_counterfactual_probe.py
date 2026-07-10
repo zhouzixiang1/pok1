@@ -27,6 +27,10 @@ for path in (WEB_CORE, TOOLS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from cross_hand_sequence import (  # noqa: E402
+    CROSS_HAND_SEQUENCE_SCHEMA,
+    server_sequences_by_hand,
+)
 from feature_spec import LABELS, encode_features, label_action  # noqa: E402
 from national_native import run_native_tcp_pair  # noqa: E402
 
@@ -349,6 +353,9 @@ def _behavior_response_rows(
 ) -> list[dict[str, Any]]:
     """Build leakage-free hero-action -> immediate opponent-response labels."""
     events = baseline.get("events") or []
+    cross_hand_sequences = server_sequences_by_hand(
+        events, opponent_player_idx=1
+    )
     rows: list[dict[str, Any]] = []
     cursor = 0
     for decision in trace:
@@ -410,6 +417,8 @@ def _behavior_response_rows(
             "opponent_action_pot_ratio": min(4.0, max(0.0, amount / pot)),
             "state_features": features,
             "opponent_profile_features": _opponent_profile_features(req),
+            "cross_hand_sequence_schema": CROSS_HAND_SEQUENCE_SCHEMA,
+            "cross_hand_sequence": cross_hand_sequences.get(hand, []),
             "request": req,
             "state": state,
         })
@@ -431,6 +440,9 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
     candidate_label = baseline["bot_a"]
     trace = _trace_rows(baseline, candidate_label)
     settlements = _settlement_map(baseline, 0)
+    cross_hand_sequences = server_sequences_by_hand(
+        baseline.get("events") or [], opponent_player_idx=1
+    )
     behavior_rows = (
         _behavior_response_rows(baseline, trace)
         if baseline.get("passed_compliance")
@@ -635,6 +647,8 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             "rule_value": int(settlements[hand]),
             "state_features": features,
             "opponent_profile_features": opponent_profile_features,
+            "cross_hand_sequence_schema": CROSS_HAND_SEQUENCE_SCHEMA,
+            "cross_hand_sequence": cross_hand_sequences.get(hand, []),
             "native_context_features": native_context_features,
             "opponent_profile": profile,
             "delta_vs_rule": targets,

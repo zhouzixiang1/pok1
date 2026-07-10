@@ -24,6 +24,9 @@ class OpponentMultiTaskEnsemble:
         self.response_labels = list(members[0].response_labels)
         self.value_fields = list(members[0].value_fields)
         self.max_hist = max(member.max_hist for member in members)
+        self.max_cross_hands = max(
+            int(getattr(member, "max_cross_hands", 32)) for member in members
+        )
         for member in members[1:]:
             if list(member.labels) != self.labels:
                 raise ValueError("ensemble action labels differ")
@@ -57,10 +60,11 @@ class OpponentMultiTaskEnsemble:
         history: list[list[float]],
         cross_hand: list[float],
         rule_label_id: int,
+        cross_sequence: list[list[float]] | None = None,
     ) -> dict[str, dict[str, list[float]]]:
         predictions = [
             member.predict_values(
-                state, profile, history, cross_hand, rule_label_id
+                state, profile, history, cross_hand, rule_label_id, cross_sequence
             )
             for member in self.members
         ]
@@ -103,10 +107,11 @@ class OpponentMultiTaskEnsemble:
         history: list[list[float]],
         cross_hand: list[float],
         hero_action: list[float],
+        cross_sequence: list[list[float]] | None = None,
     ) -> dict[str, Any]:
         predictions = [
             member.predict_response(
-                state, profile, history, cross_hand, hero_action
+                state, profile, history, cross_hand, hero_action, cross_sequence
             )
             for member in self.members
         ]

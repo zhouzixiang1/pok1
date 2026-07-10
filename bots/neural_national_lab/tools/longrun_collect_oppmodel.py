@@ -385,7 +385,7 @@ def main(argv=None) -> int:
     start_pass = _completed_passes(out_dir)
     candidate_path = _resolve(args.candidate)
     resume_contract = {
-        "schema_version": 2,
+        "schema_version": 3,
         "candidate": str(candidate_path),
         "candidate_sha256": _directory_digest(candidate_path),
         "ratings_path": str(ratings_path),
@@ -404,6 +404,9 @@ def main(argv=None) -> int:
         "collector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "probe_sha256": hashlib.sha256(
             (TOOLS / "native_tcp_counterfactual_probe.py").read_bytes()
+        ).hexdigest(),
+        "cross_hand_sequence_sha256": hashlib.sha256(
+            (TOOLS / "cross_hand_sequence.py").read_bytes()
         ).hexdigest(),
     }
     manifest_path = out_dir / "collection_manifest.json"

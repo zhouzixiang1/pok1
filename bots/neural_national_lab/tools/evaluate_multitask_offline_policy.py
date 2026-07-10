@@ -65,6 +65,67 @@ def _bootstrap_mean_ci(
     }
 
 
+def _cluster_bootstrap_mean_ci(
+    clusters: dict[str, list[float]],
+    *,
+    samples: int,
+    seed: int,
+) -> dict[str, float]:
+    nonempty = [values for values in clusters.values() if values]
+    if not nonempty:
+        return {"lower": 0.0, "mean": 0.0, "upper": 0.0}
+    observed = [value for values in nonempty for value in values]
+    rng = random.Random(seed)
+    cluster_count = len(nonempty)
+    means = []
+    for _ in range(max(1, samples)):
+        sampled = [
+            nonempty[rng.randrange(cluster_count)] for _ in range(cluster_count)
+        ]
+        values = [value for cluster in sampled for value in cluster]
+        means.append(statistics.fmean(values))
+    return {
+        "lower": _percentile(means, 0.025),
+        "mean": statistics.fmean(observed),
+        "upper": _percentile(means, 0.975),
+    }
+
+
+def _opponent_stratified_cluster_ci(
+    clusters: dict[str, dict[str, list[float]]],
+    *,
+    samples: int,
+    seed: int,
+) -> dict[str, float]:
+    usable = {
+        opponent: [values for values in opponent_clusters.values() if values]
+        for opponent, opponent_clusters in clusters.items()
+    }
+    usable = {opponent: values for opponent, values in usable.items() if values}
+    if not usable:
+        return {"lower": 0.0, "mean": 0.0, "upper": 0.0}
+    observed = [
+        value
+        for opponent_clusters in usable.values()
+        for cluster in opponent_clusters
+        for value in cluster
+    ]
+    rng = random.Random(seed)
+    means = []
+    for _ in range(max(1, samples)):
+        values = []
+        for opponent_clusters in usable.values():
+            count = len(opponent_clusters)
+            for _ in range(count):
+                values.extend(opponent_clusters[rng.randrange(count)])
+        means.append(statistics.fmean(values))
+    return {
+        "lower": _percentile(means, 0.025),
+        "mean": statistics.fmean(observed),
+        "upper": _percentile(means, 0.975),
+    }
+
+
 def _response_signal(
     response: dict[str, Any], row: dict[str, Any], action: int
 ) -> float:
@@ -97,6 +158,7 @@ def _prepare_rows(
             sample["history"],
             sample["cross_hand"],
             rule_id,
+            sample["cross_hand_sequence"],
         )
         if not values:
             continue
@@ -123,6 +185,7 @@ def _prepare_rows(
                     sample["history"],
                     sample["cross_hand"],
                     _hero_action_features(response_row),
+                    sample["cross_hand_sequence"],
                 )
                 if response:
                     response_signal = _response_signal(response, raw, action)
@@ -136,8 +199,14 @@ def _prepare_rows(
                 "match_delta": float(probe["match_delta_vs_rule"]),
             })
         if candidates:
+            opponent = str(raw.get("_opponent_label") or raw.get("opponent"))
             prepared.append({
-                "opponent": str(raw.get("_opponent_label") or raw.get("opponent")),
+                "opponent": opponent,
+                "cluster": "|".join((
+                    opponent,
+                    str(raw.get("deck_seed_base")),
+                    str(raw.get("bot_seed_base")),
+                )),
                 "rule_id": rule_id,
                 "values": values,
                 "candidates": candidates,
@@ -155,12 +224,14 @@ def _evaluate_config(
     deltas = []
     selected = []
     by_opponent: dict[str, list[float]] = {}
+    by_cluster: dict[str, list[float]] = {}
+    by_opponent_cluster: dict[str, dict[str, list[float]]] = {}
     hand_weight = float(config["hand_weight"])
     response_weight = float(config["response_weight"])
     margin = float(config["margin"])
     use_lower = bool(config.get("use_lower", True))
     value_key = "lower" if use_lower else "mean"
-    for row in rows:
+    for row_index, row in enumerate(rows):
         best = None
         for candidate in row["candidates"]:
             label_id = candidate["label_id"]
@@ -180,12 +251,26 @@ def _evaluate_config(
         else:
             delta = 0.0
         deltas.append(delta)
-        by_opponent.setdefault(row["opponent"], []).append(delta)
+        opponent = row["opponent"]
+        cluster = str(row.get("cluster") or f"row:{row_index}")
+        by_opponent.setdefault(opponent, []).append(delta)
+        by_cluster.setdefault(cluster, []).append(delta)
+        by_opponent_cluster.setdefault(opponent, {}).setdefault(
+            cluster, []
+        ).append(delta)
     override_match = [candidate["match_delta"] for candidate in selected]
     override_hand = [candidate["hand_delta"] for candidate in selected]
     override_tail = [candidate["tail_delta"] for candidate in selected]
     ci = _bootstrap_mean_ci(
         deltas, samples=bootstrap_samples, seed=bootstrap_seed
+    )
+    cluster_ci = _cluster_bootstrap_mean_ci(
+        by_cluster, samples=bootstrap_samples, seed=bootstrap_seed + 1
+    )
+    stratified_cluster_ci = _opponent_stratified_cluster_ci(
+        by_opponent_cluster,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed + 2,
     )
     return {
         "config": config,
@@ -195,6 +280,9 @@ def _evaluate_config(
         "match_total": sum(deltas),
         "match_mean_per_opportunity": statistics.fmean(deltas) if deltas else 0.0,
         "match_bootstrap_mean_ci": ci,
+        "match_cluster_bootstrap_mean_ci": cluster_ci,
+        "match_opponent_stratified_cluster_ci": stratified_cluster_ci,
+        "match_clusters": len(by_cluster),
         "override_match_mean": statistics.fmean(override_match) if override_match else 0.0,
         "override_hand_mean": statistics.fmean(override_hand) if override_hand else 0.0,
         "override_tail_mean": statistics.fmean(override_tail) if override_tail else 0.0,
@@ -206,6 +294,7 @@ def _evaluate_config(
         "by_opponent": {
             opponent: {
                 "rows": len(values),
+                "clusters": len(by_opponent_cluster.get(opponent, {})),
                 "total": sum(values),
                 "mean": statistics.fmean(values),
             }
@@ -225,6 +314,7 @@ def main() -> int:
     parser.add_argument("--hand-weight-grid", default="0.25,0.5,0.75,1.0")
     parser.add_argument("--response-weight-grid", default="0,0.05,0.1")
     parser.add_argument("--min-overrides", type=int, default=10)
+    parser.add_argument("--min-selection-clusters", type=int, default=8)
     parser.add_argument("--min-override-hand-mean", type=float, default=0.0)
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--bootstrap-seed", type=int, default=20260710)
@@ -257,6 +347,7 @@ def main() -> int:
                 )
                 result["eligible"] = (
                     result["overrides"] >= args.min_overrides
+                    and result["match_clusters"] >= args.min_selection_clusters
                     and result["override_hand_mean"] >= args.min_override_hand_mean
                 )
                 grid.append(result)
@@ -266,7 +357,8 @@ def main() -> int:
     selected = max(
         eligible,
         key=lambda result: (
-            result["match_bootstrap_mean_ci"]["lower"],
+            result["match_opponent_stratified_cluster_ci"]["lower"],
+            result["match_cluster_bootstrap_mean_ci"]["lower"],
             result["match_mean_per_opportunity"],
             -result["negative_override_rate"],
             -result["config"]["margin"],

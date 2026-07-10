@@ -31,6 +31,8 @@ def _value_row(opponent: str, seed: int) -> dict:
         "bot_seed_base": seed + 100,
         "hand": 1,
         "hand_decision_index": 0,
+        "cross_hand_sequence_schema": "public_opponent_hand_v1",
+        "cross_hand_sequence": [],
         "rule_label_id": 1,
         "delta_vs_rule": values,
         "tail_delta_vs_rule": [None, 0.0, 25.0, None, None, None],
@@ -60,6 +62,8 @@ def _behavior_row(opponent: str, seed: int) -> dict:
         "bot_seed_base": seed + 100,
         "hand": 1,
         "hand_decision_index": 0,
+        "cross_hand_sequence_schema": "public_opponent_hand_v1",
+        "cross_hand_sequence": [],
         "opponent_action": "fold",
         "opponent_action_label_id": 0,
     }
@@ -75,7 +79,12 @@ def test_audit_accepts_disjoint_protocol_clean_splits(tmp_path: Path) -> None:
             _behavior_row(opponent, index + 10),
         )
 
-    report = tool.audit(tmp_path, min_value_rows=1, min_behavior_rows=1)
+    report = tool.audit(
+        tmp_path,
+        min_value_rows=1,
+        min_behavior_rows=1,
+        require_cross_hand_sequence=True,
+    )
 
     assert report["passed"] is True
     assert report["valid_probes"] == 3
@@ -95,3 +104,25 @@ def test_audit_rejects_opponent_leakage(tmp_path: Path) -> None:
 
     assert report["passed"] is False
     assert any("opponent leakage" in error for error in report["errors"])
+
+
+def test_audit_rejects_future_hand_sequence_leakage(tmp_path: Path) -> None:
+    tool = _load_tool()
+    for index, split in enumerate(tool.SPLITS):
+        opponent = f"national_v{index + 1}"
+        value = _value_row(opponent, index + 30)
+        behavior = _behavior_row(opponent, index + 30)
+        if split == "train":
+            value["cross_hand_sequence"] = [[0.0] * 16]
+        _write(tmp_path / f"cf_{split}.jsonl", value)
+        _write(tmp_path / f"opponent_actions_{split}.jsonl", behavior)
+
+    report = tool.audit(
+        tmp_path,
+        min_value_rows=1,
+        min_behavior_rows=1,
+        require_cross_hand_sequence=True,
+    )
+
+    assert report["passed"] is False
+    assert any("strictly-prior expected" in error for error in report["errors"])

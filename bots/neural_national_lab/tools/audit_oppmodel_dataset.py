@@ -8,8 +8,19 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sys
 from typing import Any
 
+
+TOOLS = Path(__file__).resolve().parent
+if str(TOOLS) not in sys.path:
+    sys.path.insert(0, str(TOOLS))
+
+from cross_hand_sequence import (  # noqa: E402
+    CROSS_HAND_SEQUENCE_DIM,
+    CROSS_HAND_SEQUENCE_SCHEMA,
+    MAX_CROSS_HANDS,
+)
 
 SPLITS = ("train", "val", "held_out")
 VALUE_FIELDS = ("delta_vs_rule", "tail_delta_vs_rule", "match_delta_vs_rule")
@@ -57,12 +68,61 @@ def _percentile(values: list[float], fraction: float) -> float | None:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
+def _audit_cross_hand_sequence(
+    row: dict[str, Any],
+    *,
+    location: str,
+    errors: list[str],
+    required: bool,
+) -> int | None:
+    raw = row.get("cross_hand_sequence")
+    if raw is None:
+        if required:
+            errors.append(f"{location}: missing cross_hand_sequence")
+        return None
+    if row.get("cross_hand_sequence_schema") != CROSS_HAND_SEQUENCE_SCHEMA:
+        errors.append(f"{location}: invalid cross_hand_sequence_schema")
+    if not isinstance(raw, list):
+        errors.append(f"{location}: cross_hand_sequence must be a list")
+        return None
+    hand = int(row.get("hand", 0) or 0)
+    expected = min(MAX_CROSS_HANDS, max(0, hand - 1))
+    if len(raw) != expected:
+        errors.append(
+            f"{location}: cross_hand_sequence length {len(raw)} != "
+            f"strictly-prior expected {expected}"
+        )
+    for row_index, vector in enumerate(raw):
+        if not isinstance(vector, list) or len(vector) != CROSS_HAND_SEQUENCE_DIM:
+            errors.append(
+                f"{location}: cross_hand_sequence[{row_index}] must have "
+                f"{CROSS_HAND_SEQUENCE_DIM} values"
+            )
+            continue
+        for feature_index, value in enumerate(vector):
+            if not _finite(value):
+                errors.append(
+                    f"{location}: cross_hand_sequence[{row_index}]"
+                    f"[{feature_index}] is non-finite"
+                )
+                continue
+            numeric = float(value)
+            lower = -1.0 if feature_index == CROSS_HAND_SEQUENCE_DIM - 1 else 0.0
+            if numeric < lower or numeric > 1.0:
+                errors.append(
+                    f"{location}: cross_hand_sequence[{row_index}]"
+                    f"[{feature_index}] outside [{lower}, 1]"
+                )
+    return len(raw)
+
+
 def audit(
     data_dir: Path,
     *,
     min_value_rows: int,
     min_behavior_rows: int,
     required_alternative_labels: set[str] | None = None,
+    require_cross_hand_sequence: bool = False,
 ) -> dict[str, Any]:
     errors: list[str] = []
     value_rows = {
@@ -100,9 +160,18 @@ def audit(
     distributions = {field: [] for field in VALUE_FIELDS}
     valid_probes = invalid_probes = 0
     alternative_classes = Counter()
+    sequence_lengths: list[int] = []
     for split, rows in value_rows.items():
         for row in rows:
             location = f"cf_{split}.jsonl:{row['__line__']}"
+            sequence_length = _audit_cross_hand_sequence(
+                row,
+                location=location,
+                errors=errors,
+                required=require_cross_hand_sequence,
+            )
+            if sequence_length is not None:
+                sequence_lengths.append(sequence_length)
             key = (
                 _opponent(row), row.get("deck_seed_base"), row.get("bot_seed_base"),
                 row.get("hand"), row.get("hand_decision_index"),
@@ -162,6 +231,14 @@ def audit(
     for split, rows in behavior_rows.items():
         for row in rows:
             location = f"opponent_actions_{split}.jsonl:{row['__line__']}"
+            sequence_length = _audit_cross_hand_sequence(
+                row,
+                location=location,
+                errors=errors,
+                required=require_cross_hand_sequence,
+            )
+            if sequence_length is not None:
+                sequence_lengths.append(sequence_length)
             key = (
                 _opponent(row), row.get("deck_seed_base"), row.get("bot_seed_base"),
                 row.get("hand"), row.get("hand_decision_index"),
@@ -201,6 +278,13 @@ def audit(
         "invalid_probes_excluded_by_masks": invalid_probes,
         "alternative_classes": dict(sorted(alternative_classes.items())),
         "behavior_classes": dict(sorted(behavior_classes.items())),
+        "cross_hand_sequence": {
+            "required": bool(require_cross_hand_sequence),
+            "schema": CROSS_HAND_SEQUENCE_SCHEMA,
+            "rows": len(sequence_lengths),
+            "min_hands": min(sequence_lengths) if sequence_lengths else None,
+            "max_hands": max(sequence_lengths) if sequence_lengths else None,
+        },
         "targets": {
             field: {
                 "samples": len(values),
@@ -223,12 +307,14 @@ def main() -> int:
     parser.add_argument("--min-value-rows", type=int, default=1)
     parser.add_argument("--min-behavior-rows", type=int, default=1)
     parser.add_argument("--require-alternative-label", action="append", default=[])
+    parser.add_argument("--require-cross-hand-sequence", action="store_true")
     args = parser.parse_args()
     report = audit(
         args.data_dir.resolve(),
         min_value_rows=args.min_value_rows,
         min_behavior_rows=args.min_behavior_rows,
         required_alternative_labels=set(args.require_alternative_label),
+        require_cross_hand_sequence=args.require_cross_hand_sequence,
     )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -13,8 +13,8 @@ sys.path.insert(0, str(TOOLS))
 
 import opp_multitask_runtime as runtime  # noqa: E402
 import opp_multitask_ensemble_runtime as ensemble_runtime  # noqa: E402
+import run_multitask_scaling_sweep as scaling  # noqa: E402
 import train_opponent_multitask_net as trainer  # noqa: E402
-from train_opponent_value_net import collate  # noqa: E402
 
 
 def test_response_samples_mask_unobservable_private_cards() -> None:
@@ -51,7 +51,33 @@ def test_response_samples_mask_unobservable_private_cards() -> None:
     assert all(response["state"][index] == 0.0 for index in trainer.PRIVATE_STATE_INDICES)
 
 
-def test_multitask_runtime_matches_torch_outputs() -> None:
+@pytest.mark.parametrize("encoder", ["gru", "deep_set", "transformer"])
+def test_scaling_config_preserves_temporal_encoder(encoder: str) -> None:
+    config = scaling._parse_config(
+        f"tiny_{encoder}@{encoder}:64:32:16:16:12:32",
+        cross_transformer_heads=2,
+    )
+
+    assert config["cross_sequence_encoder"] == encoder
+    assert config["cross_sequence_hidden"] == 12
+    assert config["cross_transformer_heads"] == 2
+
+
+def test_scaling_config_rejects_incompatible_transformer_heads() -> None:
+    with pytest.raises(SystemExit, match="divisible by heads"):
+        scaling._parse_config(
+            "bad@transformer:64:32:16:16:13:32",
+            cross_transformer_heads=2,
+        )
+
+
+@pytest.mark.parametrize(
+    "cross_sequence_encoder", [None, "gru", "deep_set", "transformer"]
+)
+def test_multitask_runtime_matches_torch_outputs(
+    cross_sequence_encoder: str | None,
+) -> None:
+    temporal_cross_hand = cross_sequence_encoder is not None
     torch.manual_seed(29)
     model = trainer.OpponentAwareMultiTaskNet(
         48,
@@ -62,6 +88,9 @@ def test_multitask_runtime_matches_torch_outputs() -> None:
         cross_hidden=7,
         head_hidden=11,
         dropout=0.0,
+        cross_sequence_hidden=4 if temporal_cross_hand else 0,
+        cross_sequence_encoder=cross_sequence_encoder or "none",
+        cross_transformer_heads=2,
     )
     model.eval()
     clips = {
@@ -71,7 +100,10 @@ def test_multitask_runtime_matches_torch_outputs() -> None:
     }
     payload = {
         "meta": {
-            "format": "opp_multitask_gru_v1",
+            "format": (
+                "opp_multitask_gru_v2" if temporal_cross_hand
+                else "opp_multitask_gru_v1"
+            ),
             "labels": list(trainer.LABELS),
             "opponent_action_labels": list(trainer.OPPONENT_ACTION_LABELS),
             "value_fields": list(trainer.VALUE_FIELDS),
@@ -82,7 +114,14 @@ def test_multitask_runtime_matches_torch_outputs() -> None:
                 for field in trainer.VALUE_FIELDS
             },
             "response_calibration": {"temperature": 2.0},
-            "model": {"gru_hidden": 5, "max_hist": 16},
+            "model": {
+                "gru_hidden": 5,
+                "max_hist": 16,
+                "cross_sequence_hidden": 4 if temporal_cross_hand else 0,
+                "max_cross_hands": 32,
+                "cross_sequence_encoder": cross_sequence_encoder or "none",
+                "cross_transformer_heads": 2,
+            },
             "training": {"clips": clips},
         },
         "weights": {key: value.detach().tolist() for key, value in model.state_dict().items()},
@@ -90,17 +129,26 @@ def test_multitask_runtime_matches_torch_outputs() -> None:
     pure = runtime.OpponentMultiTaskRuntime(payload)
     hero = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.1, 0.0, 1.0]
 
-    for history_length in (0, 1, 6, 15, 16):
+    for history_length, cross_length in (
+        (0, 0), (1, 1), (6, 6), (15, 15), (16, 32), (16, 40)
+    ):
         sample = {
             "state": [0.01] * 48,
             "profile": [0.02] * 12,
             "cross_hand": [0.03] * 20,
+            "cross_hand_sequence": [
+                [0.004 * (step + 1)] * 16
+                for step in range(cross_length)
+            ],
             "history": [[0.001 * (step + 1)] * 15 for step in range(history_length)],
             "target": [0.0] * 6,
             "rule_id": 1,
             "candidate_id": None,
         }
-        state, profile, cross, history, lengths, *_ = collate(
+        (
+            state, profile, history, lengths, cross,
+            cross_sequence, cross_lengths,
+        ) = trainer._context_tensors(
             [sample], max_hist=16, device="cpu"
         )
         with torch.no_grad():
@@ -108,13 +156,19 @@ def test_multitask_runtime_matches_torch_outputs() -> None:
                 torch.tensor([1]), num_classes=trainer.NUM_ACTIONS
             ).float()
             latent = model.encode(
-                state, profile, history, lengths, cross, rule_action=rule_action
+                state, profile, history, lengths, cross,
+                rule_action=rule_action,
+                cross_sequence=cross_sequence,
+                cross_lengths=cross_lengths,
             )
             torch_values = model.value(latent)
             public_state = state.clone()
             public_state[:, list(trainer.PRIVATE_STATE_INDICES)] = 0.0
             response_latent = model.encode(
-                public_state, profile, history, lengths, cross, response=True
+                public_state, profile, history, lengths, cross,
+                response=True,
+                cross_sequence=cross_sequence,
+                cross_lengths=cross_lengths,
             )
             torch_response = model.response(
                 response_latent, torch.tensor([hero], dtype=torch.float32)
@@ -123,6 +177,7 @@ def test_multitask_runtime_matches_torch_outputs() -> None:
         actual_values = pure.predict_values(
             sample["state"], sample["profile"], sample["history"],
             sample["cross_hand"], 1,
+            sample["cross_hand_sequence"],
         )
         for field in trainer.VALUE_FIELDS:
             raw = torch_values[field][0].tolist()
@@ -142,6 +197,7 @@ def test_multitask_runtime_matches_torch_outputs() -> None:
         actual_response = pure.predict_response(
             sample["state"], sample["profile"], sample["history"],
             sample["cross_hand"], hero,
+            sample["cross_hand_sequence"],
         )
         expected_probabilities = torch.softmax(
             torch_response[:len(trainer.OPPONENT_ACTION_LABELS)] / 2.0, dim=0

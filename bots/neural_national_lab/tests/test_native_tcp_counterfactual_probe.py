@@ -117,3 +117,5 @@ def test_behavior_rows_use_immediate_post_action_event() -> None:
     assert rows[0]["hero_action"] == 200
     assert rows[0]["opponent_action"] == "fold"
     assert rows[0]["opponent_action_label_id"] == 0
+    assert rows[0]["cross_hand_sequence_schema"] == "public_opponent_hand_v1"
+    assert rows[0]["cross_hand_sequence"] == []

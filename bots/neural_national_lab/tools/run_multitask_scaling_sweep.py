@@ -21,26 +21,58 @@ from audit_oppmodel_dataset import audit  # noqa: E402
 
 
 DEFAULT_CONFIGS = (
-    "small:128:64:48:32:64",
-    "medium:256:128:96:64:128",
-    "large:512:256:192:128:256",
+    "small_gru@gru:128:64:48:32:32:64",
+    "small_set@deep_set:128:64:48:32:32:64",
+    "small_tx@transformer:128:64:48:32:32:64",
+    "medium_gru@gru:256:128:96:64:64:128",
+    "medium_set@deep_set:256:128:96:64:64:128",
+    "medium_tx@transformer:256:128:96:64:64:128",
+    "large_gru@gru:512:256:192:128:128:256",
+    "large_set@deep_set:512:256:192:128:128:256",
+    "large_tx@transformer:512:256:192:128:128:256",
 )
 
 
-def _parse_config(raw: str) -> dict[str, Any]:
+def _parse_config(
+    raw: str, *, cross_transformer_heads: int = 4
+) -> dict[str, Any]:
     parts = raw.split(":")
-    if len(parts) != 6:
+    if len(parts) not in {6, 7}:
         raise SystemExit(
-            f"invalid config {raw!r}; expected name:hidden:latent:gru:cross:head"
+            f"invalid config {raw!r}; expected "
+            "name:hidden:latent:gru:aggregate_cross:sequence_cross:head"
         )
-    name = parts[0]
+    name_spec = parts[0]
+    if "@" in name_spec:
+        name, encoder = name_spec.rsplit("@", 1)
+    else:
+        name, encoder = name_spec, "gru"
+    if encoder not in {"gru", "deep_set", "transformer"}:
+        raise SystemExit(f"invalid cross-hand encoder in {raw!r}: {encoder}")
     values = [int(value) for value in parts[1:]]
+    if len(values) == 5:
+        values.insert(4, values[3])
     if not name or any(value <= 0 for value in values):
         raise SystemExit(f"invalid config {raw!r}")
-    return dict(zip(
-        ("name", "hidden", "latent", "gru_hidden", "cross_hidden", "head_hidden"),
+    config = dict(zip(
+        (
+            "name", "hidden", "latent", "gru_hidden", "cross_hidden",
+            "cross_sequence_hidden", "head_hidden",
+        ),
         (name, *values),
     ))
+    config["cross_sequence_encoder"] = encoder
+    config["cross_transformer_heads"] = int(cross_transformer_heads)
+    if config["cross_transformer_heads"] <= 0:
+        raise SystemExit("cross-transformer-heads must be positive")
+    if (
+        encoder == "transformer"
+        and config["cross_sequence_hidden"] % config["cross_transformer_heads"]
+    ):
+        raise SystemExit(
+            f"transformer sequence hidden size must be divisible by heads in {raw!r}"
+        )
+    return config
 
 
 def _sha256(path: Path) -> str:
@@ -62,12 +94,19 @@ def _model_matches(
         training = meta["training"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError):
         return False
-    for key in ("hidden", "latent", "gru_hidden", "cross_hidden", "head_hidden"):
+    for key in (
+        "hidden", "latent", "gru_hidden", "cross_hidden",
+        "cross_sequence_hidden", "cross_transformer_heads", "head_hidden",
+    ):
         if int(model.get(key, -1)) != int(config[key]):
             return False
+    if model.get("cross_sequence_encoder", "gru") != config["cross_sequence_encoder"]:
+        return False
     if int(training.get("seed", -1)) != seed:
         return False
     if meta.get("response_encoder") != "separate_public_v1":
+        return False
+    if meta.get("format") != "opp_multitask_gru_v2":
         return False
     if int(meta.get("rule_action_dim", -1)) != 6:
         return False
@@ -104,6 +143,9 @@ def _run_training(
         "--latent", str(config["latent"]),
         "--gru-hidden", str(config["gru_hidden"]),
         "--cross-hidden", str(config["cross_hidden"]),
+        "--cross-sequence-hidden", str(config["cross_sequence_hidden"]),
+        "--cross-sequence-encoder", config["cross_sequence_encoder"],
+        "--cross-transformer-heads", str(config["cross_transformer_heads"]),
         "--head-hidden", str(config["head_hidden"]),
         "--epochs", str(args.epochs),
         "--patience", str(args.patience),
@@ -111,6 +153,8 @@ def _run_training(
         "--device", args.device,
         "--seed", str(seed),
     ]
+    if not args.allow_missing_cross_hand_sequence:
+        command.append("--require-cross-hand-sequence")
     if "value_held_out" in data_paths:
         command.extend([
             "--value-held-out", str(data_paths["value_held_out"]),
@@ -146,9 +190,11 @@ def main() -> int:
     parser.add_argument("--patience", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--cross-transformer-heads", type=int, default=4)
     parser.add_argument("--min-value-train", type=int, default=500)
     parser.add_argument("--min-behavior-train", type=int, default=2000)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--allow-missing-cross-hand-sequence", action="store_true")
     args = parser.parse_args()
 
     data_dir = args.data_dir.resolve()
@@ -158,6 +204,7 @@ def main() -> int:
         data_dir,
         min_value_rows=args.min_value_train,
         min_behavior_rows=args.min_behavior_train,
+        require_cross_hand_sequence=not args.allow_missing_cross_hand_sequence,
     )
     (out_dir / "dataset_audit.json").write_text(
         json.dumps(audit_report, indent=2, sort_keys=True), encoding="utf-8"
@@ -165,7 +212,12 @@ def main() -> int:
     if not audit_report["passed"]:
         raise SystemExit("dataset audit failed; see dataset_audit.json")
 
-    configs = [_parse_config(raw) for raw in (args.config or DEFAULT_CONFIGS)]
+    configs = [
+        _parse_config(
+            raw, cross_transformer_heads=args.cross_transformer_heads
+        )
+        for raw in (args.config or DEFAULT_CONFIGS)
+    ]
     seeds = [int(value) for value in args.seeds.split(",") if value.strip()]
     if not seeds:
         raise SystemExit("at least one seed is required")
@@ -286,7 +338,7 @@ def main() -> int:
         json.dumps(ensemble_manifest, indent=2, sort_keys=True), encoding="utf-8"
     )
     summary = {
-        "schema_version": 2,
+        "schema_version": 3,
         "selection_used_held_out": False,
         "dataset_audit": str(out_dir / "dataset_audit.json"),
         "experiments": experiments,

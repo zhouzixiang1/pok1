@@ -59,3 +59,17 @@ def test_offline_policy_uses_lcb_and_response_signal() -> None:
 
     assert no_response["match_total"] == 10.0
     assert with_response["match_total"] == 20.0
+
+
+def test_cluster_bootstrap_resamples_whole_matches() -> None:
+    tool = _load_tool()
+
+    ci = tool._cluster_bootstrap_mean_ci(
+        {"positive": [100.0, 100.0], "negative": [-100.0, -100.0]},
+        samples=200,
+        seed=7,
+    )
+
+    assert ci["mean"] == 0.0
+    assert ci["lower"] == -100.0
+    assert ci["upper"] == 100.0
