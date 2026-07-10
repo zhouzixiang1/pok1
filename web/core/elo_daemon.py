@@ -741,8 +741,8 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
                 bot_a_path,
                 bot_b_path,
                 hands,
-                require_native_a=False,
-                require_native_b=False,
+                require_native_a=True,
+                require_native_b=True,
             ))
         else:
             result = asyncio.run(run_pair(bot_a, bot_b, hands, strict=strict))

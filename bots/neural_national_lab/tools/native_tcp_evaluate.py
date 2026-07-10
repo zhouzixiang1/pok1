@@ -17,7 +17,10 @@ WEB_CORE = ROOT / "web" / "core"
 if str(WEB_CORE) not in sys.path:
     sys.path.insert(0, str(WEB_CORE))
 
-from national_native import run_native_tcp_pair  # noqa: E402
+from national_native import (  # noqa: E402
+    run_legacy_debug_tcp_pair_with_wrappers,
+    run_native_tcp_pair,
+)
 
 
 def _resolve(path: str) -> Path:
@@ -126,6 +129,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             "net_chips_per_hand": round(net_chips / max(1, int(result["hands_played"])), 3),
             "hand_net_chips": hand_net_chips,
             "passed_compliance": bool(result["passed_compliance"]),
+            "wrapper_used": bool(result.get("wrapper_used")),
             "issues": result["issues"],
             "candidate_illegal": result["per_player"][candidate_key]["illegal_actions"],
             "candidate_timeouts": result["per_player"][candidate_key]["timeouts"],
@@ -140,15 +144,23 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     async def one(opponent_idx: int, opponent: Path, match_idx: int, deck_seed: int | None) -> dict[str, Any]:
         async with semaphore:
             bot_seed_base = _bot_seed(args, match_idx, opponent_idx)
-            forward = await run_native_tcp_pair(
+            pair_runner = (
+                run_legacy_debug_tcp_pair_with_wrappers
+                if args.allow_generated_opponent_entry
+                else run_native_tcp_pair
+            )
+            strict_kwargs = {} if args.allow_generated_opponent_entry else {
+                "require_native_a": True,
+                "require_native_b": True,
+            }
+            forward = await pair_runner(
                 candidate,
                 opponent,
                 int(args.hands),
-                require_native_a=True,
-                require_native_b=not args.allow_generated_opponent_entry,
                 deck_seed_base=deck_seed,
                 bot_seed_base=bot_seed_base,
                 timeout_sec=float(args.timeout_sec),
+                **strict_kwargs,
             )
             forward_row = result_row(
                 forward,
@@ -160,15 +172,14 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             )
             if not args.paired:
                 return forward_row
-            swapped = await run_native_tcp_pair(
+            swapped = await pair_runner(
                 opponent,
                 candidate,
                 int(args.hands),
-                require_native_a=not args.allow_generated_opponent_entry,
-                require_native_b=True,
                 deck_seed_base=deck_seed,
                 bot_seed_base=bot_seed_base,
                 timeout_sec=float(args.timeout_sec),
+                **strict_kwargs,
             )
             swapped_row = result_row(
                 swapped,
@@ -203,6 +214,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 "net_chips_per_hand": round(net_chips / max(1, hands_played), 3),
                 "hand_net_chips": paired_hand_net_chips,
                 "passed_compliance": bool(forward_row["passed_compliance"] and swapped_row["passed_compliance"]),
+                "wrapper_used": bool(forward_row["wrapper_used"] or swapped_row["wrapper_used"]),
                 "issues": issues,
                 "candidate_illegal": int(forward_row["candidate_illegal"]) + int(swapped_row["candidate_illegal"]),
                 "candidate_timeouts": int(forward_row["candidate_timeouts"]) + int(swapped_row["candidate_timeouts"]),
@@ -233,6 +245,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "workers": int(args.workers),
         "paired": bool(args.paired),
         "requires_native_opponents": not args.allow_generated_opponent_entry,
+        "legacy_debug_wrapper_enabled": bool(args.allow_generated_opponent_entry),
+        "wrapper_used": any(bool(row.get("wrapper_used")) for row in rows),
         "bot_seed_base": args.bot_seed_base,
         "trace_decisions": bool(args.trace_decisions),
         "force": {
@@ -265,7 +279,11 @@ def main() -> int:
     parser.add_argument("--force-hand", type=int, default=None, help="Set POK_FORCE_HAND for native bot subprocesses that support force probes.")
     parser.add_argument("--force-decision", type=int, default=None, help="Set POK_FORCE_DECISION for native bot subprocesses that support force probes.")
     parser.add_argument("--force-action", type=int, default=None, help="Set POK_FORCE_ACTION for native bot subprocesses that support force probes.")
-    parser.add_argument("--allow-generated-opponent-entry", action="store_true", help="Allow template native entry for legacy opponents. Off by default.")
+    parser.add_argument(
+        "--allow-generated-opponent-entry",
+        action="store_true",
+        help="Use the legacy/debug wrapper API for missing or invalid native entries. Off by default.",
+    )
     parser.add_argument("--print-rows", action="store_true")
     parser.add_argument("--output", default="", help="Optional JSON output path.")
     args = parser.parse_args()

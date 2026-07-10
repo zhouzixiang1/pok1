@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 from candidate_hygiene import sanitize_candidate_dir
 import evolution_infra
 import national_native
@@ -11,6 +13,7 @@ from national_native import (
     check_native_contract,
     ensure_native_entry,
     _completed_active_bots,
+    run_legacy_debug_tcp_pair_with_wrappers,
     run_native_tcp_smoke,
     run_native_tcp_pair,
 )
@@ -402,8 +405,6 @@ def test_native_tcp_pair_runs_without_adapter(tmp_path):
         bot_a,
         bot_b,
         hands=2,
-        require_native_a=True,
-        require_native_b=True,
         deck_seed_base=1234,
         timeout_sec=30,
     ))
@@ -414,10 +415,59 @@ def test_native_tcp_pair_runs_without_adapter(tmp_path):
     assert all(len(row["earnings"]) == 2 for row in result["settlements"])
     assert result["passed_compliance"] is True
     assert result["issues"] == []
+    assert result["wrapper_used"] is False
+    assert result["wrapper_used_by_player"] == {"BotA": False, "BotB": False}
+    assert all(row["wrapper_used"] is False for row in result["per_player"].values())
     assert all(
         row["adapter"]["actions_sent"] == 0
         for row in result["per_player"].values()
     )
+
+
+def test_native_tcp_pair_defaults_to_strict_both_and_does_not_create_missing_entry(tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_minimal_strategy_bot(bot_a)
+    _write_minimal_strategy_bot(bot_b)
+    ensure_native_entry(bot_a)
+
+    with pytest.raises(ValueError, match=r"BotB: missing required national_bot\.py"):
+        asyncio.run(run_native_tcp_pair(bot_a, bot_b, hands=1))
+
+    assert not (bot_b / "national_bot.py").exists()
+
+
+def test_native_tcp_pair_rejects_invalid_entry_without_rewriting_it(tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_minimal_strategy_bot(bot_a)
+    _write_minimal_strategy_bot(bot_b)
+    ensure_native_entry(bot_a)
+    invalid_source = "# intentionally invalid native contract\n"
+    entry = bot_b / "national_bot.py"
+    entry.write_text(invalid_source, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"BotB: invalid national_bot\.py"):
+        asyncio.run(run_native_tcp_pair(bot_a, bot_b, hands=1))
+
+    assert entry.read_text(encoding="utf-8") == invalid_source
+
+
+def test_native_tcp_pair_rejects_disabled_native_requirement(tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_minimal_strategy_bot(bot_a)
+    _write_minimal_strategy_bot(bot_b)
+    ensure_native_entry(bot_a)
+    ensure_native_entry(bot_b)
+
+    with pytest.raises(ValueError, match="run_legacy_debug_tcp_pair_with_wrappers"):
+        asyncio.run(run_native_tcp_pair(
+            bot_a,
+            bot_b,
+            hands=1,
+            require_native_b=False,
+        ))
 
 
 def test_native_tcp_smoke_runs_without_adapter(tmp_path):
@@ -955,6 +1005,69 @@ def test_native_acceptance_summary_includes_runtime_telemetry(tmp_path):
     assert runtime["matches_with_bot_log"] == 1
 
 
+def test_native_acceptance_and_precommit_require_native_entries_for_both_players(monkeypatch, tmp_path):
+    candidate = tmp_path / "Candidate"
+    opponent = tmp_path / "Opponent"
+    _write_minimal_strategy_bot(candidate)
+    _write_minimal_strategy_bot(opponent)
+    calls = []
+
+    async def fake_native_pair(bot_a, bot_b, hands, **kwargs):
+        label_a = Path(bot_a).name
+        label_b = Path(bot_b).name
+        calls.append(kwargs)
+        return {
+            "bot_a": label_a,
+            "bot_b": label_b,
+            "hands_played": hands,
+            "net_chips_a": 100,
+            "net_chips_b": -100,
+            "net_chips_a_per_hand": 100.0 / hands,
+            "passed_compliance": True,
+            "wrapper_used": False,
+            "issues": [],
+            "per_player": {
+                label_a: {
+                    "earnings": 100,
+                    "illegal_actions": 0,
+                    "timeouts": 0,
+                    "runtime_telemetry": {},
+                    "native": {},
+                },
+                label_b: {
+                    "earnings": -100,
+                    "illegal_actions": 0,
+                    "timeouts": 0,
+                    "runtime_telemetry": {},
+                    "native": {},
+                },
+            },
+        }
+
+    monkeypatch.setattr(national_native, "run_native_tcp_pair", fake_native_pair)
+
+    acceptance = asyncio.run(national_native.run_native_acceptance_for_candidate(
+        candidate,
+        opponent_tokens=[opponent],
+        hands=1,
+        timeout_sec=5,
+    ))
+    precommit = asyncio.run(national_native.run_native_precommit(
+        candidate,
+        [{"name": "Opponent", "path": str(opponent), "reason": "parent"}],
+        hands=1,
+        parent_label="Opponent",
+        parent_loss_threshold=-999_999,
+        aggregate_loss_threshold=-999_999,
+    ))
+
+    assert acceptance.report["wrapper_used"] is False
+    assert precommit["wrapper_used"] is False
+    assert len(calls) == 2
+    assert all(call["require_native_a"] is True for call in calls)
+    assert all(call["require_native_b"] is True for call in calls)
+
+
 def test_native_tcp_pair_reorders_clients_by_bot_label(tmp_path):
     bot_a = tmp_path / "BotA"
     bot_b = tmp_path / "BotB"
@@ -1004,13 +1117,14 @@ def test_native_tcp_pair_disambiguates_duplicate_labels(tmp_path):
     assert result["passed_compliance"] is True
 
 
-def test_native_tcp_pair_refreshes_unsafe_legacy_opponent_entry(tmp_path):
+def test_legacy_debug_tcp_pair_wraps_unsafe_opponent_without_rewriting_it(tmp_path):
     bot_a = tmp_path / "BotA"
     bot_b = tmp_path / "BotB"
     _write_minimal_strategy_bot(bot_a)
     _write_minimal_strategy_bot(bot_b)
     ensure_native_entry(bot_a)
-    (bot_b / "national_bot.py").write_text(
+    entry = bot_b / "national_bot.py"
+    invalid_source = (
         "import socket\n\n"
         "class NativeNationalBot:\n"
         "    def _strategy_action(self):\n"
@@ -1020,16 +1134,14 @@ def test_native_tcp_pair_refreshes_unsafe_legacy_opponent_entry(tmp_path):
         "        except Exception:\n"
         "            pass\n"
         "        return int(action)\n\n"
-        "# required wire tokens: raise fold call check allin\n",
-        encoding="utf-8",
+        "# required wire tokens: raise fold call check allin\n"
     )
+    entry.write_text(invalid_source, encoding="utf-8")
 
-    result = asyncio.run(run_native_tcp_pair(
+    result = asyncio.run(run_legacy_debug_tcp_pair_with_wrappers(
         bot_a,
         bot_b,
         hands=2,
-        require_native_a=True,
-        require_native_b=False,
         deck_seed_base=5678,
         timeout_sec=30,
     ))
@@ -1037,3 +1149,7 @@ def test_native_tcp_pair_refreshes_unsafe_legacy_opponent_entry(tmp_path):
     assert result["execution_mode"] == "native_tcp"
     assert result["hands_played"] == 2
     assert result["passed_compliance"] is True
+    assert result["wrapper_used"] is True
+    assert result["wrapper_used_by_player"] == {"BotA": False, "BotB": True}
+    assert result["per_player"]["BotB"]["wrapper_used"] is True
+    assert entry.read_text(encoding="utf-8") == invalid_source

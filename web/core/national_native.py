@@ -611,6 +611,7 @@ class NativeBotSpec:
     path: Path
     entry: Path
     temp_root: Path | None = None
+    wrapper_used: bool = False
 
 
 class _TCPClient:
@@ -967,20 +968,37 @@ def select_acceptance_opponents(candidate_label: str, source_v: int | None, limi
     return chosen[:limit]
 
 
-def _prepare_native_spec(label: str, bot_dir: Path, *, require_existing: bool) -> NativeBotSpec:
+def _prepare_native_spec(
+    label: str,
+    bot_dir: Path,
+    *,
+    allow_legacy_wrapper: bool = False,
+) -> NativeBotSpec:
+    """Resolve an existing native entry, optionally wrapping a copied legacy bot.
+
+    The strict path never writes to ``bot_dir``. Wrapper generation is reserved
+    for the explicitly named legacy/debug runner and only touches a temporary
+    copy of the source bot.
+    """
     entry = bot_dir / NATIVE_ENTRY
     if entry.exists():
         contract_errors = check_native_contract(bot_dir)
         if not contract_errors:
             return NativeBotSpec(label=label, path=bot_dir, entry=entry)
-        if require_existing:
+        if not allow_legacy_wrapper:
             raise ValueError(f"{label}: invalid {NATIVE_ENTRY}: {'; '.join(contract_errors[:3])}")
-    if require_existing:
+    if not allow_legacy_wrapper:
         raise ValueError(f"{label}: missing required {NATIVE_ENTRY}")
     tmp = Path(tempfile.mkdtemp(prefix=f"pok_native_{label}_"))
     dst = tmp / bot_dir.name
     shutil.copytree(bot_dir, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    return NativeBotSpec(label=label, path=dst, entry=ensure_native_entry(dst, overwrite=True), temp_root=tmp)
+    return NativeBotSpec(
+        label=label,
+        path=dst,
+        entry=ensure_native_entry(dst, overwrite=True),
+        temp_root=tmp,
+        wrapper_used=True,
+    )
 
 
 def _cleanup_specs(specs: list[NativeBotSpec]) -> None:
@@ -1223,6 +1241,7 @@ async def _run_tcp_server_with_processes(
     if run_error:
         issues.append(f"native_tcp_match_error={run_error}")
     for idx, label in enumerate(run_labels):
+        spec = (bot_a, bot_b)[idx]
         proc_info = stdout_stderr.get(label, {})
         proc_failed = bool(proc_info.get("returncode") not in (0, None))
         stdout_text = str(proc_info.get("stdout") or "")
@@ -1245,6 +1264,7 @@ async def _run_tcp_server_with_processes(
             "earnings": int(earnings[idx]),
             "illegal_actions": illegal[idx],
             "timeouts": timeouts[idx],
+            "wrapper_used": spec.wrapper_used,
             "runtime_telemetry": runtime_telemetry,
             "native": {
                 "returncode": proc_info.get("returncode"),
@@ -1286,6 +1306,11 @@ async def _run_tcp_server_with_processes(
         "net_chips_b": int(earnings[1]),
         "net_chips_a_per_hand": round(int(earnings[0]) / max(1, hands_played), 3),
         "execution_mode": "native_tcp",
+        "wrapper_used": bot_a.wrapper_used or bot_b.wrapper_used,
+        "wrapper_used_by_player": {
+            run_labels[0]: bot_a.wrapper_used,
+            run_labels[1]: bot_b.wrapper_used,
+        },
         "deck_seed_base": deck_seed_base,
         "bot_seed_base": bot_seed_base,
         "settlements": settlements,
@@ -1301,17 +1326,86 @@ async def run_native_tcp_pair(
     hands: int,
     *,
     require_native_a: bool = True,
-    require_native_b: bool = False,
+    require_native_b: bool = True,
     deck_seed_base: int | None = None,
     bot_seed_base: int | None = None,
     timeout_sec: float | None = None,
 ) -> dict[str, Any]:
+    """Run a formal native TCP match using both bots' existing entries.
+
+    The ``require_native_*`` arguments are retained so formal callers can state
+    the contract explicitly. They cannot be disabled; legacy wrapper generation
+    is available only through ``run_legacy_debug_tcp_pair_with_wrappers``.
+    """
+    if require_native_a is not True or require_native_b is not True:
+        raise ValueError(
+            "run_native_tcp_pair requires existing valid national_bot.py entries "
+            "for both players; use run_legacy_debug_tcp_pair_with_wrappers only "
+            "for legacy/debug regression"
+        )
+    return await _run_native_tcp_pair(
+        bot_a_token,
+        bot_b_token,
+        hands,
+        allow_legacy_wrappers=False,
+        deck_seed_base=deck_seed_base,
+        bot_seed_base=bot_seed_base,
+        timeout_sec=timeout_sec,
+    )
+
+
+async def run_legacy_debug_tcp_pair_with_wrappers(
+    bot_a_token: str | Path,
+    bot_b_token: str | Path,
+    hands: int,
+    *,
+    deck_seed_base: int | None = None,
+    bot_seed_base: int | None = None,
+    timeout_sec: float | None = None,
+) -> dict[str, Any]:
+    """Run an old regression match, wrapping missing/invalid native entries.
+
+    This API is intentionally named for legacy/debug use. Any generated entry is
+    written only to a temporary copy and reported through ``wrapper_used``.
+    """
+    return await _run_native_tcp_pair(
+        bot_a_token,
+        bot_b_token,
+        hands,
+        allow_legacy_wrappers=True,
+        deck_seed_base=deck_seed_base,
+        bot_seed_base=bot_seed_base,
+        timeout_sec=timeout_sec,
+    )
+
+
+async def _run_native_tcp_pair(
+    bot_a_token: str | Path,
+    bot_b_token: str | Path,
+    hands: int,
+    *,
+    allow_legacy_wrappers: bool,
+    deck_seed_base: int | None,
+    bot_seed_base: int | None,
+    timeout_sec: float | None,
+) -> dict[str, Any]:
     label_a, dir_a = resolve_bot(bot_a_token)
     label_b, dir_b = resolve_bot(bot_b_token)
-    specs = [
-        _prepare_native_spec(label_a, dir_a, require_existing=require_native_a),
-        _prepare_native_spec(label_b, dir_b, require_existing=require_native_b),
-    ]
+    specs: list[NativeBotSpec] = []
+    try:
+        specs.append(_prepare_native_spec(
+            label_a,
+            dir_a,
+            allow_legacy_wrapper=allow_legacy_wrappers,
+        ))
+        specs.append(_prepare_native_spec(
+            label_b,
+            dir_b,
+            allow_legacy_wrapper=allow_legacy_wrappers,
+        ))
+    except Exception:
+        _cleanup_specs(specs)
+        raise
     hands = max(1, min(70, int(hands)))
     if timeout_sec is None:
         timeout_sec = max(90.0, hands * 4.0)
@@ -1344,6 +1438,7 @@ async def run_native_tcp_smoke(
         return {
             "passed": False,
             "execution_mode": "native_tcp",
+            "wrapper_used": False,
             "hands": hands,
             "issues": [f"native_smoke_candidate_error={type(exc).__name__}: {str(exc)[:300]}"],
         }
@@ -1356,6 +1451,7 @@ async def run_native_tcp_smoke(
                 "candidate": candidate_label,
                 "passed": False,
                 "execution_mode": "native_tcp",
+                "wrapper_used": False,
                 "hands": hands,
                 "issues": [f"native_smoke_opponent_error={type(exc).__name__}: {str(exc)[:300]}"],
             }
@@ -1367,6 +1463,7 @@ async def run_native_tcp_smoke(
             "candidate": candidate_label,
             "passed": False,
             "execution_mode": "native_tcp",
+            "wrapper_used": False,
             "hands": hands,
             "issues": ["native_smoke_no_opponent"],
         }
@@ -1378,7 +1475,7 @@ async def run_native_tcp_smoke(
             opponent_dir,
             hands,
             require_native_a=True,
-            require_native_b=False,
+            require_native_b=True,
             timeout_sec=timeout_sec,
         )
     except Exception as exc:
@@ -1387,6 +1484,7 @@ async def run_native_tcp_smoke(
             "opponent": opponent_label,
             "passed": False,
             "execution_mode": "native_tcp",
+            "wrapper_used": False,
             "hands": hands,
             "issues": [f"native_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
         }
@@ -1400,6 +1498,7 @@ async def run_native_tcp_smoke(
         "opponent": opponent_label,
         "passed": passed,
         "execution_mode": "native_tcp",
+        "wrapper_used": bool(result.get("wrapper_used")),
         "hands": hands,
         "issues": issues,
         "result": result,
@@ -1422,6 +1521,7 @@ def _summary_from_results(bots: list[tuple[str, Path]], results: list[dict[str, 
             "postflop_pass_conversions": 0,
             "native_process_failures": 0,
             "json_response_stdout": 0,
+            "wrapper_used": False,
             "passed_compliance": True,
             "runtime_telemetry": _empty_runtime_telemetry(),
         }
@@ -1438,6 +1538,7 @@ def _summary_from_results(bots: list[tuple[str, Path]], results: list[dict[str, 
             native = pdata.get("native", {}) or {}
             row["native_process_failures"] += int(native.get("process_failures", 0) or 0)
             row["json_response_stdout"] += int(native.get("json_response_stdout", 0) or 0)
+            row["wrapper_used"] = row["wrapper_used"] or bool(pdata.get("wrapper_used"))
             row["passed_compliance"] = row["passed_compliance"] and result.get("passed_compliance", False)
     for label, rows in runtime_rows.items():
         if label in summary:
@@ -1467,6 +1568,8 @@ async def run_native_acceptance_for_candidate(
             hands_per_pair=hands,
             passed=False,
             issues=["need at least one opponent for native national acceptance"],
+            summary={"wrapper_used": False, "passed_compliance": False},
+            report={"execution_mode": "native_tcp", "wrapper_used": False},
         )
     pair_indices = [(0, idx) for idx in range(1, len(bots))]
     if timeout_sec is None:
@@ -1480,8 +1583,8 @@ async def run_native_acceptance_for_candidate(
                 bots[i][1],
                 bots[j][1],
                 hands,
-                require_native_a=(i == 0),
-                require_native_b=False,
+                require_native_a=True,
+                require_native_b=True,
                 deck_seed_base=pair_seed,
                 timeout_sec=timeout_sec,
             ))
@@ -1493,11 +1596,17 @@ async def run_native_acceptance_for_candidate(
             hands_per_pair=hands,
             passed=False,
             issues=[issue],
-            summary={"matches": 0, "net_chips": 0, "passed_compliance": False},
+            summary={
+                "matches": 0,
+                "net_chips": 0,
+                "wrapper_used": False,
+                "passed_compliance": False,
+            },
             report={
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
                 "hands_per_pair": hands,
                 "execution_mode": "native_tcp",
+                "wrapper_used": False,
                 "candidate_only": True,
                 "timeout_sec": timeout_sec,
                 "timed_out": True,
@@ -1514,18 +1623,21 @@ async def run_native_acceptance_for_candidate(
             "net_chips": result["net_chips_a"],
             "per_hand": result["net_chips_a_per_hand"],
             "passed_compliance": result["passed_compliance"],
+            "wrapper_used": bool(result.get("wrapper_used")),
             "issues": result["issues"],
         }
         matrix[b][a] = {
             "net_chips": result["net_chips_b"],
             "per_hand": round(result["net_chips_b"] / max(1, result["hands_played"]), 3),
             "passed_compliance": result["passed_compliance"],
+            "wrapper_used": bool(result.get("wrapper_used")),
             "issues": result["issues"],
         }
     report = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "hands_per_pair": hands,
         "execution_mode": "native_tcp",
+        "wrapper_used": any(bool(result.get("wrapper_used")) for result in results),
         "pair_count": len(pair_indices),
         "bots": [{"label": label, "path": str(path)} for label, path in bots],
         "results": results,
@@ -1603,7 +1715,7 @@ async def run_native_precommit(
                 opponent[1],
                 hands,
                 require_native_a=True,
-                require_native_b=False,
+                require_native_b=True,
                 deck_seed_base=seed,
             )
             net = int(result.get("net_chips_a", 0) or 0)
@@ -1656,6 +1768,7 @@ async def run_native_precommit(
             "net_chip_ci": [_rounded(ci_lo), _rounded(ci_hi)],
             "candidate_compliance_issues": candidate_issues,
             "opponent_compliance_issues": opponent_issues,
+            "wrapper_used": any(bool(row["raw"].get("wrapper_used")) for row in repeats),
             "repeats": repeats,
         }
         matchups.append(matchup)
@@ -1699,6 +1812,7 @@ async def run_native_precommit(
         "total_draws": total_draws,
         "aggregate_net_chips": aggregate_net_chips,
         "paired_bootstrap": paired_payload,
+        "wrapper_used": any(bool(matchup.get("wrapper_used")) for matchup in matchups),
         "blockers": blockers,
         "passed": not blockers,
     }
