@@ -90,8 +90,10 @@ python bots/neural_national_lab/tools/native_tcp_evaluate.py \
   positive.
 - **#5 (held-out robustness) is MET** — v146 does not collapse on held-out bots.
 - **#2 (0 illegal/timeout/adapter) is MET** across 45 matches.
-- **#1 (protocol compliance)**: native contract clean; local native TCP verified.
-  Official EXE smoke was not re-run this session (local eval per user guidance).
+- **#1 (protocol compliance)**: native contract clean. **Official EXE smoke
+  PASSED: 2/2 rounds (self-play + vs national_v123), 27 hands each (target 10),
+  0 failures, 0 bot errors.** Evidence at
+  bots/neural_national_lab/data/official_platform_v146_smoke/acceptance_20260710_123540.
 - The model's absolute strength is still modest; the gains are real and
   statistically significant but the EV magnitude per hand (+4703/5040 hands ≈
   +0.93/hand average over a high-allin-variance pool) reflects that this is an
