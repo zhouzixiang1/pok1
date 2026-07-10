@@ -9,6 +9,7 @@ is a deterministic JSON artifact intended for a stdlib-only native runtime.
 from __future__ import annotations
 
 import argparse
+from collections import Counter, defaultdict
 import hashlib
 import json
 import math
@@ -592,6 +593,94 @@ def _assert_disjoint(split_rows: dict[str, list[dict[str, Any]]]) -> dict[str, l
     return {name: sorted(values) for name, values in split_opponents.items()}
 
 
+def _match_cluster_key(row: dict[str, Any]) -> tuple[str, int, int]:
+    opponent = str(row.get("_opponent_label") or row.get("opponent") or "")
+    try:
+        deck_seed = int(row["deck_seed_base"])
+        bot_seed = int(row["bot_seed_base"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("training row is missing a match-cluster seed") from exc
+    if not opponent:
+        raise ValueError("training row is missing an opponent label")
+    return opponent, deck_seed, bot_seed
+
+
+def _stratified_cluster_bootstrap(
+    value_rows: list[dict[str, Any]],
+    behavior_rows: list[dict[str, Any]],
+    *,
+    seed: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    def group(rows: list[dict[str, Any]]):
+        grouped: dict[tuple[str, int, int], list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            grouped[_match_cluster_key(row)].append(row)
+        return dict(grouped)
+
+    value_groups = group(value_rows)
+    behavior_groups = group(behavior_rows)
+    if set(value_groups) != set(behavior_groups):
+        value_only = sorted(set(value_groups) - set(behavior_groups))
+        behavior_only = sorted(set(behavior_groups) - set(value_groups))
+        raise ValueError(
+            "value/behavior match clusters differ: "
+            f"value_only={value_only} behavior_only={behavior_only}"
+        )
+    by_opponent: dict[str, list[tuple[str, int, int]]] = defaultdict(list)
+    for key in value_groups:
+        by_opponent[key[0]].append(key)
+    rng = random.Random(int(seed))
+    multiplicities: Counter[tuple[str, int, int]] = Counter()
+    per_opponent = {}
+    for opponent in sorted(by_opponent):
+        keys = sorted(by_opponent[opponent])
+        for _ in keys:
+            multiplicities[keys[rng.randrange(len(keys))]] += 1
+        per_opponent[opponent] = {
+            "source_clusters": len(keys),
+            "sampled_draws": len(keys),
+            "unique_sampled_clusters": sum(
+                multiplicities[key] > 0 for key in keys
+            ),
+        }
+
+    def expand(groups: dict[tuple[str, int, int], list[dict[str, Any]]]):
+        expanded = []
+        for key in sorted(groups):
+            for _ in range(multiplicities[key]):
+                expanded.extend(groups[key])
+        return expanded
+
+    sampled_value = expand(value_groups)
+    sampled_behavior = expand(behavior_groups)
+    report = {
+        "enabled": True,
+        "scheme": "opponent_stratified_match_cluster_v1",
+        "seed": int(seed),
+        "source_clusters": len(value_groups),
+        "sampled_draws": sum(multiplicities.values()),
+        "unique_sampled_clusters": sum(
+            multiplicity > 0 for multiplicity in multiplicities.values()
+        ),
+        "omitted_clusters": len(value_groups) - len(multiplicities),
+        "source_value_rows": len(value_rows),
+        "source_behavior_rows": len(behavior_rows),
+        "effective_value_rows": len(sampled_value),
+        "effective_behavior_rows": len(sampled_behavior),
+        "per_opponent": per_opponent,
+        "clusters": [
+            {
+                "opponent": key[0],
+                "deck_seed_base": key[1],
+                "bot_seed_base": key[2],
+                "multiplicity": multiplicities[key],
+            }
+            for key in sorted(value_groups)
+        ],
+    }
+    return sampled_value, sampled_behavior, report
+
+
 def _direction_report(counts: dict[str, Any]) -> dict[str, Any]:
     class_accuracies = [
         counts[f"{label}_correct"] / counts[label]
@@ -1035,6 +1124,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--direction-score-weight", type=float, default=0.5)
     parser.add_argument("--lower-direction-score-weight", type=float, default=0.5)
     parser.add_argument("--min-calibration-per-action", type=int, default=20)
+    parser.add_argument("--cluster-bootstrap", action="store_true")
     parser.add_argument("--require-cross-hand-sequence", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=1)
@@ -1071,7 +1161,28 @@ def main(argv: list[str] | None = None) -> int:
         "behavior_held_out": args.behavior_held_out,
         "behavior_calibration": args.behavior_calibration,
     }
-    raw = {name: load_jsonl(path) if path else [] for name, path in paths.items()}
+    source_raw = {
+        name: load_jsonl(path) if path else [] for name, path in paths.items()
+    }
+    raw = {name: list(rows) for name, rows in source_raw.items()}
+    cluster_bootstrap = {
+        "enabled": False,
+        "scheme": "opponent_stratified_match_cluster_v1",
+        "seed": int(args.seed),
+    }
+    if args.cluster_bootstrap:
+        try:
+            (
+                raw["value_train"],
+                raw["behavior_train"],
+                cluster_bootstrap,
+            ) = _stratified_cluster_bootstrap(
+                source_raw["value_train"],
+                source_raw["behavior_train"],
+                seed=args.seed,
+            )
+        except ValueError as exc:
+            raise SystemExit(f"cluster bootstrap failed: {exc}") from exc
     if args.require_cross_hand_sequence:
         missing = {
             name: sum(row.get("cross_hand_sequence") is None for row in rows)
@@ -1165,6 +1276,19 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
     print(f"[multitask] match_ranking={ranking_stats}", flush=True)
+    print(
+        "[multitask] cluster_bootstrap="
+        + str({
+            key: cluster_bootstrap.get(key)
+            for key in (
+                "enabled", "scheme", "seed", "source_clusters",
+                "sampled_draws", "unique_sampled_clusters",
+                "effective_value_rows", "effective_behavior_rows",
+            )
+            if key in cluster_bootstrap
+        }),
+        flush=True,
+    )
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -1386,7 +1510,7 @@ def main(argv: list[str] | None = None) -> int:
         lower_direction_score_weight=args.lower_direction_score_weight,
     ) if value["held_out"] or behavior["held_out"] else None
     manifests = {
-        name: _manifest(path, raw[name]) for name, path in paths.items()
+        name: _manifest(path, source_raw[name]) for name, path in paths.items()
     }
     payload = {
         "meta": {
@@ -1442,6 +1566,11 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 "ranking_statistics": ranking_stats,
                 "ranking_reference": VALUE_REFERENCE,
+                "cluster_bootstrap_enabled": bool(args.cluster_bootstrap),
+                "cluster_bootstrap": cluster_bootstrap,
+                "effective_rows": {
+                    name: len(rows) for name, rows in raw.items()
+                },
                 "trainer_sha256": hashlib.sha256(
                     Path(__file__).read_bytes()
                 ).hexdigest(),

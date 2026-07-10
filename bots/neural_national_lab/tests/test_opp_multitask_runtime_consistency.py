@@ -116,6 +116,64 @@ def test_pairwise_ranking_loss_prefers_rule_relative_direction() -> None:
     assert shifted_lower_loss.item() == pytest.approx(good_lower.item())
 
 
+def test_cluster_bootstrap_resamples_shared_whole_match_groups() -> None:
+    value_rows = []
+    behavior_rows = []
+    for opponent in ("national_v1", "national_v2"):
+        for cluster in (10, 20, 30):
+            base = {
+                "opponent": opponent,
+                "deck_seed_base": cluster,
+                "bot_seed_base": cluster + 1,
+            }
+            value_rows.extend([{**base, "row": index} for index in range(2)])
+            behavior_rows.extend([{**base, "row": index} for index in range(3)])
+
+    first = trainer._stratified_cluster_bootstrap(
+        value_rows, behavior_rows, seed=17
+    )
+    second = trainer._stratified_cluster_bootstrap(
+        value_rows, behavior_rows, seed=17
+    )
+
+    assert first == second
+    sampled_value, sampled_behavior, report = first
+    assert report["source_clusters"] == 6
+    assert report["sampled_draws"] == 6
+    assert report["effective_value_rows"] == len(sampled_value)
+    assert report["effective_behavior_rows"] == len(sampled_behavior)
+    value_counts = {}
+    behavior_counts = {}
+    for row in sampled_value:
+        key = trainer._match_cluster_key(row)
+        value_counts[key] = value_counts.get(key, 0) + 1
+    for row in sampled_behavior:
+        key = trainer._match_cluster_key(row)
+        behavior_counts[key] = behavior_counts.get(key, 0) + 1
+    assert set(value_counts) == set(behavior_counts)
+    assert {
+        key: count // 2 for key, count in value_counts.items()
+    } == {
+        key: count // 3 for key, count in behavior_counts.items()
+    }
+
+
+def test_cluster_bootstrap_rejects_value_behavior_cluster_mismatch() -> None:
+    value = [{
+        "opponent": "national_v1",
+        "deck_seed_base": 10,
+        "bot_seed_base": 11,
+    }]
+    behavior = [{
+        "opponent": "national_v1",
+        "deck_seed_base": 20,
+        "bot_seed_base": 21,
+    }]
+
+    with pytest.raises(ValueError, match="match clusters differ"):
+        trainer._stratified_cluster_bootstrap(value, behavior, seed=1)
+
+
 @pytest.mark.parametrize(
     "encoder", ["gru", "gru_moe", "deep_set", "transformer"]
 )

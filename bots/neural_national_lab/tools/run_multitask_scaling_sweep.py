@@ -125,7 +125,7 @@ def _sha256(path: Path) -> str:
 
 def _training_recipe(
     args: argparse.Namespace, config: dict[str, Any] | None = None
-) -> dict[str, float]:
+) -> dict[str, float | bool]:
     return {
         "match_ranking_weight": float(
             (config or {}).get(
@@ -144,6 +144,7 @@ def _training_recipe(
         "lower_direction_score_weight": float(
             args.lower_direction_score_weight
         ),
+        "cluster_bootstrap_enabled": bool(args.cluster_bootstrap),
     }
 
 
@@ -694,7 +695,11 @@ def _model_matches(
     if training.get("trainer_sha256") != _sha256(TRAINER):
         return False
     for key, expected in _training_recipe(args, config).items():
-        if float(training.get(key, float("nan"))) != expected:
+        actual = training.get(key)
+        if isinstance(expected, bool):
+            if actual is not expected:
+                return False
+        elif float(actual if actual is not None else float("nan")) != expected:
             return False
     if meta.get("response_encoder") != "separate_public_v1":
         return False
@@ -758,6 +763,8 @@ def _run_training(
     ]
     if not args.allow_missing_cross_hand_sequence:
         command.append("--require-cross-hand-sequence")
+    if args.cluster_bootstrap:
+        command.append("--cluster-bootstrap")
     if "value_held_out" in data_paths:
         command.extend([
             "--value-held-out", str(data_paths["value_held_out"]),
@@ -825,6 +832,7 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--training-workers", type=int, default=1)
+    parser.add_argument("--cluster-bootstrap", action="store_true")
     parser.add_argument("--cross-transformer-heads", type=int, default=4)
     parser.add_argument("--cross-moe-experts", type=int, default=4)
     parser.add_argument("--match-ranking-weight", type=float, default=0.5)
