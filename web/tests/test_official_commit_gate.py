@@ -20,6 +20,24 @@ def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
     (opponent / ".completed").touch()
     monkeypatch.setenv("POK_OFFICIAL_OPPONENT", str(opponent))
     monkeypatch.setattr(tool_commit, "get_active_bots", lambda: [str(opponent)])
+    monkeypatch.setattr(
+        official_certification,
+        "select_official_opponent",
+        lambda *_a, **_k: {
+            "selected": True,
+            "opponent": {
+                "path": str(opponent),
+                "bot": opponent.name,
+                "reason": "content_bound_grandfather_grant",
+            },
+            "considered": [],
+        },
+    )
+    monkeypatch.setattr(
+        official_certification,
+        "official_full_certified",
+        lambda _status, _candidate, **_kwargs: True,
+    )
     calls = []
 
     def fake_run_certification(spec, **kwargs):
@@ -53,8 +71,7 @@ def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
     assert spec.opponent_rounds == 3
     assert spec.target_hands == 70
     assert kwargs["queue_on_busy"] is False
-    assert result["opponent_selection"]["opponent"]["reason"] == "bootstrap_grandfathered"
-    assert result["opponent_selection"]["opponent"]["grandfather_record"]["status"] == "official-grandfathered"
+    assert result["opponent_selection"]["opponent"]["reason"] == "content_bound_grandfather_grant"
 
 
 def test_official_full_commit_gate_blocks_inconclusive_result(tmp_path, monkeypatch):
@@ -67,6 +84,24 @@ def test_official_full_commit_gate_blocks_inconclusive_result(tmp_path, monkeypa
     (opponent / ".completed").touch()
     monkeypatch.setenv("POK_OFFICIAL_OPPONENT", str(opponent))
     monkeypatch.setattr(tool_commit, "get_active_bots", lambda: [str(opponent)])
+    monkeypatch.setattr(
+        official_certification,
+        "select_official_opponent",
+        lambda *_a, **_k: {
+            "selected": True,
+            "opponent": {
+                "path": str(opponent),
+                "bot": opponent.name,
+                "reason": "content_bound_grandfather_grant",
+            },
+            "considered": [],
+        },
+    )
+    monkeypatch.setattr(
+        official_certification,
+        "official_full_certified",
+        lambda _status, _candidate, **_kwargs: False,
+    )
 
     def fake_run_certification(_spec, **_kwargs):
         return {
@@ -180,3 +215,43 @@ def test_official_full_gate_records_inconclusive_checkpoint_stage(monkeypatch, t
     args, kwargs = writes[0]
     assert args[:3] == (134, 120, "official_inconclusive")
     assert kwargs["gate_results"]["official_full"]["repairable_by_workers"] is False
+
+
+def test_official_full_pass_is_persisted_in_verified_gate_ledger(monkeypatch, tmp_path):
+    import tool_commit
+
+    writes = []
+    monkeypatch.setattr(
+        tool_commit,
+        "write_pipeline_checkpoint",
+        lambda *args, **kwargs: writes.append((args, kwargs)) or True,
+    )
+    gate = {
+        "passed": True,
+        "status": {
+            "status": "official-certified",
+            "mode": "full",
+            "policy_id": "official-full-v2",
+            "certificate_digest": "cert-digest",
+        },
+        "certificate_digest": "cert-digest",
+        "certification_identity": {"candidate_hash": "candidate-hash"},
+    }
+
+    ok = tool_commit._record_official_full_pass_checkpoint(
+        143,
+        142,
+        {
+            "next_v": 143,
+            "source_v": 142,
+            "stage": "verified",
+            "gate_results": {"precommit_eval": {"passed": True}},
+        },
+        gate,
+    )
+
+    assert ok is True
+    args, kwargs = writes[0]
+    assert args[:3] == (143, 142, "verified")
+    assert kwargs["gate_results"]["official_full"]["passed"] is True
+    assert kwargs["gate_results"]["official_full"]["certificate_digest"] == "cert-digest"

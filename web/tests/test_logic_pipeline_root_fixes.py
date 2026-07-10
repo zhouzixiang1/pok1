@@ -1907,3 +1907,53 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
     assert ("add", "--", "bots/national_v999") in calls
     assert any(call[:1] == ("commit",) for call in calls)
     assert not any("docs/user-notes.md" in call for call in calls if call[:1] == ("commit",))
+
+
+def test_git_commit_bot_binds_official_certificate_to_commit_and_tag(monkeypatch):
+    import bot_artifact
+    import evolution_infra
+
+    calls = []
+    staged = []
+
+    def fake_git(*args, **_kwargs):
+        calls.append(args)
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return "main\n"
+        if args == ("diff", "--cached", "--name-only"):
+            return "\n".join(staged) + ("\n" if staged else "")
+        if args == ("add", "--", "bots/national_v999"):
+            staged.append("bots/national_v999/main.py")
+            return ""
+        if args[:2] == ("commit", "-m"):
+            assert "official-certificate: cert-digest" in args[2]
+            assert "official-candidate-hash: candidate-hash" in args[2]
+            return ""
+        if args in {
+            ("rev-parse", "HEAD"),
+            ("rev-parse", "--short=12", "HEAD"),
+        }:
+            return "abc123456789\n"
+        if args == ("tag", "-d", "national-bot-v999"):
+            return ""
+        if args[:3] == ("tag", "national-bot-v999", "-m"):
+            assert "official-certificate: cert-digest" in args[3]
+            assert "official-policy: official-full-v2" in args[3]
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(evolution_infra, "_git", fake_git)
+    monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
+
+    evolution_infra.git_commit_bot(
+        999,
+        998,
+        "test",
+        official_certificate={
+            "certificate_digest": "cert-digest",
+            "candidate_hash": "candidate-hash",
+            "policy_id": "official-full-v2",
+        },
+    )
+
+    assert any(call[:3] == ("tag", "national-bot-v999", "-m") for call in calls)

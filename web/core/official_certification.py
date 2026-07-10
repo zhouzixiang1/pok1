@@ -20,7 +20,9 @@ from pathlib import Path
 import time
 from typing import Any, Callable, Literal
 
+from bot_artifact import canonical_digest, hash_path, published_bot_identity
 from bot_namespace import bot_name, parse_bot_version
+from official_eligibility import grandfather_eligibility
 from official_platform_harness import (
     OfficialPlatformConfig,
     _copy_config,
@@ -36,6 +38,8 @@ HARNESS_PATH = ROOT / "web" / "core" / "official_platform_harness.py"
 SERVICE_PATH = Path(__file__).resolve()
 
 CertificationMode = Literal["smoke", "compliance", "full"]
+FULL_POLICY_ID = "official-full-v2"
+CERTIFICATE_SCHEMA_VERSION = 2
 
 STATUS_LOCAL_PASS = "local-pass"
 STATUS_SMOKE_PASS = "official-smoke-pass"
@@ -123,6 +127,7 @@ MODE_CONFIG = {
 @dataclass(frozen=True)
 class CertificationSpec:
     mode: CertificationMode
+    policy_id: str
     candidate: str
     opponent: str | None
     self_play_rounds: int
@@ -149,6 +154,10 @@ def status_dir() -> Path:
 
 def cache_dir() -> Path:
     return certification_root() / "cache"
+
+
+def certificate_dir() -> Path:
+    return certification_root() / "certificates"
 
 
 def queue_path() -> Path:
@@ -216,41 +225,6 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def hash_path(path_or_token: str | Path) -> str:
-    """Hash bot source or a single file, excluding runtime/cache artifacts."""
-    path = Path(path_or_token).expanduser().resolve()
-    h = hashlib.sha256()
-    if path.is_file():
-        h.update(path.name.encode("utf-8", "surrogateescape"))
-        h.update(b"\0")
-        h.update(path.read_bytes())
-        return h.hexdigest()
-    if not path.exists():
-        h.update(f"missing:{path}".encode("utf-8", "surrogateescape"))
-        return h.hexdigest()
-
-    excluded_names = {".completed"}
-    excluded_suffixes = {".pyc", ".pyo"}
-    files = []
-    for item in path.rglob("*"):
-        if not item.is_file() or item.is_symlink():
-            continue
-        rel = item.relative_to(path)
-        if "__pycache__" in rel.parts:
-            continue
-        if item.name in excluded_names or item.suffix in excluded_suffixes:
-            continue
-        if item.name.startswith("."):
-            continue
-        files.append((str(rel).replace(os.sep, "/"), item))
-    for rel, item in sorted(files):
-        h.update(rel.encode("utf-8", "surrogateescape"))
-        h.update(b"\0")
-        h.update(item.read_bytes())
-        h.update(b"\0")
-    return h.hexdigest()
-
-
 def _mode_defaults(mode: CertificationMode) -> dict[str, Any]:
     return dict(MODE_CONFIG[mode])
 
@@ -267,18 +241,69 @@ def build_spec(
     no_progress_timeout_sec: float | None = None,
 ) -> CertificationSpec:
     defaults = _mode_defaults(mode)
-    return CertificationSpec(
+    requested = {
+        "self_play_rounds": int(
+            self_play_rounds if self_play_rounds is not None else defaults["self_play_rounds"]
+        ),
+        "opponent_rounds": int(
+            opponent_rounds if opponent_rounds is not None else defaults["opponent_rounds"]
+        ),
+        "target_hands": max(
+            1,
+            min(70, int(target_hands if target_hands is not None else defaults["target_hands"])),
+        ),
+    }
+    if mode == "full":
+        mismatches = {
+            key: {"required": int(defaults[key]), "requested": value}
+            for key, value in requested.items()
+            if value != int(defaults[key])
+        }
+        if mismatches:
+            raise ValueError(
+                "full official certification profile is immutable: "
+                + json.dumps(mismatches, sort_keys=True)
+            )
+        if opponent is None:
+            raise ValueError("full official certification requires an opponent")
+    spec = CertificationSpec(
         mode=mode,
+        policy_id=FULL_POLICY_ID if mode == "full" else f"official-{mode}-v1",
         candidate=str(Path(candidate).expanduser().resolve()),
         opponent=str(Path(opponent).expanduser().resolve()) if opponent else None,
-        self_play_rounds=int(self_play_rounds if self_play_rounds is not None else defaults["self_play_rounds"]),
-        opponent_rounds=int(opponent_rounds if opponent_rounds is not None else defaults["opponent_rounds"]),
-        target_hands=max(1, min(70, int(target_hands if target_hands is not None else defaults["target_hands"]))),
+        self_play_rounds=requested["self_play_rounds"],
+        opponent_rounds=requested["opponent_rounds"],
+        target_hands=requested["target_hands"],
         round_timeout_sec=float(round_timeout_sec if round_timeout_sec is not None else defaults["round_timeout_sec"]),
         no_progress_timeout_sec=float(
             no_progress_timeout_sec if no_progress_timeout_sec is not None else defaults["no_progress_timeout_sec"]
         ),
     )
+    validate_spec(spec)
+    return spec
+
+
+def validate_spec(spec: CertificationSpec) -> None:
+    if spec.mode not in MODE_CONFIG:
+        raise ValueError(f"unknown official certification mode: {spec.mode!r}")
+    if spec.self_play_rounds < 0 or spec.opponent_rounds < 0:
+        raise ValueError("official certification rounds cannot be negative")
+    if spec.self_play_rounds + spec.opponent_rounds <= 0:
+        raise ValueError("official certification must run at least one round")
+    if spec.mode == "full":
+        defaults = MODE_CONFIG["full"]
+        valid = (
+            spec.policy_id == FULL_POLICY_ID
+            and spec.self_play_rounds == defaults["self_play_rounds"]
+            and spec.opponent_rounds == defaults["opponent_rounds"]
+            and spec.target_hands == defaults["target_hands"]
+            and bool(spec.opponent)
+        )
+        if not valid:
+            raise ValueError(
+                "full certification must use official-full-v2 with "
+                "5 self + 3 opponent rounds of 70 hands"
+            )
 
 
 def _config_fingerprint(config: OfficialPlatformConfig) -> dict[str, Any]:
@@ -290,20 +315,42 @@ def _config_fingerprint(config: OfficialPlatformConfig) -> dict[str, Any]:
         "host": config.host,
         "port": config.port,
         "wineprefix": str(config.wineprefix),
+        "startup_timeout_sec": config.startup_timeout_sec,
+        "listen_timeout_sec": config.listen_timeout_sec,
+        "no_progress_timeout_sec": config.no_progress_timeout_sec,
+        "round_timeout_sec": config.round_timeout_sec,
+        "settlement_grace_sec": config.settlement_grace_sec,
+        "artifact_grace_sec": config.artifact_grace_sec,
+        "ui": asdict(config.ui),
     }
 
 
-def cache_key(spec: CertificationSpec, config: OfficialPlatformConfig | None = None) -> str:
-    cfg = config or OfficialPlatformConfig()
+def certification_identity(
+    spec: CertificationSpec,
+    config: OfficialPlatformConfig | None = None,
+) -> dict[str, Any]:
+    validate_spec(spec)
+    cfg = _copy_config(
+        config or OfficialPlatformConfig(),
+        round_timeout_sec=spec.round_timeout_sec,
+        no_progress_timeout_sec=spec.no_progress_timeout_sec,
+        results_dir=certification_root() / spec.mode,
+    )
     payload = {
-        "schema": 1,
+        "schema_version": CERTIFICATE_SCHEMA_VERSION,
+        "policy_id": spec.policy_id,
         "spec": asdict(spec),
         "candidate_hash": hash_path(spec.candidate),
         "opponent_hash": hash_path(spec.opponent) if spec.opponent else None,
         "platform": _config_fingerprint(cfg),
     }
-    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+    payload["platform_fingerprint"] = canonical_digest(payload["platform"])
+    payload["identity_digest"] = canonical_digest(payload)
+    return payload
+
+
+def cache_key(spec: CertificationSpec, config: OfficialPlatformConfig | None = None) -> str:
+    return str(certification_identity(spec, config)["identity_digest"])
 
 
 def _cache_file(key: str) -> Path:
@@ -331,7 +378,39 @@ def _log_target_reached(receipt: dict[str, Any], target_hands: int) -> bool:
     return hands_started >= target_hands and settlements >= max(0, target_hands - 1)
 
 
-def receipt_validation_issues(receipt: dict[str, Any], spec: CertificationSpec) -> list[str]:
+def _same_resolved_path(left: Any, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    try:
+        return Path(str(left)).expanduser().resolve() == Path(right).expanduser().resolve()
+    except Exception:
+        return False
+
+
+def _full_wire_evidence_issues(receipt: dict[str, Any]) -> list[str]:
+    probe = receipt.get("wire_probe")
+    if not isinstance(probe, dict) or not bool(probe.get("enabled")):
+        return ["full_wire_probe_missing_or_disabled"]
+    artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
+    issues: list[str] = []
+    for key in ("wire_events", "replay_summary"):
+        value = artifacts.get(key)
+        try:
+            exists = bool(value) and Path(str(value)).exists()
+        except Exception:
+            exists = False
+        if not exists:
+            issues.append(f"full_wire_artifact_missing:{key}")
+    return issues
+
+
+def receipt_validation_issues(
+    receipt: dict[str, Any],
+    spec: CertificationSpec,
+    *,
+    expected_kind: str | None = None,
+    expected_index: int | None = None,
+) -> list[str]:
     issues: list[str] = []
     if receipt.get("passed") is not True:
         issues.append("receipt_not_passed")
@@ -345,8 +424,36 @@ def receipt_validation_issues(receipt: dict[str, Any], spec: CertificationSpec) 
     if receipt_target_hands != spec.target_hands:
         issues.append(f"target_hands_mismatch: receipt={receipt_target_hands} spec={spec.target_hands}")
 
+    if expected_kind is not None and receipt.get("round_kind") != expected_kind:
+        issues.append(
+            f"round_kind_mismatch: receipt={receipt.get('round_kind')} expected={expected_kind}"
+        )
+    if expected_index is not None:
+        try:
+            actual_index = int(receipt.get("round_index", 0) or 0)
+        except Exception:
+            actual_index = 0
+        if actual_index != expected_index:
+            issues.append(
+                f"round_index_mismatch: receipt={actual_index} expected={expected_index}"
+            )
+
+    bot_a = receipt.get("bot_a") if isinstance(receipt.get("bot_a"), dict) else {}
+    bot_b = receipt.get("bot_b") if isinstance(receipt.get("bot_b"), dict) else {}
+    if expected_kind == "self_play":
+        if not _same_resolved_path(bot_a.get("path"), spec.candidate):
+            issues.append("self_play_bot_a_candidate_identity_mismatch")
+        if not _same_resolved_path(bot_b.get("path"), spec.candidate):
+            issues.append("self_play_bot_b_candidate_identity_mismatch")
+    elif expected_kind == "opponent":
+        if not _same_resolved_path(bot_a.get("path"), spec.candidate):
+            issues.append("opponent_round_candidate_identity_mismatch")
+        if not _same_resolved_path(bot_b.get("path"), spec.opponent):
+            issues.append("opponent_round_opponent_identity_mismatch")
+
     thp_hands = _max_thp_hands(receipt)
     if spec.mode == "full" or spec.target_hands >= 70:
+        issues.extend(_full_wire_evidence_issues(receipt))
         if thp_hands < spec.target_hands:
             issues.append(f"thp_incomplete_for_full_certification: hands={thp_hands} target={spec.target_hands}")
             summary = receipt.get("log_summary") or {}
@@ -386,6 +493,10 @@ def receipt_valid_for_spec(receipt: dict[str, Any], spec: CertificationSpec) -> 
 
 
 def report_validation_issues(report: dict[str, Any], spec: CertificationSpec) -> list[str]:
+    try:
+        validate_spec(spec)
+    except Exception as exc:
+        return [f"invalid_certification_spec:{type(exc).__name__}:{str(exc)[:300]}"]
     issues: list[str] = []
     if report.get("passed") is not True:
         issues.append("report_not_passed")
@@ -396,8 +507,25 @@ def report_validation_issues(report: dict[str, Any], spec: CertificationSpec) ->
     expected = spec.self_play_rounds + spec.opponent_rounds
     if len(rounds) != expected:
         issues.append(f"round_count_mismatch: rounds={len(rounds)} expected={expected}")
+    if spec.mode == "full":
+        expected_rounds = [
+            *(("self_play", index) for index in range(1, spec.self_play_rounds + 1)),
+            *(("opponent", index) for index in range(1, spec.opponent_rounds + 1)),
+        ]
+    else:
+        expected_rounds = [(None, None)] * expected
     for index, receipt in enumerate(rounds, start=1):
-        receipt_issues = receipt_validation_issues(dict(receipt), spec)
+        expected_kind, expected_index = (
+            expected_rounds[index - 1]
+            if index <= len(expected_rounds)
+            else (None, None)
+        )
+        receipt_issues = receipt_validation_issues(
+            dict(receipt),
+            spec,
+            expected_kind=expected_kind,
+            expected_index=expected_index,
+        )
         issues.extend(f"round_{index}: {issue}" for issue in receipt_issues)
     return issues
 
@@ -407,19 +535,30 @@ def report_valid_for_spec(report: dict[str, Any], spec: CertificationSpec) -> bo
 
 
 def _cache_hit(spec: CertificationSpec, config: OfficialPlatformConfig | None = None) -> dict[str, Any] | None:
-    key = cache_key(spec, config)
+    identity = certification_identity(spec, config)
+    key = identity["identity_digest"]
     payload = _read_json(_cache_file(key))
-    if payload and payload.get("cache_key") == key and report_valid_for_spec(payload.get("result", {}), spec):
+    if (
+        payload
+        and payload.get("cache_key") == key
+        and payload.get("identity") == identity
+        and report_valid_for_spec(payload.get("result", {}), spec)
+    ):
         return payload
     return None
 
 
-def _write_cache(spec: CertificationSpec, result: dict[str, Any], config: OfficialPlatformConfig | None = None) -> str:
-    key = cache_key(spec, config)
+def _write_cache(
+    spec: CertificationSpec,
+    result: dict[str, Any],
+    identity: dict[str, Any],
+) -> str:
+    key = str(identity["identity_digest"])
     payload = {
         "cache_key": key,
         "created_at": now_iso(),
         "spec": asdict(spec),
+        "identity": identity,
         "result": result,
     }
     _write_json(_cache_file(key), payload)
@@ -482,26 +621,14 @@ def record_grandfathered(
     reason: str,
     source: str = "official_transition",
 ) -> dict[str, Any]:
-    """Record a transitional official-opponent allowance for a historical bot.
+    """Reject mutable status-based grandfathering.
 
-    Grandfathering is never a substitute for certifying a new candidate.  It is
-    only used to keep the existing active pool usable while historical bots are
-    gradually audited under the real EXE.
+    Transitional grants are policy, not platform evidence. They must be added
+    to ``official_grandfathering.json`` with an immutable artifact hash.
     """
-    current = read_status(candidate)
-    if current.get("status") == STATUS_CERTIFIED:
-        return current
-    if current.get("status") == STATUS_FAILED and official_failure_blocks_parent(current):
-        return current
-    return write_status(
-        candidate,
-        STATUS_GRANDFATHERED,
-        mode="full",
-        source=source,
-        reason=reason,
-        grandfathered=True,
-        previous_status=current.get("status"),
-        issues=[],
+    raise RuntimeError(
+        "mutable official grandfather status is disabled; add a content-bound "
+        "role grant to web/core/official_grandfathering.json"
     )
 
 
@@ -659,34 +786,166 @@ def official_failure_blocks_parent(status: dict[str, Any]) -> bool:
     return bool(official_compliance_verdict(status).get("blocking"))
 
 
-def official_full_certified(status: dict[str, Any]) -> bool:
-    verdict = official_compliance_verdict(status)
-    return (
-        status.get("status") == STATUS_CERTIFIED
-        and status.get("mode") == "full"
-        and bool(verdict.get("ok"))
-        and not bool(verdict.get("inconclusive"))
-        and not bool(verdict.get("blocking"))
+def _certificate_payload_digest(record: dict[str, Any]) -> str:
+    payload = {
+        key: value
+        for key, value in record.items()
+        if key not in {"certificate_digest", "certificate_path"}
+    }
+    return canonical_digest(payload)
+
+
+def _spec_from_mapping(data: dict[str, Any]) -> CertificationSpec:
+    mode = str(data.get("mode") or "")
+    spec = CertificationSpec(
+        mode=mode,
+        policy_id=str(
+            data.get("policy_id")
+            or (FULL_POLICY_ID if mode == "full" else f"official-{mode}-v1")
+        ),
+        candidate=str(data.get("candidate") or ""),
+        opponent=str(data.get("opponent")) if data.get("opponent") else None,
+        self_play_rounds=int(data.get("self_play_rounds", 0) or 0),
+        opponent_rounds=int(data.get("opponent_rounds", 0) or 0),
+        target_hands=int(data.get("target_hands", 0) or 0),
+        round_timeout_sec=float(data.get("round_timeout_sec", 0.0) or 0.0),
+        no_progress_timeout_sec=float(data.get("no_progress_timeout_sec", 0.0) or 0.0),
+    )
+    validate_spec(spec)
+    return spec
+
+
+def _config_for_spec(
+    spec: CertificationSpec,
+    config: OfficialPlatformConfig | None = None,
+) -> OfficialPlatformConfig:
+    return _copy_config(
+        config or OfficialPlatformConfig(),
+        round_timeout_sec=spec.round_timeout_sec,
+        no_progress_timeout_sec=spec.no_progress_timeout_sec,
+        results_dir=certification_root() / spec.mode,
     )
 
 
+def certificate_validation(
+    status: dict[str, Any],
+    *,
+    candidate: str | Path | None = None,
+    config: OfficialPlatformConfig | None = None,
+    require_published: bool = False,
+) -> dict[str, Any]:
+    issues: list[str] = []
+    path_value = status.get("certificate_path")
+    record = _read_json(Path(str(path_value))) if path_value else None
+    if not isinstance(record, dict):
+        return {"valid": False, "issues": ["content_bound_certificate_missing"]}
+    digest = str(record.get("certificate_digest") or "")
+    if not digest or digest != _certificate_payload_digest(record):
+        issues.append("certificate_digest_mismatch")
+    if digest != str(status.get("certificate_digest") or ""):
+        issues.append("status_certificate_digest_mismatch")
+    try:
+        spec = _spec_from_mapping(record.get("spec") or {})
+    except Exception as exc:
+        return {
+            "valid": False,
+            "issues": [f"certificate_spec_invalid:{type(exc).__name__}:{str(exc)[:200]}"],
+        }
+    current_identity = certification_identity(spec, _config_for_spec(spec, config))
+    if record.get("identity") != current_identity:
+        issues.append("certificate_identity_stale")
+    status_identity = status.get("certification_identity") or {}
+    if status_identity != current_identity:
+        issues.append("status_identity_stale")
+    candidate_path = Path(candidate).expanduser().resolve() if candidate is not None else Path(spec.candidate)
+    if hash_path(candidate_path) != current_identity.get("candidate_hash"):
+        issues.append("candidate_artifact_hash_mismatch")
+    llm_summary = (record.get("llm_analysis") or {}).get("summary") or {}
+    try:
+        llm_confidence = float(llm_summary.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        llm_confidence = 0.0
+    if not (
+        llm_summary.get("analysis_source") == "llm"
+        and llm_summary.get("compliance_verdict") == "pass"
+        and llm_confidence >= 0.5
+    ):
+        issues.append("certificate_llm_analysis_not_complete")
+    if require_published:
+        published = published_bot_identity(candidate_path)
+        if not published.get("published"):
+            issues.append("certificate_candidate_not_published")
+        metadata = published.get("tag_metadata") or {}
+        if metadata.get("official-certificate") != digest:
+            issues.append("completion_tag_certificate_digest_mismatch")
+        if metadata.get("official-candidate-hash") != current_identity.get("candidate_hash"):
+            issues.append("completion_tag_candidate_hash_mismatch")
+        if metadata.get("official-policy") != spec.policy_id:
+            issues.append("completion_tag_policy_mismatch")
+    return {
+        "valid": not issues,
+        "issues": list(dict.fromkeys(issues)),
+        "certificate_digest": digest,
+        "spec": asdict(spec),
+        "identity": current_identity,
+    }
+
+
+def official_full_certified(
+    status: dict[str, Any],
+    candidate: str | Path | None = None,
+    *,
+    config: OfficialPlatformConfig | None = None,
+    require_published: bool = False,
+) -> bool:
+    verdict = official_compliance_verdict(status)
+    if not (
+        status.get("status") == STATUS_CERTIFIED
+        and status.get("mode") == "full"
+        and status.get("policy_id") == FULL_POLICY_ID
+        and bool(verdict.get("ok"))
+        and not bool(verdict.get("inconclusive"))
+        and not bool(verdict.get("blocking"))
+    ):
+        return False
+    validation = certificate_validation(
+        status,
+        candidate=candidate,
+        config=config,
+        require_published=require_published,
+    )
+    return bool(validation.get("valid"))
+
+
 def parent_eligible(candidate: str | Path) -> bool:
-    return not official_failure_blocks_parent(read_status(candidate))
+    status = read_status(candidate)
+    if official_failure_blocks_parent(status):
+        return False
+    if official_full_certified(status, candidate, require_published=True):
+        return True
+    return bool(
+        grandfather_eligibility(candidate, "parent_source").get("eligible")
+    )
+
+
+def active_pool_eligible(candidate: str | Path) -> bool:
+    status = read_status(candidate)
+    if official_failure_blocks_parent(status):
+        return False
+    if official_full_certified(status, candidate, require_published=True):
+        return True
+    parent_grant = grandfather_eligibility(candidate, "parent_source")
+    rating_grant = grandfather_eligibility(candidate, "rating_pool")
+    return bool(parent_grant.get("eligible") and rating_grant.get("eligible"))
 
 
 def official_opponent_eligibility(
     candidate: str | Path,
     *,
-    allow_bootstrap_grandfather: bool = True,
+    allow_bootstrap_grandfather: bool = False,
+    target_version: int | None = None,
 ) -> dict[str, Any]:
-    """Return whether a bot may be used as an official-EXE opponent.
-
-    New candidates still need ``official-certified`` full status.  This helper is
-    for selecting opponents: certified bots are preferred, explicitly
-    grandfathered historical bots are allowed, and otherwise active historical
-    bots may be used as bootstrap-grandfathered opponents when they have no
-    known blocking official failure.
-    """
+    """Return content-bound eligibility for an official-EXE opponent."""
     status = read_status(candidate)
     verdict = official_compliance_verdict(status)
     if bool(verdict.get("blocking")):
@@ -697,23 +956,27 @@ def official_opponent_eligibility(
             "mode": status.get("mode"),
             "verdict": verdict,
         }
-    if official_full_certified(status):
+    if official_full_certified(status, candidate, require_published=True):
         reason = "official_certified"
         priority = 0
-    elif status.get("status") == STATUS_GRANDFATHERED:
-        reason = "official_grandfathered"
-        priority = 1
-    elif allow_bootstrap_grandfather:
-        reason = "bootstrap_grandfathered"
-        priority = 2
     else:
-        return {
-            "eligible": False,
-            "reason": "not_official_certified",
-            "status": status.get("status"),
-            "mode": status.get("mode"),
-            "verdict": verdict,
-        }
+        grant = grandfather_eligibility(
+            candidate,
+            "official_opponent",
+            target_version=target_version,
+        )
+        if not grant.get("eligible"):
+            return {
+                "eligible": False,
+                "reason": grant.get("reason") or "not_official_certified",
+                "status": status.get("status"),
+                "mode": status.get("mode"),
+                "verdict": verdict,
+                "grant": grant,
+                "bootstrap_requested_but_disabled": bool(allow_bootstrap_grandfather),
+            }
+        reason = "content_bound_grandfather_grant"
+        priority = 1
     return {
         "eligible": True,
         "reason": reason,
@@ -721,6 +984,7 @@ def official_opponent_eligibility(
         "status": status.get("status"),
         "mode": status.get("mode"),
         "verdict": verdict,
+        "grandfathered": reason == "content_bound_grandfather_grant",
     }
 
 
@@ -746,9 +1010,18 @@ def select_official_opponent(
     active_bots: list[str] | tuple[str, ...],
     *,
     preferred: str | Path | None = None,
-    allow_bootstrap_grandfather: bool = True,
+    allow_bootstrap_grandfather: bool = False,
 ) -> dict[str, Any]:
     candidate_path = _bot_path_from_token(candidate)
+    target_version = parse_bot_version(candidate_path.name)
+    try:
+        from evolution_infra import load_reaped_bot_versions
+
+        reaped_versions = load_reaped_bot_versions()
+        lifecycle_error = ""
+    except Exception as exc:
+        reaped_versions = None
+        lifecycle_error = f"{type(exc).__name__}: {str(exc)[:200]}"
     raw_tokens: list[str | Path] = []
     if preferred:
         raw_tokens.append(preferred)
@@ -772,10 +1045,60 @@ def select_official_opponent(
         if not (path / ".completed").exists():
             considered.append({"bot": name, "path": str(path), "eligible": False, "reason": "missing_completed_sentinel"})
             continue
-        eligibility = official_opponent_eligibility(path, allow_bootstrap_grandfather=allow_bootstrap_grandfather)
+        if reaped_versions is None:
+            considered.append({
+                "bot": name,
+                "path": str(path),
+                "eligible": False,
+                "reason": "lifecycle_ledger_unavailable",
+                "error": lifecycle_error,
+            })
+            continue
+        identity = published_bot_identity(path)
+        if not identity.get("published"):
+            considered.append({
+                "bot": name,
+                "path": str(path),
+                "eligible": False,
+                "reason": "not_published_artifact",
+                "identity_issues": identity.get("issues") or [],
+            })
+            continue
+        version = parse_bot_version(name)
+        if version is None or version in reaped_versions:
+            considered.append({
+                "bot": name,
+                "path": str(path),
+                "eligible": False,
+                "reason": "reaped_or_invalid_version",
+            })
+            continue
+        try:
+            from national_native import check_native_contract
+
+            native_errors = check_native_contract(path)
+        except Exception as exc:
+            native_errors = [f"native_contract_check_error:{type(exc).__name__}:{str(exc)[:200]}"]
+        if native_errors:
+            considered.append({
+                "bot": name,
+                "path": str(path),
+                "eligible": False,
+                "reason": "native_contract_failed",
+                "native_errors": native_errors[:5],
+            })
+            continue
+        eligibility = official_opponent_eligibility(
+            path,
+            allow_bootstrap_grandfather=allow_bootstrap_grandfather,
+            target_version=target_version,
+        )
         item = {
             "bot": name,
             "path": str(path),
+            "artifact_hash": identity.get("artifact_hash"),
+            "tag": identity.get("tag"),
+            "tag_object": identity.get("tag_object"),
             **eligibility,
         }
         considered.append(item)
@@ -847,8 +1170,12 @@ def _spec_from_queue_entry(entry: dict[str, Any]) -> CertificationSpec:
     mode = data.get("mode")
     if mode not in MODE_CONFIG:
         raise ValueError(f"invalid certification mode in queue entry: {mode!r}")
-    return CertificationSpec(
+    spec = CertificationSpec(
         mode=mode,
+        policy_id=str(
+            data.get("policy_id")
+            or (FULL_POLICY_ID if mode == "full" else f"official-{mode}-v1")
+        ),
         candidate=str(data["candidate"]),
         opponent=str(data["opponent"]) if data.get("opponent") else None,
         self_play_rounds=int(data["self_play_rounds"]),
@@ -857,6 +1184,8 @@ def _spec_from_queue_entry(entry: dict[str, Any]) -> CertificationSpec:
         round_timeout_sec=float(data["round_timeout_sec"]),
         no_progress_timeout_sec=float(data["no_progress_timeout_sec"]),
     )
+    validate_spec(spec)
+    return spec
 
 
 def queue_snapshot() -> dict[str, Any]:
@@ -875,14 +1204,14 @@ def enqueue_certification(
     reason: str = "requested",
     config: OfficialPlatformConfig | None = None,
 ) -> dict[str, Any]:
+    validate_spec(spec)
+    identity = certification_identity(spec, config)
     key = cache_key(spec, config)
     current = read_status(spec.candidate)
     if current.get("cache_key") == key and current.get("status") in {
-        STATUS_PENDING,
         STATUS_SMOKE_PASS,
         STATUS_COMPLIANCE_PASS,
         STATUS_CERTIFIED,
-        STATUS_INCONCLUSIVE,
     }:
         return current
     if current.get("status") == STATUS_CERTIFIED and spec.mode in {"smoke", "compliance"}:
@@ -905,7 +1234,9 @@ def enqueue_certification(
         spec.candidate,
         STATUS_PENDING,
         mode=spec.mode,
+        policy_id=spec.policy_id,
         cache_key=key,
+        certification_identity=identity,
         reason=reason,
         queued=True,
         issues=[],
@@ -931,6 +1262,47 @@ def _short_text(value: Any, limit: int = 1200) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 3].rstrip() + "..."
+
+
+def _write_certificate_record(
+    spec: CertificationSpec,
+    identity: dict[str, Any],
+    evidence_extra: dict[str, Any],
+    cache_key_value: str,
+) -> dict[str, Any]:
+    evidence_path = Path(str(evidence_extra.get("official_evidence_path") or ""))
+    analysis_path = Path(str(evidence_extra.get("official_llm_analysis_path") or ""))
+    payload = {
+        "schema_version": CERTIFICATE_SCHEMA_VERSION,
+        "issued_at": now_iso(),
+        "policy_id": spec.policy_id,
+        "mode": spec.mode,
+        "spec": asdict(spec),
+        "identity": identity,
+        "cache_key": cache_key_value,
+        "evidence": {
+            "sha256": _file_sha256(evidence_path) if evidence_path.is_file() else "missing",
+            "summary": evidence_extra.get("official_evidence_summary") or {},
+        },
+        "llm_analysis": {
+            "sha256": _file_sha256(analysis_path) if analysis_path.is_file() else "missing",
+            "summary": evidence_extra.get("official_llm_analysis_summary") or {},
+        },
+        "strength_evaluation": "not_applicable",
+    }
+    digest = canonical_digest(payload)
+    path = (
+        certificate_dir()
+        / str(identity.get("candidate_hash") or "missing")
+        / f"{digest}.json"
+    )
+    record = {
+        **payload,
+        "certificate_digest": digest,
+        "certificate_path": str(path),
+    }
+    _write_json(path, record)
+    return record
 
 
 def official_feedback_summary(*, limit: int = 8, max_chars: int = 6000) -> str:
@@ -1003,13 +1375,24 @@ def official_feedback_summary(*, limit: int = 8, max_chars: int = 6000) -> str:
     return text
 
 
-def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache_hit: bool, cache_key_value: str) -> dict[str, Any]:
+def _status_for_result(
+    spec: CertificationSpec,
+    result: dict[str, Any],
+    *,
+    cache_hit: bool,
+    cache_key_value: str,
+    identity: dict[str, Any],
+    identity_issues: list[str] | None = None,
+) -> dict[str, Any]:
     validation_issues = report_validation_issues(result, spec)
     valid = not validation_issues
     raw_result_issues = result.get("issues") or []
     if not isinstance(raw_result_issues, list):
         raw_result_issues = [raw_result_issues]
-    issues = list(dict.fromkeys([str(issue) for issue in raw_result_issues + validation_issues]))
+    issues = list(dict.fromkeys([
+        str(issue)
+        for issue in raw_result_issues + validation_issues + list(identity_issues or [])
+    ]))
     if valid:
         if spec.mode == "full":
             status = STATUS_CERTIFIED
@@ -1020,6 +1403,8 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
     elif _issues_have_protocol_violation(issues):
         status = STATUS_FAILED
     else:
+        status = STATUS_INCONCLUSIVE
+    if identity_issues and status != STATUS_FAILED:
         status = STATUS_INCONCLUSIVE
     report = result.get("report", {}) if isinstance(result, dict) else {}
     summary = report.get("summary", {}) if isinstance(report, dict) else {}
@@ -1089,6 +1474,25 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
             analysis.get("prompt_feedback"),
             2000,
         )
+        if spec.mode == "full" and status != STATUS_FAILED:
+            try:
+                analysis_confidence = float(analysis.get("confidence", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                analysis_confidence = 0.0
+            llm_complete = (
+                analysis.get("analysis_source") == "llm"
+                and analysis.get("compliance_verdict") == "pass"
+                and analysis_confidence >= 0.5
+            )
+            if not llm_complete:
+                issues = list(dict.fromkeys([
+                    *issues,
+                    "official_full_llm_analysis_incomplete: "
+                    f"source={analysis.get('analysis_source')} "
+                    f"verdict={analysis.get('compliance_verdict')} "
+                    f"confidence={analysis_confidence:.3f}",
+                ]))
+                status = STATUS_INCONCLUSIVE
     except Exception as exc:
         issue = f"official_evidence_error: {type(exc).__name__}: {str(exc)[:300]}"
         issues = list(dict.fromkeys([*issues, issue]))
@@ -1096,16 +1500,32 @@ def _status_for_result(spec: CertificationSpec, result: dict[str, Any], *, cache
         evidence_extra = {
             "official_evidence_error": issue,
         }
+    certificate_extra: dict[str, Any] = {}
+    if status == STATUS_CERTIFIED and spec.mode == "full":
+        record = _write_certificate_record(
+            spec,
+            identity,
+            evidence_extra,
+            cache_key_value,
+        )
+        certificate_extra = {
+            "certificate_schema_version": record.get("schema_version"),
+            "certificate_digest": record.get("certificate_digest"),
+            "certificate_path": record.get("certificate_path"),
+        }
     return write_status(
         spec.candidate,
         status,
         mode=spec.mode,
+        policy_id=spec.policy_id,
         cache_hit=cache_hit,
         cache_key=cache_key_value,
+        certification_identity=identity,
         summary=summary,
         issues=issues,
         result=result,
         **evidence_extra,
+        **certificate_extra,
     )
 
 
@@ -1117,6 +1537,7 @@ def run_certification(
     queue_on_busy: bool = True,
     runner: Runner = run_official_acceptance_sync,
 ) -> dict[str, Any]:
+    validate_spec(spec)
     cfg = config or OfficialPlatformConfig()
     cfg = _copy_config(
         cfg,
@@ -1124,11 +1545,18 @@ def run_certification(
         no_progress_timeout_sec=spec.no_progress_timeout_sec,
         results_dir=certification_root() / spec.mode,
     )
-    key = cache_key(spec, cfg)
+    identity_before = certification_identity(spec, cfg)
+    key = str(identity_before["identity_digest"])
     if not force:
         cached = _cache_hit(spec, cfg)
         if cached:
-            return _status_for_result(spec, cached["result"], cache_hit=True, cache_key_value=key)
+            return _status_for_result(
+                spec,
+                cached["result"],
+                cache_hit=True,
+                cache_key_value=key,
+                identity=identity_before,
+            )
     if queue_on_busy and official_lock_busy(cfg):
         return enqueue_certification(spec, reason="official_platform_busy", config=cfg)
 
@@ -1141,9 +1569,24 @@ def run_certification(
         config=cfg,
     )
     result = result_obj.model_dump() if hasattr(result_obj, "model_dump") else dict(result_obj)
-    if report_valid_for_spec(result, spec):
-        key = _write_cache(spec, result, cfg)
-    return _status_for_result(spec, result, cache_hit=False, cache_key_value=key)
+    identity_after = certification_identity(spec, cfg)
+    identity_issues: list[str] = []
+    if identity_after.get("candidate_hash") != identity_before.get("candidate_hash"):
+        identity_issues.append("candidate_changed_during_official_certification")
+    if identity_after.get("opponent_hash") != identity_before.get("opponent_hash"):
+        identity_issues.append("opponent_changed_during_official_certification")
+    if identity_after.get("platform_fingerprint") != identity_before.get("platform_fingerprint"):
+        identity_issues.append("official_platform_policy_changed_during_certification")
+    if report_valid_for_spec(result, spec) and not identity_issues:
+        key = _write_cache(spec, result, identity_before)
+    return _status_for_result(
+        spec,
+        result,
+        cache_hit=False,
+        cache_key_value=key,
+        identity=identity_before,
+        identity_issues=identity_issues,
+    )
 
 
 def process_certification_queue(

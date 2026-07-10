@@ -1044,10 +1044,16 @@ def get_active_bots():
 
 def _official_parent_eligible(bot_dir: Path) -> bool:
     try:
-        from official_certification import parent_eligible
-        return bool(parent_eligible(bot_dir))
-    except Exception:
-        return True
+        from official_certification import active_pool_eligible
+
+        return bool(active_pool_eligible(bot_dir))
+    except Exception as exc:
+        log.error(
+            "Official active-pool eligibility failed closed for %s: %s",
+            bot_dir.name,
+            exc,
+        )
+        return False
 
 
 def find_current_v():
@@ -1676,7 +1682,14 @@ def publish_runtime_expected_head(reason: str = "", version=None) -> str:
     return head
 
 
-def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=None):
+def git_commit_bot(
+    version,
+    source_v,
+    strategy_tag,
+    rating_info="",
+    parent2_v=None,
+    official_certificate=None,
+):
     """Commit a completed bot generation.
 
     Always commits on EVOLUTION_BRANCH (main). Calls _git_ensure_main_branch()
@@ -1688,12 +1701,33 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     parent_line = f"parent: {bot_name(source_v)}"
     if parent2_v is not None:
         parent_line += f"\nparent2: {bot_name(parent2_v)}"
+    certificate = dict(official_certificate or {})
+    certificate_digest = str(certificate.get("certificate_digest") or "")
+    expected_bot_hash = str(certificate.get("candidate_hash") or "")
+    certificate_policy = str(certificate.get("policy_id") or "")
+    if certificate and not (certificate_digest and expected_bot_hash and certificate_policy):
+        raise RuntimeError("official certificate metadata is incomplete")
+    if certificate:
+        from bot_artifact import hash_path
+
+        current_bot_hash = hash_path(get_bot_dir(version))
+        if current_bot_hash != expected_bot_hash:
+            raise RuntimeError(
+                "candidate changed after official certification: "
+                f"expected {expected_bot_hash}, current {current_bot_hash}"
+            )
     msg = (
         f"evolve: v{source_v} → v{version}\n\n"
         f"{parent_line}\n"
         f"strategy: {strategy_tag}\n"
         f"{rating_info}"
     )
+    if certificate:
+        msg += (
+            f"\nofficial-certificate: {certificate_digest}"
+            f"\nofficial-candidate-hash: {expected_bot_hash}"
+            f"\nofficial-policy: {certificate_policy}"
+        )
     bot_path = bot_relpath(version)
     preexisting_staged = [
         p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
@@ -1730,6 +1764,16 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     # LOG GAP FIX (2026-06-29): record what gets staged so a hand-edit bypass
     # (orchestrator LLM mutating bot code outside execute_workers) is visible.
     _staged = _git("add", "--", bot_path, check=False)
+    if certificate:
+        from bot_artifact import hash_path
+
+        staged_bot_hash = hash_path(get_bot_dir(version))
+        if staged_bot_hash != expected_bot_hash:
+            _git("restore", "--staged", "--", bot_path, check=False)
+            raise RuntimeError(
+                "candidate changed while staging official-certified artifact: "
+                f"expected {expected_bot_hash}, current {staged_bot_hash}"
+            )
     allowed_paths = [bot_path]
     # Capture the staged file list right before commit for auditability.
     _staged_files = _git("diff", "--cached", "--name-only", check=False).strip().splitlines()
@@ -1789,7 +1833,14 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     publish_runtime_expected_head("bot_commit", version=version)
     tag = bot_tag(version)
     _git("tag", "-d", tag, check=False)
-    _git("tag", tag, "-m", f"National bot v{format_version(version)}: {strategy_tag}")
+    tag_message = f"National bot v{format_version(version)}: {strategy_tag}"
+    if certificate:
+        tag_message += (
+            f"\n\nofficial-certificate: {certificate_digest}"
+            f"\nofficial-candidate-hash: {expected_bot_hash}"
+            f"\nofficial-policy: {certificate_policy}"
+        )
+    _git("tag", tag, "-m", tag_message)
     try:
         from system_log import log_system_event
         log_system_event(

@@ -1474,6 +1474,21 @@ def _bare_commit_gate_ledger_ok(v, ckpt):
             for item in (ledger.get("failed_gates") or [])
         )
         return False, f"gate_ledger_failed:missing={missing};failed={failed}"
+    if str(ckpt.get("national_execution_mode") or "") == "native_tcp":
+        official_gate = (ckpt.get("gate_results") or {}).get("official_full") or {}
+        official_status = official_gate.get("status") or {}
+        if official_gate.get("passed") is not True:
+            return False, "official_full_gate_missing_or_failed"
+        try:
+            from official_certification import official_full_certified
+
+            if not official_full_certified(
+                official_status,
+                get_bot_dir(v),
+            ):
+                return False, "official_full_certificate_invalid_or_stale"
+        except Exception as exc:
+            return False, f"official_full_certificate_check_error:{type(exc).__name__}:{str(exc)[:120]}"
     return True, ""
 
 
@@ -1529,7 +1544,27 @@ def _finalize_bare_commit(v, ckpt=None):
         or ((ckpt or {}).get("master_plan") or {}).get("strategy") \
         or f"bare-commit recovery for v{v}"
     try:
-        git_commit_bot(v, source_v, strategy, rating_info="", parent2_v=parent2_v)
+        official_status = (
+            ((ckpt or {}).get("gate_results") or {})
+            .get("official_full", {})
+            .get("status", {})
+        )
+        identity = official_status.get("certification_identity") or {}
+        official_certificate = None
+        if official_status:
+            official_certificate = {
+                "certificate_digest": official_status.get("certificate_digest"),
+                "candidate_hash": identity.get("candidate_hash"),
+                "policy_id": official_status.get("policy_id"),
+            }
+        git_commit_bot(
+            v,
+            source_v,
+            strategy,
+            rating_info="",
+            parent2_v=parent2_v,
+            official_certificate=official_certificate,
+        )
         if not git_has_tag(v):
             log.warning("finalize for v%d ran git_commit_bot but tag still absent — leaving dir.", v)
             return False

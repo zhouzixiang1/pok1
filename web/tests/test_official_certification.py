@@ -9,13 +9,13 @@ from official_certification import (
     STATUS_COMPLIANCE_PASS,
     STATUS_CERTIFIED,
     STATUS_FAILED,
-    STATUS_GRANDFATHERED,
     STATUS_INCONCLUSIVE,
     STATUS_PENDING,
     STATUS_SMOKE_PASS,
     STATUS_UNCERTIFIED,
     build_spec,
     cache_key,
+    certificate_validation,
     enqueue_certification,
     official_feedback_summary,
     official_full_certified,
@@ -84,6 +84,56 @@ def _report(*, target_hands: int, rounds: int, passed=True, issues=None, thp_han
         "issues": issues or [],
         "report": {
             "summary": {"suite_dir": "/tmp/suite", "rounds_run": rounds},
+            "rounds": receipts,
+        },
+    }
+
+
+def _full_report(
+    tmp_path: Path,
+    candidate: Path,
+    opponent: Path,
+    *,
+    passed: bool = True,
+    issues=None,
+    thp_hands: int = 70,
+):
+    suite = tmp_path / "full-suite"
+    receipts = []
+    for kind, count in (("self_play", 5), ("opponent", 3)):
+        for round_index in range(1, count + 1):
+            round_dir = suite / f"{kind}_{round_index:02d}"
+            round_dir.mkdir(parents=True, exist_ok=True)
+            wire_events = round_dir / "wire_events.jsonl"
+            replay_summary = round_dir / "replay_summary.json"
+            wire_events.write_text("{}\n", encoding="utf-8")
+            replay_summary.write_text(
+                json.dumps({"events_seen": 1, "issues": [], "warnings": []}),
+                encoding="utf-8",
+            )
+            bot_b_path = candidate if kind == "self_play" else opponent
+            receipts.append({
+                "round_id": f"{kind}_{round_index:02d}",
+                "round_kind": kind,
+                "round_index": round_index,
+                "passed": passed,
+                "issues": issues or [],
+                "target_hands": 70,
+                "bot_a": {"path": str(candidate)},
+                "bot_b": {"path": str(bot_b_path)},
+                "wire_probe": {"enabled": True, "issues": []},
+                "artifacts": {
+                    "round_dir": str(round_dir),
+                    "wire_events": str(wire_events),
+                    "replay_summary": str(replay_summary),
+                    "thp_summaries": [{"hand_records": thp_hands}],
+                },
+            })
+    return {
+        "passed": passed,
+        "issues": issues or [],
+        "report": {
+            "summary": {"suite_dir": str(suite), "rounds_run": 8},
             "rounds": receipts,
         },
     }
@@ -194,6 +244,54 @@ def test_cache_key_changes_when_inputs_change(tmp_path, monkeypatch):
     assert changed_candidate != changed_mode
 
 
+def test_full_profile_cannot_be_downgraded_or_run_without_opponent(tmp_path):
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+
+    with pytest.raises(ValueError, match="profile is immutable"):
+        build_spec("full", candidate, opponent=opponent, self_play_rounds=0)
+    with pytest.raises(ValueError, match="profile is immutable"):
+        build_spec("full", candidate, opponent=opponent, target_hands=1)
+    with pytest.raises(ValueError, match="requires an opponent"):
+        build_spec("full", candidate)
+
+
+def test_full_report_requires_round_identity_and_wire_artifacts(tmp_path):
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    spec = build_spec("full", candidate, opponent=opponent)
+    report = _full_report(tmp_path, candidate, opponent)
+    report["report"]["rounds"][0]["round_kind"] = "opponent"
+    report["report"]["rounds"][1].pop("wire_probe")
+
+    issues = report_validation_issues(report, spec)
+
+    assert any("round_kind_mismatch" in issue for issue in issues)
+    assert any("full_wire_probe_missing_or_disabled" in issue for issue in issues)
+
+
+def test_candidate_change_during_certification_is_inconclusive(tmp_path, monkeypatch):
+    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    cfg = _config(tmp_path)
+    spec = build_spec("compliance", candidate, opponent=opponent)
+
+    def mutating_runner(*_args, **_kwargs):
+        (candidate / "main.py").write_text("def act():\n    return -1\n", encoding="utf-8")
+        return FakeResult(_report(target_hands=10, rounds=2))
+
+    result = run_certification(
+        spec,
+        config=cfg,
+        runner=mutating_runner,
+        queue_on_busy=False,
+    )
+
+    assert result["status"] == STATUS_INCONCLUSIVE
+    assert "candidate_changed_during_official_certification" in result["issues"]
+
+
 def test_smoke_receipt_cannot_satisfy_full_certification(tmp_path):
     candidate = _bot(tmp_path / "national_v1")
     opponent = _bot(tmp_path / "national_v2")
@@ -284,7 +382,7 @@ def test_run_certification_uses_valid_cache(tmp_path, monkeypatch):
     assert second["cache_hit"] is True
 
 
-def test_full_certification_status_requires_full_report(tmp_path, monkeypatch):
+def test_full_certification_requires_successful_llm_analysis(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v1")
     opponent = _bot(tmp_path / "national_v2")
@@ -294,12 +392,13 @@ def test_full_certification_status_requires_full_report(tmp_path, monkeypatch):
     result = run_certification(
         spec,
         config=cfg,
-        runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=70, rounds=8)),
+        runner=lambda *_args, **_kwargs: FakeResult(_full_report(tmp_path, candidate, opponent)),
         queue_on_busy=False,
     )
 
-    assert result["status"] == STATUS_CERTIFIED
-    assert official_full_certified(result) is True
+    assert result["status"] == STATUS_INCONCLUSIVE
+    assert any("official_full_llm_analysis_incomplete" in issue for issue in result["issues"])
+    assert official_full_certified(result, candidate, config=cfg) is False
 
 
 def test_full_certification_persists_llm_repair_feedback(tmp_path, monkeypatch):
@@ -312,6 +411,7 @@ def test_full_certification_persists_llm_repair_feedback(tmp_path, monkeypatch):
 
     def fake_llm(evidence, *, output_path=None, **_kwargs):
         payload = {
+            "analysis_source": "llm",
             "compliance_verdict": "pass",
             "failure_class": "none",
             "blocking": False,
@@ -329,15 +429,22 @@ def test_full_certification_persists_llm_repair_feedback(tmp_path, monkeypatch):
     result = run_certification(
         spec,
         config=cfg,
-        runner=lambda *args, **kwargs: FakeResult(_report(target_hands=70, rounds=8)),
+        runner=lambda *args, **kwargs: FakeResult(_full_report(tmp_path, candidate, opponent)),
     )
     feedback = official_feedback_summary()
 
     assert result["status"] == STATUS_CERTIFIED
+    assert official_full_certified(result, candidate, config=cfg) is True
+    assert Path(result["certificate_path"]).is_file()
     assert result["official_llm_repair_guidance"] == "Keep pending-action validation before every send."
     assert result["official_llm_prompt_feedback"] == "Require wire send checks in worker tasks."
     assert "compliance-only" in feedback
     assert "pending-action validation" in feedback
+
+    (candidate / "main.py").write_text("def act():\n    return -1\n", encoding="utf-8")
+    validation = certificate_validation(result, candidate=candidate, config=cfg)
+    assert validation["valid"] is False
+    assert "certificate_identity_stale" in validation["issues"]
 
 
 def test_compliance_certification_has_distinct_status(tmp_path, monkeypatch):
@@ -545,7 +652,7 @@ def test_inconclusive_status_includes_non_violation_validation_issues(tmp_path, 
     assert result["status"] == STATUS_INCONCLUSIVE
     assert result["issues"]
     assert any("thp_incomplete_for_full_certification" in issue for issue in result["issues"])
-    assert result["official_evidence_summary"]["classification"] == "inconclusive"
+    assert result["official_evidence_summary"]["classification"] == "harness"
     assert result["official_evidence_summary"]["inconclusive"] is True
 
 
@@ -655,27 +762,21 @@ def test_record_local_pass_writes_local_status_for_uncertified(tmp_path, monkeyp
     assert verdict["classification"] == "local_pass"
 
 
-def test_record_grandfathered_marks_historical_opponent_without_certifying(tmp_path, monkeypatch):
+def test_mutable_grandfather_status_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v70")
 
-    result = record_grandfathered(candidate, reason="bootstrap active pool", source="test")
-    verdict = official_compliance_verdict(result)
-
-    assert result["status"] == STATUS_GRANDFATHERED
-    assert result["grandfathered"] is True
-    assert verdict["classification"] == "grandfathered"
-    assert verdict["blocking"] is False
-    assert official_full_certified(result) is False
+    with pytest.raises(RuntimeError, match="official_grandfathering.json"):
+        record_grandfathered(candidate, reason="bootstrap active pool", source="test")
 
 
-def test_official_opponent_eligibility_allows_bootstrap_but_not_blocking_failure(tmp_path, monkeypatch):
+def test_official_opponent_eligibility_rejects_untracked_bootstrap_and_blocking_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     historical = _bot(tmp_path / "national_v70")
 
     bootstrap = official_opponent_eligibility(historical)
-    assert bootstrap["eligible"] is True
-    assert bootstrap["reason"] == "bootstrap_grandfathered"
+    assert bootstrap["eligible"] is False
+    assert bootstrap["reason"] in {"not_published_artifact", "no_grandfather_grant"}
 
     write_status(historical, STATUS_FAILED, mode="smoke", issues=["protocol_raise_format"])
     failed = official_opponent_eligibility(historical)
@@ -683,19 +784,44 @@ def test_official_opponent_eligibility_allows_bootstrap_but_not_blocking_failure
     assert failed["reason"] == "blocking_official_failure"
 
 
-def test_select_official_opponent_prefers_certified_over_bootstrap(tmp_path, monkeypatch):
+def test_select_official_opponent_prefers_certified_over_content_bound_grant(tmp_path, monkeypatch):
+    import evolution_infra
+    import national_native
+    import official_certification
+
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "national_v134")
     bootstrap = _bot(tmp_path / "national_v70")
     certified = _bot(tmp_path / "national_v120")
     (bootstrap / ".completed").touch()
     (certified / ".completed").touch()
-    write_status(certified, STATUS_CERTIFIED, mode="full", issues=[])
+    monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
+    monkeypatch.setattr(national_native, "check_native_contract", lambda _path: [])
+    monkeypatch.setattr(
+        official_certification,
+        "published_bot_identity",
+        lambda path: {
+            "published": True,
+            "artifact_hash": f"hash-{Path(path).name}",
+            "tag": f"tag-{Path(path).name}",
+            "tag_object": f"tag-object-{Path(path).name}",
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        official_certification,
+        "official_opponent_eligibility",
+        lambda path, **_kwargs: {
+            "eligible": True,
+            "reason": "official_certified" if Path(path).name == "national_v120" else "content_bound_grandfather_grant",
+            "priority": 0 if Path(path).name == "national_v120" else 1,
+        },
+    )
 
     result = select_official_opponent(
         candidate,
         [str(bootstrap), str(certified)],
-        allow_bootstrap_grandfather=True,
+        allow_bootstrap_grandfather=False,
     )
 
     assert result["selected"] is True
