@@ -28,6 +28,12 @@ for path in (WEB_CORE, TOOLS):
         sys.path.insert(0, str(path))
 
 import national_native  # noqa: E402
+try:  # national_native owned the game runtime before the shared-runtime split.
+    import national_game_runtime  # type: ignore[import-not-found]  # noqa: E402
+except ModuleNotFoundError as exc:  # Keep archived/older checkouts usable.
+    if exc.name != "national_game_runtime":
+        raise
+    national_game_runtime = None
 from native_tcp_counterfactual_probe import (  # noqa: E402
     _force_confirmed,
     _resolve,
@@ -35,6 +41,17 @@ from native_tcp_counterfactual_probe import (  # noqa: E402
     _settlement_map,
     _trace_rows,
 )
+
+
+def _runtime_deck_binding() -> tuple[Any, type]:
+    """Return the module whose ``Deck`` name is resolved by the game runtime."""
+    for owner in (national_game_runtime, national_native):
+        if owner is None:
+            continue
+        deck_class = getattr(owner, "Deck", None)
+        if isinstance(deck_class, type):
+            return owner, deck_class
+    raise RuntimeError("national TCP game runtime does not expose a Deck binding")
 
 
 def _read_row(path: Path, index: int) -> dict[str, Any]:
@@ -132,8 +149,8 @@ async def _run_with_deck(
     deck_factory: Callable[..., Any],
     force: dict[str, int] | None,
 ) -> dict[str, Any]:
-    original_deck = national_native.Deck
-    national_native.Deck = deck_factory
+    deck_owner, original_deck = _runtime_deck_binding()
+    deck_owner.Deck = deck_factory
     try:
         return await _run_pair(
             candidate,
@@ -145,7 +162,7 @@ async def _run_with_deck(
             force=force,
         )
     finally:
-        national_native.Deck = original_deck
+        deck_owner.Deck = original_deck
 
 
 def _percentile(values: list[float], q: float) -> float:
@@ -223,7 +240,7 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
     rule_action = int(source["rule_final"])
     forced_action = _forced_action(source, args.alternative_label)
     known_cards = _known_card_count(source)
-    original_deck = national_native.Deck
+    _, original_deck = _runtime_deck_binding()
     target_deck_seed = deck_seed_base + hand
     through_match = bool(getattr(args, "through_match", False))
     run_hands = max(

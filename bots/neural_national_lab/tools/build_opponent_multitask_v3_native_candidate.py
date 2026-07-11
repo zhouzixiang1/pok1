@@ -296,11 +296,14 @@ def verify_build_authorization(
     }
 
 
-def _patched_response_schema(source: Path) -> str:
-    text = source.read_text(encoding="utf-8")
+def _patched_response_schema_text(text: str) -> str:
     start = text.index("def _load_validator():")
     end = text.index("\n\n\ndef _mapping", start)
     return text[:start] + "import national_validator as _VALIDATOR" + text[end:]
+
+
+def _patched_response_schema(source: Path) -> str:
+    return _patched_response_schema_text(source.read_text(encoding="utf-8"))
 
 
 def _decision_methods() -> str:
@@ -439,8 +442,7 @@ def _decision_methods() -> str:
 '''
 
 
-def _patch_national_bot(source: Path) -> str:
-    text = source.read_text(encoding="utf-8")
+def _patch_national_bot_text(text: str) -> str:
     text = text.replace(
         "        from strategy import get_action\n",
         "        from strategy import get_action\n"
@@ -470,6 +472,10 @@ def _patch_national_bot(source: Path) -> str:
     end = text.index("    def _current_round_has_allin", start)
     text = text[:start] + _decision_methods() + text[end:]
     return text
+
+
+def _patch_national_bot(source: Path) -> str:
+    return _patch_national_bot_text(source.read_text(encoding="utf-8"))
 
 
 def _copy_tree(source: Path, target: Path) -> None:

@@ -1234,12 +1234,110 @@ threshold weakening, malformed outcome bounds, uncalibrated members, and
 member-binding drift. The full neural-lab suite now passes 340 tests, with all
 30 national protocol tests still passing.
 
-This runtime contract is not yet connected to protected v4 policy selection,
-policy gate, native candidate construction, or native TCP strength evaluation.
-No new bot version has been created. The next implementation step is to add
-Torch-side multi-seed outcome aggregation to the opponent-disjoint selection
-role and make that selector call this same shared scoring function; copying the
-old v3 scalar-value selector would reintroduce offline/runtime semantic drift.
+## Protected V4 Selection And Native Construction
+
+The v4 contract is now connected through the complete protected development
+path. Formal `run_opponent_multitask_v4_scaling.py` requires the exact atomic
+160/160 collection boundary, CUDA training, at least two parameter scales,
+at least two encoder architectures, and at least three distinct seeds. It
+aggregates the four-component early-stop key lexicographically, so chip/value
+metrics cannot outrank the 70-hand outcome errors. Calibration verifies every
+real checkpoint/report/authorization in the full Cartesian grid on CPU,
+recomputes every seed aggregate and the global winner with the shared scaling
+code, and retains only the winning members on the requested device. Forging a
+non-selected run or editing the selected configuration cannot redirect formal
+calibration.
+
+The ensemble calibration artifact binds every unique seed and checkpoint to
+the same role manifest, train/early-stop artifacts, model-calibration artifact,
+and model-calibration opponents. Value lower offsets and response temperature
+retain the v3 semantics. Each member fits its own checkpoint-bound outcome
+scale and bias before probabilities are aggregated. Calibration opens only
+train, early stop, and model calibration; it has no path to policy selection,
+policy gate, or old held-out files. Formal mode requires at least three members,
+both uncertainty weights exactly 1.0, current trainer dependency hashes, and
+the self-hashed full-grid verification proof. Every calibration, report, and
+manifest keeps `deployment_policy_value=false` and
+`strength_evidence=false`.
+
+`select_opponent_multitask_v4_policy.py` reuses the v3 value/response inference
+preparation but does not reuse the v3 scalar action selector. For every Torch
+inference row it calls the same
+`win_first_policy_v4.aggregate_member_probabilities` and
+`win_first_policy_v4.select_candidate` functions used by the stdlib runtime.
+The action floors are fixed globally at positive-probability LCB 0.5,
+probability-uplift LCB 0, and immediate-hand LCB 0. Only nonnegative chip
+margins are searched. The observed forced 70-hand outcomes then enter ordinary
+and opponent-stratified whole-match cluster bootstraps. Formal selection fixes
+a minimum of 2,000 bootstrap samples plus 12 overrides, eight selection and
+override clusters, and four overrides per opponent. Before gate data can be
+opened, the system reopens only the already exposed selection role, rebuilds
+the complete candidate-bound grid and winner from the protected rows and
+current checkpoints, and compares the full evaluation. Probability/uplift
+domains, bootstrap seed, grid membership, and the prior ledger exposure are
+also checked. Thus synchronized edits to the result JSON and its hashes cannot
+manufacture a passing selection. A separate v4 evidence schema prevents a v3
+selection credential from opening the v4 gate.
+
+`export_opponent_multitask_ensemble_v4.py` emits a calibration-only bundle when
+selection has not passed. After a formal selection, it deterministically
+exports every member from the verified checkpoint. The gate reconstructs that
+bundle byte-for-byte before it opens policy-gate rows, then evaluates exactly
+the frozen policy without grid search and applies both cluster bootstraps and
+the per-opponent checks again. The builder later reloads the calibration and
+policy artifacts and independently replays both selection and gate evidence.
+It therefore rejects self-consistent evidence edits as well as a changed model
+weight with a recomputed bundle-internal hash. A formal selected bundle requires
+three unique seeds, complete data, one shared model-calibration role, and false
+evidence claims.
+
+`v4_native_policy.py` constructs the same one-action-per-label alternatives as
+the collector and delegates scoring to the shared v4 ensemble runtime. This
+collection's baseline is the exact v140 snapshot final action after its legacy
+overlay and single `sanitize_action` call; it is not the raw strategy action.
+The native wrapper never reinterprets that already sanitized integer. Any
+model, input, response, scoring, or final-sanitization exception returns it
+unchanged. If final sanitization changes a selected candidate action or label,
+the wrapper also returns the baseline rather than executing an unscored action.
+
+The collection contains no strategy-context payload, so training saw the
+66-dimensional context as all zeros. The frozen runtime contract therefore
+forces that context to zero while retaining the v151 cross-hand lifecycle and
+sticky-packet transport. The builder derives the complete v140 strategy/legacy
+overlay tree from the role manifest's snapshot path and digest, locks the v151
+transport, and verifies the role manifest plus gate exposures in the ledger.
+Gate artifacts also bind the builder/patch helper, validator, response schema,
+and transport inputs. Candidate construction uses one byte snapshot of those
+inputs, checks a recursive stdlib/local import allowlist, compiles and smoke
+loads the result, and cleans read-only temporary trees on failure. At native
+load time the build manifest and copied gate evidence externally anchor the
+bundle and every runtime artifact; a post-build bundle edit falls back to the
+v140 baseline. The candidate still declares native strength, official
+acceptance, deployment eligibility, deployment policy value, and strength
+evidence false.
+
+The final incomplete end-to-end smoke used the atomic 40/160 prefix. Its role
+manifest SHA-256 was
+`0b7846e0bea016a57a1815ea11a12a0e1512a75d0c2b950667182d6e2cbf1c7f`
+and contained 1,712/158/230/240/465 value rows and
+7,898/877/1,101/1,382/1,384 behavior rows for train, early stop, model
+calibration, policy selection, and policy gate. A one-epoch, one-seed small-GRU
+CUDA run exercised scaling and ensemble calibration; this deliberately cannot
+meet the formal three-seed/two-scale/two-encoder contract. The ensemble and
+outcome calibration payload SHA-256 values were
+`0a170a7262920229e8e11780926c1545976bbedbe82b9e4abdcc406fdca8aa3a`
+and `5ee1017a361aa09b64f7f83f18fd22c37dc077d478e28ac8c9d620995163adc5`.
+
+The protected selector evaluated all 240 v98 rows but wrote a failed result
+with `selected_policy_sha256=null`, `formal_selection=false`, and both evidence
+flags false. The calibration-only stdlib bundle was byte-validated with SHA-256
+`834e3c0d3efe61a58664c0701f46aba495426e60975b4248346f5ce5e36c3132`;
+it has `selected_policy=null` and cannot override the rule policy. The formal
+gate rejected the incomplete role manifest before opening policy-gate data,
+the exposure ledger contains no policy-gate event, and the builder created no
+version directory. This is fail-closed pipeline evidence only. No new bot
+version or strength claim exists. The complete neural-lab suite now passes 449
+tests, and all 30 national protocol tests pass.
 
 ## Literature Recheck And Search Direction
 

@@ -87,6 +87,7 @@ def _phase() -> dict:
         "role_manifest_sha256": "b" * 64,
         "policy_gate_artifact_sha256": "c" * 64,
         "selection_result_sha256": "d" * 64,
+        "calibration_payload_sha256": "e" * 64,
         "deployment_policy_value": False,
         "strength_evidence": False,
     }

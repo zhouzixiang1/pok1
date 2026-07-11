@@ -14,7 +14,6 @@ for path in (TOOLS, WEB_CORE):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-import national_native  # noqa: E402
 import native_tcp_conditional_runout_probe as probe  # noqa: E402
 
 
@@ -24,15 +23,16 @@ def _cards(deck) -> list[tuple[int, int]]:
 
 def test_conditional_deck_keeps_prefix_and_resamples_suffix() -> None:
     target_seed = 101
-    original = national_native.Deck(seed=target_seed)
+    _, deck_class = probe._runtime_deck_binding()
+    original = deck_class(seed=target_seed)
     factory_a = probe._conditional_deck_factory(
-        national_native.Deck,
+        deck_class,
         target_seed=target_seed,
         known_cards=4,
         runout_seed=9001,
     )
     factory_b = probe._conditional_deck_factory(
-        national_native.Deck,
+        deck_class,
         target_seed=target_seed,
         known_cards=4,
         runout_seed=9002,
@@ -47,13 +47,41 @@ def test_conditional_deck_keeps_prefix_and_resamples_suffix() -> None:
 
 
 def test_conditional_deck_leaves_other_hands_unchanged() -> None:
+    _, deck_class = probe._runtime_deck_binding()
     factory = probe._conditional_deck_factory(
-        national_native.Deck,
+        deck_class,
         target_seed=101,
         known_cards=7,
         runout_seed=9001,
     )
-    assert _cards(factory(seed=102)) == _cards(national_native.Deck(seed=102))
+    assert _cards(factory(seed=102)) == _cards(deck_class(seed=102))
+
+
+def test_run_with_deck_patches_active_runtime_and_restores_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deck_owner, original_deck = probe._runtime_deck_binding()
+
+    def replacement_deck(seed=None):
+        return original_deck(seed=seed)
+
+    async def failing_run_pair(*_args, **_kwargs):
+        assert deck_owner.Deck is replacement_deck
+        raise RuntimeError("probe failure")
+
+    monkeypatch.setattr(probe, "_run_pair", failing_run_pair)
+    with pytest.raises(RuntimeError, match="probe failure"):
+        asyncio.run(probe._run_with_deck(
+            Path("candidate"),
+            Path("opponent"),
+            hands=1,
+            deck_seed_base=100,
+            bot_seed_base=200,
+            timeout_sec=1.0,
+            deck_factory=replacement_deck,
+            force=None,
+        ))
+    assert deck_owner.Deck is original_deck
 
 
 @pytest.mark.parametrize(

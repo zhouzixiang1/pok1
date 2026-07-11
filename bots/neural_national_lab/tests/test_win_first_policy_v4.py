@@ -128,3 +128,29 @@ def test_scoring_rejects_drifted_outcome_bounds() -> None:
         policy.select_candidate(
             _policy(), outcomes, _values(), [{"label_id": 3}], rule_label_id=2
         )
+
+
+def test_scoring_recomputes_uncertainty_bounds_and_value_dimensions() -> None:
+    outcomes = policy.aggregate_member_probabilities(
+        [
+            [0.1, 0.1, 0.2, 0.7, 0.1, 0.1],
+            [0.1, 0.1, 0.2, 0.9, 0.1, 0.1],
+        ],
+        uncertainty_std_weight=1.0,
+    )
+    outcomes["lower"][3] = 0.75
+    with pytest.raises(ValueError, match="do not match uncertainty"):
+        policy.select_candidate(
+            _policy(), outcomes, _values(), [{"label_id": 3}], rule_label_id=2
+        )
+
+    outcomes = policy.aggregate_member_probabilities(
+        [[0.1, 0.1, 0.2, 0.8, 0.1, 0.1]],
+        uncertainty_std_weight=0.0,
+    )
+    malformed = _values()
+    malformed["delta_vs_rule"]["lower"] = [0.0, 1.0]
+    with pytest.raises(ValueError, match="value prediction is malformed"):
+        policy.select_candidate(
+            _policy(), outcomes, malformed, [{"label_id": 3}], rule_label_id=2
+        )

@@ -34,6 +34,8 @@ def _sha(raw: bytes) -> str:
 def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
     root = tmp_path / "dataset"
     root.mkdir()
+    candidate = root / "candidate"
+    candidate.mkdir()
     roles = {
         role: [f"national_v{index}"]
         for index, role in enumerate(freeze.EVIDENCE_ROLES, 1)
@@ -102,6 +104,16 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
     manifest = {
         "schema": freeze.SCHEMA,
         "source_collection_complete": complete,
+        "source_completed_passes": 160 if complete else 2,
+        "source_requested_passes": 160,
+        "candidate_snapshot": {
+            "path": str(candidate),
+            "name": candidate.name,
+            "sha256": "f" * 64,
+        },
+        "strategy_context_runtime_mode": (
+            freeze.STRATEGY_CONTEXT_RUNTIME_MODE
+        ),
         "roles": roles,
         "outputs": outputs,
         "behavior_supervision": response_schema_metadata(),
@@ -156,6 +168,41 @@ def _selection_result(
         "selected_policy_sha256": "e" * 64,
     }), encoding="utf-8")
     return path
+
+
+def _formal_v4_result_fields(dataset: access.RoleDatasetAccess) -> dict:
+    bootstrap = {
+        "schema": "observed_70_hand_match_cluster_bootstrap_v1",
+        "samples": 2000,
+        "seed": 17,
+        "observed_70_hand_match_clusters": True,
+        "ordinary": True,
+        "opponent_stratified": True,
+    }
+    return {
+        "errors": [],
+        "formal_selection": True,
+        "source_collection_complete": True,
+        "candidate_snapshot": dict(dataset.candidate_snapshot),
+        "strategy_context_runtime_mode": (
+            dataset.strategy_context_runtime_mode
+        ),
+        "thresholds": {
+            "min_overrides": 12,
+            "min_selection_clusters": 8,
+            "min_override_clusters": 8,
+            "min_overrides_per_opponent": 4,
+            "min_override_hand_mean": 0.0,
+            "bootstrap_samples": 2000,
+            "min_cluster_ci_lower": 0.0,
+            "min_opponent_stratified_ci_lower": 0.0,
+            "min_match_outcome_coverage": 1.0,
+            "min_match_positive_rate_ci_lower": 0.5,
+            "min_match_positive_uplift_ci_lower": 0.0,
+            "min_opponent_match_positive_rate": 0.5,
+        },
+        "summary": {"bootstrap_contract": bootstrap},
+    }
 
 
 def test_manifest_load_does_not_touch_role_files(tmp_path: Path) -> None:
@@ -213,6 +260,7 @@ def test_policy_gate_is_bound_to_same_frozen_candidate(tmp_path: Path) -> None:
 
     assert opened["candidate_sha256"] == CANDIDATE_SHA
     assert opened["prerequisite_sha256"] is not None
+    assert opened["prerequisite_calibration_payload_sha256"] == "c" * 64
 
 
 def test_failed_policy_selection_does_not_open_policy_gate_data(
@@ -262,6 +310,105 @@ def test_policy_gate_rejects_selection_role_artifact_mismatch(
     assert "national_v5" not in report["opponents"]
 
 
+def test_policy_gate_accepts_only_registered_v4_schema_estimand_pair(
+    tmp_path: Path,
+) -> None:
+    dataset = _access(tmp_path)
+    for role in ("train", "early_stop", "model_calibration"):
+        dataset.open_role(role)
+    dataset.open_role("policy_selection", candidate_sha256=CANDIDATE_SHA)
+    result = _selection_result(dataset, tmp_path / "selection_result_v4.json")
+    payload = json.loads(result.read_text())
+    payload.update({
+        "schema": access.POLICY_SELECTION_RESULT_SCHEMA_V4,
+        "offline_estimand": access.POLICY_OFFLINE_ESTIMAND_V4,
+        **_formal_v4_result_fields(dataset),
+    })
+    result.write_text(json.dumps(payload), encoding="utf-8")
+
+    opened = dataset.open_role(
+        "policy_gate",
+        candidate_sha256=CANDIDATE_SHA,
+        prerequisite_report=result,
+    )
+    assert opened["candidate_sha256"] == CANDIDATE_SHA
+
+    payload["offline_estimand"] = access.POLICY_OFFLINE_ESTIMAND
+    result.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="did not authorize"):
+        dataset.open_role(
+            "policy_gate",
+            candidate_sha256=CANDIDATE_SHA,
+            prerequisite_report=result,
+        )
+
+
+def test_requested_v4_gate_contract_rejects_v3_result_before_exposure(
+    tmp_path: Path,
+) -> None:
+    dataset = _access(tmp_path)
+    for role in ("train", "early_stop", "model_calibration"):
+        dataset.open_role(role)
+    dataset.open_role("policy_selection", candidate_sha256=CANDIDATE_SHA)
+    result = _selection_result(dataset, tmp_path / "selection_result_v3.json")
+
+    with pytest.raises(RuntimeError, match="did not authorize"):
+        dataset.open_role(
+            "policy_gate",
+            candidate_sha256=CANDIDATE_SHA,
+            prerequisite_report=result,
+            prerequisite_schema=access.POLICY_SELECTION_RESULT_SCHEMA_V4,
+            prerequisite_offline_estimand=access.POLICY_OFFLINE_ESTIMAND_V4,
+        )
+
+    report = ledger.status(dataset.ledger_path)
+    assert "national_v5" not in report["opponents"]
+
+
+def test_unknown_selection_contract_cannot_match_missing_estimand(
+    tmp_path: Path,
+) -> None:
+    dataset = _access(tmp_path)
+    for role in ("train", "early_stop", "model_calibration"):
+        dataset.open_role(role)
+    dataset.open_role("policy_selection", candidate_sha256=CANDIDATE_SHA)
+    result = _selection_result(dataset, tmp_path / "unknown_selection.json")
+    payload = json.loads(result.read_text())
+    payload["schema"] = "unknown_policy_selection_result"
+    payload.pop("offline_estimand")
+    result.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="did not authorize"):
+        dataset.open_role(
+            "policy_gate",
+            candidate_sha256=CANDIDATE_SHA,
+            prerequisite_report=result,
+        )
+
+    report = ledger.status(dataset.ledger_path)
+    assert "national_v5" not in report["opponents"]
+
+
+def test_stale_role_artifact_exposure_does_not_satisfy_prerequisite(
+    tmp_path: Path,
+) -> None:
+    dataset = _access(tmp_path)
+    ledger.open_exposure(
+        dataset.ledger_path,
+        role="train",
+        opponents=dataset.roles["train"],
+        run_id=dataset.run_id,
+        artifact_sha256="0" * 64,
+    )
+    for role in ("early_stop", "model_calibration"):
+        dataset.open_role(role)
+
+    with pytest.raises(RuntimeError, match="prerequisite"):
+        dataset.open_role(
+            "policy_selection", candidate_sha256=CANDIDATE_SHA
+        )
+
+
 def test_failed_file_validation_remains_conservatively_exposed(
     tmp_path: Path,
 ) -> None:
@@ -300,6 +447,75 @@ def test_canonical_response_validation_cannot_be_bypassed_by_manifest(
     assert report["opponents"]["national_v1"]["exposures"][0]["role"] == "train"
 
 
+@pytest.mark.parametrize(
+    ("filename", "context"),
+    [
+        ("cf_train.jsonl", {"strategy_context_features": [1.0] * 66}),
+        ("cf_train.jsonl", {"strategy_context_available": "true"}),
+        ("cf_train.jsonl", {"strategy_context_available": 1}),
+        ("cf_train.jsonl", {"strategy_context": {}}),
+        (
+            "opponent_actions_train.jsonl",
+            {"strategy_context_available": "true"},
+        ),
+    ],
+)
+def test_zero_context_validation_cannot_be_bypassed_by_manifest(
+    tmp_path: Path, filename: str, context: dict,
+) -> None:
+    manifest_path, ledger_path = _dataset(tmp_path)
+    path = manifest_path.parent / filename
+    row = json.loads(path.read_text())
+    row["request"] = context
+    raw = (json.dumps(row) + "\n").encode()
+    path.write_bytes(raw)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["outputs"][path.name]["bytes"] = len(raw)
+    manifest["outputs"][path.name]["sha256"] = _sha(raw)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    dataset = access.RoleDatasetAccess(
+        manifest_path, ledger_path=ledger_path, run_id="run-1"
+    )
+
+    with pytest.raises(RuntimeError, match="zero-context"):
+        dataset.open_role("train")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("errors", ["forged"]),
+        ("formal_selection", False),
+        ("source_collection_complete", False),
+    ],
+)
+def test_policy_gate_rejects_minimally_forged_v4_prerequisite(
+    tmp_path: Path, field: str, value,
+) -> None:
+    dataset = _access(tmp_path)
+    for role in ("train", "early_stop", "model_calibration"):
+        dataset.open_role(role)
+    dataset.open_role("policy_selection", candidate_sha256=CANDIDATE_SHA)
+    result = _selection_result(dataset, tmp_path / "selection_result_v4.json")
+    payload = json.loads(result.read_text())
+    payload.update({
+        "schema": access.POLICY_SELECTION_RESULT_SCHEMA_V4,
+        "offline_estimand": access.POLICY_OFFLINE_ESTIMAND_V4,
+        **_formal_v4_result_fields(dataset),
+        field: value,
+    })
+    result.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="did not authorize"):
+        dataset.open_role(
+            "policy_gate",
+            candidate_sha256=CANDIDATE_SHA,
+            prerequisite_report=result,
+            prerequisite_schema=access.POLICY_SELECTION_RESULT_SCHEMA_V4,
+            prerequisite_offline_estimand=access.POLICY_OFFLINE_ESTIMAND_V4,
+        )
+
+
 def test_complete_collection_is_required_for_training_access(
     tmp_path: Path,
 ) -> None:
@@ -316,3 +532,52 @@ def test_complete_collection_is_required_for_training_access(
         require_complete=False,
     )
     assert smoke.manifest["source_collection_complete"] is False
+
+
+def test_formal_collection_boundary_requires_exact_atomic_160_passes(
+    tmp_path: Path,
+) -> None:
+    dataset = _access(tmp_path)
+    boundary = dataset.require_collection_boundary()
+    assert boundary == {
+        "schema": "complete_atomic_collection_boundary_v1",
+        "source_completed_passes": 160,
+        "source_requested_passes": 160,
+        "source_collection_complete": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"source_completed_passes": 2, "source_requested_passes": 2},
+        {"source_completed_passes": True},
+        {"source_requested_passes": True},
+        {"remove": "source_completed_passes"},
+        {"remove": "source_requested_passes"},
+    ],
+)
+def test_formal_collection_boundary_rejects_partial_or_missing_fields(
+    tmp_path: Path, updates: dict,
+) -> None:
+    manifest_path, ledger_path = _dataset(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    remove = updates.pop("remove", None)
+    manifest.update(updates)
+    if remove is not None:
+        manifest.pop(remove)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    dataset = access.RoleDatasetAccess(
+        manifest_path, ledger_path=ledger_path, run_id="formal-boundary"
+    )
+
+    with pytest.raises(ValueError, match="complete atomic 160-pass"):
+        dataset.require_collection_boundary()
+
+
+def test_formal_collection_boundary_rejects_boolean_expected_passes(
+    tmp_path: Path,
+) -> None:
+    dataset = _access(tmp_path)
+    with pytest.raises(ValueError, match="positive integer"):
+        dataset.require_collection_boundary(True)

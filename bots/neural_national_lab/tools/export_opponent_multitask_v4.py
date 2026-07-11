@@ -15,7 +15,7 @@ from opponent_multitask_runtime_v4 import (
     OpponentMultiTaskRuntimeV4,
     RUNTIME_FORMAT,
 )
-from train_opponent_multitask_v4 import load_checkpoint
+from train_opponent_multitask_v4 import CHECKPOINT_SCHEMA, load_checkpoint
 
 
 EXPORT_SCHEMA = "opponent_multitask_stdlib_export_v2_outcome"
@@ -37,6 +37,36 @@ def build_export_payload(
             checkpoint_sha256=checkpoint_sha256,
             model_format=MODEL_FORMAT,
         )
+        checkpoint_role = v3_export._digest(
+            checkpoint.get("role_manifest_sha256"),
+            field="checkpoint role_manifest_sha256",
+        )
+        if (
+            outcome_calibration.get("role_manifest_sha256") != checkpoint_role
+        ):
+            raise ValueError(
+                "outcome calibration role manifest does not match checkpoint"
+            )
+        checkpoint_complete = checkpoint.get("source_collection_complete")
+        if (
+            not isinstance(checkpoint_complete, bool)
+            or outcome_calibration.get("source_collection_complete")
+            is not checkpoint_complete
+        ):
+            raise ValueError(
+                "outcome calibration collection state does not match checkpoint"
+            )
+        training = checkpoint.get("training_artifact_sha256")
+        if (
+            checkpoint.get("schema") != CHECKPOINT_SCHEMA
+            or not isinstance(training, dict)
+            or set(training) != {"train", "early_stop"}
+        ):
+            raise ValueError("v4 calibrated checkpoint provenance is incomplete")
+        for role, digest in training.items():
+            v3_export._digest(digest, field=f"training_artifact_sha256.{role}")
+        if not v3_export._code_contract(checkpoint.get("code_artifacts")):
+            raise ValueError("v4 calibrated checkpoint code contract is empty")
     weights = {}
     for name, tensor in sorted(model.state_dict().items()):
         if tensor.ndim not in (1, 2):
@@ -54,6 +84,9 @@ def build_export_payload(
             "role_manifest_sha256": checkpoint.get("role_manifest_sha256"),
             "training_artifact_sha256": checkpoint.get(
                 "training_artifact_sha256"
+            ),
+            "source_collection_complete": checkpoint.get(
+                "source_collection_complete"
             ),
             "code_artifacts": v3_export._code_contract(
                 checkpoint.get("code_artifacts")

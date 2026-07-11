@@ -28,6 +28,9 @@ class _Dataset:
         return {
             "artifact_sha256": ("c" if role == "policy_selection" else "d") * 64,
             "prerequisite_sha256": "e" * 64 if role == "policy_gate" else None,
+            "prerequisite_calibration_payload_sha256": (
+                "f" * 64 if role == "policy_gate" else None
+            ),
             "opponents": ["national_v98" if role == "policy_selection" else "national_v57"],
             "value": [{"role": role}],
             "behavior": [{"role": role}],
@@ -226,6 +229,8 @@ def test_result_write_then_gate_open_preserves_candidate_binding(
         {
             "candidate_sha256": CANDIDATE,
             "prerequisite_report": path,
+            "prerequisite_schema": evidence.POLICY_SELECTION_RESULT_SCHEMA,
+            "prerequisite_offline_estimand": evidence.POLICY_OFFLINE_ESTIMAND,
         },
     )
     assert gate["deployment_policy_value"] is False
@@ -253,6 +258,7 @@ def test_policy_gate_result_binds_fixed_policy_and_authorizes_only_build(
     assert result["deployment_policy_value"] is False
     assert result["strength_evidence"] is False
     assert result["selection_result_sha256"] == "e" * 64
+    assert result["calibration_payload_sha256"] == "f" * 64
     assert len(result["selected_policy_sha256"]) == 64
     assert len(digest) == 64
 

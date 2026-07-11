@@ -45,19 +45,24 @@ def _stdlib_inputs(inputs: dict[str, torch.Tensor]) -> dict:
     }
 
 
-def _outcome_calibration(checkpoint: str, *, bias: float) -> dict:
+def _outcome_calibration(
+    checkpoint: str, *, bias: float, member_seed: int
+) -> dict:
     payload = {
         "schema": outcome_calibration.CALIBRATION_SCHEMA,
         "method": outcome_calibration.CALIBRATION_METHOD,
         "scale": 1.0,
         "bias": bias,
         "run_id": "run-1",
+        "member_seed": member_seed,
         "model_format": models.MODEL_FORMAT,
         "checkpoint_sha256": checkpoint,
         "role_manifest_sha256": "b" * 64,
         "model_calibration_artifact_sha256": "c" * 64,
         "model_calibration_opponents": ["national_v142"],
-        "source_collection_complete": False,
+        "calibration_role": "model_calibration",
+        "policy_evidence_used": False,
+        "source_collection_complete": True,
         "metrics": {},
         "deployment_policy_value": False,
         "strength_evidence": False,
@@ -85,23 +90,39 @@ def _selected_policy() -> dict:
 
 
 def _payload(*, selected: bool = True, calibrated: bool = True) -> dict:
-    checkpoints = ["a" * 64, "d" * 64]
+    checkpoints = ["a" * 64, "d" * 64, "f" * 64]
+    member_seeds = [101, 211, 307]
     members = []
-    for seed, checkpoint in enumerate(checkpoints, 1):
-        torch.manual_seed(seed)
+    for index, (member_seed, checkpoint) in enumerate(
+        zip(member_seeds, checkpoints, strict=True), 1
+    ):
+        torch.manual_seed(index)
         model = models.model_from_scale("small", dropout=0.0).eval()
         members.append(exporter.build_export_payload(
             model,
-            {"schema": "test_v4_checkpoint", "code_artifacts": {}},
+            {
+                "schema": exporter.CHECKPOINT_SCHEMA,
+                "role_manifest_sha256": "b" * 64,
+                "training_artifact_sha256": {
+                    "train": "7" * 64,
+                    "early_stop": "8" * 64,
+                },
+                "source_collection_complete": True,
+                "code_artifacts": {
+                    "trainer": {"bytes": 1, "sha256": "9" * 64}
+                },
+            },
             checkpoint_sha256=checkpoint,
             outcome_calibration=(
-                _outcome_calibration(checkpoint, bias=seed * 0.1)
+                _outcome_calibration(
+                    checkpoint, bias=index * 0.1, member_seed=member_seed
+                )
                 if calibrated else None
             ),
         ))
     policy = _selected_policy() if selected else None
     calibration = {
-        "payload_sha256": "e" * 64,
+        "member_seed": member_seeds,
         "member_checkpoint_sha256": checkpoints,
         "lower_quantile": 0.2,
         "uncertainty_std_weight": 1.0,
@@ -114,10 +135,72 @@ def _payload(*, selected: bool = True, calibrated: bool = True) -> dict:
         "outcome_uncertainty_std_weight": 1.0,
         "outcome_calibration_payload_sha256": [
             member.get("outcome_calibration", {}).get("payload_sha256")
+            or "0" * 64
             for member in members
         ],
+        "run_id": "run-1",
+        "role_manifest_sha256": "b" * 64,
+        "model_calibration_artifact_sha256": "c" * 64,
+        "model_calibration_opponents": ["national_v142"],
+        "source_collection_complete": True,
     }
+    original_calibration = {
+        "schema": runtime.ORIGINAL_CALIBRATION_SCHEMA,
+        "run_id": "run-1",
+        "role_manifest_sha256": "b" * 64,
+        "calibration_role": "model_calibration",
+        "calibration_artifact_sha256": "c" * 64,
+        "opponents": ["national_v142"],
+        "policy_evidence_used": False,
+        "ensemble": {
+            "members": [
+                {"seed": seed, "checkpoint_sha256": checkpoint}
+                for seed, checkpoint in zip(
+                    member_seeds, checkpoints, strict=True
+                )
+            ],
+            "lower_quantile": calibration["lower_quantile"],
+            "uncertainty_std_weight": calibration[
+                "uncertainty_std_weight"
+            ],
+            "outcome_aggregation": calibration["outcome_aggregation"],
+            "outcome_uncertainty_std_weight": calibration[
+                "outcome_uncertainty_std_weight"
+            ],
+            "outcome_calibration_payload_sha256": list(
+                calibration["outcome_calibration_payload_sha256"]
+            ),
+        },
+        "value_lower": {
+            "target_preprocessing": "symmetric_clip_before_residual",
+            "target_clips": dict(calibration["clips"]),
+            "fields": {
+                field: {"offsets": list(calibration["offsets"][field])}
+                for field in v3_models.VALUE_FIELDS
+            },
+        },
+        "response_temperature": {
+            "temperature": calibration["response_temperature"]
+        },
+        "source_collection_complete": True,
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+    }
+    original_calibration["payload_sha256"] = (
+        v3_ensemble._canonical_sha256(original_calibration)
+    )
+    projection = runtime.calibration_projection_from_artifact(
+        original_calibration
+    )
+    projection_sha256 = runtime.calibration_projection_sha256(projection)
+    calibration.update({
+        "payload_sha256": original_calibration["payload_sha256"],
+        "original_calibration_artifact": original_calibration,
+        "original_calibration_file_sha256": "e" * 64,
+        "calibration_projection_sha256": projection_sha256,
+    })
     return {
+        "schema": runtime.BUNDLE_SCHEMA,
         "format": runtime.ENSEMBLE_FORMAT,
         "members": members,
         "member_payload_sha256": [
@@ -126,6 +209,23 @@ def _payload(*, selected: bool = True, calibrated: bool = True) -> dict:
         "calibration": calibration,
         "selected_policy": policy,
         "source": {
+            "run_id": "run-1",
+            "role_manifest_sha256": "b" * 64,
+            "source_collection_complete": True,
+            "source_completed_passes": 160,
+            "source_requested_passes": 160,
+            "calibration_payload_sha256": original_calibration[
+                "payload_sha256"
+            ],
+            "calibration_file_sha256": "e" * 64,
+            "calibration_projection_sha256": projection_sha256,
+            "candidate_snapshot": {
+                "name": "v140_test",
+                "sha256": "6" * 64,
+            },
+            "strategy_context_runtime_mode": (
+                runtime.STRATEGY_CONTEXT_RUNTIME_MODE
+            ),
             "selected_policy_sha256": (
                 v3_ensemble._canonical_sha256(policy)
                 if policy is not None else None
@@ -187,7 +287,7 @@ def test_v4_ensemble_rejects_member_or_calibration_drift() -> None:
     malformed["calibration"]["outcome_calibration_payload_sha256"][0] = (
         "f" * 64
     )
-    with pytest.raises(ValueError, match="member binding changed"):
+    with pytest.raises(ValueError, match="differs from original"):
         runtime.OpponentMultiTaskEnsembleRuntimeV4(malformed)
 
     malformed = copy.deepcopy(payload)
@@ -196,4 +296,99 @@ def test_v4_ensemble_rejects_member_or_calibration_drift() -> None:
         v3_ensemble._canonical_sha256(malformed["selected_policy"])
     )
     with pytest.raises(ValueError, match="cannot be below 0.5"):
+        runtime.OpponentMultiTaskEnsembleRuntimeV4(malformed)
+
+    malformed = copy.deepcopy(payload)
+    malformed["calibration"]["model_calibration_artifact_sha256"] = "a" * 64
+    with pytest.raises(ValueError, match="differs from original"):
+        runtime.OpponentMultiTaskEnsembleRuntimeV4(malformed)
+
+    malformed = copy.deepcopy(payload)
+    malformed["calibration"]["member_seed"] = [101, 101, 307]
+    with pytest.raises(ValueError, match="member projection is invalid"):
+        runtime.OpponentMultiTaskEnsembleRuntimeV4(malformed)
+
+    malformed = copy.deepcopy(payload)
+    malformed["source"]["source_collection_complete"] = False
+    with pytest.raises(ValueError, match="complete formal calibration boundary"):
+        runtime.OpponentMultiTaskEnsembleRuntimeV4(malformed)
+
+
+@pytest.mark.parametrize(
+    ("field", "mutate"),
+    [
+        (
+            "uncertainty",
+            lambda calibration: calibration.__setitem__(
+                "uncertainty_std_weight", 0.75
+            ),
+        ),
+        (
+            "offset",
+            lambda calibration: calibration["offsets"][
+                "delta_vs_rule"
+            ].__setitem__(0, 1.0),
+        ),
+        (
+            "response_temperature",
+            lambda calibration: calibration.__setitem__(
+                "response_temperature", 1.25
+            ),
+        ),
+    ],
+)
+def test_v4_ensemble_rejects_flattened_calibration_tampering(
+    field: str, mutate,
+) -> None:
+    malformed = copy.deepcopy(_payload())
+    mutate(malformed["calibration"])
+    # Even updating the convenience projection hash cannot detach the runtime
+    # fields from the gate-bound original calibration payload.
+    projection = runtime.calibration_projection_from_bundle(
+        malformed["calibration"]
+    )
+    digest = runtime.calibration_projection_sha256(projection)
+    malformed["calibration"]["calibration_projection_sha256"] = digest
+    malformed["source"]["calibration_projection_sha256"] = digest
+    with pytest.raises(ValueError, match="differs from original"):
+        runtime.OpponentMultiTaskEnsembleRuntimeV4(malformed)
+
+
+def test_v4_selected_bundle_requires_exact_boundary_and_uncertainty() -> None:
+    malformed = _payload()
+    malformed["source"]["source_completed_passes"] = 159
+    with pytest.raises(ValueError, match="complete formal calibration boundary"):
+        runtime.OpponentMultiTaskEnsembleRuntimeV4(malformed)
+
+    malformed = _payload()
+    original = malformed["calibration"]["original_calibration_artifact"]
+    original["ensemble"]["uncertainty_std_weight"] = 0.75
+    malformed["calibration"]["uncertainty_std_weight"] = 0.75
+    original.pop("payload_sha256")
+    original["payload_sha256"] = v3_ensemble._canonical_sha256(original)
+    projection = runtime.calibration_projection_from_artifact(original)
+    projection_sha256 = runtime.calibration_projection_sha256(projection)
+    malformed["calibration"]["payload_sha256"] = original[
+        "payload_sha256"
+    ]
+    malformed["calibration"][
+        "calibration_projection_sha256"
+    ] = projection_sha256
+    malformed["source"]["calibration_payload_sha256"] = original[
+        "payload_sha256"
+    ]
+    malformed["source"][
+        "calibration_projection_sha256"
+    ] = projection_sha256
+    with pytest.raises(ValueError, match="complete formal calibration boundary"):
+        runtime.OpponentMultiTaskEnsembleRuntimeV4(malformed)
+
+
+def test_v4_ensemble_rejects_original_calibration_artifact_tampering() -> None:
+    malformed = _payload()
+    original = malformed["calibration"]["original_calibration_artifact"]
+    original["value_lower"]["fields"]["match_delta_vs_rule"][
+        "offsets"
+    ][0] = 10.0
+    with pytest.raises(ValueError, match="original calibration payload changed"):
         runtime.OpponentMultiTaskEnsembleRuntimeV4(malformed)

@@ -198,6 +198,10 @@ def test_freeze_creates_five_opponent_disjoint_roles(tmp_path: Path) -> None:
     assert manifest["source_completed_passes"] == 1
     assert manifest["source_requested_passes"] == 2
     assert manifest["source_collection_complete"] is False
+    assert manifest["candidate_snapshot"]["name"] == "candidate"
+    assert manifest["strategy_context_runtime_mode"] == (
+        freeze.STRATEGY_CONTEXT_RUNTIME_MODE
+    )
     assert manifest["invariants"]["deck_blocks_non_overlapping"] is True
     assert manifest["invariants"]["national_response_v2_validated"] is True
     assert manifest["invariants"]["national_70_hand_outcome_validated"] is True
@@ -303,6 +307,32 @@ def test_freeze_binds_candidate_snapshot_digest(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="candidate snapshot digest mismatch"):
+        _freeze(source, tmp_path / "out")
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        lambda row: row.update({"strategy_context_available": True}),
+        lambda row: row.update({"strategy_context_available": "true"}),
+        lambda row: row.update({"strategy_context_available": 1}),
+        lambda row: row["request"].update({
+            "strategy_context_features": [0.0] * 65 + [1.0]
+        }),
+        lambda row: row["request"].update({"strategy_context": {}}),
+    ],
+)
+def test_freeze_rejects_unobserved_strategy_context(
+    tmp_path: Path, tamper,
+) -> None:
+    source = _collection(tmp_path)
+    path = source / "cf_train.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[0].setdefault("request", {})
+    tamper(rows[0])
+    _write_jsonl(path, rows)
+
+    with pytest.raises(RuntimeError, match="zero-context role freeze"):
         _freeze(source, tmp_path / "out")
 
 
