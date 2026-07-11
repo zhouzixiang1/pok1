@@ -126,10 +126,31 @@ class OpponentMultiTaskRuntimeV3:
             raise ValueError("v3 hidden-size contract is invalid")
         self.cross_encoder = str(metadata.get("cross_encoder", ""))
         self.moe_experts = int(metadata.get("moe_experts", 0))
-        if self.cross_encoder not in {"none", "deep_set", "gru", "gru_moe"}:
+        raw_transformer_heads = metadata.get("cross_transformer_heads")
+        self.transformer_heads = (
+            raw_transformer_heads
+            if isinstance(raw_transformer_heads, int)
+            and not isinstance(raw_transformer_heads, bool)
+            else 0
+        )
+        if self.cross_encoder not in {
+            "none", "deep_set", "gru", "gru_moe", "transformer"
+        }:
             raise ValueError("unsupported v3 cross-hand encoder")
         if self.cross_encoder == "gru_moe" and self.moe_experts < 2:
             raise ValueError("GRU MoE requires at least two experts")
+        if self.cross_encoder == "transformer" and (
+            isinstance(raw_transformer_heads, bool)
+            or not isinstance(raw_transformer_heads, int)
+            or self.transformer_heads <= 0
+            or self.hidden["cross_hidden"] % self.transformer_heads
+        ):
+            raise ValueError("invalid v3 temporal transformer dimensions")
+        if (
+            self.cross_encoder != "transformer"
+            and raw_transformer_heads is not None
+        ):
+            raise ValueError("non-transformer v3 model declares transformer heads")
         self._validate_metadata()
         expected = self._expected_shapes()
         if set(weights) != set(expected):
@@ -181,6 +202,16 @@ class OpponentMultiTaskRuntimeV3:
         for key, value in expected.items():
             if self.metadata.get(key) != value:
                 raise ValueError(f"v3 model metadata changed: {key}")
+        if self.cross_encoder == "transformer":
+            layers = self.metadata.get("cross_transformer_layers")
+            if (
+                isinstance(layers, bool)
+                or not isinstance(layers, int)
+                or layers != 1
+                or self.metadata.get("cross_transformer_pooling")
+                != "last_valid_position"
+            ):
+                raise ValueError("v3 transformer metadata changed")
         dropout = _finite(self.metadata.get("dropout"), field="dropout")
         if not 0.0 <= dropout < 1.0:
             raise ValueError("v3 dropout contract is invalid")
@@ -232,6 +263,20 @@ class OpponentMultiTaskRuntimeV3:
                         h["cross_hidden"],
                         h["cross_hidden"],
                     )
+        elif self.cross_encoder == "transformer":
+            size = h["cross_hidden"]
+            shapes["cross_encoder.transformer.position"] = (
+                MAX_CROSS_HANDS, size
+            )
+            linear("cross_encoder.transformer.input_proj", size, CROSS_DIM)
+            for name in ("q_proj", "k_proj", "v_proj", "out_proj"):
+                linear(f"cross_encoder.transformer.{name}", size, size)
+            shapes["cross_encoder.transformer.norm1.weight"] = (size,)
+            shapes["cross_encoder.transformer.norm1.bias"] = (size,)
+            linear("cross_encoder.transformer.ff.0", 2 * size, size)
+            linear("cross_encoder.transformer.ff.2", size, 2 * size)
+            shapes["cross_encoder.transformer.norm2.weight"] = (size,)
+            shapes["cross_encoder.transformer.norm2.bias"] = (size,)
         linear(
             "opponent_fusion.0",
             h["opponent_hidden"],
@@ -327,6 +372,81 @@ class OpponentMultiTaskRuntimeV3:
             _vector(row, size=feature_size, field=field) for row in value
         ]
 
+    def _layer_norm(self, values: list[float], *, prefix: str) -> list[float]:
+        weight = self.weights[f"{prefix}.weight"]
+        bias = self.weights[f"{prefix}.bias"]
+        mean = sum(values) / len(values)
+        variance = sum((value - mean) ** 2 for value in values) / len(values)
+        inverse_std = 1.0 / math.sqrt(variance + 1.0e-5)
+        return [
+            (value - mean) * inverse_std * weight[index] + bias[index]
+            for index, value in enumerate(values)
+        ]
+
+    def _transformer(self, sequence: list[list[float]]) -> list[float]:
+        size = self.hidden["cross_hidden"]
+        heads = self.transformer_heads
+        head_dim = size // heads
+        prefix = "cross_encoder.transformer"
+        position = self.weights[f"{prefix}.position"]
+        values = [
+            [
+                value + position[row_index][feature]
+                for feature, value in enumerate(
+                    self._layer(f"{prefix}.input_proj", row)
+                )
+            ]
+            for row_index, row in enumerate(sequence)
+        ]
+        query = [self._layer(f"{prefix}.q_proj", row) for row in values]
+        key = [self._layer(f"{prefix}.k_proj", row) for row in values]
+        projected_value = [
+            self._layer(f"{prefix}.v_proj", row) for row in values
+        ]
+        attended_rows = []
+        divisor = math.sqrt(head_dim)
+        for row_index in range(len(values)):
+            attended = []
+            for head in range(heads):
+                start = head * head_dim
+                stop = start + head_dim
+                scores = [
+                    sum(
+                        query[row_index][feature] * key[key_index][feature]
+                        for feature in range(start, stop)
+                    ) / divisor
+                    for key_index in range(len(values))
+                ]
+                probabilities = _softmax(scores)
+                attended.extend([
+                    sum(
+                        probabilities[key_index]
+                        * projected_value[key_index][feature]
+                        for key_index in range(len(values))
+                    )
+                    for feature in range(start, stop)
+                ])
+            attended_rows.append(attended)
+        output_rows = []
+        for residual, attended in zip(values, attended_rows, strict=True):
+            projected = self._layer(f"{prefix}.out_proj", attended)
+            normalized = self._layer_norm(
+                [left + right for left, right in zip(residual, projected, strict=True)],
+                prefix=f"{prefix}.norm1",
+            )
+            feed_forward = _relu(self._layer(f"{prefix}.ff.0", normalized))
+            feed_forward = self._layer(f"{prefix}.ff.2", feed_forward)
+            output_rows.append(self._layer_norm(
+                [
+                    left + right
+                    for left, right in zip(
+                        normalized, feed_forward, strict=True
+                    )
+                ],
+                prefix=f"{prefix}.norm2",
+            ))
+        return output_rows[-1]
+
     def _cross_embedding(self, sequence: list[list[float]]) -> list[float]:
         size = self.hidden["cross_hidden"]
         if not sequence or self.cross_encoder == "none":
@@ -348,6 +468,8 @@ class OpponentMultiTaskRuntimeV3:
             return _relu(
                 self._layer("cross_encoder.set_fusion.0", mean + maximum)
             )
+        if self.cross_encoder == "transformer":
+            return self._transformer(sequence)
         embedding = self._gru(
             sequence, prefix="cross_encoder.gru", hidden_size=size
         )

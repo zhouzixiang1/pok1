@@ -118,7 +118,9 @@ def test_deep_set_cross_hand_encoder_is_permutation_invariant() -> None:
     assert torch.allclose(original, permuted, atol=1e-7, rtol=0.0)
 
 
-@pytest.mark.parametrize("encoder", ["none", "deep_set", "gru", "gru_moe"])
+@pytest.mark.parametrize(
+    "encoder", ["none", "deep_set", "gru", "gru_moe", "transformer"]
+)
 def test_supported_cross_encoders_handle_empty_sequences(encoder: str) -> None:
     model = model_v3.model_from_scale("small", cross_encoder=encoder, dropout=0.0)
     model.eval()
@@ -130,6 +132,53 @@ def test_supported_cross_encoders_handle_empty_sequences(encoder: str) -> None:
     assert encoded.shape == (2, 48)
     assert torch.isfinite(encoded).all()
     assert torch.equal(encoded, torch.zeros_like(encoded))
+
+
+def test_temporal_transformer_uses_completed_hand_order() -> None:
+    torch.manual_seed(17)
+    model = model_v3.model_from_scale(
+        "small", cross_encoder="transformer", dropout=0.0
+    ).eval()
+    values = _inputs(batch=1)
+
+    original = model.cross_encoder(
+        values["cross_sequence"], values["cross_lengths"]
+    )
+    reversed_order = model.cross_encoder(
+        values["cross_sequence"].flip(1), values["cross_lengths"]
+    )
+
+    assert not torch.allclose(original, reversed_order, atol=1.0e-7, rtol=0.0)
+    assert model.metadata()["cross_transformer_heads"] == 4
+    assert model.metadata()["cross_transformer_pooling"] == "last_valid_position"
+
+
+def test_temporal_transformer_rejects_nondivisible_heads() -> None:
+    with pytest.raises(ValueError, match="divisible"):
+        model_v3.model_from_scale(
+            "small",
+            cross_encoder="transformer",
+            transformer_heads=5,
+            dropout=0.0,
+        )
+    with pytest.raises(ValueError, match="divisible"):
+        model_v3.model_from_scale(
+            "small",
+            cross_encoder="transformer",
+            transformer_heads=True,
+            dropout=0.0,
+        )
+
+
+def test_temporal_transformer_rejects_overlong_sequence() -> None:
+    model = model_v3.model_from_scale(
+        "small", cross_encoder="transformer", dropout=0.0
+    ).eval()
+    sequence = torch.zeros(1, model_v3.MAX_CROSS_HANDS + 1, 16)
+    lengths = torch.tensor([model_v3.MAX_CROSS_HANDS + 1])
+
+    with pytest.raises(ValueError, match="exceeds transformer maximum"):
+        model.cross_encoder(sequence, lengths)
 
 
 def test_scale_parameter_counts_increase_and_metadata_is_explicit() -> None:

@@ -16,10 +16,10 @@ import opponent_multitask_model_v3 as models  # noqa: E402
 import opponent_multitask_runtime_v3 as runtime  # noqa: E402
 
 
-def _inputs(*, empty: bool = False) -> dict:
+def _inputs(*, empty: bool = False, cross_steps: int | None = None) -> dict:
     generator = torch.Generator().manual_seed(20260711)
     history_steps = 0 if empty else 3
-    cross_steps = 0 if empty else 2
+    cross_steps = 0 if empty else (2 if cross_steps is None else cross_steps)
     state = torch.rand(1, 81, generator=generator)
     profile = torch.rand(1, 12, generator=generator)
     history = torch.rand(1, history_steps, 24, generator=generator)
@@ -69,7 +69,9 @@ def _max_difference(expected, actual) -> float:
     return max(differences, default=0.0)
 
 
-@pytest.mark.parametrize("encoder", ["none", "deep_set", "gru", "gru_moe"])
+@pytest.mark.parametrize(
+    "encoder", ["none", "deep_set", "gru", "gru_moe", "transformer"]
+)
 def test_stdlib_value_and_response_match_torch(encoder: str) -> None:
     torch.manual_seed(101)
     model = models.model_from_scale(
@@ -148,6 +150,33 @@ def test_empty_sequences_match_torch() -> None:
     assert _max_difference(expected, actual) < 1.0e-5
 
 
+def test_transformer_max_length_matches_torch() -> None:
+    torch.manual_seed(223)
+    model = models.model_from_scale(
+        "small", cross_encoder="transformer", dropout=0.0
+    ).eval()
+    inputs = _inputs(cross_steps=runtime.MAX_CROSS_HANDS)
+    with torch.no_grad():
+        expected = model.forward_value(**{
+            key: inputs[key]
+            for key in (
+                "state", "profile", "history", "history_lengths",
+                "cross_sequence", "cross_lengths", "rule_action",
+                "strategy_context",
+            )
+        })
+    actual = runtime.OpponentMultiTaskRuntimeV3(_payload(model)).predict_value(
+        state=inputs["state"][0].tolist(),
+        profile=inputs["profile"][0].tolist(),
+        history=inputs["history"][0].tolist(),
+        cross_sequence=inputs["cross_sequence"][0].tolist(),
+        rule_action=inputs["rule_action"][0].tolist(),
+        strategy_context=inputs["strategy_context"][0].tolist(),
+    )
+
+    assert _max_difference(expected, actual) < 2.0e-5
+
+
 def test_response_runtime_masks_private_state_again() -> None:
     torch.manual_seed(307)
     model = models.model_from_scale("small", dropout=0.0).eval()
@@ -182,6 +211,24 @@ def test_runtime_rejects_weight_shape_or_key_drift() -> None:
     malformed = copy.deepcopy(payload)
     malformed["weights"]["unexpected.weight"] = [[0.0]]
     with pytest.raises(ValueError, match="weight keys changed"):
+        runtime.OpponentMultiTaskRuntimeV3(malformed)
+
+    transformer = models.model_from_scale(
+        "small", cross_encoder="transformer", dropout=0.0
+    ).eval()
+    malformed = _payload(transformer)
+    malformed["model_metadata"]["cross_transformer_heads"] = 5
+    with pytest.raises(ValueError, match="transformer dimensions"):
+        runtime.OpponentMultiTaskRuntimeV3(malformed)
+
+    malformed = _payload(transformer)
+    malformed["model_metadata"]["cross_transformer_heads"] = True
+    with pytest.raises(ValueError, match="transformer dimensions"):
+        runtime.OpponentMultiTaskRuntimeV3(malformed)
+
+    malformed = _payload(transformer)
+    malformed["model_metadata"]["cross_transformer_layers"] = True
+    with pytest.raises(ValueError, match="transformer metadata"):
         runtime.OpponentMultiTaskRuntimeV3(malformed)
 
 

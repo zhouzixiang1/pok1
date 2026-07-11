@@ -63,12 +63,12 @@ def test_scaling_aggregates_every_v4_selection_key_component() -> None:
     )
 
 
-def test_formal_scaling_requires_three_seeds_two_configs_and_complete_source() -> None:
+def test_formal_scaling_requires_all_encoders_three_seeds_and_complete_source() -> None:
     seeds = [101, 211, 307]
     rows = [
         *[_row(scale, encoder, seed, [0.1] * 4)
-          for scale in ("small", "medium")
-          for encoder in ("gru", "deep_set")
+          for scale in scaling.FORMAL_SCALES
+          for encoder in scaling.FORMAL_ENCODERS
           for seed in seeds],
     ]
     configurations, selected = scaling.summarize_runs(
@@ -85,6 +85,29 @@ def test_formal_scaling_requires_three_seeds_two_configs_and_complete_source() -
         rows,
         [row for row in configurations if row["scale"] == "small"],
         selected,
+        allow_incomplete_smoke=False,
+    )
+    without_transformer = [
+        row for row in configurations if row["encoder"] != "transformer"
+    ]
+    assert not scaling.formal_selection_allowed(
+        rows,
+        without_transformer,
+        selected,
+        allow_incomplete_smoke=False,
+    )
+    missing_pair_rows = [
+        row
+        for row in rows
+        if (row["scale"], row["encoder"]) != ("small", "deep_set")
+    ]
+    missing_pair_configurations, missing_pair_selected = scaling.summarize_runs(
+        missing_pair_rows, required_seeds=seeds
+    )
+    assert not scaling.formal_selection_allowed(
+        missing_pair_rows,
+        missing_pair_configurations,
+        missing_pair_selected,
         allow_incomplete_smoke=False,
     )
     rows[0]["source_collection_complete"] = False
@@ -106,8 +129,8 @@ def test_formal_scaling_rejects_cpu_training_rows() -> None:
     seeds = [101, 211, 307]
     rows = [
         _row(scale, encoder, seed, [0.1] * 4)
-        for scale in ("small", "medium")
-        for encoder in ("gru", "deep_set")
+        for scale in scaling.FORMAL_SCALES
+        for encoder in scaling.FORMAL_ENCODERS
         for seed in seeds
     ]
     configurations, selected = scaling.summarize_runs(
@@ -171,4 +194,52 @@ def test_training_report_device_must_match_requested_device() -> None:
             seed=101,
             run_id="run-1",
             device="cpu",
+        )
+
+
+def test_transformer_training_report_binds_head_count() -> None:
+    report = {
+        "schema": REPORT_SCHEMA,
+        "run_id": "run-transformer",
+        "opened_roles": ["train", "early_stop"],
+        "model_calibration_opened": False,
+        "policy_roles_opened": False,
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+        "native_tcp_evaluated": False,
+        "model": {
+            "format": MODEL_FORMAT,
+            "scale": "small",
+            "cross_encoder": "transformer",
+            "cross_transformer_heads": 4,
+        },
+        "config": {"seed": 101, "cross_transformer_heads": 4},
+        "environment": {"device": "cuda"},
+        "early_stop": {
+            "selection_key": [0.1, 0.2, 0.3, 0.4],
+            "selection_key_order": list(scaling.SELECTION_KEY_ORDER),
+            "selection_key_is_lexicographic": True,
+            "selection_score_is_strength_evidence": False,
+        },
+    }
+
+    assert scaling.validate_training_report(
+        report,
+        scale="small",
+        encoder="transformer",
+        seed=101,
+        run_id="run-transformer",
+        device="cuda",
+        transformer_heads=4,
+    ) == [0.1, 0.2, 0.3, 0.4]
+    report["model"]["cross_transformer_heads"] = 8
+    with pytest.raises(ValueError, match="role contract"):
+        scaling.validate_training_report(
+            report,
+            scale="small",
+            encoder="transformer",
+            seed=101,
+            run_id="run-transformer",
+            device="cuda",
+            transformer_heads=4,
         )

@@ -988,16 +988,16 @@ rows. These are pipeline and collection-progress facts, not strength evidence.
 
 `export_opponent_multitask_v3.py` and
 `opponent_multitask_runtime_v3.py` now provide a deterministic JSON export and
-stdlib-only forward path for every currently selectable cross-hand encoder:
-none, Deep Sets, GRU, and GRU+MoE. The loader derives the exact expected matrix
+stdlib-only forward path for every supported cross-hand encoder: none, Deep
+Sets, GRU, GRU+MoE, and temporal Transformer. The loader derives the exact matrix
 shape from the frozen hidden-size and model metadata contracts, rejects missing
 or extra tensors, checks every value and the total parameter count, and masks
 response-private state again at inference. It implements linear/ReLU stacks,
 PyTorch-compatible GRU gates, Deep Sets masked mean/max, MoE routing,
 monotonic softplus quantiles, sigmoid size heads, and legal-action logit masks
-without Torch, NumPy, or network access. Eight focused tests cover all four
+without Torch, NumPy, or network access. Focused tests cover all five
 encoders, empty histories, private-state invariance, malformed weights, and
-byte-deterministic export. Across the four random small-model parity cases, all
+byte-deterministic export. Across the five random small-model parity cases, all
 97 value/response outputs differed from Torch by less than `1e-5` (observed
 maxima were approximately `1.7e-7` to `2.6e-7`).
 
@@ -1238,8 +1238,11 @@ member-binding drift. The full neural-lab suite now passes 340 tests, with all
 
 The v4 contract is now connected through the complete protected development
 path. Formal `run_opponent_multitask_v4_scaling.py` requires the exact atomic
-160/160 collection boundary, CUDA training, at least two parameter scales,
-at least two encoder architectures, and at least three distinct seeds. It
+160/160 collection boundary, CUDA training, every small/medium/large parameter
+scale, every Deep Sets/GRU/GRU+MoE/temporal-Transformer encoder, and at least
+three distinct seeds. `none` remains an explicit cross-hand ablation and is not
+eligible to substitute for a formal architecture. The default formal matrix is
+therefore 3 scales x 4 encoders x seeds 101/211/307, or 36 training jobs. It
 aggregates the four-component early-stop key lexicographically, so chip/value
 metrics cannot outrank the 70-hand outcome errors. Calibration verifies every
 real checkpoint/report/authorization in the full Cartesian grid on CPU,
@@ -1323,8 +1326,8 @@ and contained 1,712/158/230/240/465 value rows and
 7,898/877/1,101/1,382/1,384 behavior rows for train, early stop, model
 calibration, policy selection, and policy gate. A one-epoch, one-seed small-GRU
 CUDA run exercised scaling and ensemble calibration; this deliberately cannot
-meet the formal three-seed/two-scale/two-encoder contract. The ensemble and
-outcome calibration payload SHA-256 values were
+meet the formal all-scale, all-required-encoder, three-seed contract. The
+ensemble and outcome calibration payload SHA-256 values were
 `0a170a7262920229e8e11780926c1545976bbedbe82b9e4abdcc406fdca8aa3a`
 and `5ee1017a361aa09b64f7f83f18fd22c37dc077d478e28ac8c9d620995163adc5`.
 
@@ -1338,6 +1341,35 @@ the exposure ledger contains no policy-gate event, and the builder created no
 version directory. This is fail-closed pipeline evidence only. No new bot
 version or strength claim exists. The complete neural-lab suite now passes 449
 tests, and all 30 national protocol tests pass.
+
+## Formal V4 Architecture Grid Hardening
+
+The v4 architecture contract now includes a single-layer temporal Transformer
+as another cross-hand opponent encoder inside the same network, rather than as
+a copied trainer or a separate policy path. It consumes the same at-most-32
+completed-hand sequence as Deep Sets, GRU, and GRU+MoE; the current-hand GRU,
+opponent fusion, value/response/outcome heads, losses, role boundaries, and
+win-first selector remain shared. The block uses a learned position table,
+multi-head self-attention, two residual LayerNorm stages, and a two-layer ReLU
+feed-forward network, then returns the last valid completed-hand token. Empty
+history remains an exact zero embedding.
+
+The stdlib runtime implements the same bounded attention and validates every
+projection, position, LayerNorm, and feed-forward tensor shape before it can
+run. Torch-versus-stdlib tests cover empty input and the full 32-hand window,
+and the three-member ensemble export/reload path now exercises Transformer
+members directly. Invalid head divisibility and metadata drift fail closed.
+Training checkpoints additionally bind the inherited v3 model and batch code,
+which are direct semantic dependencies of v4.
+
+The scaling summary and independently recomputed calibration proof were
+versioned forward. Formal selection now rejects any grid missing one of the
+three scales, any required encoder, any of three seeds, the exact 160/160
+boundary, or CUDA execution. These are architecture-chain guarantees only:
+they do not open policy-selection, policy-gate, or held-out roles, and they do
+not create strength evidence before the independent collection is complete.
+After this hardening, the complete neural-lab suite passes 484 tests and all 33
+national protocol tests pass.
 
 ## Literature Recheck And Search Direction
 
