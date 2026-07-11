@@ -217,6 +217,11 @@ def archive_and_initialize(
     reason: str,
 ) -> dict[str, Any]:
     root = Path(results_dir)
+    # Resolve/import every evaluator identity dependency before moving any
+    # authoritative payload.  A broken CLI environment must fail while the old
+    # ratings are still intact, rather than leaving a complete archive but no
+    # replacement manifest.
+    base_evaluation_identity()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     destination = root / "archive" / "evaluation_identity" / timestamp
     with _manifest_lock(root):
