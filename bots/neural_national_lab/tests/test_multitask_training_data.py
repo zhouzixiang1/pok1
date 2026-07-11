@@ -70,6 +70,12 @@ def _value_row(opponent: str, seed: int, *, eligible: int = 24) -> dict:
         "selected_decisions": selected,
         "decision_inclusion_probability": probability,
         "decision_inverse_probability_weight": 1.0 / probability,
+        "_collection_hands": 70,
+        "baseline_match_net_chips": 1_000.0,
+        "match_action_values": [
+            None, None, 1_000.0, 1_000.0 + seed, None, 1_000.0 - seed,
+        ],
+        "probes": [],
         "state_features": [0.5] * 48,
         "legal_mask": mask,
         "rule_label_id": 2,
@@ -315,6 +321,12 @@ def test_encoded_value_accepts_only_versioned_strategy_context() -> None:
     assert encoded["value_targets"]["delta_vs_rule"] == [
         0.0, 0.0, 0.0, 1.0, 0.0, -1.0
     ]
+    outcome = encoded["match_outcome_supervision"]
+    assert outcome["hands"] == 70
+    assert outcome["baseline_match_positive"] == 1
+    assert outcome["match_positive_targets"][2] == 1
+    assert outcome["match_positive_uplift_targets"][0] == 0
+    assert outcome["target_mask"] == [0, 0, 1, 1, 0, 1]
 
     row["strategy_context_schema"] = "unknown"
     with pytest.raises(ValueError, match="unsupported strategy"):

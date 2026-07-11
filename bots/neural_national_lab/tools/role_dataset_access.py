@@ -18,6 +18,11 @@ from freeze_opponent_role_dataset import (  # noqa: E402
     PREFIXES,
     SCHEMA as ROLE_DATASET_SCHEMA,
 )
+from match_outcome_schema import (  # noqa: E402
+    MATCH_OUTCOME_ESTIMAND,
+    MATCH_OUTCOME_SCHEMA,
+    derive_match_outcome_supervision,
+)
 from opponent_exposure_ledger import open_exposure, status  # noqa: E402
 from opponent_response_schema import (  # noqa: E402
     OPPONENT_RESPONSE_SCHEMA,
@@ -32,13 +37,16 @@ ROLE_PREREQUISITES = {
     "policy_gate": ("policy_selection",),
 }
 POLICY_SELECTION_RESULT_SCHEMA = "policy_selection_result_v2"
-POLICY_OFFLINE_ESTIMAND = "single_decision_action_uplift_ipw_v2"
+POLICY_OFFLINE_ESTIMAND = (
+    "single_decision_action_uplift_ipw_v3_win_first_70_hand"
+)
 REQUIRED_INVARIANTS = (
     "opponent_disjoint",
     "match_cluster_disjoint",
     "deck_blocks_non_overlapping",
     "uniform_decision_ipw_validated",
     "national_response_v2_validated",
+    "national_70_hand_outcome_validated",
     "artifact_snapshots_verified",
 )
 
@@ -96,6 +104,13 @@ class RoleDatasetAccess:
             or behavior_supervision.get("schema") != OPPONENT_RESPONSE_SCHEMA
         ):
             raise ValueError("role dataset has invalid behavior supervision")
+        match_outcome = manifest.get("match_outcome_supervision")
+        if (
+            not isinstance(match_outcome, dict)
+            or match_outcome.get("schema") != MATCH_OUTCOME_SCHEMA
+            or match_outcome.get("required_for_win_first_policy_evidence") is not True
+        ):
+            raise ValueError("role dataset has invalid match outcome supervision")
         roles = manifest.get("roles")
         outputs = manifest.get("outputs")
         if not isinstance(roles, dict) or set(roles) != set(EVIDENCE_ROLES):
@@ -207,6 +222,7 @@ class RoleDatasetAccess:
             or report.get("candidate_sha256") != candidate_sha256
             or report.get("role_manifest_sha256") != self.manifest_sha256
             or report.get("offline_estimand") != POLICY_OFFLINE_ESTIMAND
+            or report.get("match_outcome_estimand") != MATCH_OUTCOME_ESTIMAND
             or report.get("deployment_policy_value") is not False
             or report.get("strength_evidence") is not False
             or report.get("policy_gate_opened") is not False
@@ -253,6 +269,14 @@ class RoleDatasetAccess:
                 except ValueError as exc:
                     raise RuntimeError(
                         f"invalid response row: {filename}:{line_number}: {exc}"
+                    ) from exc
+            else:
+                try:
+                    derive_match_outcome_supervision(row, required=True)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"invalid match outcome row: "
+                        f"{filename}:{line_number}: {exc}"
                     ) from exc
             rows.append(row)
         if len(rows) != expected["rows"]:

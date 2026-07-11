@@ -32,6 +32,7 @@ SOURCE_SPLIT = {
 
 
 def _value_row(name: str, deck: int, bot: int) -> dict:
+    mask = [0, 0, 1, 1, 0, 0]
     return {
         "status": "ok",
         "opponent": name,
@@ -48,6 +49,13 @@ def _value_row(name: str, deck: int, bot: int) -> dict:
         "selected_decisions": 12,
         "decision_inclusion_probability": 0.5,
         "decision_inverse_probability_weight": 2.0,
+        "legal_mask": mask,
+        "rule_label_id": 2,
+        "baseline_match_net_chips": 100,
+        "match_delta_vs_rule": [None, None, 0.0, -200.0, None, None],
+        "match_action_values": [None, None, 100.0, -100.0, None, None],
+        "target_masks": {"match_delta_vs_rule": mask},
+        "probes": [],
     }
 
 
@@ -186,12 +194,14 @@ def test_freeze_creates_five_opponent_disjoint_roles(tmp_path: Path) -> None:
 
     manifest = _freeze(source, output)
 
-    assert manifest["schema"] == "opponent_role_dataset_v2"
+    assert manifest["schema"] == "opponent_role_dataset_v3"
     assert manifest["source_completed_passes"] == 1
     assert manifest["source_requested_passes"] == 2
     assert manifest["source_collection_complete"] is False
     assert manifest["invariants"]["deck_blocks_non_overlapping"] is True
     assert manifest["invariants"]["national_response_v2_validated"] is True
+    assert manifest["invariants"]["national_70_hand_outcome_validated"] is True
+    assert manifest["match_outcome_supervision"]["hands"] == 70
     assert manifest["behavior_supervision"]["schema"] == (
         "national_opponent_response_v2"
     )

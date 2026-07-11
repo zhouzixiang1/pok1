@@ -8,6 +8,11 @@ TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import evaluate_opponent_multitask_v3_policy_gate as gate  # noqa: E402
+from match_outcome_schema import (  # noqa: E402
+    MATCH_OUTCOME_ESTIMAND,
+    MATCH_OUTCOME_SCHEMA,
+    POSITIVE_OUTCOME_RULE,
+)
 import policy_role_evidence as evidence  # noqa: E402
 
 
@@ -45,6 +50,14 @@ def _rows(*, negative_second: bool = False) -> list[dict]:
                     "cluster": f"{opponent}|{cluster}",
                     "rule_id": 1,
                     "sampling_weight": 1.0,
+                    "match_outcome": {
+                        "schema": MATCH_OUTCOME_SCHEMA,
+                        "estimand": MATCH_OUTCOME_ESTIMAND,
+                        "hands": 70,
+                        "positive_outcome_rule": POSITIVE_OUTCOME_RULE,
+                        "baseline_match_net_chips": 100.0,
+                        "baseline_match_positive": 1,
+                    },
                     "decision": {"decision": decision},
                     "values": values,
                     "candidates": [{
@@ -55,6 +68,12 @@ def _rows(*, negative_second: bool = False) -> list[dict]:
                         "hand_delta": observed,
                         "tail_delta": observed,
                         "match_delta": observed,
+                        "match_outcome_schema": MATCH_OUTCOME_SCHEMA,
+                        "forced_match_net_chips": 100.0 + observed,
+                        "forced_match_positive": int(100.0 + observed > 0.0),
+                        "match_positive_uplift": (
+                            int(100.0 + observed > 0.0) - 1
+                        ),
                     }],
                 })
     return rows

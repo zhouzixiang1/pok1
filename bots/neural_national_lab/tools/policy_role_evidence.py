@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+from match_outcome_schema import MATCH_OUTCOME_ESTIMAND
 from role_dataset_access import (
     POLICY_OFFLINE_ESTIMAND,
     POLICY_SELECTION_RESULT_SCHEMA,
@@ -17,13 +18,17 @@ from role_dataset_access import (
 
 
 POLICY_SELECTION_PHASE_SCHEMA = "policy_selection_phase_v1"
-POLICY_GATE_RESULT_SCHEMA = "policy_gate_result_v1"
+POLICY_GATE_RESULT_SCHEMA = "policy_gate_result_v2"
 DEFAULT_THRESHOLDS = {
     "min_overrides": 12,
     "min_override_clusters": 8,
     "min_overrides_per_opponent": 4,
     "min_cluster_ci_lower": 0.0,
     "min_opponent_stratified_ci_lower": 0.0,
+    "min_match_outcome_coverage": 1.0,
+    "min_match_positive_rate_ci_lower": 0.5,
+    "min_match_positive_uplift_ci_lower": 0.0,
+    "min_opponent_match_positive_rate": 0.5,
 }
 
 
@@ -91,9 +96,22 @@ def _thresholds(overrides: Mapping[str, Any] | None) -> dict[str, float | int]:
             raise ValueError(f"{field} must be a positive integer")
         result[field] = int(value)
     for field in (
-        "min_cluster_ci_lower", "min_opponent_stratified_ci_lower"
+        "min_cluster_ci_lower",
+        "min_opponent_stratified_ci_lower",
+        "min_match_outcome_coverage",
+        "min_match_positive_rate_ci_lower",
+        "min_match_positive_uplift_ci_lower",
+        "min_opponent_match_positive_rate",
     ):
         result[field] = _finite(result[field], field=field)
+    if result["min_match_outcome_coverage"] != 1.0:
+        raise ValueError("min_match_outcome_coverage must remain 1.0")
+    if not 0.5 <= result["min_match_positive_rate_ci_lower"] <= 1.0:
+        raise ValueError("min_match_positive_rate_ci_lower cannot be weakened")
+    if not 0.0 <= result["min_match_positive_uplift_ci_lower"] <= 1.0:
+        raise ValueError("min_match_positive_uplift_ci_lower cannot be weakened")
+    if not 0.5 <= result["min_opponent_match_positive_rate"] <= 1.0:
+        raise ValueError("min_opponent_match_positive_rate cannot be weakened")
     return result
 
 
@@ -101,6 +119,41 @@ def _gate_errors(
     evaluation: Mapping[str, Any], thresholds: Mapping[str, Any]
 ) -> list[str]:
     errors = []
+    if evaluation.get("match_outcome_estimand") != MATCH_OUTCOME_ESTIMAND:
+        errors.append("match_outcome_estimand_missing")
+    coverage = thresholds["min_match_outcome_coverage"]
+    if _finite(
+        evaluation.get("match_outcome_row_coverage", 0.0),
+        field="match outcome row coverage",
+    ) < coverage:
+        errors.append(f"match_outcome_row_coverage<{coverage}")
+    if _finite(
+        evaluation.get("match_outcome_cluster_coverage", 0.0),
+        field="match outcome cluster coverage",
+    ) < coverage:
+        errors.append(f"match_outcome_cluster_coverage<{coverage}")
+    for field in (
+        "match_positive_rate_cluster_bootstrap_ci",
+        "match_positive_rate_opponent_stratified_cluster_ci",
+    ):
+        lower = _finite(
+            (evaluation.get(field) or {}).get("lower", 0.0),
+            field=f"{field} lower",
+        )
+        threshold = thresholds["min_match_positive_rate_ci_lower"]
+        if lower <= threshold:
+            errors.append(f"{field}_lower<={threshold}")
+    for field in (
+        "match_positive_uplift_cluster_bootstrap_ci",
+        "match_positive_uplift_opponent_stratified_cluster_ci",
+    ):
+        lower = _finite(
+            (evaluation.get(field) or {}).get("lower", 0.0),
+            field=f"{field} lower",
+        )
+        threshold = thresholds["min_match_positive_uplift_ci_lower"]
+        if lower < threshold:
+            errors.append(f"{field}_lower<{threshold}")
     selected = evaluation.get("selected_policy")
     if not isinstance(selected, Mapping) or not selected:
         errors.append("selected_policy_missing")
@@ -144,6 +197,22 @@ def _gate_errors(
                 )
             if _finite(row.get("mean", 0.0), field=f"{opponent}.mean") < 0.0:
                 errors.append(f"{opponent}:negative_mean")
+            if int(row.get("match_outcome_clusters", 0) or 0) < 1:
+                errors.append(f"{opponent}:match_outcome_clusters<1")
+            positive_rate = _finite(
+                row.get("match_positive_rate", 0.0),
+                field=f"{opponent}.match_positive_rate",
+            )
+            if positive_rate < thresholds["min_opponent_match_positive_rate"]:
+                errors.append(
+                    f"{opponent}:match_positive_rate<"
+                    f"{thresholds['min_opponent_match_positive_rate']}"
+                )
+            if _finite(
+                row.get("match_positive_uplift_mean", 0.0),
+                field=f"{opponent}.match_positive_uplift_mean",
+            ) < 0.0:
+                errors.append(f"{opponent}:match_positive_uplift_mean<0")
     return errors
 
 
@@ -156,6 +225,7 @@ def build_policy_selection_result(
     if (
         phase.get("schema") != POLICY_SELECTION_PHASE_SCHEMA
         or evaluation.get("offline_estimand") != POLICY_OFFLINE_ESTIMAND
+        or evaluation.get("match_outcome_estimand") != MATCH_OUTCOME_ESTIMAND
         or evaluation.get("deployment_policy_value") is not False
         or evaluation.get("strength_evidence") is not False
     ):
@@ -186,6 +256,7 @@ def build_policy_selection_result(
         "evaluation_report_sha256": _canonical_sha256(evaluation),
         "selected_policy_sha256": selected_sha256,
         "offline_estimand": POLICY_OFFLINE_ESTIMAND,
+        "match_outcome_estimand": MATCH_OUTCOME_ESTIMAND,
         "deployment_policy_value": False,
         "strength_evidence": False,
         "policy_gate_opened": False,
@@ -197,6 +268,12 @@ def build_policy_selection_result(
                 "override_clusters",
                 "match_cluster_bootstrap_mean_ci",
                 "match_opponent_stratified_cluster_ci",
+                "match_positive_rate_cluster_bootstrap_ci",
+                "match_positive_rate_opponent_stratified_cluster_ci",
+                "match_positive_uplift_cluster_bootstrap_ci",
+                "match_positive_uplift_opponent_stratified_cluster_ci",
+                "match_outcome_row_coverage",
+                "match_outcome_cluster_coverage",
                 "by_opponent",
             )
         },
@@ -266,6 +343,7 @@ def build_policy_gate_result(
         or phase.get("deployment_policy_value") is not False
         or phase.get("strength_evidence") is not False
         or evaluation.get("offline_estimand") != POLICY_OFFLINE_ESTIMAND
+        or evaluation.get("match_outcome_estimand") != MATCH_OUTCOME_ESTIMAND
         or evaluation.get("policy_search_performed") is not False
         or evaluation.get("source_collection_complete") is not True
         or evaluation.get("deployment_policy_value") is not False
@@ -301,6 +379,7 @@ def build_policy_gate_result(
         "evaluation_report_sha256": _canonical_sha256(evaluation),
         "selected_policy_sha256": selected_sha256,
         "offline_estimand": POLICY_OFFLINE_ESTIMAND,
+        "match_outcome_estimand": MATCH_OUTCOME_ESTIMAND,
         "deployment_policy_value": False,
         "strength_evidence": False,
         "native_candidate_build_authorized": not errors,
@@ -312,6 +391,12 @@ def build_policy_gate_result(
                 "override_clusters",
                 "match_cluster_bootstrap_mean_ci",
                 "match_opponent_stratified_cluster_ci",
+                "match_positive_rate_cluster_bootstrap_ci",
+                "match_positive_rate_opponent_stratified_cluster_ci",
+                "match_positive_uplift_cluster_bootstrap_ci",
+                "match_positive_uplift_opponent_stratified_cluster_ci",
+                "match_outcome_row_coverage",
+                "match_outcome_cluster_coverage",
                 "by_opponent",
             )
         },

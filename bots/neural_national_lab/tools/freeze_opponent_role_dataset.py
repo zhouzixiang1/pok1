@@ -23,6 +23,10 @@ from freeze_oppmodel_dataset import (  # noqa: E402
     _write_jsonl,
 )
 from longrun_collect_oppmodel import _directory_digest  # noqa: E402
+from match_outcome_schema import (  # noqa: E402
+    derive_match_outcome_supervision,
+    match_outcome_metadata,
+)
 from opponent_response_schema import (  # noqa: E402
     OPPONENT_RESPONSE_SCHEMA,
     annotate_response_rows,
@@ -31,7 +35,7 @@ from opponent_response_schema import (  # noqa: E402
 from sampling_weights import decision_sampling_weight  # noqa: E402
 
 
-SCHEMA = "opponent_role_dataset_v2"
+SCHEMA = "opponent_role_dataset_v3"
 SOURCE_SPLITS = ("train", "val", "held_out")
 PREFIXES = ("cf", "opponent_actions")
 EVIDENCE_ROLES = (
@@ -288,6 +292,12 @@ def _validate_rows(
                     if int(row.get("invalid_probe_count", -1)) != 0:
                         raise RuntimeError(f"value row contains invalid probes: {key}")
                     _validate_ipw(row)
+                    try:
+                        derive_match_outcome_supervision(row, required=True)
+                    except ValueError as exc:
+                        raise RuntimeError(
+                            f"value row has invalid 70-hand outcome: {key}: {exc}"
+                        ) from exc
                     decision = (
                         key,
                         _integer(row.get("hand"), field="hand", minimum=1),
@@ -537,12 +547,14 @@ def freeze_role_dataset(
                 **response_schema_metadata(),
                 "source_split_counts": response_counts,
             },
+            "match_outcome_supervision": match_outcome_metadata(),
             "invariants": {
                 "opponent_disjoint": True,
                 "match_cluster_disjoint": True,
                 "deck_blocks_non_overlapping": True,
                 "uniform_decision_ipw_validated": True,
                 "national_response_v2_validated": True,
+                "national_70_hand_outcome_validated": True,
                 "artifact_snapshots_verified": True,
                 "final_blind_in_dataset": False,
             },

@@ -333,6 +333,7 @@ def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
         policy_min_hand_lcb=-1.0,
         policy_allow_negative_opponent=False,
         allow_missing_cross_hand_sequence=False,
+        allow_missing_match_outcome=False,
     )
     audit = {
         "value_rows": {"train": requirements["value_train_rows"]},
@@ -415,6 +416,10 @@ def _post_selection_args() -> SimpleNamespace:
         policy_min_held_out_overrides=10,
         policy_min_held_out_override_clusters=8,
         policy_min_held_out_ci_lower=0.0,
+        policy_min_match_positive_rate_ci_lower=0.5,
+        policy_min_match_positive_uplift_ci_lower=0.0,
+        policy_min_opponent_match_positive_rate=0.5,
+        allow_missing_match_outcome=False,
     )
 
 
@@ -453,7 +458,11 @@ def test_post_selection_opens_held_out_only_after_calibration_passes(
         }
 
     monkeypatch.setattr(scaling, "read_policy_rows", read_rows)
-    monkeypatch.setattr(scaling, "prepare_policy_rows", lambda rows, _ensemble: rows)
+    monkeypatch.setattr(
+        scaling,
+        "prepare_policy_rows",
+        lambda rows, _ensemble, **_kwargs: rows,
+    )
     monkeypatch.setattr(scaling, "evaluate_policy_config", evaluate)
     monkeypatch.setattr(
         scaling,

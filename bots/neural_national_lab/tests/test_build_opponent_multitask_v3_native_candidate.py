@@ -51,6 +51,34 @@ def _artifacts(tmp_path: Path, *, passed: bool = True) -> tuple[Path, Path, dict
         "policy_search_performed": False,
         "deployment_policy_value": False,
         "strength_evidence": False,
+        "offline_estimand": builder.POLICY_OFFLINE_ESTIMAND,
+        "match_outcome_estimand": builder.MATCH_OUTCOME_ESTIMAND,
+        "match_outcome_row_coverage": 1.0,
+        "match_outcome_cluster_coverage": 1.0,
+        "match_positive_rate_cluster_bootstrap_ci": {
+            "lower": 0.6, "mean": 0.7, "upper": 0.8,
+        },
+        "match_positive_rate_opponent_stratified_cluster_ci": {
+            "lower": 0.6, "mean": 0.7, "upper": 0.8,
+        },
+        "match_positive_uplift_cluster_bootstrap_ci": {
+            "lower": 0.0, "mean": 0.1, "upper": 0.2,
+        },
+        "match_positive_uplift_opponent_stratified_cluster_ci": {
+            "lower": 0.0, "mean": 0.1, "upper": 0.2,
+        },
+        "by_opponent": {
+            "national_v1": {
+                "match_outcome_clusters": 8,
+                "match_positive_rate": 0.7,
+                "match_positive_uplift_mean": 0.1,
+            },
+            "national_v2": {
+                "match_outcome_clusters": 8,
+                "match_positive_rate": 0.7,
+                "match_positive_uplift_mean": 0.1,
+            },
+        },
     }
     result = {
         "schema": builder.GATE_RESULT_SCHEMA,
@@ -65,6 +93,14 @@ def _artifacts(tmp_path: Path, *, passed: bool = True) -> tuple[Path, Path, dict
         "evaluation_report_sha256": builder._canonical_sha256(evaluation),
         "deployment_policy_value": False,
         "strength_evidence": False,
+        "offline_estimand": builder.POLICY_OFFLINE_ESTIMAND,
+        "match_outcome_estimand": builder.MATCH_OUTCOME_ESTIMAND,
+        "thresholds": {
+            "min_match_outcome_coverage": 1.0,
+            "min_match_positive_rate_ci_lower": 0.5,
+            "min_match_positive_uplift_ci_lower": 0.0,
+            "min_opponent_match_positive_rate": 0.5,
+        },
     }
     _write(gate / "policy_gate_evaluation.json", evaluation)
     _write(gate / "policy_gate_result.json", result)
@@ -141,6 +177,22 @@ def test_failed_policy_gate_cannot_authorize_candidate(
 
     with pytest.raises(ValueError, match="does not authorize"):
         builder.verify_build_authorization(gate, bundle)
+
+
+def test_builder_independently_rejects_win_first_evidence_below_floor(
+    tmp_path: Path,
+) -> None:
+    gate, _bundle, _selected = _artifacts(tmp_path, passed=True)
+    evaluation = json.loads(
+        (gate / "policy_gate_evaluation.json").read_text(encoding="utf-8")
+    )
+    result = json.loads(
+        (gate / "policy_gate_result.json").read_text(encoding="utf-8")
+    )
+    evaluation["match_positive_rate_cluster_bootstrap_ci"]["lower"] = 0.49
+
+    with pytest.raises(ValueError, match="positive-rate evidence"):
+        builder._verify_win_first_evidence(evaluation, result)
 
 
 def test_passing_gate_builds_merged_native_candidate_without_old_version_mutation(

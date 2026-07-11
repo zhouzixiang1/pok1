@@ -18,6 +18,13 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from feature_spec import LABELS  # noqa: E402
+from match_outcome_schema import (  # noqa: E402
+    MATCH_OUTCOME_ESTIMAND,
+    MATCH_OUTCOME_SCHEMA,
+    candidate_outcome,
+    derive_match_outcome_supervision,
+    policy_outcome_context,
+)
 from opp_multitask_ensemble_runtime import OpponentMultiTaskEnsemble  # noqa: E402
 from sampling_weights import decision_sampling_weight  # noqa: E402
 from train_opponent_multitask_net import (  # noqa: E402
@@ -26,7 +33,7 @@ from train_opponent_multitask_net import (  # noqa: E402
 )
 
 
-OFFLINE_ESTIMAND = "single_decision_action_uplift_ipw_v2"
+OFFLINE_ESTIMAND = "single_decision_action_uplift_ipw_v3_win_first_70_hand"
 
 
 def _read(path: Path) -> list[dict[str, Any]]:
@@ -183,6 +190,71 @@ def _opponent_stratified_cluster_ci(
     }
 
 
+def _cluster_point_values(
+    clusters: dict[str, list[Any]],
+) -> list[float]:
+    points = []
+    for values in clusters.values():
+        pairs = _weighted_pairs(values)
+        if pairs:
+            points.append(_weighted_mean(
+                [value for value, _ in pairs],
+                [weight for _, weight in pairs],
+            ))
+    return points
+
+
+def _equal_cluster_bootstrap_mean_ci(
+    clusters: dict[str, list[Any]],
+    *,
+    samples: int,
+    seed: int,
+) -> dict[str, float]:
+    """Bootstrap one point per 70-hand match, not one point per decision."""
+    points = _cluster_point_values(clusters)
+    if not points:
+        return {"lower": 0.0, "mean": 0.0, "upper": 0.0}
+    rng = random.Random(seed)
+    count = len(points)
+    means = []
+    for _ in range(max(1, samples)):
+        means.append(sum(points[rng.randrange(count)] for _ in range(count)) / count)
+    return {
+        "lower": _percentile(means, 0.025),
+        "mean": sum(points) / count,
+        "upper": _percentile(means, 0.975),
+    }
+
+
+def _opponent_stratified_equal_cluster_ci(
+    clusters: dict[str, dict[str, list[Any]]],
+    *,
+    samples: int,
+    seed: int,
+) -> dict[str, float]:
+    """Resample 70-hand matches within opponent strata with equal match weight."""
+    usable = {
+        opponent: _cluster_point_values(opponent_clusters)
+        for opponent, opponent_clusters in clusters.items()
+    }
+    usable = {opponent: values for opponent, values in usable.items() if values}
+    if not usable:
+        return {"lower": 0.0, "mean": 0.0, "upper": 0.0}
+    observed = [value for values in usable.values() for value in values]
+    rng = random.Random(seed)
+    means = []
+    for _ in range(max(1, samples)):
+        sampled = []
+        for values in usable.values():
+            sampled.extend(values[rng.randrange(len(values))] for _ in values)
+        means.append(sum(sampled) / len(sampled))
+    return {
+        "lower": _percentile(means, 0.025),
+        "mean": sum(observed) / len(observed),
+        "upper": _percentile(means, 0.975),
+    }
+
+
 def _response_signal(
     response: dict[str, Any], row: dict[str, Any], action: int
 ) -> float:
@@ -207,9 +279,17 @@ def _prepare_rows(
     ensemble: OpponentMultiTaskEnsemble,
     *,
     require_ipw: bool = True,
+    require_match_outcome: bool = False,
 ) -> list[dict[str, Any]]:
     prepared = []
     for source_row_index, raw in enumerate(raw_rows):
+        match_outcome_supervision = derive_match_outcome_supervision(
+            raw, required=require_match_outcome
+        )
+        match_outcome = (
+            policy_outcome_context(match_outcome_supervision)
+            if match_outcome_supervision is not None else None
+        )
         sample = build_value_sample(raw, max_hist=ensemble.max_hist)
         rule_id = int(sample.get("rule_id", 1) or 0)
         values = ensemble.predict_values(
@@ -249,7 +329,7 @@ def _prepare_rows(
                 )
                 if response:
                     response_signal = _response_signal(response, raw, action)
-            candidates.append({
+            candidate = {
                 "label_id": label_id,
                 "label": label_name,
                 "action": action,
@@ -257,7 +337,12 @@ def _prepare_rows(
                 "hand_delta": float(probe["delta_vs_rule"]),
                 "tail_delta": float(probe["tail_delta_vs_rule"]),
                 "match_delta": float(probe["match_delta_vs_rule"]),
-            })
+            }
+            if match_outcome_supervision is not None:
+                candidate.update(candidate_outcome(
+                    match_outcome_supervision, label_id
+                ))
+            candidates.append(candidate)
         if candidates:
             opponent = str(raw.get("_opponent_label") or raw.get("opponent"))
             has_sampling_evidence = any(
@@ -282,6 +367,7 @@ def _prepare_rows(
                 )),
                 "rule_id": rule_id,
                 "sampling_weight": sampling_weight,
+                "match_outcome": match_outcome,
                 "decision": {
                     key: raw.get(key)
                     for key in (
@@ -300,6 +386,52 @@ def _prepare_rows(
                 "candidates": candidates,
             })
     return prepared
+
+
+def _match_outcome_observation(
+    row: dict[str, Any], candidate: dict[str, Any] | None
+) -> dict[str, float | int] | None:
+    raw = row.get("match_outcome")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or raw.get("schema") != MATCH_OUTCOME_SCHEMA:
+        raise ValueError("policy row has invalid match outcome context")
+    if raw.get("estimand") != MATCH_OUTCOME_ESTIMAND or int(
+        raw.get("hands", 0) or 0
+    ) != 70:
+        raise ValueError("policy row does not describe a 70-hand outcome")
+    baseline_net = float(raw.get("baseline_match_net_chips"))
+    baseline_positive = int(raw.get("baseline_match_positive"))
+    if (
+        not math.isfinite(baseline_net)
+        or baseline_positive not in (0, 1)
+        or baseline_positive != int(baseline_net > 0.0)
+    ):
+        raise ValueError("policy row has invalid baseline match outcome")
+    if candidate is None:
+        candidate_net = baseline_net
+        candidate_positive = baseline_positive
+        uplift = 0
+    else:
+        if candidate.get("match_outcome_schema") != MATCH_OUTCOME_SCHEMA:
+            raise ValueError("selected candidate lacks 70-hand outcome evidence")
+        candidate_net = float(candidate.get("forced_match_net_chips"))
+        candidate_positive = int(candidate.get("forced_match_positive"))
+        uplift = int(candidate.get("match_positive_uplift"))
+        if (
+            not math.isfinite(candidate_net)
+            or candidate_positive not in (0, 1)
+            or candidate_positive != int(candidate_net > 0.0)
+            or uplift != candidate_positive - baseline_positive
+        ):
+            raise ValueError("selected candidate has invalid 70-hand outcome evidence")
+    return {
+        "baseline_match_net_chips": baseline_net,
+        "forced_match_net_chips": candidate_net,
+        "baseline_match_positive": baseline_positive,
+        "forced_match_positive": candidate_positive,
+        "match_positive_uplift": uplift,
+    }
 
 
 def _evaluate_config(
@@ -323,6 +455,23 @@ def _evaluate_config(
     opponent_override_counts = Counter()
     opponent_negative_overrides = Counter()
     opponent_override_clusters: dict[str, set[str]] = {}
+    outcome_rows = 0
+    outcome_weights = []
+    outcome_clusters: set[str] = set()
+    outcome_baseline_by_cluster: dict[str, float] = {}
+    positive_by_cluster: dict[str, list[tuple[float, float]]] = {}
+    rule_positive_by_cluster: dict[str, list[tuple[float, float]]] = {}
+    positive_uplift_by_cluster: dict[str, list[tuple[float, float]]] = {}
+    positive_by_opponent_cluster: dict[
+        str, dict[str, list[tuple[float, float]]]
+    ] = {}
+    rule_positive_by_opponent_cluster: dict[
+        str, dict[str, list[tuple[float, float]]]
+    ] = {}
+    positive_uplift_by_opponent_cluster: dict[
+        str, dict[str, list[tuple[float, float]]]
+    ] = {}
+    outcome_flip_counts = Counter()
     hand_weight = float(config["hand_weight"])
     tail_weight = float(config.get("tail_weight", 0.0))
     match_weight = float(
@@ -368,6 +517,17 @@ def _evaluate_config(
             selected.append(candidate)
             selected_weights.append(sampling_weight)
             chosen = candidate
+        else:
+            delta = 0.0
+        outcome = _match_outcome_observation(row, chosen)
+        if chosen is not None:
+            observed = {
+                "hand_delta": chosen["hand_delta"],
+                "tail_delta": chosen["tail_delta"],
+                "match_delta": chosen["match_delta"],
+            }
+            if outcome is not None:
+                observed.update(outcome)
             override_trace.append({
                 "source_row_index": row.get("source_row_index", row_index),
                 "opponent": opponent,
@@ -376,9 +536,9 @@ def _evaluate_config(
                 "decision": row.get("decision") or {},
                 "rule_id": row["rule_id"],
                 "candidate": {
-                    "label_id": candidate["label_id"],
-                    "label": candidate.get("label"),
-                    "action": candidate.get("action"),
+                    "label_id": chosen["label_id"],
+                    "label": chosen.get("label"),
+                    "action": chosen.get("action"),
                 },
                 "prediction": {
                     "value_key": value_key,
@@ -388,17 +548,11 @@ def _evaluate_config(
                     "hand_weight": hand_weight,
                     "tail_weight": tail_weight,
                     "match_weight": match_weight,
-                    "response_signal": candidate["response_signal"],
+                    "response_signal": chosen["response_signal"],
                     "policy_score": best[0],
                 },
-                "observed": {
-                    "hand_delta": candidate["hand_delta"],
-                    "tail_delta": candidate["tail_delta"],
-                    "match_delta": candidate["match_delta"],
-                },
+                "observed": observed,
             })
-        else:
-            delta = 0.0
         deltas.append(delta)
         sampling_weights.append(sampling_weight)
         pair = (delta, sampling_weight)
@@ -407,6 +561,44 @@ def _evaluate_config(
         by_opponent_cluster.setdefault(opponent, {}).setdefault(
             cluster, []
         ).append(pair)
+        if outcome is not None:
+            baseline_net = float(outcome["baseline_match_net_chips"])
+            previous_baseline = outcome_baseline_by_cluster.setdefault(
+                cluster, baseline_net
+            )
+            if not math.isclose(
+                previous_baseline, baseline_net, rel_tol=0.0, abs_tol=1e-6
+            ):
+                raise ValueError("one match cluster has inconsistent baseline chips")
+            baseline_positive = float(outcome["baseline_match_positive"])
+            candidate_positive = float(outcome["forced_match_positive"])
+            positive_uplift = float(outcome["match_positive_uplift"])
+            outcome_rows += 1
+            outcome_weights.append(sampling_weight)
+            outcome_clusters.add(cluster)
+            positive_pair = (candidate_positive, sampling_weight)
+            rule_pair = (baseline_positive, sampling_weight)
+            uplift_pair = (positive_uplift, sampling_weight)
+            positive_by_cluster.setdefault(cluster, []).append(positive_pair)
+            rule_positive_by_cluster.setdefault(cluster, []).append(rule_pair)
+            positive_uplift_by_cluster.setdefault(cluster, []).append(uplift_pair)
+            positive_by_opponent_cluster.setdefault(opponent, {}).setdefault(
+                cluster, []
+            ).append(positive_pair)
+            rule_positive_by_opponent_cluster.setdefault(
+                opponent, {}
+            ).setdefault(cluster, []).append(rule_pair)
+            positive_uplift_by_opponent_cluster.setdefault(
+                opponent, {}
+            ).setdefault(cluster, []).append(uplift_pair)
+            if baseline_positive == 0.0 and candidate_positive == 1.0:
+                outcome_flip_counts["negative_to_positive"] += 1
+            elif baseline_positive == 1.0 and candidate_positive == 0.0:
+                outcome_flip_counts["positive_to_negative"] += 1
+            elif candidate_positive == 1.0:
+                outcome_flip_counts["unchanged_positive"] += 1
+            else:
+                outcome_flip_counts["unchanged_nonpositive"] += 1
         if chosen is not None:
             override_clusters.add(cluster)
             override_opponents.add(opponent)
@@ -433,6 +625,61 @@ def _evaluate_config(
         samples=bootstrap_samples,
         seed=bootstrap_seed + 2,
     )
+    positive_cluster_ci = _equal_cluster_bootstrap_mean_ci(
+        positive_by_cluster,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed + 3,
+    )
+    positive_stratified_ci = _opponent_stratified_equal_cluster_ci(
+        positive_by_opponent_cluster,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed + 4,
+    )
+    rule_positive_cluster_ci = _equal_cluster_bootstrap_mean_ci(
+        rule_positive_by_cluster,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed + 5,
+    )
+    rule_positive_stratified_ci = _opponent_stratified_equal_cluster_ci(
+        rule_positive_by_opponent_cluster,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed + 6,
+    )
+    positive_uplift_cluster_ci = _equal_cluster_bootstrap_mean_ci(
+        positive_uplift_by_cluster,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed + 7,
+    )
+    positive_uplift_stratified_ci = _opponent_stratified_equal_cluster_ci(
+        positive_uplift_by_opponent_cluster,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed + 8,
+    )
+    outcome_by_opponent = {}
+    for opponent in sorted(by_opponent):
+        candidate_points = _cluster_point_values(
+            positive_by_opponent_cluster.get(opponent, {})
+        )
+        rule_points = _cluster_point_values(
+            rule_positive_by_opponent_cluster.get(opponent, {})
+        )
+        uplift_points = _cluster_point_values(
+            positive_uplift_by_opponent_cluster.get(opponent, {})
+        )
+        outcome_by_opponent[opponent] = {
+            "match_outcome_clusters": len(candidate_points),
+            "match_positive_rate": (
+                sum(candidate_points) / len(candidate_points)
+                if candidate_points else 0.0
+            ),
+            "rule_match_positive_rate": (
+                sum(rule_points) / len(rule_points) if rule_points else 0.0
+            ),
+            "match_positive_uplift_mean": (
+                sum(uplift_points) / len(uplift_points)
+                if uplift_points else 0.0
+            ),
+        }
     return {
         "estimand": OFFLINE_ESTIMAND,
         "deployment_policy_value": False,
@@ -458,6 +705,44 @@ def _evaluate_config(
         "match_bootstrap_mean_ci": ci,
         "match_cluster_bootstrap_mean_ci": cluster_ci,
         "match_opponent_stratified_cluster_ci": stratified_cluster_ci,
+        "match_outcome_estimand": MATCH_OUTCOME_ESTIMAND,
+        "match_outcome_rows": outcome_rows,
+        "match_outcome_clusters": len(outcome_clusters),
+        "match_outcome_row_coverage": (
+            outcome_rows / len(rows) if rows else 0.0
+        ),
+        "match_outcome_cluster_coverage": (
+            len(outcome_clusters) / len(by_cluster) if by_cluster else 0.0
+        ),
+        "match_outcome_estimated_opportunities": sum(outcome_weights),
+        "match_positive_rate": positive_cluster_ci["mean"],
+        "rule_match_positive_rate": rule_positive_cluster_ci["mean"],
+        "match_positive_uplift_mean": positive_uplift_cluster_ci["mean"],
+        "match_positive_rate_cluster_bootstrap_ci": positive_cluster_ci,
+        "match_positive_rate_opponent_stratified_cluster_ci": (
+            positive_stratified_ci
+        ),
+        "rule_match_positive_rate_cluster_bootstrap_ci": (
+            rule_positive_cluster_ci
+        ),
+        "rule_match_positive_rate_opponent_stratified_cluster_ci": (
+            rule_positive_stratified_ci
+        ),
+        "match_positive_uplift_cluster_bootstrap_ci": (
+            positive_uplift_cluster_ci
+        ),
+        "match_positive_uplift_opponent_stratified_cluster_ci": (
+            positive_uplift_stratified_ci
+        ),
+        "match_positive_flip_counts": {
+            key: outcome_flip_counts[key]
+            for key in (
+                "negative_to_positive",
+                "positive_to_negative",
+                "unchanged_positive",
+                "unchanged_nonpositive",
+            )
+        },
         "match_clusters": len(by_cluster),
         "override_clusters": len(override_clusters),
         "override_opponents": len(override_opponents),
@@ -490,10 +775,54 @@ def _evaluate_config(
                     [value for value, _ in values],
                     [weight for _, weight in values],
                 ),
+                **outcome_by_opponent[opponent],
             }
             for opponent, values in sorted(by_opponent.items())
         },
     }
+
+
+def _win_first_errors(
+    result: dict[str, Any],
+    *,
+    min_match_positive_rate_ci_lower: float,
+    min_match_positive_uplift_ci_lower: float,
+    min_opponent_match_positive_rate: float,
+) -> list[str]:
+    errors = []
+    if result.get("match_outcome_row_coverage", 0.0) < 1.0:
+        errors.append("match_outcome_row_coverage<1.0")
+    if result.get("match_outcome_cluster_coverage", 0.0) < 1.0:
+        errors.append("match_outcome_cluster_coverage<1.0")
+    for field in (
+        "match_positive_rate_cluster_bootstrap_ci",
+        "match_positive_rate_opponent_stratified_cluster_ci",
+    ):
+        lower = float((result.get(field) or {}).get("lower", 0.0))
+        if lower <= min_match_positive_rate_ci_lower:
+            errors.append(
+                f"{field}_lower<={min_match_positive_rate_ci_lower}"
+            )
+    for field in (
+        "match_positive_uplift_cluster_bootstrap_ci",
+        "match_positive_uplift_opponent_stratified_cluster_ci",
+    ):
+        lower = float((result.get(field) or {}).get("lower", 0.0))
+        if lower < min_match_positive_uplift_ci_lower:
+            errors.append(
+                f"{field}_lower<{min_match_positive_uplift_ci_lower}"
+            )
+    for opponent, row in result.get("by_opponent", {}).items():
+        if row.get("match_outcome_clusters", 0) < 1:
+            errors.append(f"{opponent}:match_outcome_clusters<1")
+        if row.get("match_positive_rate", 0.0) < min_opponent_match_positive_rate:
+            errors.append(
+                f"{opponent}:match_positive_rate<"
+                f"{min_opponent_match_positive_rate}"
+            )
+        if row.get("match_positive_uplift_mean", 0.0) < 0.0:
+            errors.append(f"{opponent}:match_positive_uplift_mean<0")
+    return errors
 
 
 def _selection_eligibility(
@@ -507,6 +836,10 @@ def _selection_eligibility(
     require_nonnegative_opponent_mean: bool,
     min_cluster_ci_lower: float = 0.0,
     min_opponent_stratified_ci_lower: float = 0.0,
+    require_win_first: bool = False,
+    min_match_positive_rate_ci_lower: float = 0.5,
+    min_match_positive_uplift_ci_lower: float = 0.0,
+    min_opponent_match_positive_rate: float = 0.5,
 ) -> list[str]:
     errors = []
     if result["overrides"] < min_overrides:
@@ -535,6 +868,19 @@ def _selection_eligibility(
             )
         if require_nonnegative_opponent_mean and row["mean"] < 0:
             errors.append(f"{opponent}:mean<0")
+    if require_win_first:
+        errors[:0] = _win_first_errors(
+            result,
+            min_match_positive_rate_ci_lower=(
+                min_match_positive_rate_ci_lower
+            ),
+            min_match_positive_uplift_ci_lower=(
+                min_match_positive_uplift_ci_lower
+            ),
+            min_opponent_match_positive_rate=(
+                min_opponent_match_positive_rate
+            ),
+        )
     return errors
 
 
@@ -546,6 +892,10 @@ def _calibration_gate(
     require_nonnegative_opponent_mean: bool,
     min_cluster_ci_lower: float = 0.0,
     min_opponent_stratified_ci_lower: float = 0.0,
+    require_win_first: bool = False,
+    min_match_positive_rate_ci_lower: float = 0.5,
+    min_match_positive_uplift_ci_lower: float = 0.0,
+    min_opponent_match_positive_rate: float = 0.5,
 ) -> dict[str, Any] | None:
     if result is None:
         return None
@@ -569,6 +919,19 @@ def _calibration_gate(
         for opponent, row in result["by_opponent"].items():
             if row["mean"] < 0:
                 errors.append(f"{opponent}:mean<0")
+    if require_win_first:
+        errors[:0] = _win_first_errors(
+            result,
+            min_match_positive_rate_ci_lower=(
+                min_match_positive_rate_ci_lower
+            ),
+            min_match_positive_uplift_ci_lower=(
+                min_match_positive_uplift_ci_lower
+            ),
+            min_opponent_match_positive_rate=(
+                min_opponent_match_positive_rate
+            ),
+        )
     return {"passed": not errors, "errors": errors}
 
 
@@ -633,6 +996,10 @@ def select_offline_policy(
     tail_weights: list[float] | None = None,
     min_match_weight: float = 0.0,
     min_hand_lcb: float | None = None,
+    require_win_first: bool = False,
+    min_match_positive_rate_ci_lower: float = 0.5,
+    min_match_positive_uplift_ci_lower: float = 0.0,
+    min_opponent_match_positive_rate: float = 0.5,
 ) -> dict[str, Any]:
     grid = []
     tail_weights = list(tail_weights or [0.0])
@@ -673,6 +1040,16 @@ def select_offline_policy(
                         min_opponent_stratified_ci_lower=(
                             min_opponent_stratified_ci_lower
                         ),
+                        require_win_first=require_win_first,
+                        min_match_positive_rate_ci_lower=(
+                            min_match_positive_rate_ci_lower
+                        ),
+                        min_match_positive_uplift_ci_lower=(
+                            min_match_positive_uplift_ci_lower
+                        ),
+                        min_opponent_match_positive_rate=(
+                            min_opponent_match_positive_rate
+                        ),
                     )
                     result["eligible"] = not result["eligibility_errors"]
                     grid.append(result)
@@ -680,6 +1057,15 @@ def select_offline_policy(
     selected = max(
         eligible,
         key=lambda result: (
+            result[
+                "match_positive_rate_opponent_stratified_cluster_ci"
+            ]["lower"],
+            result["match_positive_rate_cluster_bootstrap_ci"]["lower"],
+            result[
+                "match_positive_uplift_opponent_stratified_cluster_ci"
+            ]["lower"],
+            result["match_positive_uplift_cluster_bootstrap_ci"]["lower"],
+            result["match_positive_rate"],
             result["match_opponent_stratified_cluster_ci"]["lower"],
             result["match_cluster_bootstrap_mean_ci"]["lower"],
             result["match_mean_per_opportunity"],
@@ -721,6 +1107,20 @@ def main() -> int:
     parser.add_argument("--min-overrides-per-opponent", type=int, default=2)
     parser.add_argument("--min-override-hand-mean", type=float, default=0.0)
     parser.add_argument("--min-selection-ci-lower", type=float, default=0.0)
+    parser.add_argument(
+        "--min-match-positive-rate-ci-lower", type=float, default=0.5
+    )
+    parser.add_argument(
+        "--min-match-positive-uplift-ci-lower", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--min-opponent-match-positive-rate", type=float, default=0.5
+    )
+    parser.add_argument(
+        "--allow-missing-match-outcome",
+        action="store_true",
+        help="Legacy diagnostic only; disable the 70-hand win-first evidence gate",
+    )
     parser.add_argument("--allow-negative-selection-opponent", action="store_true")
     parser.add_argument("--min-calibration-overrides", type=int, default=5)
     parser.add_argument(
@@ -740,6 +1140,19 @@ def main() -> int:
         raise SystemExit("min-match-weight must be in [0, 1]")
     if not math.isfinite(args.min_hand_lcb):
         raise SystemExit("min-hand-lcb must be finite")
+    win_thresholds = (
+        args.min_match_positive_rate_ci_lower,
+        args.min_match_positive_uplift_ci_lower,
+        args.min_opponent_match_positive_rate,
+    )
+    if not all(math.isfinite(value) for value in win_thresholds):
+        raise SystemExit("match outcome thresholds must be finite")
+    if not args.allow_missing_match_outcome and (
+        not 0.5 <= args.min_match_positive_rate_ci_lower <= 1.0
+        or not 0.0 <= args.min_match_positive_uplift_ci_lower <= 1.0
+        or not 0.5 <= args.min_opponent_match_positive_rate <= 1.0
+    ):
+        raise SystemExit("win-first thresholds cannot be weakened")
 
     model_paths = [Path(path).resolve() for path in args.model]
     ensemble = OpponentMultiTaskEnsemble.load(model_paths)
@@ -749,6 +1162,7 @@ def main() -> int:
         _read(args.selection_data),
         ensemble,
         require_ipw=not args.allow_missing_ipw,
+        require_match_outcome=not args.allow_missing_match_outcome,
     )
     policy_selection = select_offline_policy(
         selection_rows,
@@ -784,6 +1198,16 @@ def main() -> int:
         bootstrap_seed=args.bootstrap_seed,
         min_cluster_ci_lower=args.min_selection_ci_lower,
         min_opponent_stratified_ci_lower=args.min_selection_ci_lower,
+        require_win_first=not args.allow_missing_match_outcome,
+        min_match_positive_rate_ci_lower=(
+            args.min_match_positive_rate_ci_lower
+        ),
+        min_match_positive_uplift_ci_lower=(
+            args.min_match_positive_uplift_ci_lower
+        ),
+        min_opponent_match_positive_rate=(
+            args.min_opponent_match_positive_rate
+        ),
     )
     grid = policy_selection["grid"]
     model_manifests = [_file_manifest(path) for path in model_paths]
@@ -809,10 +1233,20 @@ def main() -> int:
         ),
         "min_cluster_ci_lower": args.min_selection_ci_lower,
         "min_opponent_stratified_ci_lower": args.min_selection_ci_lower,
+        "require_win_first": not args.allow_missing_match_outcome,
+        "min_match_positive_rate_ci_lower": (
+            args.min_match_positive_rate_ci_lower
+        ),
+        "min_match_positive_uplift_ci_lower": (
+            args.min_match_positive_uplift_ci_lower
+        ),
+        "min_opponent_match_positive_rate": (
+            args.min_opponent_match_positive_rate
+        ),
     }
     if policy_selection["selected"] is None:
         payload = {
-            "schema_version": 6,
+            "schema_version": 7,
             "estimand": OFFLINE_ESTIMAND,
             "deployment_policy_value": False,
             "strength_evidence": False,
@@ -841,6 +1275,7 @@ def main() -> int:
             _read(path),
             ensemble,
             require_ipw=not args.allow_missing_ipw,
+            require_match_outcome=not args.allow_missing_match_outcome,
         )
         return _evaluate_config(
             rows,
@@ -861,6 +1296,16 @@ def main() -> int:
         ),
         min_cluster_ci_lower=args.min_calibration_ci_lower,
         min_opponent_stratified_ci_lower=args.min_calibration_ci_lower,
+        require_win_first=not args.allow_missing_match_outcome,
+        min_match_positive_rate_ci_lower=(
+            args.min_match_positive_rate_ci_lower
+        ),
+        min_match_positive_uplift_ci_lower=(
+            args.min_match_positive_uplift_ci_lower
+        ),
+        min_opponent_match_positive_rate=(
+            args.min_opponent_match_positive_rate
+        ),
     )
     if args.held_out_data is not None and calibration_gate is None:
         calibration_gate = {
@@ -884,11 +1329,21 @@ def main() -> int:
         ),
         min_cluster_ci_lower=args.min_calibration_ci_lower,
         min_opponent_stratified_ci_lower=args.min_calibration_ci_lower,
+        require_win_first=not args.allow_missing_match_outcome,
+        min_match_positive_rate_ci_lower=(
+            args.min_match_positive_rate_ci_lower
+        ),
+        min_match_positive_uplift_ci_lower=(
+            args.min_match_positive_uplift_ci_lower
+        ),
+        min_opponent_match_positive_rate=(
+            args.min_opponent_match_positive_rate
+        ),
     )
     no_response_config = dict(selected["config"], response_weight=0.0)
     mean_only_config = dict(selected["config"], use_lower=False)
     payload = {
-        "schema_version": 6,
+        "schema_version": 7,
         "estimand": OFFLINE_ESTIMAND,
         "deployment_policy_value": False,
         "strength_evidence": False,

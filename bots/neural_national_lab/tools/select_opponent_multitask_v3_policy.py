@@ -27,6 +27,12 @@ from evaluate_multitask_offline_policy import (
     select_offline_policy,
 )
 from feature_spec import LABELS, label_action
+from match_outcome_schema import (
+    MATCH_OUTCOME_ESTIMAND,
+    candidate_outcome,
+    derive_match_outcome_supervision,
+    policy_outcome_context,
+)
 from multitask_training_data import (
     ENCODED_CONTEXT_SCHEMA,
     VALUE_FIELDS,
@@ -45,10 +51,10 @@ from role_dataset_access import RoleDatasetAccess
 from sampling_weights import decision_sampling_weight
 
 
-POLICY_CANDIDATE_SCHEMA = "opponent_multitask_v3_policy_candidate_v1"
-POLICY_EVALUATION_SCHEMA = "opponent_multitask_v3_policy_evaluation_v1"
-POLICY_REPORT_SCHEMA = "opponent_multitask_v3_policy_selection_report_v1"
-POLICY_ARTIFACT_SCHEMA = "opponent_multitask_v3_policy_artifacts_v1"
+POLICY_CANDIDATE_SCHEMA = "opponent_multitask_v3_policy_candidate_v2"
+POLICY_EVALUATION_SCHEMA = "opponent_multitask_v3_policy_evaluation_v2"
+POLICY_REPORT_SCHEMA = "opponent_multitask_v3_policy_selection_report_v2"
+POLICY_ARTIFACT_SCHEMA = "opponent_multitask_v3_policy_artifacts_v2"
 RESPONSE_SIGNAL_SCHEMA = "opponent_response_risk_signal_v2"
 
 
@@ -483,6 +489,8 @@ def prepare_policy_rows(
     for source_row_index, (raw, context, values) in enumerate(
         zip(raw_rows, encoded, predictions, strict=True)
     ):
+        match_supervision = derive_match_outcome_supervision(raw, required=True)
+        match_outcome = policy_outcome_context(match_supervision)
         rule_id = int(context["rule_label_id"])
         candidates = []
         for probe in raw.get("probes") or []:
@@ -516,6 +524,7 @@ def prepare_policy_rows(
                     probe.get("match_delta_vs_rule"), field="probe match delta"
                 ),
             }
+            candidate.update(candidate_outcome(match_supervision, label_id))
             candidates.append(candidate)
             response_source = dict(raw)
             response_source["hero_action"] = action
@@ -543,6 +552,7 @@ def prepare_policy_rows(
             )),
             "rule_id": rule_id,
             "sampling_weight": decision_sampling_weight(raw),
+            "match_outcome": match_outcome,
             "decision": {
                 key: raw.get(key)
                 for key in (
@@ -573,6 +583,8 @@ def prepare_policy_rows(
         "response_predictions": len(response_jobs),
         "skipped_unconfirmed_probes": skipped_unconfirmed,
         "skipped_rows_without_alternative": skipped_no_alternative,
+        "match_outcome_rows": len(prepared),
+        "match_outcome_estimand": MATCH_OUTCOME_ESTIMAND,
     }
 
 
@@ -580,6 +592,15 @@ def _best_diagnostic(grid: list[dict[str, Any]]) -> dict[str, Any] | None:
     return max(
         grid,
         key=lambda result: (
+            result[
+                "match_positive_rate_opponent_stratified_cluster_ci"
+            ]["lower"],
+            result["match_positive_rate_cluster_bootstrap_ci"]["lower"],
+            result[
+                "match_positive_uplift_opponent_stratified_cluster_ci"
+            ]["lower"],
+            result["match_positive_uplift_cluster_bootstrap_ci"]["lower"],
+            result["match_positive_rate"],
             result["match_opponent_stratified_cluster_ci"]["lower"],
             result["match_cluster_bootstrap_mean_ci"]["lower"],
             result["match_mean_per_opportunity"],
@@ -606,6 +627,19 @@ def policy_evaluation(
             "match_opponent_stratified_cluster_ci": {
                 "lower": 0.0, "mean": 0.0, "upper": 0.0,
             },
+            "match_positive_rate_cluster_bootstrap_ci": {
+                "lower": 0.0, "mean": 0.0, "upper": 0.0,
+            },
+            "match_positive_rate_opponent_stratified_cluster_ci": {
+                "lower": 0.0, "mean": 0.0, "upper": 0.0,
+            },
+            "match_positive_uplift_cluster_bootstrap_ci": {
+                "lower": 0.0, "mean": 0.0, "upper": 0.0,
+            },
+            "match_positive_uplift_opponent_stratified_cluster_ci": {
+                "lower": 0.0, "mean": 0.0, "upper": 0.0,
+            },
+            "match_positive_rate": 0.0,
             "by_opponent": {},
         }
     evaluation = dict(diagnostic)
@@ -613,6 +647,7 @@ def policy_evaluation(
     evaluation.update({
         "schema": POLICY_EVALUATION_SCHEMA,
         "offline_estimand": OFFLINE_ESTIMAND,
+        "match_outcome_estimand": MATCH_OUTCOME_ESTIMAND,
         "deployment_policy_value": False,
         "strength_evidence": False,
         "selected_policy": None if incomplete_smoke else provisional,
@@ -630,6 +665,7 @@ def _code_artifacts() -> dict[str, dict[str, Any]]:
         "calibration_loader": "calibrate_opponent_multitask_v3_ensemble",
         "feature_spec": "feature_spec",
         "model": "opponent_multitask_model_v3",
+        "match_outcome": "match_outcome_schema",
         "offline_policy": "evaluate_multitask_offline_policy",
         "opponent_response": "opponent_response_schema",
         "policy_evidence": "policy_role_evidence",
@@ -668,6 +704,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-overrides-per-opponent", type=int, default=4)
     parser.add_argument("--min-override-hand-mean", type=float, default=0.0)
     parser.add_argument("--min-ci-lower", type=float, default=0.0)
+    parser.add_argument(
+        "--min-match-positive-rate-ci-lower", type=float, default=0.5
+    )
+    parser.add_argument(
+        "--min-match-positive-uplift-ci-lower", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--min-opponent-match-positive-rate", type=float, default=0.5
+    )
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--bootstrap-seed", type=int, default=20260711)
     parser.add_argument("--batch-size", type=int, default=128)
@@ -695,6 +740,12 @@ def main(argv: list[str] | None = None) -> int:
         ) < 1
     ):
         raise SystemExit("invalid policy selection thresholds")
+    if (
+        not 0.5 <= args.min_match_positive_rate_ci_lower <= 1.0
+        or not 0.0 <= args.min_match_positive_uplift_ci_lower <= 1.0
+        or not 0.5 <= args.min_opponent_match_positive_rate <= 1.0
+    ):
+        raise SystemExit("win-first thresholds cannot be weakened")
     if str(args.device).startswith("cuda") and not torch.cuda.is_available():
         raise SystemExit("CUDA was requested but is unavailable")
 
@@ -729,6 +780,16 @@ def main(argv: list[str] | None = None) -> int:
         "min_override_hand_mean": args.min_override_hand_mean,
         "min_cluster_ci_lower": args.min_ci_lower,
         "min_opponent_stratified_ci_lower": args.min_ci_lower,
+        "require_win_first": True,
+        "min_match_positive_rate_ci_lower": (
+            args.min_match_positive_rate_ci_lower
+        ),
+        "min_match_positive_uplift_ci_lower": (
+            args.min_match_positive_uplift_ci_lower
+        ),
+        "min_opponent_match_positive_rate": (
+            args.min_opponent_match_positive_rate
+        ),
         "bootstrap_samples": args.bootstrap_samples,
         "bootstrap_seed": args.bootstrap_seed,
         "offline_estimand": OFFLINE_ESTIMAND,
@@ -822,6 +883,16 @@ def main(argv: list[str] | None = None) -> int:
             bootstrap_seed=args.bootstrap_seed,
             min_cluster_ci_lower=args.min_ci_lower,
             min_opponent_stratified_ci_lower=args.min_ci_lower,
+            require_win_first=True,
+            min_match_positive_rate_ci_lower=(
+                args.min_match_positive_rate_ci_lower
+            ),
+            min_match_positive_uplift_ci_lower=(
+                args.min_match_positive_uplift_ci_lower
+            ),
+            min_opponent_match_positive_rate=(
+                args.min_opponent_match_positive_rate
+            ),
         )
         evaluation = policy_evaluation(
             selection, incomplete_smoke=args.allow_incomplete_smoke
@@ -836,6 +907,15 @@ def main(argv: list[str] | None = None) -> int:
             "min_overrides_per_opponent": args.min_overrides_per_opponent,
             "min_cluster_ci_lower": args.min_ci_lower,
             "min_opponent_stratified_ci_lower": args.min_ci_lower,
+            "min_match_positive_rate_ci_lower": (
+                args.min_match_positive_rate_ci_lower
+            ),
+            "min_match_positive_uplift_ci_lower": (
+                args.min_match_positive_uplift_ci_lower
+            ),
+            "min_opponent_match_positive_rate": (
+                args.min_opponent_match_positive_rate
+            ),
         }
         result = build_policy_selection_result(
             phase, evaluation, thresholds=thresholds

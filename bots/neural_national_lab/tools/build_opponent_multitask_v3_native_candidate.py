@@ -17,6 +17,8 @@ from opponent_multitask_ensemble_runtime_v3 import (
     ENSEMBLE_FORMAT,
     OpponentMultiTaskEnsembleRuntimeV3,
 )
+from match_outcome_schema import MATCH_OUTCOME_ESTIMAND
+from role_dataset_access import POLICY_OFFLINE_ESTIMAND
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -30,10 +32,10 @@ DEFAULT_TRANSPORT_DONOR = (
 )
 BUILD_SCHEMA = "opponent_multitask_v3_native_candidate_build_v1"
 BUNDLE_SCHEMA = "opponent_multitask_stdlib_ensemble_export_v1"
-GATE_RESULT_SCHEMA = "policy_gate_result_v1"
-GATE_EVALUATION_SCHEMA = "opponent_multitask_v3_policy_gate_evaluation_v1"
-GATE_REPORT_SCHEMA = "opponent_multitask_v3_policy_gate_report_v1"
-GATE_ARTIFACT_SCHEMA = "opponent_multitask_v3_policy_gate_artifacts_v1"
+GATE_RESULT_SCHEMA = "policy_gate_result_v2"
+GATE_EVALUATION_SCHEMA = "opponent_multitask_v3_policy_gate_evaluation_v2"
+GATE_REPORT_SCHEMA = "opponent_multitask_v3_policy_gate_report_v2"
+GATE_ARTIFACT_SCHEMA = "opponent_multitask_v3_policy_gate_artifacts_v2"
 VERSION_RE = re.compile(r"^v\d+_[a-z0-9_]+$")
 COPIED_TOOL_MODULES = (
     "feature_spec.py",
@@ -125,6 +127,61 @@ def _verify_manifest_files(root: Path, manifest: dict[str, Any]) -> None:
             raise ValueError(f"policy gate artifact changed: {name}")
 
 
+def _verify_win_first_evidence(
+    evaluation: dict[str, Any], result: dict[str, Any]
+) -> None:
+    thresholds = result.get("thresholds")
+    if not isinstance(thresholds, dict):
+        raise ValueError("policy gate has no win-first thresholds")
+    try:
+        coverage = float(thresholds["min_match_outcome_coverage"])
+        rate_floor = float(thresholds["min_match_positive_rate_ci_lower"])
+        uplift_floor = float(
+            thresholds["min_match_positive_uplift_ci_lower"]
+        )
+        opponent_floor = float(
+            thresholds["min_opponent_match_positive_rate"]
+        )
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("policy gate has invalid win-first thresholds") from exc
+    if (
+        coverage != 1.0
+        or not 0.5 <= rate_floor <= 1.0
+        or not 0.0 <= uplift_floor <= 1.0
+        or not 0.5 <= opponent_floor <= 1.0
+        or evaluation.get("match_outcome_estimand") != MATCH_OUTCOME_ESTIMAND
+        or result.get("match_outcome_estimand") != MATCH_OUTCOME_ESTIMAND
+        or evaluation.get("match_outcome_row_coverage") != 1.0
+        or evaluation.get("match_outcome_cluster_coverage") != 1.0
+    ):
+        raise ValueError("policy gate does not satisfy the win-first contract")
+    for field in (
+        "match_positive_rate_cluster_bootstrap_ci",
+        "match_positive_rate_opponent_stratified_cluster_ci",
+    ):
+        if float((evaluation.get(field) or {}).get("lower", 0.0)) <= rate_floor:
+            raise ValueError("policy gate positive-rate evidence is insufficient")
+    for field in (
+        "match_positive_uplift_cluster_bootstrap_ci",
+        "match_positive_uplift_opponent_stratified_cluster_ci",
+    ):
+        if float((evaluation.get(field) or {}).get("lower", -1.0)) < uplift_floor:
+            raise ValueError("policy gate positive-uplift evidence is insufficient")
+    by_opponent = evaluation.get("by_opponent")
+    if not isinstance(by_opponent, dict) or not by_opponent:
+        raise ValueError("policy gate has no per-opponent outcome evidence")
+    for opponent, row in by_opponent.items():
+        if (
+            not isinstance(row, dict)
+            or int(row.get("match_outcome_clusters", 0) or 0) < 1
+            or float(row.get("match_positive_rate", 0.0)) < opponent_floor
+            or float(row.get("match_positive_uplift_mean", -1.0)) < 0.0
+        ):
+            raise ValueError(
+                f"policy gate win-first evidence failed for {opponent}"
+            )
+
+
 def verify_build_authorization(
     gate_dir: Path, bundle_path: Path
 ) -> dict[str, Any]:
@@ -139,6 +196,7 @@ def verify_build_authorization(
     report = _load_json(report_path, field="gate report")
     bundle = _load_json(bundle_path, field="v3 ensemble bundle")
     _verify_manifest_files(gate_root, artifact)
+    _verify_win_first_evidence(evaluation, result)
 
     selected = evaluation.get("selected_policy")
     selected_sha = _canonical_sha256(selected) if isinstance(selected, dict) else None
@@ -158,12 +216,14 @@ def verify_build_authorization(
         or result.get("evaluation_report_sha256") != _canonical_sha256(evaluation)
         or result.get("deployment_policy_value") is not False
         or result.get("strength_evidence") is not False
+        or result.get("offline_estimand") != POLICY_OFFLINE_ESTIMAND
         or evaluation.get("schema") != GATE_EVALUATION_SCHEMA
         or evaluation.get("config") != selected
         or evaluation.get("source_collection_complete") is not True
         or evaluation.get("policy_search_performed") is not False
         or evaluation.get("deployment_policy_value") is not False
         or evaluation.get("strength_evidence") is not False
+        or evaluation.get("offline_estimand") != POLICY_OFFLINE_ESTIMAND
         or report.get("schema") != GATE_REPORT_SCHEMA
         or report.get("run_id") != run_id
         or report.get("role_manifest_sha256") != role_manifest_sha

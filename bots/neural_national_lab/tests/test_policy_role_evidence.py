@@ -36,7 +36,8 @@ class _Dataset:
 
 def _evaluation(*, mean: float = 10.0, lower: float = 1.0) -> dict:
     return {
-        "offline_estimand": "single_decision_action_uplift_ipw_v2",
+        "offline_estimand": evidence.POLICY_OFFLINE_ESTIMAND,
+        "match_outcome_estimand": evidence.MATCH_OUTCOME_ESTIMAND,
         "deployment_policy_value": False,
         "strength_evidence": False,
         "selected_policy": {"margin": 0.5, "use_lower": True},
@@ -44,7 +45,27 @@ def _evaluation(*, mean: float = 10.0, lower: float = 1.0) -> dict:
         "override_clusters": 8,
         "match_cluster_bootstrap_mean_ci": {"lower": lower, "upper": 20.0},
         "match_opponent_stratified_cluster_ci": {"lower": lower, "upper": 20.0},
-        "by_opponent": {"national_v98": {"overrides": 12, "mean": mean}},
+        "match_outcome_row_coverage": 1.0,
+        "match_outcome_cluster_coverage": 1.0,
+        "match_positive_rate_cluster_bootstrap_ci": {
+            "lower": 0.6, "mean": 0.7, "upper": 0.8,
+        },
+        "match_positive_rate_opponent_stratified_cluster_ci": {
+            "lower": 0.6, "mean": 0.7, "upper": 0.8,
+        },
+        "match_positive_uplift_cluster_bootstrap_ci": {
+            "lower": 0.0, "mean": 0.1, "upper": 0.2,
+        },
+        "match_positive_uplift_opponent_stratified_cluster_ci": {
+            "lower": 0.0, "mean": 0.1, "upper": 0.2,
+        },
+        "by_opponent": {"national_v98": {
+            "overrides": 12,
+            "mean": mean,
+            "match_outcome_clusters": 8,
+            "match_positive_rate": 0.7,
+            "match_positive_uplift_mean": 0.1,
+        }},
     }
 
 
@@ -114,6 +135,41 @@ def test_selection_rejects_negative_opponent_or_nonpositive_ci(
 
     assert result["passed"] is False
     assert any(error in item for item in result["errors"])
+
+
+def test_selection_rejects_chip_positive_policy_below_match_win_floor() -> None:
+    dataset = _Dataset()
+    phase = evidence.open_policy_selection(
+        dataset,
+        candidate_sha256=CANDIDATE,
+        calibration_payload_sha256="f" * 64,
+    )
+    evaluation = _evaluation(mean=1_000.0, lower=500.0)
+    evaluation["match_positive_rate_cluster_bootstrap_ci"]["lower"] = 0.49
+
+    result = evidence.build_policy_selection_result(phase, evaluation)
+
+    assert result["passed"] is False
+    assert (
+        "match_positive_rate_cluster_bootstrap_ci_lower<=0.5"
+        in result["errors"]
+    )
+
+
+def test_win_first_thresholds_cannot_be_weakened() -> None:
+    dataset = _Dataset()
+    phase = evidence.open_policy_selection(
+        dataset,
+        candidate_sha256=CANDIDATE,
+        calibration_payload_sha256="f" * 64,
+    )
+
+    with pytest.raises(ValueError, match="cannot be weakened"):
+        evidence.build_policy_selection_result(
+            phase,
+            _evaluation(),
+            thresholds={"min_match_positive_rate_ci_lower": 0.49},
+        )
 
 
 def test_selection_rejects_claim_that_offline_uplift_is_strength() -> None:

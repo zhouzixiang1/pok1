@@ -12,6 +12,10 @@ TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import freeze_opponent_role_dataset as freeze  # noqa: E402
+from match_outcome_schema import (  # noqa: E402
+    MATCH_OUTCOME_ESTIMAND,
+    match_outcome_metadata,
+)
 import opponent_exposure_ledger as ledger  # noqa: E402
 from opponent_response_schema import (  # noqa: E402
     annotate_response_row,
@@ -43,7 +47,23 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
                 "_split": role,
                 "_evidence_role": role,
             }
-            if prefix == "opponent_actions":
+            if prefix == "cf":
+                mask = [0, 0, 1, 1, 0, 0]
+                row.update({
+                    "_collection_hands": 70,
+                    "legal_mask": mask,
+                    "rule_label_id": 2,
+                    "baseline_match_net_chips": 100,
+                    "match_delta_vs_rule": [
+                        None, None, 0.0, -200.0, None, None,
+                    ],
+                    "match_action_values": [
+                        None, None, 100.0, -100.0, None, None,
+                    ],
+                    "target_masks": {"match_delta_vs_rule": mask},
+                    "probes": [],
+                })
+            else:
                 row.update({
                     "stage": "preflop",
                     "hero_action": 200,
@@ -85,12 +105,14 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
         "roles": roles,
         "outputs": outputs,
         "behavior_supervision": response_schema_metadata(),
+        "match_outcome_supervision": match_outcome_metadata(),
         "invariants": {
             "opponent_disjoint": True,
             "match_cluster_disjoint": True,
             "deck_blocks_non_overlapping": True,
             "uniform_decision_ipw_validated": True,
             "national_response_v2_validated": True,
+            "national_70_hand_outcome_validated": True,
             "artifact_snapshots_verified": True,
             "final_blind_in_dataset": False,
         },
@@ -122,6 +144,7 @@ def _selection_result(
         "candidate_sha256": CANDIDATE_SHA,
         "role_manifest_sha256": dataset.manifest_sha256,
         "offline_estimand": access.POLICY_OFFLINE_ESTIMAND,
+        "match_outcome_estimand": MATCH_OUTCOME_ESTIMAND,
         "deployment_policy_value": False,
         "strength_evidence": False,
         "policy_gate_opened": False,

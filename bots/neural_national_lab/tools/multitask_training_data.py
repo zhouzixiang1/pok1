@@ -12,6 +12,10 @@ from cross_hand_sequence import (
     MAX_CROSS_HANDS,
 )
 from feature_spec import LABELS, label_action
+from match_outcome_schema import (
+    derive_match_outcome_supervision,
+    match_outcome_metadata,
+)
 from model_input_schema import encode_model_input, model_input_metadata
 from opponent_profile_schema import (
     OPPONENT_PROFILE_SCHEMA,
@@ -593,6 +597,9 @@ def encode_prepared_row(
             "value_targets": targets,
             "value_target_masks": target_masks,
         })
+        match_outcome = derive_match_outcome_supervision(row, required=False)
+        if match_outcome is not None:
+            encoded["match_outcome_supervision"] = match_outcome
     return encoded
 
 
@@ -627,4 +634,5 @@ def training_data_metadata() -> dict[str, Any]:
             "fields": list(HERO_RESPONSE_ACTION_FIELDS),
         },
         "strategy_context": strategy_context_metadata(),
+        "match_outcome": match_outcome_metadata(),
     }

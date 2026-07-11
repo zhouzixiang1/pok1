@@ -244,6 +244,8 @@ def _offline_candidate_gate(
 
     if args.selection_mode != "policy":
         errors.append("selection_mode!=policy")
+    if args.allow_missing_match_outcome:
+        errors.append("allow_missing_match_outcome")
     if post_selection_policy is None or not post_selection_policy["passed"]:
         errors.append("post_selection_policy_failed")
     minimum(
@@ -414,7 +416,11 @@ def _run_policy_selection(
     ensemble = OpponentMultiTaskEnsemble.load(model_paths)
     if ensemble is None:
         raise SystemExit(f"failed to load selection ensemble for {config['name']}")
-    prepared = prepare_policy_rows(raw_selection_rows, ensemble)
+    prepared = prepare_policy_rows(
+        raw_selection_rows,
+        ensemble,
+        require_match_outcome=not args.allow_missing_match_outcome,
+    )
     result = select_offline_policy(
         prepared,
         margins=_float_grid(args.policy_margin_grid, name="policy margin"),
@@ -446,6 +452,16 @@ def _run_policy_selection(
         min_cluster_ci_lower=args.policy_min_selection_ci_lower,
         min_opponent_stratified_ci_lower=(
             args.policy_min_selection_ci_lower
+        ),
+        require_win_first=not args.allow_missing_match_outcome,
+        min_match_positive_rate_ci_lower=(
+            args.policy_min_match_positive_rate_ci_lower
+        ),
+        min_match_positive_uplift_ci_lower=(
+            args.policy_min_match_positive_uplift_ci_lower
+        ),
+        min_opponent_match_positive_rate=(
+            args.policy_min_opponent_match_positive_rate
         ),
     )
     path = out_dir / f"policy_selection_{config['name']}.json"
@@ -484,6 +500,16 @@ def _run_policy_selection(
             "min_opponent_stratified_ci_lower": (
                 args.policy_min_selection_ci_lower
             ),
+            "require_win_first": not args.allow_missing_match_outcome,
+            "min_match_positive_rate_ci_lower": (
+                args.policy_min_match_positive_rate_ci_lower
+            ),
+            "min_match_positive_uplift_ci_lower": (
+                args.policy_min_match_positive_uplift_ci_lower
+            ),
+            "min_opponent_match_positive_rate": (
+                args.policy_min_opponent_match_positive_rate
+            ),
         },
         **result,
     }
@@ -514,7 +540,11 @@ def _run_post_selection_policy(
 
     def evaluate(path: Path) -> tuple[dict[str, Any], int]:
         raw_rows = read_policy_rows(path)
-        prepared = prepare_policy_rows(raw_rows, ensemble)
+        prepared = prepare_policy_rows(
+            raw_rows,
+            ensemble,
+            require_match_outcome=not args.allow_missing_match_outcome,
+        )
         result = evaluate_policy_config(
             prepared,
             policy_config,
@@ -533,6 +563,16 @@ def _run_post_selection_policy(
         min_opponent_stratified_ci_lower=(
             args.policy_min_calibration_ci_lower
         ),
+        require_win_first=not args.allow_missing_match_outcome,
+        min_match_positive_rate_ci_lower=(
+            args.policy_min_match_positive_rate_ci_lower
+        ),
+        min_match_positive_uplift_ci_lower=(
+            args.policy_min_match_positive_uplift_ci_lower
+        ),
+        min_opponent_match_positive_rate=(
+            args.policy_min_opponent_match_positive_rate
+        ),
     )
     held_out = None
     held_out_rows = None
@@ -546,6 +586,16 @@ def _run_post_selection_policy(
             require_nonnegative_opponent_mean=True,
             min_cluster_ci_lower=args.policy_min_held_out_ci_lower,
             min_opponent_stratified_ci_lower=args.policy_min_held_out_ci_lower,
+            require_win_first=not args.allow_missing_match_outcome,
+            min_match_positive_rate_ci_lower=(
+                args.policy_min_match_positive_rate_ci_lower
+            ),
+            min_match_positive_uplift_ci_lower=(
+                args.policy_min_match_positive_uplift_ci_lower
+            ),
+            min_opponent_match_positive_rate=(
+                args.policy_min_opponent_match_positive_rate
+            ),
         )
     else:
         held_out_gate = {
@@ -596,6 +646,16 @@ def _run_post_selection_policy(
                     args.policy_min_calibration_ci_lower
                 ),
                 "require_nonnegative_opponent_mean": True,
+                "require_win_first": not args.allow_missing_match_outcome,
+                "min_match_positive_rate_ci_lower": (
+                    args.policy_min_match_positive_rate_ci_lower
+                ),
+                "min_match_positive_uplift_ci_lower": (
+                    args.policy_min_match_positive_uplift_ci_lower
+                ),
+                "min_opponent_match_positive_rate": (
+                    args.policy_min_opponent_match_positive_rate
+                ),
             },
             "held_out": {
                 "min_overrides": args.policy_min_held_out_overrides,
@@ -607,6 +667,16 @@ def _run_post_selection_policy(
                     args.policy_min_held_out_ci_lower
                 ),
                 "require_nonnegative_opponent_mean": True,
+                "require_win_first": not args.allow_missing_match_outcome,
+                "min_match_positive_rate_ci_lower": (
+                    args.policy_min_match_positive_rate_ci_lower
+                ),
+                "min_match_positive_uplift_ci_lower": (
+                    args.policy_min_match_positive_uplift_ci_lower
+                ),
+                "min_opponent_match_positive_rate": (
+                    args.policy_min_opponent_match_positive_rate
+                ),
             },
         },
         "calibration": calibration,
@@ -879,6 +949,11 @@ def main() -> int:
     parser.add_argument("--allow-missing-cross-hand-sequence", action="store_true")
     parser.add_argument("--allow-missing-calibration", action="store_true")
     parser.add_argument(
+        "--allow-missing-match-outcome",
+        action="store_true",
+        help="Legacy diagnostic only; cannot pass the offline candidate gate",
+    )
+    parser.add_argument(
         "--selection-mode", choices=("policy", "supervised"), default="policy"
     )
     parser.add_argument("--policy-margin-grid", default="0,25,50,100,200,400")
@@ -893,6 +968,21 @@ def main() -> int:
     parser.add_argument("--policy-min-overrides-per-opponent", type=int, default=2)
     parser.add_argument("--policy-min-override-hand-mean", type=float, default=0.0)
     parser.add_argument("--policy-min-selection-ci-lower", type=float, default=0.0)
+    parser.add_argument(
+        "--policy-min-match-positive-rate-ci-lower",
+        type=float,
+        default=0.5,
+    )
+    parser.add_argument(
+        "--policy-min-match-positive-uplift-ci-lower",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--policy-min-opponent-match-positive-rate",
+        type=float,
+        default=0.5,
+    )
     parser.add_argument("--policy-allow-negative-opponent", action="store_true")
     parser.add_argument("--policy-bootstrap-samples", type=int, default=500)
     parser.add_argument("--policy-bootstrap-seed", type=int, default=20260710)
@@ -931,6 +1021,14 @@ def main() -> int:
         raise SystemExit("policy-min-match-weight must be in [0, 1]")
     if not math.isfinite(args.policy_min_hand_lcb):
         raise SystemExit("policy-min-hand-lcb must be finite")
+    if not args.allow_missing_match_outcome and (
+        not 0.5 <= args.policy_min_match_positive_rate_ci_lower <= 1.0
+        or not 0.0
+        <= args.policy_min_match_positive_uplift_ci_lower
+        <= 1.0
+        or not 0.5 <= args.policy_min_opponent_match_positive_rate <= 1.0
+    ):
+        raise SystemExit("win-first thresholds cannot be weakened")
     for name in (
         "policy_min_overrides",
         "policy_min_selection_clusters",
@@ -948,6 +1046,9 @@ def main() -> int:
         "policy_min_selection_ci_lower",
         "policy_min_calibration_ci_lower",
         "policy_min_held_out_ci_lower",
+        "policy_min_match_positive_rate_ci_lower",
+        "policy_min_match_positive_uplift_ci_lower",
+        "policy_min_opponent_match_positive_rate",
     ):
         if not math.isfinite(getattr(args, name)):
             raise SystemExit(f"{name.replace('_', '-')} must be finite")

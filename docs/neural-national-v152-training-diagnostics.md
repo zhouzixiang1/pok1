@@ -1096,6 +1096,47 @@ control; it can no longer silently truncate vectors through Python `zip`.
 The historical v150 context-only encoder and newer rule-conditioned encoder are
 distinguished from their first-layer widths and tested as explicit contracts.
 
+## Win-First 70-Hand Evidence Contract
+
+The primary objective is now explicit throughout the protected data and policy
+path: a complete national match is successful only when net chips after exactly
+70 hands are greater than zero. Chip magnitude is considered only after this
+outcome criterion. `match_outcome_schema.py` cross-checks
+`baseline_match_net_chips`, every observed `match_action_values` entry,
+`match_delta_vs_rule`, the rule action, and every confirmed probe. Partial,
+non-finite, non-70-hand, or internally inconsistent evidence fails closed in a
+formal role freeze. The existing v3 model format remains unchanged; encoded v3
+rows carry optional outcome supervision so a separately versioned future model
+can add an outcome head without silently changing old checkpoint semantics.
+
+The role dataset contract is now `opponent_role_dataset_v3` and records
+`national_70_hand_outcome_validated=true`. Policy evaluation uses the versioned
+`single_decision_70_hand_positive_outcome_uplift_clustered_v1` diagnostic. It
+first collapses sampled decision opportunities within each match cluster, then
+bootstraps one point per 70-hand match, both ordinarily and within opponent
+strata. Reports include candidate and rule positive rates, positive-outcome
+uplift, sign-flip counts, complete row/cluster coverage, and per-opponent rates.
+These remain single-intervention diagnostics with
+`deployment_policy_value=false` and `strength_evidence=false`; only fresh native
+joint-policy matches can prove bot strength.
+
+Formal policy selection and the fixed protected gate now require full outcome
+coverage, both candidate positive-rate CI lower bounds above 50 percent,
+nonnegative ordinary and stratified positive-outcome uplift lower bounds, and
+at least 50 percent positive rate with nonnegative uplift for every opponent.
+Only after those checks do the existing chip-EV CI and per-opponent mean checks
+rank or authorize a policy. Thresholds below these floors are rejected, and the
+native candidate builder independently rechecks the same evidence, so old
+chip-first gate artifacts cannot authorize a build.
+
+Against the live independent collector at its atomic 24/160-pass boundary, a
+smoke freeze validated 1,688 value rows and 7,481 response rows. It froze 1,031
+train, 91 early-stop, 144 model-calibration, 144 policy-selection, and 278
+policy-gate value rows, correctly truncating concurrently appended files to the
+completed collector state. The neural-lab suite passes 306 tests. This proves
+the data and gate contract on real collection output, not that a policy or bot
+has passed the new strength criterion.
+
 ## Literature Recheck And Search Direction
 
 The architecture decision is also constrained by established imperfect-
@@ -1139,17 +1180,20 @@ Learning with Quantile Regression*, 2018:
    ablation before selecting the pass-160 architecture.
 4. Compare the existing mean-plus-q20 head with a fixed multi-quantile
    distribution head and a predeclared lower-tail aggregate.
-5. Split early stopping, model calibration, policy selection, policy gate, and
+5. Add a separately versioned per-action 70-hand positive-outcome/logit head,
+   train it from the new masked targets, and compare it against deriving match
+   sign only from the relative chip head.
+6. Split early stopping, model calibration, policy selection, policy gate, and
    final blind by opponent. Track every opened opponent in an exposure ledger;
    do not read or hash the next split after a failed gate.
-6. Use offline clustered policy selection before creating an active TCP bot,
+7. Use offline clustered policy selection before creating an active TCP bot,
    then evaluate the selected network as a leaf/response model in bounded
    depth-limited search under the national 60-second decision budget.
-7. Treat fresh, non-overlapping native paired classic-pool joint-policy EV, not
+8. Treat fresh, non-overlapping native paired classic-pool joint-policy EV, not
    offline single-intervention uplift or supervised metrics, as the eventual
    strength criterion.
-8. Use the catastrophe head as an ablation and uncertainty signal, not a
+9. Use the catastrophe head as an ablation and uncertainty signal, not a
    release gate, until targeted data closes its rare-action false negatives.
-9. Use conditional common-runout replication only for first-divergence
+10. Use conditional common-runout replication only for first-divergence
    diagnosis until an outer opponent-range/deck/bot-seed sampling layer exists;
    do not treat its fixed-hidden-state labels as causal policy targets.

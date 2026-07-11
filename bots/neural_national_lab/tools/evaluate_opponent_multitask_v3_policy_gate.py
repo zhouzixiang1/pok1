@@ -29,9 +29,9 @@ from select_opponent_multitask_v3_policy import (
 )
 
 
-GATE_EVALUATION_SCHEMA = "opponent_multitask_v3_policy_gate_evaluation_v1"
-GATE_REPORT_SCHEMA = "opponent_multitask_v3_policy_gate_report_v1"
-GATE_ARTIFACT_SCHEMA = "opponent_multitask_v3_policy_gate_artifacts_v1"
+GATE_EVALUATION_SCHEMA = "opponent_multitask_v3_policy_gate_evaluation_v2"
+GATE_REPORT_SCHEMA = "opponent_multitask_v3_policy_gate_report_v2"
+GATE_ARTIFACT_SCHEMA = "opponent_multitask_v3_policy_gate_artifacts_v2"
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -81,6 +81,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-override-clusters", type=int, default=8)
     parser.add_argument("--min-overrides-per-opponent", type=int, default=4)
     parser.add_argument("--min-ci-lower", type=float, default=0.0)
+    parser.add_argument(
+        "--min-match-positive-rate-ci-lower", type=float, default=0.5
+    )
+    parser.add_argument(
+        "--min-match-positive-uplift-ci-lower", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--min-opponent-match-positive-rate", type=float, default=0.5
+    )
     args = parser.parse_args(argv)
     if (
         min(
@@ -93,6 +102,12 @@ def main(argv: list[str] | None = None) -> int:
         or not math.isfinite(args.min_ci_lower)
     ):
         raise SystemExit("invalid policy gate thresholds")
+    if (
+        not 0.5 <= args.min_match_positive_rate_ci_lower <= 1.0
+        or not 0.0 <= args.min_match_positive_uplift_ci_lower <= 1.0
+        or not 0.5 <= args.min_opponent_match_positive_rate <= 1.0
+    ):
+        raise SystemExit("win-first thresholds cannot be weakened")
     if str(args.device).startswith("cuda") and not torch.cuda.is_available():
         raise SystemExit("CUDA was requested but is unavailable")
 
@@ -161,6 +176,15 @@ def main(argv: list[str] | None = None) -> int:
             "min_overrides_per_opponent": args.min_overrides_per_opponent,
             "min_cluster_ci_lower": args.min_ci_lower,
             "min_opponent_stratified_ci_lower": args.min_ci_lower,
+            "min_match_positive_rate_ci_lower": (
+                args.min_match_positive_rate_ci_lower
+            ),
+            "min_match_positive_uplift_ci_lower": (
+                args.min_match_positive_uplift_ci_lower
+            ),
+            "min_opponent_match_positive_rate": (
+                args.min_opponent_match_positive_rate
+            ),
         }
         result = build_policy_gate_result(
             phase, evaluation, thresholds=thresholds

@@ -467,3 +467,157 @@ def test_offline_policy_uses_ipw_for_means_and_all_bootstraps() -> None:
     assert result["match_opponent_stratified_cluster_ci"]["mean"] == -50.0
     assert result["by_opponent"]["national_v1"]["mean"] == -50.0
     assert result["estimated_opportunities"] == 4.0
+
+
+def _match_outcome_context(tool, baseline: float) -> dict:
+    return {
+        "schema": tool.MATCH_OUTCOME_SCHEMA,
+        "estimand": tool.MATCH_OUTCOME_ESTIMAND,
+        "hands": 70,
+        "positive_outcome_rule": "net_chips_after_70_hands_gt_zero",
+        "baseline_match_net_chips": baseline,
+        "baseline_match_positive": int(baseline > 0.0),
+    }
+
+
+def _candidate_with_outcome(
+    tool, *, label_id: int, baseline: float, delta: float
+) -> dict:
+    final = baseline + delta
+    return {
+        "label_id": label_id,
+        "label": "raise_half" if label_id == 2 else "raise_pot",
+        "response_signal": 0.0,
+        "hand_delta": delta,
+        "tail_delta": delta,
+        "match_delta": delta,
+        "match_outcome_schema": tool.MATCH_OUTCOME_SCHEMA,
+        "forced_match_net_chips": final,
+        "forced_match_positive": int(final > 0.0),
+        "match_positive_uplift": int(final > 0.0) - int(baseline > 0.0),
+    }
+
+
+def test_match_positive_rate_counts_each_70_hand_cluster_once() -> None:
+    tool = _load_tool()
+    values = {
+        field: {
+            "lower": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            "mean": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        }
+        for field in ("delta_vs_rule", "tail_delta_vs_rule", "match_delta_vs_rule")
+    }
+    rows = []
+    for index in range(5):
+        rows.append({
+            "opponent": "national_v1",
+            "cluster": "positive",
+            "rule_id": 1,
+            "values": values,
+            "match_outcome": _match_outcome_context(tool, 100.0),
+            "candidates": [_candidate_with_outcome(
+                tool, label_id=2, baseline=100.0, delta=1.0
+            )],
+        })
+    rows.append({
+        "opponent": "national_v1",
+        "cluster": "negative",
+        "rule_id": 1,
+        "values": values,
+        "match_outcome": _match_outcome_context(tool, -100.0),
+        "candidates": [_candidate_with_outcome(
+            tool, label_id=2, baseline=-100.0, delta=1.0
+        )],
+    })
+
+    result = tool._evaluate_config(
+        rows,
+        {
+            "margin": 1_000.0,
+            "hand_weight": 1.0,
+            "response_weight": 0.0,
+            "use_lower": True,
+        },
+        bootstrap_samples=200,
+        bootstrap_seed=3,
+    )
+
+    assert result["match_outcome_rows"] == 6
+    assert result["match_outcome_clusters"] == 2
+    assert result["match_positive_rate"] == 0.5
+    assert result["rule_match_positive_rate"] == 0.5
+    assert result["match_positive_rate_cluster_bootstrap_ci"]["mean"] == 0.5
+
+
+def test_win_first_selection_prefers_positive_matches_before_chip_magnitude() -> None:
+    tool = _load_tool()
+    values = {
+        "delta_vs_rule": {
+            "lower": [0.0, 0.0, 100.0, 0.0, 0.0, 0.0],
+            "mean": [0.0, 0.0, 100.0, 0.0, 0.0, 0.0],
+        },
+        "tail_delta_vs_rule": {
+            "lower": [0.0] * 6,
+            "mean": [0.0] * 6,
+        },
+        "match_delta_vs_rule": {
+            "lower": [0.0, 0.0, 0.0, 100.0, 0.0, 0.0],
+            "mean": [0.0, 0.0, 0.0, 100.0, 0.0, 0.0],
+        },
+    }
+    rows = []
+    for cluster, risky_delta in enumerate((-200.0, 1_000.0, 1_000.0, 1_000.0)):
+        baseline = 100.0
+        rows.append({
+            "opponent": "national_v1",
+            "cluster": f"match-{cluster}",
+            "rule_id": 1,
+            "values": values,
+            "match_outcome": _match_outcome_context(tool, baseline),
+            "candidates": [
+                _candidate_with_outcome(
+                    tool, label_id=2, baseline=baseline, delta=risky_delta
+                ),
+                _candidate_with_outcome(
+                    tool, label_id=3, baseline=baseline, delta=10.0
+                ),
+            ],
+        })
+
+    selection = tool.select_offline_policy(
+        rows,
+        margins=[0.0],
+        hand_weights=[0.0, 1.0],
+        response_weights=[0.0],
+        min_overrides=4,
+        min_selection_clusters=4,
+        min_override_clusters=4,
+        min_overrides_per_opponent=4,
+        min_override_hand_mean=-1_000.0,
+        require_nonnegative_opponent_mean=True,
+        bootstrap_samples=500,
+        bootstrap_seed=7,
+        min_cluster_ci_lower=-1_000.0,
+        min_opponent_stratified_ci_lower=-1_000.0,
+        require_win_first=True,
+        min_match_positive_rate_ci_lower=0.5,
+        min_match_positive_uplift_ci_lower=0.0,
+        min_opponent_match_positive_rate=0.5,
+    )
+
+    selected = selection["selected"]
+    assert selected is not None
+    assert selected["config"]["hand_weight"] == 0.0
+    assert selected["match_total"] == 40.0
+    risky = next(
+        row for row in selection["grid"]
+        if row["config"]["hand_weight"] == 1.0
+    )
+    assert risky["match_total"] == 2_800.0
+    assert risky["match_positive_rate"] == 0.75
+    assert risky["eligible"] is False
+    assert any(
+        "match_positive_rate_cluster_bootstrap_ci_lower" in error
+        or "match_positive_uplift_cluster_bootstrap_ci_lower" in error
+        for error in risky["eligibility_errors"]
+    )
