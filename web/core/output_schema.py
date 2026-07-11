@@ -1,22 +1,98 @@
 """Pydantic models for validating structured LLM output from each pipeline agent."""
 
-from typing import Literal, Optional
+from typing import Literal, Optional, get_args
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from skill_library import valid_skill_layers
 
 
-RUNTIME_CONTRACT_REQUIRED_LAYERS = frozenset({
-    "runtime_architecture",
-    "precompute",
-    "match_memory",
-    "opponent_model",
-    "native_tcp",
+MASTER_PLAN_MIN_TASKS = 1
+MASTER_PLAN_MAX_TASKS = 3
+WORKER_TASK_MIN_TARGET_FILES = 1
+WORKER_TASK_MAX_TARGET_FILES = 3
+WORKER_PROMPT_MIN_CHARS = 20
+WORKER_PROMPT_MAX_CHARS = 12_000
+
+PrecomputeBuildPhase = Literal["module_import"]
+PrecomputeFallback = Literal["legal_baseline"]
+PRECOMPUTE_BUILD_PHASES = tuple(get_args(PrecomputeBuildPhase))
+PRECOMPUTE_FALLBACKS = tuple(get_args(PrecomputeFallback))
+PRECOMPUTE_MAX_BUILD_MS = 2_500
+PRECOMPUTE_MAX_ENTRIES = 65_536
+PRECOMPUTE_MAX_BYTES = 8 * 1024 * 1024
+PRECOMPUTE_KEY_SHAPE_PATTERN = (
+    r"^(int|str|tuple\[(int|str|bool)(,(int|str|bool)){0,4}\])$"
+)
+PRECOMPUTE_CONSUMER_PATTERN = (
+    r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$"
+)
+
+MatchMemoryResetBoundary = Literal["tcp_connection"]
+MatchMemorySnapshotField = Literal["opponent_runtime"]
+MatchMemoryUpdateEvent = Literal[
+    "hand_start",
+    "street_start",
+    "hero_action",
+    "opponent_action",
+    "settlement",
+    "showdown",
+]
+MATCH_MEMORY_RESET_BOUNDARIES = tuple(get_args(MatchMemoryResetBoundary))
+MATCH_MEMORY_SNAPSHOT_FIELDS = tuple(get_args(MatchMemorySnapshotField))
+MATCH_MEMORY_ALLOWED_UPDATE_EVENTS = tuple(get_args(MatchMemoryUpdateEvent))
+MATCH_MEMORY_REQUIRED_UPDATE_EVENTS = frozenset({
+    "hand_start",
+    "opponent_action",
+    "settlement",
+    "showdown",
 })
+MATCH_MEMORY_MIN_UPDATE_EVENTS = 4
+MATCH_MEMORY_MAX_UPDATE_EVENTS = 6
+
+RUNTIME_CONTRACT_WORKER_PROMPT_TERMS = {
+    "decision": ("budget", "fallback", "baseline", "deadline"),
+    "precompute_artifacts": ("precompute",),
+    "match_memory": ("memory", "confidence", "opponent_runtime"),
+    "official_feedback_refs": ("official",),
+}
+
+
+RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_LAYER = {
+    "runtime_architecture": ("decision",),
+    "precompute": ("precompute_artifacts",),
+    "match_memory": ("match_memory",),
+    "opponent_model": ("match_memory",),
+    "native_tcp": ("decision",),
+}
+RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_FOCUS = {
+    "incremental_match_model": ("match_memory",),
+    "reusable_precompute": ("precompute_artifacts",),
+    "deadline_refinement": ("decision",),
+    "bounded_runtime_enumeration": ("precompute_artifacts",),
+    "decision_path_purity": ("decision",),
+}
+RUNTIME_CONTRACT_REQUIRED_LAYERS = frozenset(
+    RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_LAYER
+)
 
 
 def runtime_contract_required_layers() -> set[str]:
     return set(RUNTIME_CONTRACT_REQUIRED_LAYERS)
+
+
+def runtime_contract_required_sections(
+    skill_layer: str,
+    architecture_focus_id: str = "",
+) -> tuple[str, ...]:
+    """Return required RuntimeContract sections for a task's layer and focus."""
+    sections = [
+        *RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_LAYER.get(skill_layer, ()),
+        *RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_FOCUS.get(
+            architecture_focus_id,
+            (),
+        ),
+    ]
+    return tuple(dict.fromkeys(sections))
 
 
 class DecisionRuntimeContract(BaseModel):
@@ -71,15 +147,13 @@ class PrecomputeArtifactContract(BaseModel):
 
     name: str = Field(min_length=2)
     owner_file: str = Field(pattern=r"^[^/\\]+\.py$")
-    build_phase: Literal["module_import"]
-    max_build_ms: int = Field(ge=1, le=2_500)
-    max_entries: int = Field(ge=1, le=65_536)
-    max_bytes: int = Field(ge=1, le=8 * 1024 * 1024)
-    key_shape: str = Field(
-        pattern=r"^(int|str|tuple\[(int|str|bool)(,(int|str|bool)){0,4}\])$"
-    )
-    consumer: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
-    fallback: Literal["legal_baseline"]
+    build_phase: PrecomputeBuildPhase
+    max_build_ms: int = Field(ge=1, le=PRECOMPUTE_MAX_BUILD_MS)
+    max_entries: int = Field(ge=1, le=PRECOMPUTE_MAX_ENTRIES)
+    max_bytes: int = Field(ge=1, le=PRECOMPUTE_MAX_BYTES)
+    key_shape: str = Field(pattern=PRECOMPUTE_KEY_SHAPE_PATTERN)
+    consumer: str = Field(pattern=PRECOMPUTE_CONSUMER_PATTERN)
+    fallback: PrecomputeFallback
 
     @field_validator("name", "owner_file", "key_shape", "consumer", "fallback")
     @classmethod
@@ -92,16 +166,12 @@ class MatchMemoryRuntimeContract(BaseModel):
 
     tracker_class: str = Field(min_length=3)
     owner_file: str = Field(pattern=r"^[^/\\]+\.py$")
-    reset_boundary: Literal["tcp_connection"]
-    update_events: list[Literal[
-        "hand_start",
-        "street_start",
-        "hero_action",
-        "opponent_action",
-        "settlement",
-        "showdown",
-    ]] = Field(min_length=4, max_length=6)
-    snapshot_field: Literal["opponent_runtime"]
+    reset_boundary: MatchMemoryResetBoundary
+    update_events: list[MatchMemoryUpdateEvent] = Field(
+        min_length=MATCH_MEMORY_MIN_UPDATE_EVENTS,
+        max_length=MATCH_MEMORY_MAX_UPDATE_EVENTS,
+    )
+    snapshot_field: MatchMemorySnapshotField
     max_recent_hands: int = Field(ge=0, le=70)
     prior_rule: str = Field(min_length=5)
     confidence_rule: str = Field(min_length=5)
@@ -118,9 +188,11 @@ class MatchMemoryRuntimeContract(BaseModel):
     def _unique_update_events(cls, value: list[str]) -> list[str]:
         if len(set(value)) != len(value):
             raise ValueError("update_events must be unique")
-        required = {"hand_start", "opponent_action", "settlement", "showdown"}
-        if not required.issubset(value):
-            raise ValueError(f"update_events must include {sorted(required)}")
+        if not MATCH_MEMORY_REQUIRED_UPDATE_EVENTS.issubset(value):
+            raise ValueError(
+                "update_events must include "
+                f"{sorted(MATCH_MEMORY_REQUIRED_UPDATE_EVENTS)}"
+            )
         return value
 
 
@@ -136,12 +208,103 @@ class RuntimeContract(BaseModel):
     forbidden_runtime_work: list[str] = Field(default_factory=list, max_length=8)
 
 
+def runtime_contract_worker_prompt_terms(contract: RuntimeContract) -> tuple[str, ...]:
+    """Return the literal execution terms a worker prompt must mirror."""
+    populated_sections: list[str] = []
+    if contract.decision is not None:
+        populated_sections.append("decision")
+    if contract.precompute_artifacts:
+        populated_sections.append("precompute_artifacts")
+    if contract.match_memory is not None:
+        populated_sections.append("match_memory")
+    if contract.official_feedback_refs:
+        populated_sections.append("official_feedback_refs")
+
+    terms: list[str] = []
+    for section in populated_sections:
+        terms.extend(RUNTIME_CONTRACT_WORKER_PROMPT_TERMS[section])
+    return tuple(dict.fromkeys(terms))
+
+
+def runtime_contract_missing_sections(
+    contract: RuntimeContract,
+    required_sections: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Return required RuntimeContract sections that are not populated."""
+    missing: list[str] = []
+    for section in required_sections:
+        value = getattr(contract, section)
+        if value is None or value == []:
+            missing.append(section)
+    return tuple(missing)
+
+
+def master_plan_executable_contract_text() -> str:
+    """Render the exact Master limits from the schema's single sources of truth."""
+    allowed_events = ", ".join(
+        f'"{event}"' for event in MATCH_MEMORY_ALLOWED_UPDATE_EVENTS
+    )
+    required_events = ", ".join(
+        f'"{event}"' for event in sorted(MATCH_MEMORY_REQUIRED_UPDATE_EVENTS)
+    )
+    lines = [
+        "System-owned executable Master-plan contract (generated from output_schema.py; authoritative):",
+        (
+            f"- tasks: {MASTER_PLAN_MIN_TASKS}..{MASTER_PLAN_MAX_TASKS} items; "
+            "worker_id values must be unique."
+        ),
+        (
+            f"- each task.target_files: {WORKER_TASK_MIN_TARGET_FILES}.."
+            f"{WORKER_TASK_MAX_TARGET_FILES} files (never more than "
+            f"{WORKER_TASK_MAX_TARGET_FILES}); every runtime artifact owner_file must "
+            "also appear in target_files or files_allowed."
+        ),
+        (
+            f"- each task.worker_prompt: {WORKER_PROMPT_MIN_CHARS}.."
+            f"{WORKER_PROMPT_MAX_CHARS} characters."
+        ),
+        (
+            "- each precompute_artifacts item: "
+            f'build_phase="{PRECOMPUTE_BUILD_PHASES[0]}"; '
+            f"max_build_ms=1..{PRECOMPUTE_MAX_BUILD_MS}; "
+            f"max_entries=1..{PRECOMPUTE_MAX_ENTRIES}; "
+            f"max_bytes=1..{PRECOMPUTE_MAX_BYTES}; "
+            f"key_shape must match {PRECOMPUTE_KEY_SHAPE_PATTERN!r}; "
+            f"consumer must match {PRECOMPUTE_CONSUMER_PATTERN!r}; "
+            f'fallback="{PRECOMPUTE_FALLBACKS[0]}".'
+        ),
+        (
+            "- match_memory: "
+            f'reset_boundary="{MATCH_MEMORY_RESET_BOUNDARIES[0]}"; '
+            f'snapshot_field="{MATCH_MEMORY_SNAPSHOT_FIELDS[0]}"; '
+            f"update_events must contain {MATCH_MEMORY_MIN_UPDATE_EVENTS}.."
+            f"{MATCH_MEMORY_MAX_UPDATE_EVENTS} unique values chosen only from "
+            f"[{allowed_events}], and must include [{required_events}]."
+        ),
+    ]
+    for section, terms in RUNTIME_CONTRACT_WORKER_PROMPT_TERMS.items():
+        rendered_terms = ", ".join(f'"{term}"' for term in terms)
+        lines.append(
+            f"- when runtime_contract.{section} is populated, worker_prompt must "
+            f"literally contain: {rendered_terms}."
+        )
+    for focus_id, sections in RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_FOCUS.items():
+        lines.append(
+            f"- architecture_focus_id=\"{focus_id}\" requires runtime_contract "
+            f"section(s): {', '.join(sections)}."
+        )
+    return "\n".join(lines)
+
+
 class WorkerTask(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     worker_id: int = Field(ge=1, le=3)
     role: str = Field(description="Algorithmic Logic Architect, Hyperparameter Tuner, or Opponent Modeler")
-    target_files: list[str] = Field(min_length=1)
+    target_files: list[str] = Field(
+        min_length=WORKER_TASK_MIN_TARGET_FILES,
+        max_length=WORKER_TASK_MAX_TARGET_FILES,
+    )
     difficulty: str = "medium"
     skill_layer: str = Field(min_length=1, description="Primary strategy/protocol layer: preflop_range, texture, spr, blocker, line_template, protocol, adapter, native_tcp, telemetry, etc.")
     files_allowed: list[str] = Field(default_factory=list)
@@ -151,7 +314,11 @@ class WorkerTask(BaseModel):
     checks_required: list[str] = Field(default_factory=list)
     merge_policy: str = "disjoint_target_files"
     architecture_focus_id: str = ""
-    worker_prompt: str = Field(min_length=20, description="Detailed instructions for this worker")
+    worker_prompt: str = Field(
+        min_length=WORKER_PROMPT_MIN_CHARS,
+        max_length=WORKER_PROMPT_MAX_CHARS,
+        description="Detailed instructions for this worker",
+    )
     runtime_contract: Optional[RuntimeContract] = Field(
         default=None,
         description="Required for runtime/precompute/match-memory/native TCP tasks.",
@@ -169,27 +336,53 @@ class WorkerTask(BaseModel):
 
     @model_validator(mode="after")
     def _runtime_contract_matches_layer(self):
-        if self.skill_layer not in RUNTIME_CONTRACT_REQUIRED_LAYERS:
+        required_sections = runtime_contract_required_sections(
+            self.skill_layer,
+            self.architecture_focus_id.strip(),
+        )
+        if not required_sections:
             return self
 
         contract = self.runtime_contract
         if contract is None:
             raise ValueError(
-                f"runtime_contract is required when skill_layer={self.skill_layer!r}"
+                "runtime_contract is required when "
+                f"skill_layer={self.skill_layer!r} or "
+                f"architecture_focus_id={self.architecture_focus_id!r}"
             )
 
-        missing: list[str] = []
-        if self.skill_layer in {"runtime_architecture", "native_tcp"}:
-            if contract.decision is None:
-                missing.append("decision")
-        if self.skill_layer == "precompute" and not contract.precompute_artifacts:
-            missing.append("precompute_artifacts")
-        if self.skill_layer in {"match_memory", "opponent_model"} and contract.match_memory is None:
-            missing.append("match_memory")
+        missing = runtime_contract_missing_sections(contract, required_sections)
         if missing:
             raise ValueError(
-                f"runtime_contract for skill_layer={self.skill_layer!r} is missing "
+                "runtime_contract for "
+                f"skill_layer={self.skill_layer!r}, "
+                f"architecture_focus_id={self.architecture_focus_id!r} is missing "
                 f"{', '.join(missing)}"
+            )
+
+        declared_scope = {
+            str(item).replace("\\", "/").rsplit("/", 1)[-1]
+            for item in [*self.target_files, *self.files_allowed]
+            if str(item).strip()
+        }
+        owners: list[str] = []
+        if contract.match_memory is not None:
+            owners.append(contract.match_memory.owner_file)
+        owners.extend(item.owner_file for item in contract.precompute_artifacts)
+        missing_owners = sorted({owner for owner in owners if owner not in declared_scope})
+        if missing_owners:
+            raise ValueError(
+                f"runtime_contract owner file(s) {missing_owners} are outside "
+                f"target_files/files_allowed={sorted(declared_scope)}"
+            )
+
+        prompt_lower = self.worker_prompt.lower()
+        required_terms = runtime_contract_worker_prompt_terms(contract)
+        missing_terms = [term for term in required_terms if term not in prompt_lower]
+        if missing_terms:
+            raise ValueError(
+                "runtime_contract is declared but worker_prompt does not mention "
+                f"required execution term(s) {missing_terms}"
             )
         return self
 
@@ -202,7 +395,10 @@ class MasterPlan(BaseModel):
     expected_behavior_change: str = ""
     do_not_touch: list[str] = Field(default_factory=list)
     measurement_plan: str = ""
-    tasks: list[WorkerTask] = Field(min_length=1, max_length=3)
+    tasks: list[WorkerTask] = Field(
+        min_length=MASTER_PLAN_MIN_TASKS,
+        max_length=MASTER_PLAN_MAX_TASKS,
+    )
 
     @model_validator(mode="after")
     def _unique_worker_ids(self):

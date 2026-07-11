@@ -18,6 +18,7 @@ from evolution_infra import (
 )
 
 from replay_analysis import summarize_replay_for_analysis  # noqa: F401 — re-exported via evolution_core
+from output_schema import master_plan_executable_contract_text
 
 
 # C-class sentinel: returned by _analyze_recent_matches /
@@ -207,6 +208,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "runtime_feedback": runtime_feedback,
         "h2h_data_file": h2h_data_file,
         "h2h_snapshot_contract": h2h_snapshot_contract,
+        "master_plan_executable_contract": master_plan_executable_contract_text(),
     })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"

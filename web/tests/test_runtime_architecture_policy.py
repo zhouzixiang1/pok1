@@ -271,6 +271,9 @@ def test_plan_must_cover_system_selected_focus(tmp_path):
 
     prompt = architecture_policy_prompt(policy)
     assert "selected_focus=national_runtime_v3_migration" in prompt
+    assert "required_worker_prompt_terms=" in prompt
+    for term in policy["selected_focus"]["required_terms"]:
+        assert term in prompt
     assert "label is not proof" in prompt
 
 
