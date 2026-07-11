@@ -25,6 +25,7 @@ import opponent_multitask_ensemble_runtime_v4 as runtime  # noqa: E402
 import opponent_multitask_runtime_v3 as v3_runtime  # noqa: E402
 import opponent_exposure_ledger as exposure_ledger  # noqa: E402
 from opponent_response_schema import response_schema_metadata  # noqa: E402
+import v4_native_policy as native_policy  # noqa: E402
 import win_first_policy_v4 as win_first  # noqa: E402
 
 
@@ -321,6 +322,10 @@ def _artifacts(
         "deployment_policy_value": False,
         "strength_evidence": False,
     }
+    bundle["source"]["preselection_runtime_budget_payload_sha256"] = "a" * 64
+    bundle["source"]["runtime_identity_sha256"] = (
+        builder.runtime_budget.bundle_runtime_identity_sha256(bundle)
+    )
     bundle_path = tmp_path / "bundle.json"
     bundle_path.write_bytes(bundle_exporter.canonical_bundle_bytes(bundle))
     bundle_binding = bundle_exporter.bundle_artifact_binding(bundle)
@@ -512,6 +517,30 @@ def _mock_runtime(monkeypatch, selected: dict) -> None:
         },
     )
 
+    def assess(target: Path, authorization: dict) -> dict:
+        artifact = builder.runtime_budget._artifact(
+            bundle_bytes=authorization["bundle_bytes"],
+            bundle_sha256=authorization["bundle_sha256"],
+            runtime_identity_sha256=authorization["runtime_identity_sha256"],
+            preselection_runtime_budget_payload_sha256=authorization[
+                "preselection_runtime_budget_payload_sha256"
+            ],
+            source_collection_complete=True,
+            cpu_ns=[1] * builder.runtime_budget.MEASURED_REPEATS,
+            wall_ns=[2] * builder.runtime_budget.MEASURED_REPEATS,
+            warmups_completed=builder.runtime_budget.WARMUP_ROUNDS,
+            errors=[],
+        )
+        path = target / builder.RUNTIME_BUDGET_FILENAME
+        path.write_text(json.dumps(artifact), encoding="utf-8")
+        authorization.update({
+            "final_runtime_budget_payload_sha256": artifact["payload_sha256"],
+            "final_runtime_budget_file_sha256": builder._sha256(path),
+        })
+        return artifact
+
+    monkeypatch.setattr(builder, "_assess_final_runtime_budget", assess)
+
 
 def _replay_args(tmp_path: Path) -> dict:
     calibration_dir = tmp_path / "calibration"
@@ -524,6 +553,41 @@ def _replay_args(tmp_path: Path) -> dict:
         "device": "cpu",
         "batch_size": 128,
     }
+
+
+@pytest.mark.parametrize("unsafe_kind", ["oversized", "symlink"])
+def test_unsafe_bundle_is_rejected_before_protected_json_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe_kind: str,
+) -> None:
+    bundle = tmp_path / f"{unsafe_kind}-bundle.json"
+    if unsafe_kind == "oversized":
+        with bundle.open("wb") as handle:
+            handle.truncate(builder.runtime_budget.MAX_BUNDLE_BYTES + 1)
+    else:
+        target = tmp_path / "bundle-target.json"
+        target.write_text("{}\n", encoding="utf-8")
+        bundle.symlink_to(target.name)
+    protected_reads = []
+
+    def forbidden_read(*args, **kwargs):
+        protected_reads.append((args, kwargs))
+        raise AssertionError("protected JSON must not be read")
+
+    monkeypatch.setattr(builder, "_read_json_snapshot", forbidden_read)
+    with pytest.raises(ValueError, match="immutable native size budget"):
+        builder.build_candidate(
+            bundle_path=bundle,
+            gate_dir=tmp_path / "protected-gate",
+            calibration_dir=tmp_path / "protected-calibration",
+            policy_dir=tmp_path / "protected-policy",
+            role_manifest_path=tmp_path / "protected-role-manifest.json",
+            ledger_path=tmp_path / "protected-ledger.json",
+            device="cpu",
+            batch_size=128,
+            output=tmp_path / "v999_unsafe_v4_native_tcp",
+        )
+    assert protected_reads == []
+    assert not list(tmp_path.glob(".v999_unsafe_v4_native_tcp.*"))
 
 
 def test_failed_v4_gate_cannot_authorize_candidate(
@@ -656,7 +720,7 @@ def test_builder_binds_original_calibration_payload_to_gate(
     bundle_path.write_bytes(bundle_exporter.canonical_bundle_bytes(bundle))
     _mock_runtime(monkeypatch, selected)
 
-    with pytest.raises(ValueError, match="authorize|bound"):
+    with pytest.raises(ValueError, match="authorize|bound|runtime identity"):
         builder.verify_build_authorization(
             gate,
             bundle_path,
@@ -717,6 +781,9 @@ def test_passing_v4_gate_builds_native_candidate_with_false_claims(
     ]
     assert (output / "v4_ensemble_bundle.json").is_file()
     assert (output / "V4_BUILD_MANIFEST.json").is_file()
+    assert native_policy._authorized_bundle_payload(output) == json.loads(
+        (output / "v4_ensemble_bundle.json").read_text(encoding="utf-8")
+    )
     native = (output / "national_bot.py").read_text(encoding="utf-8")
     assert "self.v4_policy" in native
     assert "v4_decision" in native
@@ -765,6 +832,55 @@ def test_passing_v4_gate_builds_native_candidate_with_false_claims(
     assert smoke.returncode == 0, smoke.stderr
     assert builder._directory_sha256(builder.DEFAULT_STRATEGY_DONOR) == strategy_before
     assert builder._directory_sha256(builder.DEFAULT_TRANSPORT_DONOR) == transport_before
+
+
+def test_final_runtime_budget_failure_cleans_temp_and_never_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate, bundle, selected, role_manifest, ledger = _artifacts(tmp_path / "case")
+    actual_assess = builder._assess_final_runtime_budget
+    _mock_runtime(monkeypatch, selected)
+    monkeypatch.setattr(builder, "_assess_final_runtime_budget", actual_assess)
+    benchmark_calls = []
+
+    def failed_benchmark(bundle_path: Path, **kwargs) -> dict:
+        benchmark_calls.append((Path(bundle_path), dict(kwargs)))
+        payload = json.loads(Path(bundle_path).read_text(encoding="utf-8"))
+        return builder.runtime_budget._artifact(
+            bundle_bytes=Path(bundle_path).stat().st_size,
+            bundle_sha256=builder._sha256(Path(bundle_path)),
+            runtime_identity_sha256=(
+                builder.runtime_budget.bundle_runtime_identity_sha256(payload)
+            ),
+            preselection_runtime_budget_payload_sha256=kwargs[
+                "preselection_runtime_budget_payload_sha256"
+            ],
+            source_collection_complete=True,
+            cpu_ns=[],
+            wall_ns=[],
+            warmups_completed=0,
+            errors=["synthetic final runtime benchmark failure"],
+        )
+
+    monkeypatch.setattr(
+        builder.runtime_budget,
+        "measure_bundle_runtime_budget_subprocess",
+        failed_benchmark,
+    )
+    output = tmp_path / "v997_runtime_budget_failure_v4_native_tcp"
+    with pytest.raises(ValueError, match="not formal-eligible"):
+        builder.build_candidate(
+            bundle_path=bundle,
+            gate_dir=gate,
+            role_manifest_path=role_manifest,
+            ledger_path=ledger,
+            output=output,
+            **_replay_args(tmp_path / "case"),
+        )
+
+    assert len(benchmark_calls) == 1
+    assert not output.exists()
+    assert not list(tmp_path.glob(f".{output.name}.*"))
 
 
 def test_v4_cli_output_must_be_new_formal_version(tmp_path: Path) -> None:

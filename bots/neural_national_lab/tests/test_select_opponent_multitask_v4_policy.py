@@ -22,7 +22,25 @@ from match_outcome_schema import (  # noqa: E402
 import opponent_multitask_model_v4 as models  # noqa: E402
 import policy_role_evidence as evidence  # noqa: E402
 import select_opponent_multitask_v4_policy as policy  # noqa: E402
+import export_opponent_multitask_ensemble_v4 as bundle_exporter  # noqa: E402
+import v4_runtime_budget as runtime_budget  # noqa: E402
 import win_first_policy_v4 as win_first  # noqa: E402
+
+
+REAL_VERIFY_PRESELECTION_RUNTIME_BUDGET = (
+    policy.verify_preselection_runtime_budget
+)
+
+
+@pytest.fixture(autouse=True)
+def _verify_static_runtime_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    def verify(path: Path, **kwargs) -> dict:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return runtime_budget.validate_runtime_budget_artifact(
+            payload, require_formal=bool(kwargs.get("formal"))
+        )
+
+    monkeypatch.setattr(policy, "verify_preselection_runtime_budget", verify)
 
 
 def _inference_row() -> dict:
@@ -411,6 +429,19 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _policy_artifacts(root: Path, calibrated: dict) -> None:
     root.mkdir()
+    budget_artifact = runtime_budget._artifact(
+        bundle_bytes=1_000,
+        bundle_sha256="e" * 64,
+        runtime_identity_sha256="d" * 64,
+        source_collection_complete=True,
+        cpu_ns=[1] * runtime_budget.MEASURED_REPEATS,
+        wall_ns=[2] * runtime_budget.MEASURED_REPEATS,
+        warmups_completed=runtime_budget.WARMUP_ROUNDS,
+        errors=[],
+    )
+    _write_json(root / policy.RUNTIME_BUDGET_NAME, budget_artifact)
+    budget_sha256 = budget_artifact["payload_sha256"]
+    identity_sha256 = budget_artifact["runtime_identity_sha256"]
     rows = _prepared_rows(clusters_per_opponent=4, decisions_per_cluster=2)
     policy_contract = _formal_policy_contract(calibrated)
     selection = policy.select_policy(
@@ -437,6 +468,8 @@ def _policy_artifacts(root: Path, calibrated: dict) -> None:
             member["outcome_calibration"]["payload_sha256"]
             for member in calibrated["members"]
         ],
+        "runtime_budget_payload_sha256": budget_sha256,
+        "runtime_identity_sha256": identity_sha256,
         "source_collection_complete": True,
         "formal_selection": True,
         "collection_boundary": _Dataset().require_collection_boundary(),
@@ -463,6 +496,8 @@ def _policy_artifacts(root: Path, calibrated: dict) -> None:
     evaluation["preparation"] = preparation
     evaluation["policy_contract"] = policy_contract
     evaluation["code_artifacts"] = code_artifacts
+    evaluation["runtime_budget_payload_sha256"] = budget_sha256
+    evaluation["runtime_identity_sha256"] = identity_sha256
     evaluation.update(runtime_context)
     _write_json(root / "policy_evaluation.json", evaluation)
     phase = {
@@ -481,6 +516,8 @@ def _policy_artifacts(root: Path, calibrated: dict) -> None:
     )
     result["source_collection_complete"] = True
     result["formal_selection"] = True
+    result["runtime_budget_payload_sha256"] = budget_sha256
+    result["runtime_identity_sha256"] = identity_sha256
     result.update(runtime_context)
     assert result["passed"] is True
     result_path = root / "policy_selection_result.json"
@@ -497,6 +534,8 @@ def _policy_artifacts(root: Path, calibrated: dict) -> None:
         "selected_policy_sha256": policy.v3._canonical_sha256(selected),
         "selection_passed": True,
         "selection_errors": [],
+        "runtime_budget_payload_sha256": budget_sha256,
+        "runtime_identity_sha256": identity_sha256,
         "incomplete_smoke": False,
         "source_collection_complete": True,
         "policy_selection_opponents": list(_Dataset.roles["policy_selection"]),
@@ -514,6 +553,7 @@ def _policy_artifacts(root: Path, calibrated: dict) -> None:
     }
     _write_json(root / "policy_selection_report.json", report)
     names = {
+        policy.RUNTIME_BUDGET_NAME,
         "candidate_manifest.json",
         "policy_evaluation.json",
         "policy_selection_result.json",
@@ -523,6 +563,8 @@ def _policy_artifacts(root: Path, calibrated: dict) -> None:
         "schema": policy.POLICY_ARTIFACT_SCHEMA,
         "run_id": "run-1",
         "candidate_sha256": candidate_sha,
+        "runtime_budget_payload_sha256": budget_sha256,
+        "runtime_identity_sha256": identity_sha256,
         **runtime_context,
         "policy_gate_opened": False,
         "deployment_policy_value": False,
@@ -600,6 +642,9 @@ def test_policy_artifact_verifier_binds_v4_policy_and_calibration(
         "evaluation_sha256",
         "result_sha256",
         "artifact_manifest_sha256",
+        "runtime_budget_path",
+        "runtime_budget_payload_sha256",
+        "runtime_identity_sha256",
         "selected_policy",
         "selected_policy_sha256",
         "selection_passed",
@@ -870,6 +915,93 @@ def test_formal_selector_checks_160_pass_boundary_before_calibration_load(
             "--out-dir", str(tmp_path / "out"),
             "--device", "cpu",
         ])
+
+
+def test_runtime_budget_failure_prevents_policy_selection_exposure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = _Dataset()
+    monkeypatch.setattr(policy, "RoleDatasetAccess", lambda *a, **k: dataset)
+    monkeypatch.setattr(
+        policy, "load_calibrated_ensemble", lambda *a, **k: _calibrated()
+    )
+    monkeypatch.setattr(
+        policy,
+        "assess_preselection_runtime_budget",
+        lambda *a, **k: (_ for _ in ()).throw(
+            ValueError("runtime budget failed before selection")
+        ),
+    )
+    monkeypatch.setattr(
+        policy,
+        "open_policy_selection",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("policy_selection must remain unopened")
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="runtime budget failed"):
+        policy.main([
+            "--calibration-dir", str(tmp_path / "calibration"),
+            "--role-manifest", str(tmp_path / "roles.json"),
+            "--ledger", str(tmp_path / "ledger.json"),
+            "--run-id", "run-1",
+            "--out-dir", str(tmp_path / "out"),
+            "--device", "cpu",
+        ])
+
+
+def test_preselection_budget_cannot_bind_an_earlier_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = {
+        "schema": "test-bundle",
+        "format": "test-format",
+        "member_payload_sha256": ["a" * 64],
+        "calibration": {},
+        "source": {},
+        "export_contract": {},
+    }
+    raw = bundle_exporter.checked_canonical_bundle_bytes(bundle)
+    artifact = runtime_budget._artifact(
+        bundle_bytes=len(raw),
+        bundle_sha256=hashlib.sha256(raw).hexdigest(),
+        runtime_identity_sha256=(
+            runtime_budget.bundle_runtime_identity_sha256(bundle)
+        ),
+        preselection_runtime_budget_payload_sha256="b" * 64,
+        source_collection_complete=True,
+        cpu_ns=[1] * runtime_budget.MEASURED_REPEATS,
+        wall_ns=[2] * runtime_budget.MEASURED_REPEATS,
+        warmups_completed=runtime_budget.WARMUP_ROUNDS,
+        errors=[],
+    )
+    monkeypatch.setattr(
+        bundle_exporter,
+        "build_preselection_bundle_payload",
+        lambda **_kwargs: bundle,
+    )
+    monkeypatch.setattr(
+        runtime_budget,
+        "measure_bundle_runtime_budget_subprocess",
+        lambda *_args, **_kwargs: artifact,
+    )
+
+    with pytest.raises(ValueError, match="unexpectedly binds"):
+        policy.assess_preselection_runtime_budget(
+            {}, dataset=_Dataset(), run_id="run-1", formal=True
+        )
+
+    path = tmp_path / policy.RUNTIME_BUDGET_NAME
+    _write_json(path, artifact)
+    with pytest.raises(ValueError, match="unexpectedly binds"):
+        REAL_VERIFY_PRESELECTION_RUNTIME_BUDGET(
+            path,
+            calibrated={},
+            dataset=_Dataset(),
+            run_id="run-1",
+            formal=True,
+        )
 
 
 def test_v4_selection_result_summary_binds_bootstrap_contract() -> None:

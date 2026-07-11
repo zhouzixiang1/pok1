@@ -1427,6 +1427,65 @@ formal selected configuration, and cannot create a Bot. No formal CUDA grid was
 run while the independent collector remained incomplete. The complete
 neural-lab suite now passes 498 tests and all 33 national protocol tests pass.
 
+## Protected V4 Deployment Runtime Budget
+
+V4 selection now has an immutable deployment-feasibility guard before it can
+open `policy_selection`. The selector first exports a policy-free calibrated
+stdlib image and enforces a 49,000,000-byte preselection ceiling. An isolated
+`python -I` child then loads only the copied runtime directory and executes two
+warmups plus seven measured maximum-shape neural override paths. Each path has
+one value forward, one calibrated outcome forward, five response forwards, and
+one call to the shared `win_first_policy_v4` selector. The fixed inputs contain
+the full 81-dimensional state, 12-dimensional profile, 16x24 current-hand
+history, 32x16 cross-hand history, and 66-dimensional strategy context. Formal
+eligibility requires the maximum `process_time_ns` result to be at most five
+seconds; wall time is diagnostic. Exceptions, non-finite output, incomplete
+measurements, a child timeout, and incomplete source data all fail closed.
+
+The preselection `runtime_budget.json` is self-hashed and binds the exact
+benchmark bytes plus a policy-independent runtime identity. That identity
+includes every member payload hash, checkpoint/calibration projection and role
+provenance, and the exporter contract with every copied runtime-module hash. It
+deliberately excludes the selected policy and its evidence hashes, avoiding a
+hash cycle while still rejecting member, calibration, or runtime-code drift.
+The artifact must not claim an earlier runtime-budget parent. Its payload hash
+and identity are copied into every selection document and are reconstructed
+from current checkpoints and calibration artifacts during protected replay.
+
+The final exporter independently caps canonical output at exactly 50,000,000
+bytes before it creates an output path. A selected bundle must carry the same
+preselection identity; the exporter and gate recompute it rather than trusting
+the embedded digest. After the builder copies the final bundle and all stdlib
+modules into its temporary native candidate, it runs the same isolated
+benchmark again and writes `V4_RUNTIME_BUDGET.json`. This second artifact binds
+the final bundle byte count and SHA-256, stable identity, and preselection
+artifact SHA-256. Benchmark failure removes the temporary tree and publishes no
+candidate. The native loader verifies the sidecar and all manifest/gate/source
+cross-bindings from single byte snapshots without rerunning a benchmark at
+startup. A missing, changed, concurrently replaced, or inconsistent sidecar,
+bundle, or gate document disables the neural policy before model loading,
+leaving the already sanitized rule action as the runtime fallback.
+
+These hashes are content-integrity and provenance bindings, not a cryptographic
+signature against an actor who can rewrite the entire candidate, its loader,
+and its manifest together. A formal release must therefore anchor the complete
+candidate tree and runtime-budget sidecar in the task commit/tag and in the
+later official-platform evidence. No formal candidate or such release anchor
+exists at this incomplete stage.
+
+The deterministic three-small-member test image is 11,169,406 bytes. On the
+current host its seven measured override-path CPU times were 147.6-151.9 ms,
+with a maximum of 151,897,359 ns. This is portability-chain smoke, not official
+platform timing, deployment value, or strength evidence. The complete
+neural-lab suite now passes 530 tests and all 33 national protocol tests pass.
+
+At the latest atomic independent-collection boundary, 75 of 160 passes are
+complete: value train/validation/held-out counts are 3,491/870/875 and behavior
+counts are 16,866/4,772/2,383. The handed-off collector PID is no longer
+running, and no restart was performed. Only that 75-pass atomic prefix is
+valid; formal scaling, selection, gate, candidate creation, and any strength
+claim remain prohibited until a complete 160/160 source exists.
+
 ## Literature Recheck And Search Direction
 
 The architecture decision is also constrained by established imperfect-
