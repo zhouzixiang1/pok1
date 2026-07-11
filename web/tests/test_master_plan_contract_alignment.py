@@ -67,8 +67,10 @@ def _runtime_contract(
             ],
             "snapshot_field": "opponent_runtime",
             "max_recent_hands": 8,
-            "prior_rule": "Beta prior with eight pseudo-observations",
-            "confidence_rule": "actions divided by actions plus twenty-four",
+            "prior_rule": "beta_prior_weight_8",
+            "confidence_rule": (
+                "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
+            ),
             "adaptation_cap": 0.65,
             "consumer": "strategy.get_baseline_action",
         }
@@ -169,7 +171,7 @@ def test_v143_contract_errors_are_rejected_by_schema_and_semantic_gate():
     _unchanged, schema_errors = validate_agent_output("master", plan)
     assert any("target_files" in error and "at most 3" in error for error in schema_errors)
     assert any(
-        "worker_prompt" in error and "['memory']" in error
+        "national_bot.py is read-only in Master worker tasks" in error
         for error in schema_errors
     )
 
@@ -189,11 +191,103 @@ def test_corrected_v143_contract_passes_both_validation_layers():
         "Implement incremental match memory, compute confidence, and publish "
         "opponent_runtime to strategy.get_baseline_action."
     )
+    plan["tasks"][1]["target_files"] = ["strategy.py"]
+    plan["tasks"][1]["files_allowed"] = ["strategy.py"]
+    plan["tasks"][1]["read_only_dependencies"] = ["national_bot.py"]
 
     validated, schema_errors = validate_agent_output("master", deepcopy(plan))
     assert schema_errors == []
     semantic_errors, _warnings = _validate_master_plan(validated)
     assert semantic_errors == []
+
+
+def test_system_runtime_owner_can_be_declared_read_only_but_not_hidden_writable():
+    plan = {
+        "analysis": "Consume the existing system provider without editing its wrapper.",
+        "targeted_failure": "Opponent profile consumer is missing.",
+        "tasks": [{
+            "worker_id": 1,
+            "role": "Opponent Modeler",
+            "target_files": ["strategy.py"],
+            "skill_layer": "opponent_model",
+            "files_allowed": [],
+            "read_only_dependencies": ["national_bot.py"],
+            "worker_prompt": (
+                "Consume bounded opponent match memory and opponent_runtime with confidence."
+            ),
+            "runtime_contract": _runtime_contract(memory=True),
+        }],
+    }
+
+    MasterPlan.model_validate(plan)
+
+    plan["tasks"][0]["read_only_dependencies"] = []
+    plan["tasks"][0]["files_allowed"] = ["national_bot.py"]
+    try:
+        MasterPlan.model_validate(plan)
+    except ValueError as exc:
+        assert "system-provided national_bot.py" in str(exc)
+    else:
+        raise AssertionError("hidden writable system provider was accepted")
+
+
+def test_master_plan_rejects_two_generation_state_learning_primaries():
+    prompt = (ROOT / "web/core/prompts/master_prompt.md").read_text(encoding="utf-8")
+    start = prompt.index('{\n  "analysis": "Strategic analysis as a single string.')
+    end = prompt.index("\n\n- Do NOT include `branch_from`", start)
+    plan = json.loads(prompt[start:end])
+    second = deepcopy(plan["tasks"][0])
+    second["worker_id"] = 2
+    second["target_files"] = ["postflop.py"]
+    second["files_allowed"] = ["postflop.py"]
+    second["runtime_contract"]["state_learning"] = {
+        "work_primitive": None,
+        "profile_dimensions": [],
+        "line_controls": ["delayed_probe"],
+        "oracle_refs": [
+            "docs/official-raise-boundary-oracle-2026-07-11.md",
+            "docs/official-terminal-settlement-oracle-2026-07-11.md",
+        ],
+    }
+    second["checks_required"] = ["semantic_line_reachability"]
+    second["worker_prompt"] += (
+        " Consume hand_runtime can_delayed_probe with a positive/control sanitized "
+        "action difference and telemetry."
+    )
+    plan["tasks"].append(second)
+
+    try:
+        MasterPlan.model_validate(plan)
+    except ValueError as exc:
+        assert "exactly one state_learning primary is allowed across the entire generation" in str(exc)
+    else:
+        raise AssertionError("two generation-level state_learning primaries were accepted")
+
+
+def test_master_plan_rejects_writable_system_native_entrypoint():
+    plan = {
+        "analysis": "Attempt to mix strategy work with system wrapper mutation.",
+        "targeted_failure": "System provider ownership is not isolated.",
+        "tasks": [{
+            "worker_id": 1,
+            "role": "Opponent Modeler",
+            "target_files": ["strategy.py", "national_bot.py"],
+            "skill_layer": "opponent_model",
+            "architecture_focus_id": "incremental_match_model",
+            "files_allowed": ["strategy.py", "national_bot.py"],
+            "worker_prompt": (
+                "Consume incremental match memory and opponent_runtime with confidence."
+            ),
+            "runtime_contract": _runtime_contract(memory=True),
+        }],
+    }
+
+    try:
+        MasterPlan.model_validate(plan)
+    except ValueError as exc:
+        assert "national_bot.py is read-only in Master worker tasks" in str(exc)
+    else:
+        raise AssertionError("ordinary Master task received writable national_bot.py")
 
 
 def test_architecture_focus_contract_requirements_are_not_deferred():

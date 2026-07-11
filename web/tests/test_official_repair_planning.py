@@ -49,3 +49,35 @@ def test_official_protocol_failure_targets_native_entrypoint():
     assert tasks[0]["task_kind"] == "official_repair"
     assert tasks[0]["target_files"] == ["national_bot.py"]
     assert "Protocol-focused" in tasks[0]["worker_prompt"]
+
+
+def test_official_llm_words_cannot_redirect_repair_to_native_entrypoint():
+    ckpt = {
+        "stage": "official_failed",
+        "next_v": 135,
+        "source_v": 120,
+        "gate_results": {
+            "official_full": {
+                "passed": False,
+                "issues": ["obvious_decision_error: repeated river overcall"],
+                "official_evidence_summary": {
+                    "classification": "obvious_decision_error",
+                    "blocking": True,
+                },
+                "status": {
+                    "official_llm_repair_guidance": (
+                        "Consider wire protocol serialization even though the "
+                        "deterministic verdict did not report it"
+                    ),
+                    "official_llm_prompt_feedback": "protocol protocol protocol",
+                },
+            }
+        },
+        "reviewer_feedback": "wire format may be worth checking",
+    }
+
+    tasks = _synthesize_rework_tasks_from_checkpoint(ckpt)
+
+    assert tasks[0]["target_files"] != ["national_bot.py"]
+    assert "national_bot.py" not in tasks[0]["target_files"]
+    assert "Decision/state-focused" in tasks[0]["worker_prompt"]

@@ -3748,6 +3748,131 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["stage"] == "precommit_failed"
         assert ckpt["precommit_rework_count"] == 2
 
+    def test_official_rework_count_advances_after_successful_worker_batch(self, tmp_path, monkeypatch):
+        """A successful worker does not erase the finite formal-repair budget."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("def act():\n    return 0\n")
+        (next_dir / "strategy.py").write_text("def act():\n    return 1\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="official_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["official_rework_count"] = 0
+        state["reviewer_feedback"] = "Official obvious_decision_error"
+        state["gate_results"] = {
+            "official_full": {
+                "passed": False,
+                "issues": ["obvious_decision_error: repeated river overcall"],
+                "official_evidence_summary": {
+                    "classification": "obvious_decision_error",
+                    "blocking": True,
+                },
+            },
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        executed_tasks = mock_exec.await_args.args[0]
+        assert [task["worker_id"] for task in executed_tasks] == [
+            "auto_official_full_repair"
+        ]
+        assert all(
+            task.get("task_kind") == "official_repair"
+            for task in executed_tasks
+        )
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["official_rework_count"] == 1
+
+    def test_official_rework_circuit_breaker_blocks_repeated_formal_runs(self, tmp_path, monkeypatch):
+        """Formal 5+3 certification cannot loop forever after worker success."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("def act():\n    return 0\n")
+        (next_dir / "strategy.py").write_text("def act():\n    return 1\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="official_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["official_rework_count"] = 2
+        state["reviewer_feedback"] = "Official obvious_decision_error"
+        state["gate_results"] = {
+            "official_full": {
+                "passed": False,
+                "issues": ["obvious_decision_error: repeated river overcall"],
+                "official_evidence_summary": {
+                    "classification": "obvious_decision_error",
+                    "blocking": True,
+                },
+            },
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "MAX_OFFICIAL_REWORK_ROUNDS", 2)
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        abandon_calls = []
+
+        async def _fake_force_abandon(next_v, source_v):
+            abandon_calls.append((next_v, source_v))
+            return {"abandoned": True, "abandoned_v": next_v}
+
+        monkeypatch.setattr(
+            tool_planning,
+            "_force_abandon_official_rework_generation",
+            _fake_force_abandon,
+        )
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec:
+                result = await tool_planning.execute_workers.handler({
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+
+        assert data["error"] == "OFFICIAL_REWORK_CIRCUIT_BREAKER"
+        assert data["official_rework_count"] == 2
+        assert data["abandoned"] is True
+        assert abandon_calls == [(11, 10)]
+        mock_exec.assert_not_called()
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "official_failed"
+        assert ckpt["official_rework_count"] == 2
+
     def test_precommit_failed_refreshes_stale_quality_tasks(self, tmp_path, monkeypatch):
         """precommit_failed must not reuse stale quality-repair tasks from checkpoint."""
         import asyncio

@@ -20,15 +20,27 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from national_runtime_probe_scenarios import (
+    ACTION_PROFILE_SCENARIO_IDS,
     DECISION_SCENARIOS,
+    LINE_SCENARIO_PAIRS,
     RUNTIME_PROBE_SCENARIO_DIGEST,
     RUNTIME_PROBE_SCENARIO_VERSION,
+    SHOWDOWN_RANGE_SCENARIO_IDS,
+    TERMINAL_RESPONSE_SCENARIO_IDS,
 )
 
 
-PROBE_WORKER_VERSION = 3
+PROBE_WORKER_VERSION = 4
 MAX_CAPTURE_CHARS = 64 * 1024
 LEGAL_WIRE_ACTIONS = {"fold", "call", "check", "allin", "raise"}
+PHASE_PATH = Path("/tmp/probe_out/phase.txt")
+
+
+def _phase(name: str) -> None:
+    try:
+        PHASE_PATH.write_text(str(name), encoding="utf-8")
+    except OSError:
+        pass
 
 
 class CappedTextIO(io.TextIOBase):
@@ -90,9 +102,19 @@ class CountingDict(dict):
         return super().__contains__(key)
 
 
+class FixedSnapshotTracker:
+    """Decision-only tracker view for one-field-family counterfactuals."""
+
+    def __init__(self, snapshot: dict[str, Any]) -> None:
+        self._snapshot = copy.deepcopy(snapshot)
+
+    def snapshot(self) -> dict[str, Any]:
+        return copy.deepcopy(self._snapshot)
+
+
 def _set_limits() -> None:
     limits = (
-        (resource.RLIMIT_CPU, (10, 10)),
+        (resource.RLIMIT_CPU, (35, 35)),
         (resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024)),
         (resource.RLIMIT_FSIZE, (1024 * 1024, 1024 * 1024)),
         (resource.RLIMIT_NOFILE, (64, 64)),
@@ -198,6 +220,8 @@ def _profile(snapshot: dict[str, Any]) -> dict[str, Any]:
                 float(value.get("adaptation_weight", 0.0) or 0.0), 9
             ),
         }
+    showdown = snapshot.get("showdown_range") or {}
+    bucket_rates = showdown.get("bucket_rates") or {}
     return {
         "schema_version": int(snapshot.get("schema_version", 0) or 0),
         "confidence": round(float(snapshot.get("confidence", 0.0) or 0.0), 9),
@@ -208,6 +232,30 @@ def _profile(snapshot: dict[str, Any]) -> dict[str, Any]:
         "vpip": round(float(snapshot.get("vpip", 0.0) or 0.0), 9),
         "pfr": round(float(snapshot.get("pfr", 0.0) or 0.0), 9),
         "postflop_aggr": round(float(snapshot.get("postflop_aggr", 0.0) or 0.0), 9),
+        "fold_to_raise": round(float(snapshot.get("fold_to_raise", 0.0) or 0.0), 9),
+        "fold_to_jam_rate": round(float(snapshot.get("fold_to_jam_rate", 0.0) or 0.0), 9),
+        "fold_to_jam_samples": int(snapshot.get("fold_to_jam_samples", 0) or 0),
+        "river_overcall_freq": round(
+            float(snapshot.get("river_overcall_freq", 0.0) or 0.0), 9
+        ),
+        "river_overcall_samples": int(snapshot.get("river_overcall_samples", 0) or 0),
+        "showdown_range": {
+            "schema_version": int(showdown.get("schema_version", 0) or 0),
+            "samples": int(showdown.get("samples", 0) or 0),
+            "confidence": round(float(showdown.get("confidence", 0.0) or 0.0), 9),
+            "adaptation_weight": round(
+                float(showdown.get("adaptation_weight", 0.0) or 0.0), 9
+            ),
+            "showdown_reach_rate": round(
+                float(showdown.get("showdown_reach_rate", 0.0) or 0.0), 9
+            ),
+            "selection_scope": str(showdown.get("selection_scope") or ""),
+            "selection_bias_guard": str(showdown.get("selection_bias_guard") or ""),
+            "prior_source": str(showdown.get("prior_source") or ""),
+            "tightness": round(float(showdown.get("tightness", 0.0) or 0.0), 9),
+            "premium_pair": round(float(bucket_rates.get("premium_pair", 0.0) or 0.0), 9),
+            "offsuit_other": round(float(bucket_rates.get("offsuit_other", 0.0) or 0.0), 9),
+        },
         "contexts": contexts,
     }
 
@@ -219,7 +267,17 @@ def _new_native_bot(imports: CandidateImports):
     return native, bot
 
 
-def _drive_connection(imports: CandidateImports, style: str, hands: int = 70):
+def _drive_connection(
+    imports: CandidateImports,
+    style: str,
+    hands: int = 70,
+    *,
+    showdown_style: str = "mixed",
+):
+    # Synthetic local lifecycle evidence only.  The official 70-hand EXE may
+    # omit hand 70's earnChips and requires the separately cross-bound THP
+    # terminal proof; this probe must never be used as formal completion or
+    # strength evidence.
     native, bot = _new_native_bot(imports)
     sock = MemorySocket()
     tracker_identity = id(bot._opponent_tracker)
@@ -233,7 +291,13 @@ def _drive_connection(imports: CandidateImports, style: str, hands: int = 70):
             bot.handle("preflop|BIGBLIND|<0,0><1,1>", sock)
             if id(bot._opponent_tracker) != tracker_identity:
                 raise AssertionError(f"tracker_recreated_at_hand:{hand}")
-            action = "raise 300" if style == "aggressive" else "fold"
+            action = (
+                "raise 300"
+                if style == "aggressive"
+                else "fold"
+                if style == "passive"
+                else "call"
+            )
             bot.handle(action, sock)
             if hand == hands:
                 bot.handle("flop|<0,2><1,4><2,6>", sock)
@@ -243,7 +307,12 @@ def _drive_connection(imports: CandidateImports, style: str, hands: int = 70):
                 bot.handle("river|<0,10>", sock)
                 bot.handle("raise 3000" if style == "aggressive" else "fold", sock)
             if hand % 5 == 0:
-                bot.handle("oppo_hands|<2,2><3,3>", sock)
+                showdown_message = {
+                    "tight": "oppo_hands|<0,12><1,12>",
+                    "loose": "oppo_hands|<0,5><1,0>",
+                    "mixed": "oppo_hands|<2,2><3,3>",
+                }[showdown_style]
+                bot.handle(showdown_message, sock)
             bot.handle("earnChips 50", sock)
             snapshot = bot._opponent_tracker.snapshot()
             request_snapshot = bot._request().get("opponent_runtime") or {}
@@ -265,11 +334,56 @@ def _drive_connection(imports: CandidateImports, style: str, hands: int = 70):
     }
 
 
+def _drive_terminal_response_profile(imports: CandidateImports, response: str, hands: int = 70):
+    _native, bot = _new_native_bot(imports)
+    tracker = bot._opponent_tracker
+    request_mismatches = 0
+    for hand in range(1, hands + 1):
+        tracker.begin_hand(hand, opponent_is_sb=bool(hand % 2))
+        tracker.observe_action("opponent", "preflop", "call")
+        if hand % 3 == 0:
+            tracker.observe_action("hero", "river", "allin", amount=20_000)
+            tracker.observe_action("opponent", "river", response)
+        elif hand % 3 == 1:
+            tracker.observe_action("hero", "river", "raise", amount=1_200)
+            tracker.observe_action("opponent", "river", response)
+        else:
+            tracker.observe_action("hero", "flop", "raise", amount=600)
+            tracker.observe_action("opponent", "flop", response)
+        tracker.observe_settlement(hand, hero_earned=50 if response == "fold" else -50)
+        if _profile(tracker.snapshot()) != _profile(bot._request()["opponent_runtime"]):
+            request_mismatches += 1
+    return bot, {
+        "response": response,
+        "hands": hands,
+        "request_mismatches": request_mismatches,
+        "final": _profile(tracker.snapshot()),
+    }
+
+
 def _probe_tracker(imports: CandidateImports):
     result = {"ok": False, "issues": []}
     try:
         native, aggressive_bot, aggressive = _drive_connection(imports, "aggressive")
         _native, passive_bot, passive = _drive_connection(imports, "passive")
+        _native, tight_showdown_bot, tight_showdown = _drive_connection(
+            imports,
+            "neutral",
+            showdown_style="tight",
+        )
+        _native, loose_showdown_bot, loose_showdown = _drive_connection(
+            imports,
+            "neutral",
+            showdown_style="loose",
+        )
+        terminal_folder_bot, terminal_folder = _drive_terminal_response_profile(
+            imports,
+            "fold",
+        )
+        terminal_caller_bot, terminal_caller = _drive_terminal_response_profile(
+            imports,
+            "call",
+        )
         _native, new_connection = _new_native_bot(imports)
         initial = _profile(new_connection._opponent_tracker.snapshot())
         cap = float(getattr(native, "OPPONENT_ADAPTATION_CAP", 1.0))
@@ -294,7 +408,7 @@ def _probe_tracker(imports: CandidateImports):
                 result["issues"].append(f"{label}_adaptation_above_cap")
             final = row["final"]
             contexts = final.get("contexts") or {}
-            if final.get("schema_version", 0) < 3:
+            if final.get("schema_version", 0) < 4:
                 result["issues"].append(f"{label}_context_schema_missing")
             if not contexts or len(contexts) > 128:
                 result["issues"].append(f"{label}_contexts_missing_or_unbounded")
@@ -312,6 +426,49 @@ def _probe_tracker(imports: CandidateImports):
                 result["issues"].append(f"{label}_context_confidence_not_isolated")
         if initial["confidence"] != 0.0 or initial["adaptation_weight"] != 0.0:
             result["issues"].append("new_connection_not_reset")
+        for label, row in (
+            ("tight_showdown", tight_showdown),
+            ("loose_showdown", loose_showdown),
+            ("terminal_folder", terminal_folder),
+            ("terminal_caller", terminal_caller),
+        ):
+            if row.get("request_mismatches"):
+                result["issues"].append(f"{label}_snapshot_not_injected")
+        tight_range = tight_showdown["final"]["showdown_range"]
+        loose_range = loose_showdown["final"]["showdown_range"]
+        if tight_range.get("schema_version", 0) < 1:
+            result["issues"].append("showdown_range_schema_missing")
+        if tight_range.get("samples") != 14 or loose_range.get("samples") != 14:
+            result["issues"].append("showdown_range_sample_count_wrong")
+        if tight_range.get("selection_scope") != "reached_showdown_only":
+            result["issues"].append("showdown_range_selection_scope_missing")
+        if tight_range.get("selection_bias_guard") != "reach_rate_discount_and_capped_influence":
+            result["issues"].append("showdown_range_selection_bias_guard_missing")
+        if tight_range.get("prior_source") != "uniform_1326_hole_combinations_v1":
+            result["issues"].append("showdown_range_prior_source_unpinned")
+        if not (0.0 < tight_range.get("adaptation_weight", 0.0) <= cap):
+            result["issues"].append("showdown_range_influence_not_capped")
+        if tight_range.get("showdown_reach_rate") != 0.2:
+            result["issues"].append("showdown_range_reach_rate_wrong")
+        if tight_range.get("tightness", 0.0) <= loose_range.get("tightness", 0.0):
+            result["issues"].append("showdown_range_posterior_not_card_sensitive")
+        if tight_range.get("premium_pair", 0.0) <= loose_range.get("premium_pair", 0.0):
+            result["issues"].append("showdown_premium_pair_posterior_not_updated")
+        folder = terminal_folder["final"]
+        caller = terminal_caller["final"]
+        if folder.get("fold_to_raise", 0.0) <= caller.get("fold_to_raise", 0.0):
+            result["issues"].append("terminal_fold_to_raise_not_response_sensitive")
+        if folder.get("fold_to_jam_rate", 0.0) <= caller.get("fold_to_jam_rate", 0.0):
+            result["issues"].append("terminal_fold_to_jam_not_response_sensitive")
+        if folder.get("river_overcall_freq", 1.0) >= caller.get("river_overcall_freq", 0.0):
+            result["issues"].append("river_overcall_not_response_sensitive")
+        if min(
+            folder.get("fold_to_jam_samples", 0),
+            caller.get("fold_to_jam_samples", 0),
+            folder.get("river_overcall_samples", 0),
+            caller.get("river_overcall_samples", 0),
+        ) <= 0:
+            result["issues"].append("terminal_response_samples_missing")
         result.update({
             "initial": initial,
             "cap": cap,
@@ -319,6 +476,14 @@ def _probe_tracker(imports: CandidateImports):
             "passive": passive,
             "aggressive_bot": aggressive_bot,
             "passive_bot": passive_bot,
+            "tight_showdown": tight_showdown,
+            "loose_showdown": loose_showdown,
+            "tight_showdown_bot": tight_showdown_bot,
+            "loose_showdown_bot": loose_showdown_bot,
+            "terminal_folder": terminal_folder,
+            "terminal_caller": terminal_caller,
+            "terminal_folder_bot": terminal_folder_bot,
+            "terminal_caller_bot": terminal_caller_bot,
         })
     except BaseException as exc:
         result["issues"].append(f"tracker_probe_error:{type(exc).__name__}:{str(exc)[:180]}")
@@ -337,12 +502,184 @@ def _configure_decision_state(bot, scenario: dict[str, Any]) -> None:
     bot._history = copy.deepcopy(scenario["history"])
     bot._stage = str(scenario.get("stage") or ("preflop" if not bot._public_cards else "flop"))
     bot._my_action_count = 0
-    bot._my_chips = 19_900
-    bot._opponent_chips = 19_900
+    hero_blind = 50 if bot._is_sb else 100
+    opponent_blind = 100 if bot._is_sb else 50
+    hero_committed = hero_blind + sum(
+        int(record.get("committed", 0) or 0)
+        for record in scenario["history"]
+        if record.get("player_id") == bot._my_id
+    )
+    opponent_committed = opponent_blind + sum(
+        int(record.get("committed", 0) or 0)
+        for record in scenario["history"]
+        if record.get("player_id") == bot._opponent_id
+    )
+    bot._my_chips = max(0, 20_000 - hero_committed)
+    bot._opponent_chips = max(0, 20_000 - opponent_committed)
     bot._pot = int(scenario["pot"])
     bot._my_stage_bet = int(scenario["my_stage_bet"])
     bot._opponent_stage_bet = int(scenario["opponent_stage_bet"])
     bot._in_allin_runout = False
+
+
+def _probe_hand_context(imports: CandidateImports):
+    result = {"ok": False, "issues": [], "scenario_contexts": {}}
+    try:
+        for scenario in DECISION_SCENARIOS:
+            expected = scenario.get("expected_hand_runtime")
+            if not expected:
+                continue
+            _native, bot = _new_native_bot(imports)
+            try:
+                _configure_decision_state(bot, scenario)
+                context = bot._request().get("hand_runtime") or {}
+                result["scenario_contexts"][scenario["id"]] = context
+                for key, value in expected.items():
+                    if context.get(key) != value:
+                        result["issues"].append(
+                            f"{scenario['id']}_{key}_mismatch:"
+                            f"expected={value!r}:actual={context.get(key)!r}"
+                        )
+            finally:
+                bot.close()
+
+        _native, line_bot = _new_native_bot(imports)
+        line_socket = MemorySocket()
+        line_bot._strategy_action = lambda: 0
+        original_send = line_bot._send_decision
+        line_bot.handle("preflop|BIGBLIND|<0,9><1,8>", line_socket)
+        line_bot.handle("raise 300", line_socket)
+        line_bot._send_decision = lambda _sock: None
+        line_bot.handle("flop|<2,2><1,5><3,7>", line_socket)
+        donk_context = line_bot._request().get("hand_runtime") or {}
+        original_send(line_socket)
+        line_bot._send_decision = lambda _sock: None
+        line_bot.handle("turn|<0,10>", line_socket)
+        delayed_context = line_bot._request().get("hand_runtime") or {}
+        inferred_passes = [
+            row for row in line_bot._history
+            if row.get("round") == 1
+            and row.get("player_id") == line_bot._opponent_id
+            and row.get("action_type") == "call"
+            and row.get("inferred")
+        ]
+        result["transcript"] = {
+            "wire_actions": list(line_socket.sent),
+            "donk": donk_context,
+            "delayed_probe": delayed_context,
+            "inferred_passes": len(inferred_passes),
+        }
+        if donk_context.get("can_donk") is not True:
+            result["issues"].append("transcript_donk_flag_missing")
+        if delayed_context.get("can_delayed_probe") is not True:
+            result["issues"].append("transcript_delayed_probe_flag_missing")
+        if not (
+            (delayed_context.get("previous_street") or {}).get("checked_through")
+            and (delayed_context.get("previous_street") or {}).get("opponent_checked_back")
+            and len(inferred_passes) == 1
+        ):
+            result["issues"].append("official_pass_call_semantics_not_preserved")
+        line_bot.close()
+
+        _native, terminal_bot = _new_native_bot(imports)
+        terminal_socket = MemorySocket()
+        terminal_bot._strategy_action = lambda: 282
+        terminal_bot.handle("preflop|SMALLBLIND|<0,12><1,11>", terminal_socket)
+        terminal_bot._send_decision = lambda _sock: None
+        terminal_bot.handle("flop|<2,0><0,9><3,7>", terminal_socket)
+        terminal_snapshot = terminal_bot._opponent_tracker.snapshot()
+        result["terminal_repair"] = {
+            "pot": terminal_bot._pot,
+            "opponent_chips": terminal_bot._opponent_chips,
+            "fold_to_raise_samples": terminal_snapshot["samples"]["fold_to_raise"],
+            "history": copy.deepcopy(terminal_bot._history),
+        }
+        if terminal_bot._pot != 564 or terminal_bot._opponent_chips != 19_718:
+            result["issues"].append("suppressed_terminal_call_did_not_repair_betting_state")
+        if terminal_snapshot["samples"]["fold_to_raise"] != 1:
+            result["issues"].append("inferred_terminal_call_not_persisted")
+        terminal_bot.close()
+
+        _native, fold_bot = _new_native_bot(imports)
+        fold_socket = MemorySocket()
+        fold_bot._strategy_action = lambda: 282
+        fold_bot.handle("preflop|SMALLBLIND|<0,12><1,11>", fold_socket)
+        fold_bot.handle("fold", fold_socket)
+        fold_bot.handle("earnChips 100", fold_socket)
+        fold_bot._send_decision = lambda _sock: None
+        fold_bot.handle("preflop|BIGBLIND|<0,7><1,6>", fold_socket)
+        next_hand_profile = fold_bot._request()["opponent_runtime"]
+        result["terminal_fold"] = _profile(next_hand_profile)
+        if next_hand_profile["samples"]["fold_to_raise"] != 1:
+            result["issues"].append("relayed_terminal_fold_not_preserved_across_hands")
+        fold_bot.close()
+
+        def drive_river_terminal(response: str | None, *, jam: bool = False):
+            _native, bot = _new_native_bot(imports)
+            sock = MemorySocket()
+            actions = iter((0, 0, 0, -2 if jam else 1200))
+            bot._strategy_action = lambda: next(actions)
+            bot.handle("preflop|SMALLBLIND|<0,12><1,11>", sock)
+            bot.handle("flop|<2,0><0,9><3,7>", sock)
+            bot.handle("check", sock)
+            bot.handle("turn|<1,6>", sock)
+            bot.handle("check", sock)
+            bot.handle("river|<2,4>", sock)
+            bot.handle("check", sock)
+            if response is not None:
+                bot.handle(response, sock)
+            bot.handle("earnChips 0", sock)
+            snapshot = bot._request()["opponent_runtime"]
+            history = copy.deepcopy(bot._history)
+            bot.close()
+            return snapshot, history, list(sock.sent)
+
+        relayed_fold, fold_history, fold_wire = drive_river_terminal("fold")
+        relayed_call, call_history, call_wire = drive_river_terminal("call")
+        inferred_call, inferred_history, inferred_wire = drive_river_terminal(None)
+        relayed_jam_call, jam_history, jam_wire = drive_river_terminal("call", jam=True)
+        result["real_terminal_transcripts"] = {
+            "relayed_fold": {
+                "profile": _profile(relayed_fold),
+                "history": fold_history,
+                "wire": fold_wire,
+            },
+            "relayed_call": {
+                "profile": _profile(relayed_call),
+                "history": call_history,
+                "wire": call_wire,
+            },
+            "inferred_call": {
+                "profile": _profile(inferred_call),
+                "history": inferred_history,
+                "wire": inferred_wire,
+            },
+            "relayed_jam_call": {
+                "profile": _profile(relayed_jam_call),
+                "history": jam_history,
+                "wire": jam_wire,
+            },
+        }
+        if relayed_fold["samples"]["fold_to_raise"] != 1:
+            result["issues"].append("real_river_relayed_fold_not_wired")
+        if relayed_call["river_overcall_samples"] != 1:
+            result["issues"].append("real_river_relayed_call_not_wired")
+        inferred_rows = [
+            item
+            for item in inferred_history
+            if item.get("inference_boundary") == "settlement"
+            and item.get("action_type") == "call"
+        ]
+        if inferred_call["river_overcall_samples"] != 1 or len(inferred_rows) != 1:
+            result["issues"].append("real_river_omitted_call_not_repaired")
+        if relayed_jam_call["fold_to_jam_samples"] != 1:
+            result["issues"].append("real_river_relayed_jam_call_not_wired")
+    except BaseException as exc:
+        result["issues"].append(
+            f"hand_context_probe_error:{type(exc).__name__}:{str(exc)[:180]}"
+        )
+    result["ok"] = not result["issues"]
+    return result
 
 
 def _probe_hanging_action(_req, _current_view):
@@ -350,14 +687,40 @@ def _probe_hanging_action(_req, _current_view):
         time.sleep(1.0)
 
 
-def _timed_formal_action(bot, scenario: dict[str, Any]) -> dict[str, Any]:
+def _timed_formal_action(
+    bot,
+    scenario: dict[str, Any],
+    *,
+    hard_deadline_sec: float | None = None,
+    baseline_target_sec: float | None = None,
+    refinement_budget_sec: float | None = None,
+    max_refinement_candidates: int | None = None,
+    request_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     def alarm(_signum, _frame):
         raise TimeoutError("formal_decision_probe_timeout")
 
     old_handler = signal.signal(signal.SIGALRM, alarm)
     signal.setitimer(signal.ITIMER_REAL, 0.9)
     try:
+        if hard_deadline_sec is not None:
+            bot._decision_hard_deadline_sec = float(hard_deadline_sec)
+        if baseline_target_sec is not None:
+            bot._decision_baseline_target_sec = float(baseline_target_sec)
+        if refinement_budget_sec is not None:
+            bot._decision_refinement_budget_sec = float(refinement_budget_sec)
+        bot._strategy_max_refinement_candidates = max_refinement_candidates
         _configure_decision_state(bot, scenario)
+        effective_request = bot._request()
+        if request_overrides:
+            effective_request = copy.deepcopy(effective_request)
+            for key, value in request_overrides.items():
+                if isinstance(value, dict) and isinstance(effective_request.get(key), dict):
+                    effective_request[key].update(copy.deepcopy(value))
+                else:
+                    effective_request[key] = copy.deepcopy(value)
+            bot._request = lambda: copy.deepcopy(effective_request)
+        hand_runtime = effective_request.get("hand_runtime") or {}
         random.seed(20260710)
         action = int(bot._strategy_action())
         wire, _action_type, _amount = bot._action_to_tcp(action)
@@ -369,6 +732,7 @@ def _timed_formal_action(bot, scenario: dict[str, Any]) -> dict[str, Any]:
             "wire": wire,
             "source": bot._last_decision_source,
             "runtime_metrics": dict(getattr(bot, "_last_decision_metrics", {}) or {}),
+            "hand_runtime": hand_runtime,
         }
     finally:
         try:
@@ -379,21 +743,102 @@ def _timed_formal_action(bot, scenario: dict[str, Any]) -> dict[str, Any]:
         signal.signal(signal.SIGALRM, old_handler)
 
 
+def _action_signature(action: dict[str, Any]) -> tuple:
+    """Supplemental sanitized trajectory, independent of reported metadata."""
+    metrics = action.get("runtime_metrics") or {}
+    trajectory = []
+    baseline = metrics.get("strategy_baseline_action")
+    if baseline is not None:
+        trajectory.append(int(baseline))
+    for item in metrics.get("refinement_progress") or []:
+        if isinstance(item, dict) and item.get("action") is not None:
+            trajectory.append(int(item["action"]))
+    return tuple(trajectory), action.get("internal"), action.get("wire")
+
+
+def _final_wire_action_changed(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Require a completed decision to change what the wrapper would send.
+
+    Intermediate anytime candidates are useful diagnostics, but they are not a
+    behavioral adaptation if the final sanitized wire action is unchanged.
+    """
+    if "error" in left or "error" in right:
+        return False
+    left_wire = left.get("wire")
+    right_wire = right.get("wire")
+    return bool(
+        isinstance(left_wire, str)
+        and isinstance(right_wire, str)
+        and left_wire
+        and right_wire
+        and left_wire != right_wire
+    )
+
+
+def _tier_specs() -> tuple[tuple[str, dict[str, Any]], ...]:
+    return (
+        ("baseline", {"max_refinement_candidates": 0}),
+        (
+            "short",
+            {
+                "hard_deadline_sec": 0.22,
+                "baseline_target_sec": 0.05,
+                "refinement_budget_sec": 0.12,
+            },
+        ),
+        (
+            "long",
+            {
+                "hard_deadline_sec": 0.68,
+                "baseline_target_sec": 0.05,
+                "refinement_budget_sec": 0.55,
+            },
+        ),
+    )
+
+
+def _profile_action(
+    imports: CandidateImports,
+    scenario: dict[str, Any],
+    snapshot: dict[str, Any] | None,
+    **kwargs,
+) -> dict[str, Any]:
+    _native, bot = _new_native_bot(imports)
+    if snapshot is not None:
+        bot._opponent_tracker = FixedSnapshotTracker(snapshot)
+    return _timed_formal_action(bot, scenario, **kwargs)
+
+
 def _probe_strategy_influence(imports: CandidateImports, tracker_result: dict[str, Any]):
-    result = {"ok": False, "issues": [], "rows": [], "changed_pairs": 0}
+    result = {
+        "ok": False,
+        "issues": [],
+        "rows": [],
+        "changed_pairs": 0,
+        "dimensions": {},
+    }
     try:
-        _native, baseline_bot = _new_native_bot(imports)
-        aggressive_bot = tracker_result["aggressive_bot"]
-        passive_bot = tracker_result["passive_bot"]
-        for scenario in DECISION_SCENARIOS:
+        scenarios = {scenario["id"]: scenario for scenario in DECISION_SCENARIOS}
+        baseline_snapshot = None
+        aggressive_snapshot = tracker_result["aggressive_bot"]._opponent_tracker.snapshot()
+        passive_snapshot = tracker_result["passive_bot"]._opponent_tracker.snapshot()
+        style_rows = []
+        style_changes = 0
+        for scenario_id in ACTION_PROFILE_SCENARIO_IDS:
+            scenario = scenarios[scenario_id]
             row = {"scenario_id": scenario["id"]}
-            for label, bot in (
-                ("baseline", baseline_bot),
-                ("aggressive", aggressive_bot),
-                ("passive", passive_bot),
+            for label, snapshot in (
+                ("baseline", baseline_snapshot),
+                ("aggressive", aggressive_snapshot),
+                ("passive", passive_snapshot),
             ):
                 try:
-                    row[label] = _timed_formal_action(bot, scenario)
+                    row[label] = _profile_action(
+                        imports,
+                        scenario,
+                        snapshot,
+                        max_refinement_candidates=0,
+                    )
                 except BaseException as exc:
                     row[label] = {"error": f"{type(exc).__name__}:{str(exc)[:160]}"}
             baseline_wire = row["baseline"].get("wire")
@@ -402,16 +847,191 @@ def _probe_strategy_influence(imports: CandidateImports, tracker_result: dict[st
                 for label in ("aggressive", "passive")
                 if "error" not in row[label] and baseline_wire is not None
             )
-            result["changed_pairs"] += changed
-            result["rows"].append(row)
+            style_changes += changed
+            style_rows.append(row)
         successful = [
-            row for row in result["rows"]
+            row for row in style_rows
             if all("error" not in row[label] for label in ("baseline", "aggressive", "passive"))
         ]
         if len(successful) < 2:
             result["issues"].append("strategy_probe_insufficient_formal_actions")
-        if result["changed_pairs"] < 1:
+        if style_changes < 1:
             result["issues"].append("opponent_runtime_no_observable_sanitized_action_influence")
+
+        terminal_caller_snapshot = (
+            tracker_result["terminal_caller_bot"]._opponent_tracker.snapshot()
+        )
+        terminal_folder_observed = (
+            tracker_result["terminal_folder_bot"]._opponent_tracker.snapshot()
+        )
+        terminal_folder_snapshot = copy.deepcopy(terminal_caller_snapshot)
+        for key in (
+            "fold_to_raise",
+            "fold_to_jam_rate",
+            "fold_to_jam_samples",
+            "river_overcall_freq",
+            "river_overcall_samples",
+            "facing_raise_by_street",
+            "facing_allin_by_street",
+            "contexts",
+            "terminal_response",
+        ):
+            terminal_folder_snapshot[key] = copy.deepcopy(terminal_folder_observed.get(key))
+        for section, keys in (
+            ("rates", ("fold_to_raise", "fold_to_allin")),
+            ("samples", ("fold_to_raise", "fold_to_allin")),
+        ):
+            terminal_folder_snapshot[section] = copy.deepcopy(
+                terminal_caller_snapshot.get(section) or {}
+            )
+            for key in keys:
+                terminal_folder_snapshot[section][key] = copy.deepcopy(
+                    (terminal_folder_observed.get(section) or {}).get(key)
+                )
+        terminal_rows = []
+        terminal_changes = 0
+        for scenario_id in TERMINAL_RESPONSE_SCENARIO_IDS:
+            scenario = scenarios[scenario_id]
+            row = {"scenario_id": scenario_id, "tiers": {}}
+            for tier, kwargs in _tier_specs():
+                tier_row = {}
+                for label, snapshot in (
+                    ("terminal_folder", terminal_folder_snapshot),
+                    ("terminal_caller", terminal_caller_snapshot),
+                ):
+                    try:
+                        tier_row[label] = _profile_action(
+                            imports, scenario, snapshot, **kwargs
+                        )
+                    except BaseException as exc:
+                        tier_row[label] = {
+                            "error": f"{type(exc).__name__}:{str(exc)[:160]}"
+                        }
+                tier_row["trajectory_changed"] = (
+                    _action_signature(tier_row["terminal_folder"])
+                    != _action_signature(tier_row["terminal_caller"])
+                )
+                tier_row["changed"] = _final_wire_action_changed(
+                    tier_row["terminal_folder"], tier_row["terminal_caller"]
+                )
+                row["tiers"][tier] = tier_row
+            terminal_changes += int(
+                any(item.get("changed") for item in row["tiers"].values())
+            )
+            terminal_rows.append(row)
+        if terminal_changes < 1:
+            result["issues"].append(
+                "terminal_response_runtime_no_observable_sanitized_action_influence"
+            )
+
+        loose_snapshot = tracker_result["loose_showdown_bot"]._opponent_tracker.snapshot()
+        tight_observed = tracker_result["tight_showdown_bot"]._opponent_tracker.snapshot()
+        tight_snapshot = copy.deepcopy(loose_snapshot)
+        tight_snapshot["showdown_range"] = copy.deepcopy(tight_observed["showdown_range"])
+        showdown_rows = []
+        showdown_changes = 0
+        for scenario_id in SHOWDOWN_RANGE_SCENARIO_IDS:
+            scenario = scenarios[scenario_id]
+            row = {"scenario_id": scenario_id, "tiers": {}}
+            for tier, kwargs in _tier_specs():
+                tier_row = {}
+                for label, snapshot in (
+                    ("tight_showdown", tight_snapshot),
+                    ("loose_showdown", loose_snapshot),
+                ):
+                    try:
+                        tier_row[label] = _profile_action(
+                            imports, scenario, snapshot, **kwargs
+                        )
+                    except BaseException as exc:
+                        tier_row[label] = {
+                            "error": f"{type(exc).__name__}:{str(exc)[:160]}"
+                        }
+                tier_row["trajectory_changed"] = (
+                    _action_signature(tier_row["tight_showdown"])
+                    != _action_signature(tier_row["loose_showdown"])
+                )
+                tier_row["changed"] = _final_wire_action_changed(
+                    tier_row["tight_showdown"], tier_row["loose_showdown"]
+                )
+                row["tiers"][tier] = tier_row
+            showdown_changes += int(
+                any(item.get("changed") for item in row["tiers"].values())
+            )
+            showdown_rows.append(row)
+        if showdown_changes < 1:
+            result["issues"].append(
+                "showdown_range_no_observable_sanitized_action_influence"
+            )
+
+        line_rows = []
+        line_changes = 0
+        for pair in LINE_SCENARIO_PAIRS:
+            scenario = scenarios[pair["positive"]]
+            positive_context = copy.deepcopy(scenario["expected_hand_runtime"])
+            negative_context = copy.deepcopy(positive_context)
+            negative_context[pair["flag"]] = False
+            row = {"dimension": pair["dimension"], "tiers": {}}
+            for tier, kwargs in _tier_specs():
+                tier_row = {}
+                for label, context in (
+                    ("positive", positive_context),
+                    ("negative", negative_context),
+                ):
+                    try:
+                        tier_row[label] = _profile_action(
+                            imports,
+                            scenario,
+                            None,
+                            request_overrides={"hand_runtime": context},
+                            **kwargs,
+                        )
+                    except BaseException as exc:
+                        tier_row[label] = {
+                            "error": f"{type(exc).__name__}:{str(exc)[:160]}"
+                        }
+                tier_row["trajectory_changed"] = (
+                    _action_signature(tier_row["positive"])
+                    != _action_signature(tier_row["negative"])
+                )
+                tier_row["changed"] = _final_wire_action_changed(
+                    tier_row["positive"], tier_row["negative"]
+                )
+                row["tiers"][tier] = tier_row
+            changed = any(item.get("changed") for item in row["tiers"].values())
+            line_changes += int(changed)
+            if not changed:
+                result["issues"].append(
+                    f"{pair['dimension']}_line_no_observable_sanitized_action_influence"
+                )
+            line_rows.append(row)
+
+        result["rows"] = style_rows
+        result["changed_pairs"] = (
+            style_changes + terminal_changes + showdown_changes + line_changes
+        )
+        result["dimensions"] = {
+            "action_profile": {
+                "ok": style_changes >= 1 and len(successful) >= 2,
+                "changed_pairs": style_changes,
+                "rows": style_rows,
+            },
+            "terminal_response": {
+                "ok": terminal_changes >= 1,
+                "changed_pairs": terminal_changes,
+                "rows": terminal_rows,
+            },
+            "showdown_range": {
+                "ok": showdown_changes >= 1,
+                "changed_pairs": showdown_changes,
+                "rows": showdown_rows,
+            },
+            "semantic_lines": {
+                "ok": line_changes == len(LINE_SCENARIO_PAIRS),
+                "changed_pairs": line_changes,
+                "rows": line_rows,
+            },
+        }
     except BaseException as exc:
         result["issues"].append(f"strategy_probe_error:{type(exc).__name__}:{str(exc)[:180]}")
     result["ok"] = not result["issues"]
@@ -427,6 +1047,11 @@ def _probe_decision_runtime(
     result = {
         "ok": False,
         "issues": [],
+        "safety_ok": False,
+        "refinement_ok": False,
+        "refinement_issues": [],
+        "refinement_evidence": [],
+        "budget_scaling": {},
         "baseline_samples_ms": [],
         "fallback_ready_samples_ms": [],
         "timeout_recovery": {},
@@ -462,6 +1087,88 @@ def _probe_decision_runtime(
             result["issues"].append("strategy_baseline_never_published")
         elif max(result["baseline_samples_ms"]) > 250.0:
             result["issues"].append("strategy_baseline_slower_than_250ms")
+
+        scaling_scenario = next(
+            scenario for scenario in DECISION_SCENARIOS
+            if scenario["id"] == "river_facing_large_bet"
+        )
+        _native, short_bot = _new_native_bot(imports)
+        _native, long_bot = _new_native_bot(imports)
+        short_bot._ensure_strategy_worker()
+        long_bot._ensure_strategy_worker()
+        short_action = _timed_formal_action(
+            short_bot,
+            scaling_scenario,
+            hard_deadline_sec=0.18,
+            baseline_target_sec=0.05,
+            refinement_budget_sec=0.08,
+        )
+        long_action = _timed_formal_action(
+            long_bot,
+            scaling_scenario,
+            hard_deadline_sec=0.68,
+            baseline_target_sec=0.05,
+            refinement_budget_sec=0.55,
+        )
+
+        def final_progress(action):
+            metrics = action.get("runtime_metrics") or {}
+            return {
+                "trusted_steps": int(metrics.get("trusted_refinement_steps") or 0),
+                "trusted_cpu_ms": round(
+                    float(metrics.get("trusted_refinement_cpu_ms") or 0.0), 6
+                ),
+                "trusted_elapsed_ms": round(
+                    float(metrics.get("trusted_refinement_elapsed_ms") or 0.0), 6
+                ),
+                "iterator_exhausted": bool(
+                    metrics.get("refinement_iterator_exhausted")
+                ),
+                "termination_reason": str(
+                    metrics.get("refinement_termination_reason") or ""
+                ),
+                "action_changes": int(
+                    metrics.get("refinement_action_changes") or 0
+                ),
+                "wire": action.get("wire"),
+            }
+
+        short_progress = final_progress(short_action)
+        long_progress = final_progress(long_action)
+        result["budget_scaling"] = {
+            "short": short_progress,
+            "long": long_progress,
+        }
+        if long_progress["trusted_steps"] < 8:
+            result["refinement_issues"].append("long_budget_refinement_has_no_bounded_work")
+        if long_progress["trusted_elapsed_ms"] < 5.0:
+            result["refinement_issues"].append(
+                "long_budget_refinement_has_no_measured_compute"
+            )
+        if not (
+            long_progress["trusted_steps"] > short_progress["trusted_steps"]
+            or (
+                short_progress["iterator_exhausted"]
+                and long_progress["iterator_exhausted"]
+                and short_progress["trusted_steps"] == long_progress["trusted_steps"]
+                and long_progress["trusted_steps"] >= 8
+            )
+        ):
+            result["refinement_issues"].append(
+                "long_budget_does_not_scale_trusted_work_or_exhaust_finite_batch"
+            )
+        if max(
+            short_progress["action_changes"], long_progress["action_changes"]
+        ) < 1:
+            result["refinement_issues"].append(
+                "refinement_never_changes_sanitized_baseline_action"
+            )
+        result["refinement_evidence"].append({
+            "scenario_id": scaling_scenario["id"],
+            "short": short_progress,
+            "long": long_progress,
+            "candidate_reported_metadata_is_non_authoritative": True,
+        })
 
         strategy = imports.load("strategy")
         missing = object()
@@ -525,7 +1232,12 @@ def _probe_decision_runtime(
     result["fallback_ready_samples_ms"] = [
         round(value, 3) for value in result["fallback_ready_samples_ms"][:64]
     ]
-    result["ok"] = not result["issues"]
+    result["refinement_issues"] = list(dict.fromkeys(result["refinement_issues"]))
+    result["safety_ok"] = not result["issues"]
+    result["refinement_ok"] = not result["refinement_issues"]
+    result["issues"].extend(result["refinement_issues"])
+    result["issues"] = list(dict.fromkeys(result["issues"]))
+    result["ok"] = result["safety_ok"] and result["refinement_ok"]
     return result
 
 
@@ -577,7 +1289,11 @@ def _probe_artifacts(imports: CandidateImports, artifacts: list[dict[str, Any]])
                         before_reads = counting.reads
                         try:
                             _native, probe_bot = _new_native_bot(imports)
-                            action = _timed_formal_action(probe_bot, scenario)
+                            action = _timed_formal_action(
+                                probe_bot,
+                                scenario,
+                                max_refinement_candidates=0,
+                            )
                             consumer_scenarios.append({
                                 "scenario_id": scenario["id"],
                                 "reads": counting.reads - before_reads,
@@ -610,7 +1326,11 @@ def _probe_artifacts(imports: CandidateImports, artifacts: list[dict[str, Any]])
                             _native, fallback_bot = _new_native_bot(imports)
                             fallback_scenarios.append({
                                 "scenario_id": scenario["id"],
-                                "action": _timed_formal_action(fallback_bot, scenario),
+                                "action": _timed_formal_action(
+                                    fallback_bot,
+                                    scenario,
+                                    max_refinement_candidates=0,
+                                ),
                             })
                         except BaseException as exc:
                             fallback_scenarios.append({
@@ -638,9 +1358,23 @@ def _probe_artifacts(imports: CandidateImports, artifacts: list[dict[str, Any]])
 
 def _strip_runtime_objects(tracker: dict[str, Any]) -> dict[str, Any]:
     result = dict(tracker)
-    result.pop("aggressive_bot", None)
-    result.pop("passive_bot", None)
-    for style in ("aggressive", "passive"):
+    for key in (
+        "aggressive_bot",
+        "passive_bot",
+        "tight_showdown_bot",
+        "loose_showdown_bot",
+        "terminal_folder_bot",
+        "terminal_caller_bot",
+    ):
+        result.pop(key, None)
+    for style in (
+        "aggressive",
+        "passive",
+        "tight_showdown",
+        "loose_showdown",
+        "terminal_folder",
+        "terminal_caller",
+    ):
         row = result.get(style)
         if isinstance(row, dict):
             row = dict(row)
@@ -664,9 +1398,14 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
     os.environ["POK_DECISION_REFINEMENT_BUDGET_SEC"] = "0.55"
     os.environ["POK_DECISION_BASELINE_TARGET_SEC"] = "0.08"
     os.environ["POK_DECISION_BUDGET_SEC"] = "0.70"
+    os.environ["POK_NATIVE_BOT_SEED"] = "20260710"
     sys.path.insert(0, str(root))
     imports = CandidateImports(root)
+    _phase("tracker")
     tracker = _probe_tracker(imports)
+    _phase("hand_context")
+    hand_context = _probe_hand_context(imports)
+    _phase("strategy_influence")
     strategy = _probe_strategy_influence(imports, tracker) if tracker.get("ok") else {
         "ok": False,
         "issues": ["strategy_probe_skipped_tracker_failed"],
@@ -674,13 +1413,14 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
         "changed_pairs": 0,
     }
     expected_runtime_version = int(spec.get("expected_decision_runtime_version") or 0)
+    _phase("decision_runtime")
     decision_runtime = (
         _probe_decision_runtime(
             imports,
             strategy,
             expected_runtime_version=expected_runtime_version,
         )
-        if strategy.get("ok")
+        if tracker.get("ok") and strategy.get("rows")
         else {
             "ok": False,
             "issues": ["decision_runtime_probe_skipped_strategy_failed"],
@@ -689,9 +1429,12 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
             "timeout_recovery": {},
         }
     )
+    _phase("artifacts")
     artifacts = _probe_artifacts(imports, spec.get("artifacts") or [])
+    _phase("report")
     issues = [
         *(tracker.get("issues") or []),
+        *(hand_context.get("issues") or []),
         *(strategy.get("issues") or []),
         *(decision_runtime.get("issues") or []),
         *(
@@ -711,6 +1454,7 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
         "issues": issues,
         "artifacts": artifacts,
         "tracker": _strip_runtime_objects(tracker),
+        "hand_context": hand_context,
         "strategy_influence": strategy,
         "decision_runtime": decision_runtime,
         "module_diagnostics": imports.diagnostics,

@@ -14,10 +14,10 @@ textual shape of the code; it checks the STRUCTURE / RUNTIME behavior:
   call evaluate_5() on a non-flush wheel, assert the result is a straight with
   high == 5. On any import/runtime failure it falls back to an AST scan for the
   literal set {14, 2, 3, 4, 5} inside evaluate_5.
-- BOT-002a  (conservative re-raise headroom): AST-locate the
-  min_raise_action assignment and assert its formula contains "+ 1". The
-  official EXE accepts exact 2x; this is a retained cross-path policy, not the
-  protocol legality boundary.
+- BOT-002a  (inclusive official re-raise boundary): AST-locate the
+  min_raise_action assignment and accept both exact ``2x`` and conservative
+  ``2x + 1`` formulas, while rejecting a statically confirmed value below the
+  official inclusive boundary.
 - BOT-004   (TOTAL_HANDS == 70): subprocess-import the bot's constants and
   assert TOTAL_HANDS == 70.
 
@@ -179,8 +179,121 @@ def _literal_int_set(node: ast.AST) -> set[int] | None:
     return out
 
 
+def _affine_terms(node: ast.AST) -> tuple[dict[str, float], float] | None:
+    """Return simple affine coefficients without evaluating candidate code."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return {}, float(node.value)
+    if isinstance(node, ast.Name):
+        return {node.id: 1.0}, 0.0
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _affine_terms(node.operand)
+        if value is None:
+            return None
+        sign = -1.0 if isinstance(node.op, ast.USub) else 1.0
+        return ({key: sign * coefficient for key, coefficient in value[0].items()}, sign * value[1])
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
+        left = _affine_terms(node.left)
+        right = _affine_terms(node.right)
+        if left is None or right is None:
+            return None
+        sign = -1.0 if isinstance(node.op, ast.Sub) else 1.0
+        coefficients = dict(left[0])
+        for key, coefficient in right[0].items():
+            coefficients[key] = coefficients.get(key, 0.0) + sign * coefficient
+        return coefficients, left[1] + sign * right[1]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        left = _affine_terms(node.left)
+        right = _affine_terms(node.right)
+        if left is None or right is None:
+            return None
+        if left[0] and right[0]:
+            return None
+        scalar, value = (left[1], right) if not left[0] else (right[1], left)
+        return (
+            {key: scalar * coefficient for key, coefficient in value[0].items()},
+            scalar * value[1],
+        )
+    return None
+
+
+def _minimum_raise_candidates(value: ast.AST) -> list[ast.AST]:
+    if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "max":
+        return list(value.args)
+    return [value]
+
+
+def _looks_like_previous_raise_to(name: str) -> bool:
+    lowered = name.lower()
+    return "raise" in lowered and any(
+        marker in lowered
+        for marker in ("last", "prev", "previous", "round", "street", "judge")
+    )
+
+
+def _looks_like_own_street_bet(name: str) -> bool:
+    lowered = name.lower()
+    owner = any(marker in lowered for marker in ("my", "own", "hero", "self"))
+    contribution = any(
+        marker in lowered for marker in ("bet", "commit", "contribution", "stage")
+    )
+    return owner and contribution
+
+
+def _inclusive_raise_boundary_margin(value: ast.AST) -> float | None:
+    """Return proven minimum headroom over ``2 * raise_to - own_bet``.
+
+    State implementations use different names (for example
+    ``judge_round_raise`` versus ``last_raise_to``), but arbitrary variables are
+    not interchangeable evidence.  Bind both semantic roles, require every
+    other affine term to vanish, and evaluate extra positive slope at the
+    smallest valid prior raise-to (the national big blind, 100 chips).  Thus a
+    formula such as ``2.5 * last_raise_to - own_bet - 1`` retains its real
+    headroom instead of being reduced incorrectly to the constant ``-1``.
+    Unknown shapes remain inconclusive and must not become a blocking false
+    positive.
+    """
+    minimum_prior_raise_to = 100.0
+    for candidate in _minimum_raise_candidates(value):
+        affine = _affine_terms(candidate)
+        if affine is None:
+            continue
+        coefficients, constant = affine
+        raise_terms = [
+            (name, coefficient)
+            for name, coefficient in coefficients.items()
+            if _looks_like_previous_raise_to(name)
+        ]
+        own_bet_terms = [
+            (name, coefficient)
+            for name, coefficient in coefficients.items()
+            if _looks_like_own_street_bet(name)
+        ]
+        if len(raise_terms) != 1 or len(own_bet_terms) != 1:
+            continue
+        raise_name, raise_coefficient = raise_terms[0]
+        own_bet_name, own_bet_coefficient = own_bet_terms[0]
+        if own_bet_coefficient != -1.0:
+            continue
+        unexpected = {
+            name: coefficient
+            for name, coefficient in coefficients.items()
+            if name not in {raise_name, own_bet_name} and coefficient != 0.0
+        }
+        if unexpected:
+            continue
+        if raise_coefficient < 2.0:
+            # With an unbounded legal raise-to domain, a slope below two is
+            # eventually below the inclusive official boundary regardless of
+            # its constant offset.
+            return float("-inf")
+        return (
+            (raise_coefficient - 2.0) * minimum_prior_raise_to + constant
+        )
+    return None
+
+
 def _verify_min_raise(bot_dir: Path) -> dict:
-    """BOT-002a: require the retained one-chip compatibility headroom policy."""
+    """BOT-002a: accept exact 2x or conservative positive headroom."""
     state_py = bot_dir / "state.py"
     if not state_py.exists():
         # state.py may legitimately be absent in some bot layouts; verifier
@@ -193,7 +306,7 @@ def _verify_min_raise(bot_dir: Path) -> dict:
         # Cannot parse -> cannot confirm a violation -> do not block.
         return {"ok": True, "reason": "state.py unparseable — min_raise contract skipped"}
 
-    assignments = []  # list of (unparse-text, source-segment)
+    assignments = []  # list of (value-node, unparse-text)
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for t in node.targets:
@@ -202,25 +315,35 @@ def _verify_min_raise(bot_dir: Path) -> dict:
                         text = ast.unparse(node.value)
                     except Exception:
                         text = ""
-                    try:
-                        seg = ast.get_source_segment(src, node.value) or ""
-                    except Exception:
-                        seg = ""
-                    assignments.append((text, seg))
+                    assignments.append((node.value, text))
 
     if not assignments:
         # No min_raise_action assignment at all — the bot may compute raises a
         # different way; we have no confirmed invariant violation, do not block.
         return {"ok": True, "reason": "no min_raise_action assignment found — contract skipped"}
 
-    for text, seg in assignments:
-        if "+ 1" in text or "+ 1" in seg:
-            return {"ok": True, "reason": f"min_raise_action contains conservative '+ 1' headroom: {text[:80]}"}
-    joined = " | ".join(t[:80] for t, _ in assignments)
+    proven_margins = []
+    for value, text in assignments:
+        margin = _inclusive_raise_boundary_margin(value)
+        if margin is not None:
+            proven_margins.append(margin)
+        if margin is not None and margin >= 0.0:
+            policy = "conservative headroom" if margin > 0.0 else "exact inclusive 2x"
+            return {"ok": True, "reason": f"min_raise_action satisfies {policy}: {text[:80]}"}
+    joined = " | ".join(text[:80] for _, text in assignments)
+    if not proven_margins:
+        return {
+            "ok": True,
+            "reason": (
+                "min_raise_action shape is inconclusive; no below-boundary "
+                f"violation was proven: {joined}"
+            ),
+        }
     return {
         "ok": False,
         "reason": (
-            f"min_raise_action assignment(s) lack the retained conservative '+ 1' headroom policy: {joined}"
+            "min_raise_action assignment(s) are not proven at or above the official "
+            f"inclusive 2x boundary: {joined}"
         ),
     }
 

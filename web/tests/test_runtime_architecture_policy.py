@@ -5,7 +5,10 @@ import pytest
 from output_schema import RuntimeContract
 from pipeline_state import validate_stage_transition
 from runtime_architecture_policy import (
+    OFFICIAL_FULL_POLICY_ID,
+    OFFICIAL_ORACLE_DOC_DIGESTS,
     RUNTIME_ARCHITECTURE_POLICY_VERSION,
+    RUNTIME_CORRECTNESS_FLOOR_CHECKS,
     attach_runtime_contract_ledger,
     architecture_policy_prompt,
     build_architecture_policy,
@@ -94,23 +97,45 @@ EQUITY_LOOKUP_TABLE = {key: key / 100 for key in range(128)}
 def equity_lookup(key): return EQUITY_LOOKUP_TABLE.get(key, key / 100)
 def _choose(req):
     profile = req.get('opponent_runtime', {})
-    baseline = 0
+    hand_runtime = req.get('hand_runtime', {})
+    if hand_runtime.get('can_donk'):
+        return 600
+    if hand_runtime.get('can_delayed_probe'):
+        return 500
+    if profile.get('fold_to_jam_samples', 0) >= 10:
+        pressure = profile.get('fold_to_raise', 0.0) + profile.get('fold_to_jam_rate', 0.0) - profile.get('river_overcall_freq', 0.0)
+        return -2 if pressure > 0.5 else 0
+    revealed = profile.get('showdown_range', {})
+    if revealed.get('samples', 0) >= 10 and revealed.get('tightness', 0.0) > 0.30:
+        return -1
     adaptation = profile.get('adaptation_weight', 0.0)
     threshold = 0.4 if equity_lookup(60) else 0.6
-    adjusted = baseline + (adaptation * 1.0)
+    adjusted = adaptation * (1.0 if profile.get('vpip', 0.0) > 0.5 else 0.2)
     deadline = time.monotonic() + 0.1
     for sample in range(64):
         if time.monotonic() >= deadline:
             break
-        baseline += sample * 0
+        adjusted += sample * 0
     return 400 if adjusted > threshold else 0
 def get_action(req, current_view):
     return _choose(req)
 def get_baseline_action(req, current_view):
     return _choose(req)
 def iter_refinements(req, requests, baseline, deadline):
-    if time.monotonic() < deadline:
-        yield baseline
+    refined = -1 if baseline == 0 and req.get('to_call', 0) > 0 else baseline
+    for step in range(1, 9):
+        if time.monotonic() >= deadline:
+            return
+        work_checksum = 0
+        for outer in range(100):
+            for unit in range(100):
+                for lane in range(4):
+                    work_checksum = (
+                        work_checksum * 33 + outer + unit + lane
+                    ) & 0xffffffff
+        if work_checksum < 0:
+            return
+        yield {'action': refined, 'sample_count': step * 8, 'confidence': step / 8.0, 'complete': False}
 """
     else:
         strategy = """
@@ -129,18 +154,38 @@ def test_policy_selects_one_coherent_parent_debt(tmp_path):
     policy = build_architecture_policy(source)
 
     assert policy["policy_version"] == RUNTIME_ARCHITECTURE_POLICY_VERSION
-    assert policy["selected_focus"]["focus_id"] == "national_runtime_v3_migration"
-    assert policy["selected_focus"]["required_checks"] == [
-        "killable_decision_runtime",
-        "fast_strategy_baseline",
-        "incremental_refinement_protocol",
-        "decision_path_no_full_history_scan",
-        "decision_path_no_large_runtime_tables",
-        "precompute_lookup_path",
-        "persistent_match_memory",
-        "incremental_opponent_model",
-    ]
+    assert policy["official_policy_id"] == OFFICIAL_FULL_POLICY_ID
+    assert policy["official_oracle_digests"] == OFFICIAL_ORACLE_DOC_DIGESTS
+    assert policy["selected_focus"]["focus_id"] == "national_runtime_v4_state_learning"
+    assert policy["selected_focus"]["required_checks"] == list(
+        RUNTIME_CORRECTNESS_FLOOR_CHECKS
+    )
+    assert "budget_scaled_refinement" in policy["selected_focus"]["innovation_checks"]
+    assert "semantic_line_reachability" in policy["selected_focus"]["innovation_checks"]
     assert len(policy["source_capability_digest"]) == 64
+    rendered = architecture_policy_prompt(policy)
+    assert f"official_policy_id={OFFICIAL_FULL_POLICY_ID}" in rendered
+    for path, digest in OFFICIAL_ORACLE_DOC_DIGESTS.items():
+        assert f"{path}:{digest}" in rendered
+
+
+def test_policy_fails_closed_when_pinned_official_oracle_content_drifts(
+    tmp_path, monkeypatch
+):
+    import runtime_architecture_policy as policy_module
+
+    source = _write_bot(tmp_path / "national_v1", complete=False)
+    monkeypatch.setattr(
+        policy_module,
+        "OFFICIAL_ORACLE_DOC_DIGESTS",
+        {
+            **OFFICIAL_ORACLE_DOC_DIGESTS,
+            "docs/official-raise-boundary-oracle-2026-07-11.md": "0" * 64,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="official oracle document digest mismatch"):
+        build_architecture_policy(source)
 
 
 def test_transition_probe_infrastructure_never_synthesizes_candidate_repairs(tmp_path, monkeypatch):
@@ -192,14 +237,14 @@ def test_transition_requires_focus_closure_and_no_parent_regression(tmp_path):
     lost = evaluate_architecture_transition(source, regressed, expected_policy=policy)
 
     assert failed["ok"] is False
-    assert "incremental_opponent_model" in failed["unresolved_focus_checks"]
+    assert "persistent_match_memory" in failed["unresolved_focus_checks"]
     assert "decision_path_no_full_history_scan" in failed["unresolved_focus_checks"]
     assert passed["ok"] is True
     assert lost["ok"] is False
     assert any(item["check_id"] == "official_safe_wire_send" for item in lost["regressions"])
 
 
-def test_selected_focus_closure_cannot_bypass_runtime_floor(tmp_path):
+def test_unselected_precompute_dimension_is_shadow_not_a_universal_floor(tmp_path):
     source = _write_bot(tmp_path / "national_v1", complete=False)
     candidate = _write_bot(tmp_path / "national_v2", complete=True)
     strategy_path = candidate / "strategy.py"
@@ -214,11 +259,14 @@ def test_selected_focus_closure_cannot_bypass_runtime_floor(tmp_path):
 
     transition = evaluate_architecture_transition(source, candidate, expected_policy=policy)
 
-    assert transition["unresolved_focus_checks"] == ["precompute_lookup_path"]
-    assert transition["ok"] is False
-    assert [item["check_id"] for item in transition["runtime_floor_failures"]] == [
-        "precompute_lookup_path"
-    ]
+    assert transition["unresolved_focus_checks"] == []
+    assert transition["runtime_floor_failures"] == []
+    assert transition["ok"] is True
+    shadows = {
+        item["check_id"]: item["passed"]
+        for item in transition["strategy_shadow_checks"]
+    }
+    assert shadows["precompute_lookup_path"] is False
 
 
 def test_policy_identity_detects_stale_source_contract(tmp_path):
@@ -250,13 +298,43 @@ def test_plan_must_cover_system_selected_focus(tmp_path):
     source = _write_bot(tmp_path / "national_v1", complete=False)
     policy = build_architecture_policy(source)
     task = {
-        "architecture_focus_id": "national_runtime_v3_migration",
+        "architecture_focus_id": "national_runtime_v4_state_learning",
         "skill_layer": "runtime_architecture",
         "target_files": ["strategy.py", "precompute.py", "opponent.py"],
-        "checks_required": list(policy["plan_required_floor_checks"]),
+        "checks_required": [
+            *policy["plan_required_floor_checks"],
+            "fast_strategy_baseline",
+            "incremental_refinement_protocol",
+            "budget_scaled_refinement",
+        ],
+        "runtime_contract": {
+            "decision": {
+                "clock": "time.monotonic",
+                "hard_deadline_ms": 55_000,
+                "baseline_target_ms": 250,
+                "refinement_budget_ms": 54_000,
+                "baseline_path": "compute a legal strategy baseline first",
+                "fallback_action": "return the sanitized legal fallback",
+                "refinement_bound": "sample-counted batches stop at deadline",
+                "max_samples": 64,
+            },
+            "precompute_artifacts": [],
+            "match_memory": None,
+            "state_learning": {
+                "work_primitive": "sample_counted_candidate_batch",
+                "profile_dimensions": [],
+                "line_controls": [],
+                "oracle_refs": [
+                    "docs/official-raise-boundary-oracle-2026-07-11.md",
+                    "docs/official-terminal-settlement-oracle-2026-07-11.md",
+                ],
+            },
+            "official_feedback_refs": [],
+            "forbidden_runtime_work": [],
+        },
         "worker_prompt": (
-            "Implement get_baseline_action and iter_refinements, consume precompute facts, "
-            "and use opponent_runtime incrementally with context-specific confidence."
+            "Implement a budget-bounded legal baseline and fallback before the deadline, then "
+            "publish increasing sample_count batches that change a sanitized action and telemetry."
         ),
     }
 
@@ -264,13 +342,18 @@ def test_plan_must_cover_system_selected_focus(tmp_path):
     task["checks_required"] = []
     floor_errors = validate_plan_architecture_focus({"tasks": [task]}, policy)
     assert any("Runtime floor check" in error for error in floor_errors)
-    task["checks_required"] = list(policy["plan_required_floor_checks"])
+    task["checks_required"] = [
+        *policy["plan_required_floor_checks"],
+        "fast_strategy_baseline",
+        "incremental_refinement_protocol",
+        "budget_scaled_refinement",
+    ]
     task["architecture_focus_id"] = "wrong"
     errors = validate_plan_architecture_focus({"tasks": [task]}, policy)
     assert any("mandatory" in error for error in errors)
 
     prompt = architecture_policy_prompt(policy)
-    assert "selected_focus=national_runtime_v3_migration" in prompt
+    assert "selected_focus=national_runtime_v4_state_learning" in prompt
     assert "required_worker_prompt_terms=" in prompt
     for term in policy["selected_focus"]["required_terms"]:
         assert term in prompt
@@ -294,8 +377,10 @@ def _match_memory_contract():
             ],
             "snapshot_field": "opponent_runtime",
             "max_recent_hands": 8,
-            "prior_rule": "Beta-style prior with weight 8",
-            "confidence_rule": "actions / (actions + 24)",
+            "prior_rule": "beta_prior_weight_8",
+            "confidence_rule": (
+                "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
+            ),
             "adaptation_cap": 0.65,
             "consumer": "strategy.get_baseline_action",
         },
@@ -317,7 +402,7 @@ def test_quality_failure_routes_one_structured_architecture_repair(tmp_path, mon
         "master_plan": {
             "architecture_policy": policy,
             "tasks": [{
-                "architecture_focus_id": "national_runtime_v3_migration",
+                "architecture_focus_id": "national_runtime_v4_state_learning",
                 "skill_layer": "runtime_architecture",
                 "runtime_contract": inherited,
             }],
@@ -341,21 +426,27 @@ def test_quality_failure_routes_one_structured_architecture_repair(tmp_path, mon
     repaired_contract = contracts[0]["runtime_contract"]
     assert repaired_contract["match_memory"] == inherited["match_memory"]
     assert repaired_contract["decision"] is not None
-    assert repaired_contract["precompute_artifacts"]
+    assert repaired_contract["precompute_artifacts"] == []
+    assert repaired_contract["state_learning"]["work_primitive"] == (
+        "sample_counted_candidate_batch"
+    )
     assert len(tasks) == 1
     task = tasks[0]
     assert task["repair_blocker"] == "runtime_architecture"
-    assert task["architecture_focus_id"] == "national_runtime_v3_migration"
+    assert task["architecture_focus_id"] == "national_runtime_v4_state_learning"
     assert task["skill_layer"] == "runtime_architecture"
     assert task["must_change_files"] == ["strategy.py"]
-    assert "national_bot.py" in task["files_allowed"]
+    assert "national_bot.py" not in task["files_allowed"]
+    assert task["read_only_dependencies"] == ["national_bot.py"]
     assert "label, comment, or telemetry field" in task["worker_prompt"]
     assert "opponent_runtime" in task["worker_prompt"]
-    assert tool_planning._task_quality_recheck_blockers(task) == {"runtime_architecture"}
+    assert tool_planning._task_quality_recheck_blockers(task) == {
+        "runtime_architecture",
+    }
     RuntimeContract.model_validate(task["runtime_contract"])
     assert task["runtime_contract"] == repaired_contract
     failures = tool_planning._quality_failure_items(ckpt)
-    assert any("runtime_architecture_focus:incremental_opponent_model" in item for item in failures)
+    assert any("runtime_architecture_focus:persistent_match_memory" in item for item in failures)
     assert any("runtime_architecture_focus:decision_path_no_full_history_scan" in item for item in failures)
 
 
@@ -386,6 +477,9 @@ def test_crossover_architecture_repair_gets_valid_default_runtime_contract(tmp_p
     assert validated.match_memory is not None
     assert validated.match_memory.reset_boundary == "tcp_connection"
     assert validated.match_memory.consumer == "strategy.get_baseline_action"
+    assert validated.state_learning.primary_innovation() == (
+        "sample_counted_candidate_batch"
+    )
 
 
 def test_policy_identity_drift_is_not_routed_to_bot_code_worker(tmp_path, monkeypatch):
@@ -462,6 +556,349 @@ def test_runtime_contract_owner_must_be_in_worker_scope():
     errors = tool_planning._runtime_contract_errors(task, 0, "opponent_model")
 
     assert any("national_bot.py" in error and "outside" in error for error in errors)
+
+
+def test_system_provider_owner_is_read_only_without_expanding_write_scope():
+    task = {
+        "architecture_focus_id": "incremental_match_model",
+        "skill_layer": "opponent_model",
+        "target_files": ["strategy.py"],
+        "files_allowed": [],
+        "read_only_dependencies": ["national_bot.py"],
+        "runtime_contract": _match_memory_contract(),
+        "worker_prompt": "Consume opponent_runtime match memory with confidence.",
+    }
+
+    assert tool_planning._runtime_contract_errors(task, 0, "opponent_model") == []
+
+    task["read_only_dependencies"] = []
+    task["files_allowed"] = ["national_bot.py"]
+    errors = tool_planning._runtime_contract_errors(task, 0, "opponent_model")
+    assert any("system-provided national_bot.py" in error for error in errors)
+
+
+def test_repair_contract_prefers_candidate_consumed_precompute_artifact():
+    capabilities = {
+        "precompute_evidence": {
+            "consumed_artifacts": [{
+                "name": "EQUITY_FACTS",
+                "location": "strategy.py:L4:EQUITY_FACTS",
+                "build_phase": "module_import",
+                "bound_entries": 128,
+                "consumer_locations": [
+                    "strategy.py:get_baseline_action->strategy.py:L4:EQUITY_FACTS"
+                ],
+            }],
+        },
+        "dynamic_runtime_probe": {
+            "artifacts": [{
+                "owner_file": "strategy.py",
+                "name": "EQUITY_FACTS",
+                "entries": 128,
+                "deep_bytes": 8192,
+                "import_elapsed_ms": 12.5,
+                "observed_key_shape": "int",
+            }],
+        },
+    }
+
+    contract = tool_planning._architecture_default_runtime_contract(
+        "national_runtime_v4_state_learning",
+        "precompute",
+        "strategy.py",
+        required_checks=["precompute_lookup_path"],
+        candidate_capabilities=capabilities,
+    )
+
+    artifact = contract["precompute_artifacts"][0]
+    assert artifact["name"] == "EQUITY_FACTS"
+    assert artifact["owner_file"] == "strategy.py"
+    assert artifact["consumer"] == "strategy.get_baseline_action"
+    assert artifact["max_entries"] == 128
+    assert artifact["key_shape"] == "int"
+
+
+def test_missing_candidate_precompute_uses_explicit_precompute_owner_fallback():
+    contract = tool_planning._architecture_default_runtime_contract(
+        "national_runtime_v4_state_learning",
+        "precompute",
+        "strategy.py",
+        required_checks=["precompute_lookup_path"],
+        candidate_capabilities={},
+    )
+
+    assert contract["precompute_artifacts"] == [{
+        "name": "bounded_decision_lookup",
+        "owner_file": "precompute.py",
+        "build_phase": "module_import",
+        "max_build_ms": 500,
+        "max_entries": 65_536,
+        "max_bytes": 8 * 1024 * 1024,
+        "key_shape": "tuple[int,int,bool]",
+        "consumer": "strategy.get_baseline_action",
+        "fallback": "legal_baseline",
+    }]
+
+
+def test_v4_contract_allows_only_one_typed_primary_innovation():
+    state = {
+        "work_primitive": "sample_counted_candidate_batch",
+        "profile_dimensions": ["terminal_response"],
+        "line_controls": [],
+        "oracle_refs": [
+            "docs/official-raise-boundary-oracle-2026-07-11.md",
+            "docs/official-terminal-settlement-oracle-2026-07-11.md",
+        ],
+    }
+
+    with pytest.raises(ValueError, match="exactly one primary innovation"):
+        RuntimeContract.model_validate({"state_learning": state})
+
+
+def test_focus_validator_rejects_second_generation_primary(tmp_path):
+    source = _write_bot(tmp_path / "national_v1", complete=False)
+    policy = build_architecture_policy(source)
+    oracle_refs = [
+        "docs/official-raise-boundary-oracle-2026-07-11.md",
+        "docs/official-terminal-settlement-oracle-2026-07-11.md",
+    ]
+    tasks = [
+        {
+            "worker_id": 1,
+            "architecture_focus_id": "national_runtime_v4_state_learning",
+            "skill_layer": "line_template",
+            "target_files": ["strategy.py"],
+            "checks_required": ["semantic_line_reachability"],
+            "runtime_contract": {
+                "state_learning": {
+                    "work_primitive": None,
+                    "profile_dimensions": [],
+                    "line_controls": ["donk"],
+                    "oracle_refs": oracle_refs,
+                },
+            },
+            "worker_prompt": "Use can_donk positive/control sanitized action telemetry.",
+        },
+        {
+            "worker_id": 2,
+            "architecture_focus_id": "",
+            "skill_layer": "line_template",
+            "target_files": ["postflop.py"],
+            "checks_required": ["semantic_line_reachability"],
+            "runtime_contract": {
+                "state_learning": {
+                    "work_primitive": None,
+                    "profile_dimensions": [],
+                    "line_controls": ["delayed_probe"],
+                    "oracle_refs": oracle_refs,
+                },
+            },
+            "worker_prompt": (
+                "Use can_delayed_probe positive/control sanitized action telemetry."
+            ),
+        },
+    ]
+
+    errors = validate_plan_architecture_focus({"tasks": tasks}, policy)
+
+    assert any("exactly one state_learning primary across the entire generation" in error for error in errors)
+    assert any("state_learning may appear only" in error for error in errors)
+
+
+def test_focus_validator_makes_native_entrypoint_read_only_except_explicit_official_protocol_repair():
+    policy = {"selected_focus": None, "plan_required_floor_checks": []}
+    ordinary = {
+        "worker_id": 1,
+        "role": "Opponent Modeler",
+        "task_kind": "strategy_change",
+        "target_files": ["strategy.py", "national_bot.py"],
+        "files_allowed": [],
+    }
+    errors = validate_plan_architecture_focus({"tasks": [ordinary]}, policy)
+    assert any("national_bot.py is read-only" in error for error in errors)
+
+    explicit_official = {
+        "worker_id": "auto_official_full_repair",
+        "role": "Protocol Integration Architect",
+        "task_kind": "official_repair",
+        "repair_blocker": "official_full",
+        "target_files": ["national_bot.py"],
+        "must_change_files": ["national_bot.py"],
+        "files_allowed": [],
+    }
+    assert validate_plan_architecture_focus(
+        {"tasks": [explicit_official]}, policy
+    ) == []
+
+    spoofed_state_learning = {
+        **explicit_official,
+        "architecture_focus_id": "national_runtime_v4_state_learning",
+        "runtime_contract": {
+            "state_learning": {
+                "work_primitive": None,
+                "profile_dimensions": ["terminal_response"],
+                "line_controls": [],
+                "oracle_refs": [
+                    "docs/official-raise-boundary-oracle-2026-07-11.md",
+                    "docs/official-terminal-settlement-oracle-2026-07-11.md",
+                ],
+            },
+        },
+    }
+    spoofed_errors = validate_plan_architecture_focus(
+        {"tasks": [spoofed_state_learning]}, policy
+    )
+    assert any("national_bot.py is read-only" in error for error in spoofed_errors)
+
+
+def test_match_memory_prior_and_confidence_rules_are_closed_literals():
+    contract = _match_memory_contract()
+    contract["match_memory"]["prior_rule"] = "some prose about a prior"
+
+    with pytest.raises(ValueError, match="prior_rule"):
+        RuntimeContract.model_validate(contract)
+
+
+def test_non_primary_strategy_dimensions_remain_shadow_in_implementation_gate():
+    oracle_refs = [
+        "docs/official-raise-boundary-oracle-2026-07-11.md",
+        "docs/official-terminal-settlement-oracle-2026-07-11.md",
+    ]
+    plan = {"tasks": [{
+        "runtime_contract": {
+            "state_learning": {
+                "work_primitive": None,
+                "profile_dimensions": ["terminal_response"],
+                "line_controls": [],
+                "oracle_refs": oracle_refs,
+            },
+        },
+    }]}
+    capabilities = {
+        "checks": [
+            {"check_id": "terminal_response_adaptation", "passed": True},
+            {"check_id": "showdown_range_adaptation", "passed": False},
+            {"check_id": "semantic_line_reachability", "passed": False},
+            {"check_id": "budget_scaled_refinement", "passed": False},
+            {"check_id": "precompute_lookup_path", "passed": False},
+        ],
+    }
+
+    assert validate_runtime_contract_implementation(plan, capabilities) == []
+
+
+def test_selected_donk_control_does_not_require_delayed_probe_control():
+    plan = {"tasks": [{
+        "runtime_contract": {
+            "state_learning": {
+                "work_primitive": None,
+                "profile_dimensions": [],
+                "line_controls": ["donk"],
+                "oracle_refs": [
+                    "docs/official-raise-boundary-oracle-2026-07-11.md",
+                    "docs/official-terminal-settlement-oracle-2026-07-11.md",
+                ],
+            },
+        },
+    }]}
+    capabilities = {
+        "checks": [{"check_id": "semantic_line_reachability", "passed": False}],
+        "incremental_model_evidence": {
+            "decision_field_locations": {
+                "hand_runtime": ["strategy.py:get_action"],
+                "can_donk": ["strategy.py:get_action"],
+                "can_delayed_probe": [],
+            },
+        },
+        "dynamic_runtime_probe": {
+            "strategy_influence": {
+                "dimensions": {
+                    "semantic_lines": {
+                        "ok": False,
+                        "rows": [
+                            {
+                                "dimension": "donk",
+                                "tiers": {
+                                    "baseline": {
+                                        "positive": {"wire": "raise 600"},
+                                        "negative": {"wire": "check"},
+                                        "changed": True,
+                                    },
+                                    "short": {"changed": False},
+                                    "long": {"changed": False},
+                                },
+                            },
+                            {
+                                "dimension": "delayed_probe",
+                                "tiers": {
+                                    "baseline": {"changed": False},
+                                    "short": {"changed": False},
+                                    "long": {"changed": False},
+                                },
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    }
+
+    assert validate_runtime_contract_implementation(plan, capabilities) == []
+
+
+def test_sample_primary_binds_max_samples_to_trusted_probe_steps_only():
+    contract = {
+        "decision": {
+            "clock": "time.monotonic",
+            "hard_deadline_ms": 55_000,
+            "baseline_target_ms": 250,
+            "refinement_budget_ms": 54_000,
+            "baseline_path": "compute the legal strategy baseline first",
+            "fallback_action": "return the sanitized legal fallback",
+            "refinement_bound": "at most eight trusted iterator steps",
+            "max_samples": 8,
+        },
+        "state_learning": {
+            "work_primitive": "sample_counted_candidate_batch",
+            "profile_dimensions": [],
+            "line_controls": [],
+            "oracle_refs": [
+                "docs/official-raise-boundary-oracle-2026-07-11.md",
+                "docs/official-terminal-settlement-oracle-2026-07-11.md",
+            ],
+        },
+    }
+    capabilities = {
+        "checks": [
+            {"check_id": "decision_time_budget_visible", "passed": True},
+            {"check_id": "fast_strategy_baseline", "passed": True},
+            {"check_id": "incremental_refinement_protocol", "passed": True},
+            {"check_id": "budget_scaled_refinement", "passed": True},
+        ],
+        "decision_time_evidence": {
+            "default_hard_deadline_ms": 55_000,
+            "default_baseline_target_ms": 250,
+            "default_refinement_budget_ms": 54_000,
+        },
+        "decision_runtime_evidence": {
+            "budget_scaling": {
+                "long": {
+                    "trusted_steps": 8,
+                    "reported_sample_count": 100_000,
+                },
+            },
+        },
+        "decision_path_risks": {},
+    }
+    plan = {"tasks": [{"runtime_contract": contract}]}
+
+    assert validate_runtime_contract_implementation(plan, capabilities) == []
+
+    capabilities["decision_runtime_evidence"]["budget_scaling"]["long"][
+        "trusted_steps"
+    ] = 9
+    errors = validate_runtime_contract_implementation(plan, capabilities)
+    assert any("trusted_steps=9" in error and "max_samples=8" in error for error in errors)
 
 
 def test_runtime_contract_is_checked_against_candidate_evidence(tmp_path):

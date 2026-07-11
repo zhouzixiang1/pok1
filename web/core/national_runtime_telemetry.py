@@ -13,7 +13,7 @@ import statistics
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DECISION_BUDGET_SEC = 60.0
 
 DECIDE_START_RE = re.compile(
@@ -28,6 +28,58 @@ SEND_RE = re.compile(
 OFFICIAL_DELAY_RE = re.compile(
     r"OFFICIAL_ACTION_DELAY wait=(?P<wait>[0-9.]+)s target=(?P<target>[0-9.]+)s"
 )
+REFINEMENT_RE = re.compile(
+    r"DECIDE refinement decision_id=(?P<decision_id>\d+) sequence=(?P<sequence>\d+) "
+    r"action=(?P<action>-?\d+) elapsed=(?P<elapsed>[0-9.]+)s "
+    r"trusted_step=(?P<trusted_step>\d+|None) "
+    r"trusted_cpu_ms=(?P<trusted_cpu>[0-9.]+|None)"
+    r"(?P<reported_tail>.*)$"
+)
+REPORTED_SAMPLES_RE = re.compile(r"\breported_samples=(?P<value>[^\s]+)")
+REPORTED_CONFIDENCE_RE = re.compile(r"\breported_confidence=(?P<value>[^\s]+)")
+WORKER_DONE_RE = re.compile(
+    r"DECIDE worker_done decision_id=(?P<decision_id>\d+) sequence=(?P<sequence>\d+) "
+    r"latest_safe=(?P<action>-?\d+) elapsed=(?P<elapsed>[0-9.]+)s "
+    r"trusted_steps=(?P<trusted_steps>\d+) "
+    r"trusted_cpu_ms=(?P<trusted_cpu>[0-9.]+) "
+    r"iterator_exhausted=(?P<exhausted>True|False) "
+    r"termination=(?P<termination>[^\s]+)"
+)
+DEADLINE_TERMINATION_RE = re.compile(
+    r"DECIDE (?P<termination>refinement_deadline|hard_deadline) "
+    r"decision_id=(?P<decision_id>\d+)"
+)
+
+
+def _optional_number(value: str, caster):
+    return None if value == "None" else caster(value)
+
+
+def _optional_reported_number(pattern: re.Pattern, text: str, caster):
+    match = pattern.search(text or "")
+    if not match or match.group("value") == "None":
+        return None
+    try:
+        return caster(match.group("value"))
+    except (TypeError, ValueError, OverflowError):
+        # Candidate-reported fields are diagnostics only.  A malformed value
+        # must not hide the preceding system-trusted step/CPU evidence.
+        return None
+
+
+def _empty_refinement_summary() -> dict[str, Any]:
+    return {
+        "message_count": 0,
+        "decision_count": 0,
+        "trusted_steps_sum": 0,
+        "trusted_steps_max": 0,
+        "trusted_cpu": summarize_durations([]),
+        "iterator_exhausted_count": 0,
+        "termination_reasons": {},
+        "reported_sample_count_max": None,
+        "reported_confidence_max": None,
+        "candidate_reported_fields_authoritative": False,
+    }
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -117,6 +169,7 @@ def empty_bot_log_summary() -> dict[str, Any]:
         "source": "bot_log",
         "decision_latency": summarize_durations([], budget_sec=DECISION_BUDGET_SEC),
         "official_action_delay": summarize_durations([]),
+        "refinement": _empty_refinement_summary(),
         "send_count": 0,
         "exception_count": 0,
     }
@@ -126,9 +179,51 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
     decisions: list[dict[str, Any]] = []
     sends: list[dict[str, Any]] = []
     delays: list[dict[str, Any]] = []
+    refinements: list[dict[str, Any]] = []
+    refinement_done: list[dict[str, Any]] = []
+    deadline_terminations: list[dict[str, Any]] = []
     pending: dict[str, Any] | None = None
     exceptions = 0
     for line in log_text.splitlines():
+        refinement = REFINEMENT_RE.search(line)
+        if refinement:
+            reported_tail = refinement.group("reported_tail") or ""
+            refinements.append({
+                "decision_id": int(refinement.group("decision_id")),
+                "sequence": int(refinement.group("sequence")),
+                "action": int(refinement.group("action")),
+                "elapsed_sec": float(refinement.group("elapsed")),
+                "trusted_step": _optional_number(
+                    refinement.group("trusted_step"), int
+                ),
+                "trusted_cpu_ms": _optional_number(
+                    refinement.group("trusted_cpu"), float
+                ),
+                "reported_samples": _optional_reported_number(
+                    REPORTED_SAMPLES_RE, reported_tail, int
+                ),
+                "reported_confidence": _optional_reported_number(
+                    REPORTED_CONFIDENCE_RE, reported_tail, float
+                ),
+            })
+            continue
+        worker_done = WORKER_DONE_RE.search(line)
+        if worker_done:
+            refinement_done.append({
+                "decision_id": int(worker_done.group("decision_id")),
+                "trusted_steps": int(worker_done.group("trusted_steps")),
+                "trusted_cpu_ms": float(worker_done.group("trusted_cpu")),
+                "iterator_exhausted": worker_done.group("exhausted") == "True",
+                "termination": worker_done.group("termination"),
+            })
+            continue
+        deadline_termination = DEADLINE_TERMINATION_RE.search(line)
+        if deadline_termination:
+            deadline_terminations.append({
+                "decision_id": int(deadline_termination.group("decision_id")),
+                "termination": deadline_termination.group("termination"),
+            })
+            continue
         start = DECIDE_START_RE.search(line)
         if start:
             pending = {
@@ -179,6 +274,60 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
         for row in delays
         if isinstance(row.get("target_sec"), (int, float))
     ]
+    trusted_by_decision: dict[int, dict[str, float | int]] = {}
+    for row in refinements:
+        decision = trusted_by_decision.setdefault(
+            int(row["decision_id"]), {"steps": 0, "cpu_ms": 0.0}
+        )
+        if isinstance(row.get("trusted_step"), int):
+            decision["steps"] = max(
+                int(decision["steps"]), int(row["trusted_step"])
+            )
+        if isinstance(row.get("trusted_cpu_ms"), (int, float)):
+            decision["cpu_ms"] = max(
+                float(decision["cpu_ms"]), float(row["trusted_cpu_ms"])
+            )
+    for row in refinement_done:
+        decision = trusted_by_decision.setdefault(
+            int(row["decision_id"]), {"steps": 0, "cpu_ms": 0.0}
+        )
+        decision["steps"] = max(
+            int(decision["steps"]), int(row.get("trusted_steps", 0) or 0)
+        )
+        decision["cpu_ms"] = max(
+            float(decision["cpu_ms"]), float(row.get("trusted_cpu_ms", 0.0) or 0.0)
+        )
+    refinement_decision_ids = {
+        int(row["decision_id"]) for row in refinements
+    } | {
+        int(row["decision_id"])
+        for row in refinement_done
+        if int(row.get("trusted_steps", 0) or 0) > 0
+    }
+    trusted_by_decision = {
+        decision_id: row
+        for decision_id, row in trusted_by_decision.items()
+        if decision_id in refinement_decision_ids
+    }
+    termination_reasons: dict[str, int] = {}
+    for row in [*refinement_done, *deadline_terminations]:
+        if int(row["decision_id"]) not in refinement_decision_ids:
+            continue
+        reason = str(row.get("termination") or "unknown")
+        termination_reasons[reason] = termination_reasons.get(reason, 0) + 1
+    trusted_cpu_seconds = [
+        float(row["cpu_ms"]) / 1000.0 for row in trusted_by_decision.values()
+    ]
+    reported_samples = [
+        int(row["reported_samples"])
+        for row in refinements
+        if isinstance(row.get("reported_samples"), int)
+    ]
+    reported_confidences = [
+        float(row["reported_confidence"])
+        for row in refinements
+        if isinstance(row.get("reported_confidence"), (int, float))
+    ]
     return {
         "schema_version": SCHEMA_VERSION,
         "source": "bot_log",
@@ -197,6 +346,28 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
         "official_action_delay": {
             **summarize_durations(delay_values),
             "target_sec": _rounded(max(delay_targets)) if delay_targets else 0.0,
+        },
+        "refinement": {
+            "message_count": len(refinements),
+            "decision_count": len(trusted_by_decision),
+            "trusted_steps_sum": sum(
+                int(row.get("steps", 0) or 0) for row in trusted_by_decision.values()
+            ),
+            "trusted_steps_max": max(
+                (int(row.get("steps", 0) or 0) for row in trusted_by_decision.values()),
+                default=0,
+            ),
+            "trusted_cpu": summarize_durations(trusted_cpu_seconds),
+            "iterator_exhausted_count": sum(
+                1
+                for row in refinement_done
+                if row.get("iterator_exhausted")
+                and int(row["decision_id"]) in refinement_decision_ids
+            ),
+            "termination_reasons": dict(sorted(termination_reasons.items())),
+            "reported_sample_count_max": max(reported_samples, default=None),
+            "reported_confidence_max": max(reported_confidences, default=None),
+            "candidate_reported_fields_authoritative": False,
         },
         "send_count": len(sends),
         "exception_count": exceptions,
@@ -287,6 +458,10 @@ def empty_runtime_telemetry() -> dict[str, Any]:
         "server_action_latency": merge_latency_summaries([]),
         "bot_decision_latency": merge_latency_summaries([]),
         "official_action_delay": merge_latency_summaries([]),
+        "refinement": {
+            **_empty_refinement_summary(),
+            "trusted_cpu": merge_latency_summaries([]),
+        },
         "matches_with_bot_log": 0,
         "trace_decision_count": 0,
         "exception_count": 0,
@@ -295,6 +470,35 @@ def empty_runtime_telemetry() -> dict[str, Any]:
 
 def merge_runtime_telemetry(rows: list[dict[str, Any]]) -> dict[str, Any]:
     merged = empty_runtime_telemetry()
+    termination_reasons: dict[str, int] = {}
+    for row in rows:
+        reasons = (((row.get("bot_log") or {}).get("refinement") or {}).get(
+            "termination_reasons"
+        ) or {})
+        for reason, count in reasons.items():
+            termination_reasons[str(reason)] = (
+                termination_reasons.get(str(reason), 0) + int(count or 0)
+            )
+    reported_sample_maxima = [
+        value
+        for row in rows
+        if isinstance(
+            value := (((row.get("bot_log") or {}).get("refinement") or {}).get(
+                "reported_sample_count_max"
+            )),
+            (int, float),
+        )
+    ]
+    reported_confidence_maxima = [
+        value
+        for row in rows
+        if isinstance(
+            value := (((row.get("bot_log") or {}).get("refinement") or {}).get(
+                "reported_confidence_max"
+            )),
+            (int, float),
+        )
+    ]
     merged.update({
         "server_action_latency": merge_latency_summaries([
             row.get("server_action_latency", {}) for row in rows
@@ -307,6 +511,42 @@ def merge_runtime_telemetry(rows: list[dict[str, Any]]) -> dict[str, Any]:
             ((row.get("bot_log") or {}).get("official_action_delay") or {})
             for row in rows
         ]),
+        "refinement": {
+            "message_count": sum(
+                int((((row.get("bot_log") or {}).get("refinement") or {}).get("message_count", 0)) or 0)
+                for row in rows
+            ),
+            "decision_count": sum(
+                int((((row.get("bot_log") or {}).get("refinement") or {}).get("decision_count", 0)) or 0)
+                for row in rows
+            ),
+            "trusted_steps_sum": sum(
+                int((((row.get("bot_log") or {}).get("refinement") or {}).get("trusted_steps_sum", 0)) or 0)
+                for row in rows
+            ),
+            "trusted_steps_max": max(
+                (
+                    int((((row.get("bot_log") or {}).get("refinement") or {}).get("trusted_steps_max", 0)) or 0)
+                    for row in rows
+                ),
+                default=0,
+            ),
+            "trusted_cpu": merge_latency_summaries([
+                (((row.get("bot_log") or {}).get("refinement") or {}).get("trusted_cpu") or {})
+                for row in rows
+            ]),
+            "iterator_exhausted_count": sum(
+                int((((row.get("bot_log") or {}).get("refinement") or {}).get("iterator_exhausted_count", 0)) or 0)
+                for row in rows
+            ),
+            "termination_reasons": dict(sorted(termination_reasons.items())),
+            "reported_sample_count_max": max(reported_sample_maxima, default=None),
+            "reported_confidence_max": max(
+                reported_confidence_maxima,
+                default=None,
+            ),
+            "candidate_reported_fields_authoritative": False,
+        },
         "matches_with_bot_log": sum(
             1 for row in rows if bool(row.get("bot_log_supported"))
         ),

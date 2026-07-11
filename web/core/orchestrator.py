@@ -1777,6 +1777,12 @@ def _is_precommit_rework_circuit_breaker_result(data):
     return str(data.get("error") or "") == "PRECOMMIT_REWORK_CIRCUIT_BREAKER"
 
 
+def _is_official_rework_circuit_breaker_result(data):
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("error") or "") == "OFFICIAL_REWORK_CIRCUIT_BREAKER"
+
+
 def _is_crossover_incompatible_result(data):
     if not isinstance(data, dict):
         return False
@@ -1892,16 +1898,27 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None, *, log_level: s
         if next_tool == "execute_workers" and (
             _is_worker_circuit_breaker_result(data)
             or _is_precommit_rework_circuit_breaker_result(data)
+            or _is_official_rework_circuit_breaker_result(data)
         ):
-            from tool_bot_management import _do_abandon_generation
-
-            abandon_reason = (
-                "precommit_rework_circuit_breaker"
-                if _is_precommit_rework_circuit_breaker_result(data)
-                else "worker_circuit_breaker"
-            )
-            abandon_result = await _do_abandon_generation(reason=abandon_reason)
-            abandoned = bool(abandon_result.get("abandoned"))
+            if _is_precommit_rework_circuit_breaker_result(data):
+                abandon_reason = "precommit_rework_circuit_breaker"
+            elif _is_official_rework_circuit_breaker_result(data):
+                abandon_reason = "official_rework_circuit_breaker"
+            else:
+                abandon_reason = "worker_circuit_breaker"
+            if (
+                _is_official_rework_circuit_breaker_result(data)
+                and data.get("abandoned") is True
+            ):
+                abandon_result = data.get("abandon_result") or {
+                    "abandoned": True,
+                    "reason": abandon_reason,
+                }
+                abandoned = True
+            else:
+                from tool_bot_management import _do_abandon_generation
+                abandon_result = await _do_abandon_generation(reason=abandon_reason)
+                abandoned = bool(abandon_result.get("abandoned"))
             msg_abandon = (
                 f"{abandon_reason} reached for v{next_v}; "
                 f"{'abandoned generation' if abandoned else 'abandon did not complete'}."

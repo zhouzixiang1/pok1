@@ -100,9 +100,24 @@ PREFLOP_LOOKUP_TABLE = {i: i / 31 for i in range(32)}
 MAX_DECISION_SAMPLES = 64
 def _choose(req):
     opp_profile = req.get('opponent_runtime', {})
+    hand_runtime = req.get('hand_runtime', {})
     baseline = PREFLOP_LOOKUP_TABLE.get(12, 0.0)
+    if hand_runtime.get('can_donk'):
+        return 600
+    if hand_runtime.get('can_delayed_probe'):
+        return 500
+    if opp_profile.get('fold_to_jam_samples', 0) >= 10:
+        pressure = opp_profile.get('fold_to_raise', 0.0) + opp_profile.get('fold_to_jam_rate', 0.0) - opp_profile.get('river_overcall_freq', 0.0)
+        return -2 if pressure > 0.5 else 0
+    revealed = opp_profile.get('showdown_range', {})
+    if (revealed.get('selection_scope') == 'reached_showdown_only'
+            and revealed.get('confidence', 0.0) > 0.1
+            and revealed.get('adaptation_weight', 0.0) > 0.0
+            and revealed.get('samples', 0) >= 10
+            and revealed.get('tightness', 0.0) > 0.30):
+        return -1
     adaptation = opp_profile.get('adaptation_weight', 0.0)
-    adjusted = baseline + (adaptation * 0.25)
+    adjusted = baseline + adaptation * (0.25 if opp_profile.get('vpip', 0.0) > 0.5 else -0.25)
     deadline = time.monotonic() + 0.05
     for sample in range(64):
         if time.monotonic() >= deadline:
@@ -114,8 +129,18 @@ def get_action(req, current_view):
 def get_baseline_action(req, current_view):
     return _choose(req)
 def iter_refinements(req, current_view, baseline, deadline):
-    if time.monotonic() < deadline:
-        yield baseline
+    refined = -1 if baseline == 0 and req.get('to_call', 0) > 0 else baseline
+    for samples in range(1, 17):
+        if time.monotonic() >= deadline:
+            return
+        work = 0
+        for outer in range(100):
+            for unit in range(100):
+                for lane in range(4):
+                    work += (outer * unit * samples + lane) % 17
+        if work < 0:
+            refined = baseline
+        yield {'action': refined, 'sample_count': samples, 'confidence': samples / 16.0, 'complete': samples == 16}
 """,
     )
 
@@ -423,7 +448,7 @@ def main():
 
     result = evaluate_national_capabilities(bot)
 
-    assert result["schema_version"] == 2
+    assert result["schema_version"] == 3
     assert result["detector_version"] == NATIONAL_CAPABILITY_DETECTOR_VERSION
     assert set(result["checks_by_id"]) == {item["check_id"] for item in result["checks"]}
     for check in result["checks"]:
@@ -532,6 +557,191 @@ def get_action(req, requests):
     influence = result["dynamic_runtime_probe"]["strategy_influence"]
     assert influence["changed_pairs"] == 0
     assert "opponent_runtime_no_observable_sanitized_action_influence" in influence["issues"]
+
+
+def test_action_style_influence_cannot_substitute_for_terminal_showdown_or_lines(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13d",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def get_action(req, requests):
+    profile = req.get('opponent_runtime', {})
+    weighted_vpip = profile.get('adaptation_weight', 0.0) * profile.get('vpip', 0.0)
+    return -2 if weighted_vpip > 0.2 else 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    checks = result["checks_by_id"]
+
+    assert checks["incremental_opponent_model"]["passed"] is True
+    assert checks["terminal_response_adaptation"]["passed"] is False
+    assert checks["showdown_range_adaptation"]["passed"] is False
+    assert checks["semantic_line_reachability"]["passed"] is False
+    dimensions = result["dynamic_runtime_probe"]["strategy_influence"]["dimensions"]
+    assert dimensions["action_profile"]["ok"] is True
+    assert dimensions["terminal_response"]["ok"] is False
+    assert dimensions["showdown_range"]["ok"] is False
+    assert dimensions["semantic_lines"]["ok"] is False
+
+
+def test_dummy_refinement_yield_of_baseline_fails_budget_scaled_contract(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13e",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+import time
+def get_action(req, requests): return 0
+def get_baseline_action(req, requests): return 0
+def iter_refinements(req, requests, baseline, deadline):
+    if time.monotonic() < deadline:
+        yield baseline
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    runtime = result["dynamic_runtime_probe"]["decision_runtime"]
+
+    assert result["checks_by_id"]["incremental_refinement_protocol"]["passed"] is True
+    assert result["checks_by_id"]["budget_scaled_refinement"]["passed"] is False
+    assert runtime["refinement_ok"] is False
+    assert "long_budget_refinement_has_no_bounded_work" in runtime["refinement_issues"]
+    assert "refinement_never_changes_sanitized_baseline_action" in runtime["refinement_issues"]
+
+
+def test_candidate_reported_complete_cannot_fake_trusted_refinement_work(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13f",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+import time
+def get_action(req, requests): return 0
+def get_baseline_action(req, requests): return 0
+def iter_refinements(req, requests, baseline, deadline):
+    if time.monotonic() < deadline:
+        yield {'action': -1, 'sample_count': 8, 'confidence': 1.0, 'complete': True}
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    runtime = result["dynamic_runtime_probe"]["decision_runtime"]
+
+    assert result["checks_by_id"]["budget_scaled_refinement"]["passed"] is False
+    assert runtime["budget_scaling"]["short"]["trusted_steps"] == 1
+    assert runtime["budget_scaling"]["long"]["trusted_steps"] == 1
+    assert "long_budget_refinement_has_no_bounded_work" in runtime["refinement_issues"]
+
+
+def test_history_length_cannot_substitute_for_hand_runtime_flag_ablation(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13g",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def get_action(req, requests):
+    hand_runtime = req.get('hand_runtime', {})
+    _ = hand_runtime.get('can_donk')
+    _ = hand_runtime.get('can_delayed_probe')
+    if len(req.get('history', [])) == 2:
+        return 600
+    if len(req.get('history', [])) == 4:
+        return 500
+    return 0
+def get_baseline_action(req, requests): return get_action(req, requests)
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    semantic = result["dynamic_runtime_probe"]["strategy_influence"]["dimensions"][
+        "semantic_lines"
+    ]
+
+    assert semantic["ok"] is False
+    assert semantic["changed_pairs"] == 0
+    assert result["checks_by_id"]["semantic_line_reachability"]["passed"] is False
+
+
+def test_showdown_baseline_influence_is_not_masked_by_common_refinement(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13h",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+import time
+def _choose(req):
+    shown = req.get('opponent_runtime', {}).get('showdown_range', {})
+    if (shown.get('selection_scope') == 'reached_showdown_only'
+            and shown.get('confidence', 0.0) > 0.0
+            and shown.get('adaptation_weight', 0.0) > 0.0
+            and shown.get('tightness', 0.0) > 0.3):
+        return -1
+    return 0
+def get_action(req, requests): return _choose(req)
+def get_baseline_action(req, requests): return _choose(req)
+def iter_refinements(req, requests, baseline, deadline):
+    for step in range(16):
+        if time.monotonic() >= deadline:
+            return
+        yield {'action': -1, 'sample_count': step + 1}
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    showdown = result["dynamic_runtime_probe"]["strategy_influence"]["dimensions"][
+        "showdown_range"
+    ]
+
+    assert showdown["ok"] is True
+    assert any(
+        row["tiers"]["baseline"]["changed"] for row in showdown["rows"]
+    )
+
+
+def test_intermediate_refinement_only_does_not_prove_final_wire_influence(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13i",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+import time
+def _influence(req):
+    profile = req.get('opponent_runtime', {})
+    terminal = profile.get('terminal_response', {})
+    shown = profile.get('showdown_range', {})
+    hand = req.get('hand_runtime', {})
+    return bool(
+        (terminal.get('confidence', 0.0) > 0.0 and profile.get('fold_to_raise', 0.0) > 0.5)
+        or (shown.get('selection_scope') == 'reached_showdown_only'
+            and shown.get('confidence', 0.0) > 0.0
+            and shown.get('adaptation_weight', 0.0) > 0.0
+            and shown.get('tightness', 0.0) > 0.3)
+        or hand.get('can_donk')
+        or hand.get('can_delayed_probe')
+    )
+def get_action(req, requests):
+    _influence(req)
+    return 0
+def get_baseline_action(req, requests):
+    _influence(req)
+    return 0
+def iter_refinements(req, requests, baseline, deadline):
+    if time.monotonic() >= deadline:
+        return
+    yield -1 if _influence(req) else baseline
+    if time.monotonic() < deadline:
+        yield baseline
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    dimensions = result["dynamic_runtime_probe"]["strategy_influence"]["dimensions"]
+
+    assert dimensions["terminal_response"]["ok"] is False
+    assert dimensions["showdown_range"]["ok"] is False
+    assert dimensions["semantic_lines"]["ok"] is False
+    for dimension in ("terminal_response", "showdown_range", "semantic_lines"):
+        assert any(
+            tier.get("trajectory_changed") and not tier.get("changed")
+            for row in dimensions[dimension]["rows"]
+            for tier in row["tiers"].values()
+        )
 
 
 def test_truthy_deadline_label_does_not_prove_bounded_decision_runtime(tmp_path):

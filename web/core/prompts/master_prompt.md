@@ -81,10 +81,13 @@ Game parameters from `sever/国赛平台/`: 70 hands/match, 20000 chips reset ev
 Heads-up identity: `dealer_id` is SB. Therefore `bb = 1 - dealer_id`; do not use `next_player(dealer_id, 1)` for SB or `next_player(dealer_id, 2)` for BB. Postflop, BB is out of position and acts first; SB/dealer is in position.
 Wire protocol boundary: TCP actions are `raise <amount>`, `fold`, `call`, `check`, `allin`. In adapter mode, JSON bots still return integer actions and the adapter emits TCP text. In national_native mode, `national_bot.py` emits TCP text itself and must not import or depend on `sever/bot_adapter.py`. `bet` is illegal on the wire; use "bet" only as poker prose and implement it as `raise <amount>` on TCP or a positive raise-to-total internally.
 Official EXE timing boundary: national_native plans must preserve the native entry's TCP send throttle (`POK_OFFICIAL_ACTION_DELAY`, default near 0.30s, actions sent through `_send_wire_action`). Local strength evaluation may disable that delay by environment, but do not plan work that removes, bypasses, or moves the throttle into strategy code. Do not plan unsolicited timeout-rescue loops that send `call` or `check` without a pending platform decision.
-Decision-time budget: the official platform allows up to 60 seconds per pending action, but robust bots should spend that budget in architecture, not in unbounded per-action work. Prefer bounded module/startup precomputation, immutable lookup tables, cached range buckets, and deadline-aware fallbacks. When planning any simulation/search/history scan, state its worst-case bound and fallback behavior.
-Persistent match memory: national_native bots run as a persistent process for the 70-hand match. Prefer incremental opponent models and match-level summaries that survive across hands but reset on a new TCP connection. Do not plan repeated full-history scans when an incremental tracker can update on received actions, showdown, or `earnChips`.
-Official feedback loop: if Official EXE Compliance Feedback reports `repair_guidance` or `prompt_feedback`, route at least one task to the exact protocol/state-machine/logging file unless the evidence is purely harness inconclusive. Do not translate official EXE failures into strength tuning.
+Decision-time budget: the official platform allows up to 60 seconds per pending action, but robust bots should spend that budget in architecture, not in unbounded per-action work. A sanitized strategy baseline must be measured strictly under 250 ms. Optional work then uses explicit bounded budget tiers and deadline-aware refinement. A refinement is real only after additional bounded work: `sample_count` (or an equivalent declared work counter) must increase monotonically, and immediately yielding the original baseline is not refinement. At least one deterministic scenario must show an observable action improvement when its budget increases. Prefer bounded module/startup precomputation, immutable lookup tables, cached range buckets, and deadline-aware fallbacks. When planning any simulation/search/history scan, state its worst-case bound and fallback behavior.
+Official terminal-action repair: the Windows EXE may omit a street-closing `call` or `check`. Before a new street, showdown, settlement, or hand reset clears street state, the native wrapper must infer only the forced missing closer, apply it exactly once to pot, both stacks, street contributions, action history, and opponent tracking, then publish the next request. A relayed closer must suppress inference so it is never counted twice. This is transport/state reconstruction and must happen before strategy code; strategy must never guess a missing wire action.
+Authoritative decision state: line- and history-derived strategy inputs come from `req['hand_runtime']`, including `preflop_aggressor`, `preflop_spot`, `hero_position`, `previous_street`, `can_donk`, `can_delayed_probe`, `street_open`, `spr`, and `pot_odds`. Cross-hand inputs come only from the bounded `req['opponent_runtime']`. `current_request_view` is a bounded compatibility argument, not permission to reconstruct pots, positions, lines, or opponent frequencies by rescanning old `requests`.
+Persistent match memory: national_native bots run as a persistent process for the 70-hand match. Prefer incremental opponent models and match-level summaries that survive across hands but reset on a new TCP connection. Record terminal folds and calls whether relayed or inferred, even when the hero gets no later decision in that hand. Showdowns must update `req['opponent_runtime']['showdown_range']` as a bounded posterior with an explicit prior, effective sample count/confidence, capped influence, and protection against showdown-selection bias; the strategy must consume that posterior in a reachable decision path. Do not plan repeated full-history scans when an incremental tracker can update on received actions, showdown, or `earnChips`.
+Official feedback loop: `repair_guidance`, `prompt_feedback`, and LLM analysis are advisory context only. Only deterministic official verdict/issues/evidence may classify a blocker as protocol-related and make the system-owned TCP entrypoint writable. Do not translate official EXE failures into strength tuning.
 Raise rules: first preflop raise-to >= 200; first postflop raise-to >= 100; every re-raise must be at least 2x the previous raise-to. Exact `prev * 2` is legal according to a controlled official-EXE oracle run; `prev * 2 + 1` is optional conservative sizing headroom, not a legality requirement. Raise-to must exceed the player's current street bet, must not exceed available chips, and must not equal all remaining chips.
+Official completion oracle: formal policy `official-full-v5` permits the natural official 70-hand form to contain starts 1..70 but paired TCP `earnChips` only for hands 1..69. It is complete only when there is no pending action or wire issue and a new strict official THP proves `STATE:0..69`, cross-binds the first 69 named settlements, supplies the final zero-sum earnings, and matches the footer total. Never synthesize a hand-70 `earnChips`, never accept 69 settlements alone, and never use EXE/THP winners or chips in Glicko, H2H, source selection, precommit strength, or experience.
 Call/check rules: postflop first action cannot be call; postflop after any first action, check is illegal. If the first postflop player checks, the second player passes with call, not another check. Preflop BB cannot call after SB limps/calls; BB should check, raise, or fold.
 All-in rules: use `allin` on native TCP and `-2` only inside legacy JSON internals. After one player all-ins, the opponent may only call or fold; consecutive all-ins are illegal. Avoid plans that rely on TCP postflop check-check being legal; native bots must send `call` after an opponent postflop check when passing the street.
 </game_rules>
@@ -147,9 +150,12 @@ hard planning gate, not optional prose.
 
 The system-owned policy may also contain `plan_required_floor_checks`. Every
 listed check id must appear verbatim in at least one task's `checks_required`.
-Group coherent debt into at most three tasks: opponent memory plus full-history
-removal belong together; reusable precompute plus hot-path table removal belong
-together; deadline/purity belong together. Checks supplied by
+For `national_runtime_v4_state_learning`, declare exactly one typed primary
+innovation in `runtime_contract.state_learning`: one work primitive, one
+opponent-profile dimension, or one line control. Only its mapped consumer checks
+are newly blocking this generation; every other strategy dimension stays
+shadow/advisory unless a passing parent capability must be preserved. Do not
+turn correctness migration into a kitchen-sink strategy rewrite. Checks supplied by
 `native_template_provided_checks` are verified by the refreshed native entry
 and do not require a worker unless quality evidence says they still fail.
 
@@ -160,7 +166,13 @@ and do not require a worker unless quality evidence says they still fail.
   deadline. Also declare a fast legal `baseline_path`, a legal
   `fallback_action`, an exact `refinement_bound`, and optional `max_samples`.
   The socket fallback exists before strategy code starts; publish a stronger
-  strategy baseline near the target, then use the remaining refinement budget.
+  strategy baseline strictly before 250 ms, then use the remaining refinement
+  budget selectively in bounded tiers: obvious/low-uncertainty decisions should
+  exhaust early, while ambiguous high-EV decisions may spend more. Candidate
+  `sample_count`, confidence, and `complete` metadata are diagnostic only.
+  Require system-observed iterator steps, elapsed/worker CPU, true exhaustion,
+  sanitized trajectories, and a deterministic larger-budget control; yielding
+  the unchanged original baseline or eight empty candidates does not count.
 - `precompute_artifacts`: required for `precompute`. Each artifact is an object
   with `name`, `owner_file`, `build_phase`, `max_entries`, `max_bytes`,
   `max_build_ms`, `key_shape`, exact `module.function` consumer, and
@@ -173,10 +185,21 @@ and do not require a worker unless quality evidence says they still fail.
   `update_events`, `snapshot_field="opponent_runtime"`, `max_recent_hands`,
   `prior_rule`, `confidence_rule`, `adaptation_cap`, and the strategy `consumer`.
   Terminal opponent actions, settlement, and showdown must be recorded even
-  when the hero receives no later decision in that hand.
+  when the hero receives no later decision in that hand. Missing EXE
+  street-closing call/check repair must precede every state-clearing boundary.
+  Showdown observations must update a bounded, selection-bias-protected
+  `opponent_runtime.showdown_range` posterior with prior and confidence, and an
+  identified strategy consumer must use it.
   Preserve all opponent-model fields consumed by the parent decision graph, or
   assign explicit consumer migrations in the same task. A sparse snapshot that
   merely triggers default priors is a parent capability regression.
+- `state_learning`: required for the v4 focus. Set exactly one of
+  `work_primitive` (`sample_counted_candidate_batch` or
+  `bounded_precompute_lookup`), `profile_dimensions` (`action_profile`,
+  `terminal_response`, or `showdown_range`), or `line_controls` (`donk` or
+  `delayed_probe`). Include both exact oracle document paths in `oracle_refs`.
+  Do not add unrelated primary dimensions merely because their shadow evidence
+  is visible.
 - `official_feedback_refs`: official evidence or LLM analysis ids being fixed;
   empty only when the task is not reacting to official EXE feedback.
 - `forbidden_runtime_work`: file/network/subprocess I/O, full-history scans,
@@ -193,6 +216,49 @@ not substitute remembered field names, bounds, event names, or prompt terms.
 
 If the injected Line budget section marks `strategy.py` or `postflop.py` as `near_hard_cap`, that file must not grow. Plan cohesive helper-module migration or LOC recovery first, and set `expected_diff_shape` to show which logic moves out or is deleted. A plan that only adds logic to a near-cap core file will fail the size gate.
 </worker_guidance>
+
+<innovation_and_dynamic_reachability>
+Prefer one attributable structural hypothesis per generation. An innovation or
+plateau-escape plan may not be only threshold edits, wrapper names around parent
+logic, or a collection of new modules that never fire. State why this mechanism
+is structurally different, which parent behavior it replaces, and which single
+measurement can falsify it. Keep unrelated mechanisms out so the next native
+evaluation can attribute the result.
+
+Every new or materially changed structural module needs a complete live chain:
+`producer -> consumer -> sanitized action -> telemetry`. The worker prompt must
+name each function in the chain and require dynamic evidence, not AST presence or
+a unit test that calls the helper in isolation. Evidence includes:
+- a real national transcript that reaches the mechanism;
+- a firing tuple listing the exact `hand_runtime`/`opponent_runtime` predicates;
+- a control pair differing in one enabling predicate;
+- an observable sanitized action difference and nonzero consumed telemetry.
+
+For a donk mechanism, the required transcript shape is: hero is BB, opponent SB
+raises, hero calls, then hero acts first on the flop. The firing tuple must use
+authoritative `hand_runtime.preflop_aggressor`, `hero_position`, `street_open`,
+and `can_donk`; the control must remove only the aggressor/line condition. For a
+delayed-probe mechanism, use the official national transcript: hero BB calls an
+SB raise. On the flop hero checks; the in-position aggressor uses official wire `call`
+(possibly omitted by the EXE and inferred at the turn boundary). Hero then acts
+first on the turn. Require
+`previous_street.checked_through`,
+`previous_street.opponent_checked_back`, and `can_delayed_probe`; do not look for
+an official-invalid postflop `check/check`, and do not require hero to be in
+position.
+
+For staged computation, the control pair also varies the allowed refinement
+budget under a fixed-seed input. The legal baseline completes strictly under
+250 ms. Larger tiers must perform additional bounded work. The runtime—not the
+candidate—counts iterator steps, worker CPU/elapsed time, true `StopIteration`,
+and the sanitized action trajectory. Candidate-reported `sample_count`,
+confidence, and `complete` remain telemetry only. An iterator is an unreachable refinement facade
+when it merely yields its input baseline, emits empty candidates, repeats cached
+work, or exposes no budget-dependent improved action in a predeclared scenario. Local strength
+precommit uses a 2.0 s action / 1.8 s refinement envelope inside a 420 s match;
+the formal entry retains the official-safe 55 s/54 s ceiling, so plans must be
+selective rather than spending the maximum on every decision.
+</innovation_and_dynamic_reachability>
 
 <worker_prompt_quality>
 Each `worker_prompt` SHOULD target 6000 characters (soft limit); the hard limit is 12000.
@@ -267,7 +333,7 @@ return None
 </injected_context>
 
 <diversity_rule>
-If `diversity_needed: true` in the performance verification, try a substantially different approach this generation. State in `analysis`: "Diversity injection: trying X instead of Y."
+If `diversity_needed: true` in the performance verification, choose one substantially different, falsifiable structural hypothesis this generation. State in `analysis`: "Diversity injection: trying X instead of Y." A threshold-only plan or several unrelated speculative modules does not satisfy diversity.
 </diversity_rule>
 
 <plateau_protocol>
@@ -276,7 +342,7 @@ When ALL H2H matchups are within 45-55% win rate (no exploitable weakness visibl
 **ACCEPTABLE strategies** (require NO specific H2H evidence):
 1. Structural exploration: add a new decision system (e.g., donk-bet strategy, turn barrel expansion, check-raise traps)
 2. Crossover: merge with a structurally different bot
-3. Aggressive parameter exploration: test extreme values (2x or 0.5x of current) to find the true sensitivity curve
+3. Structurally motivated sensitivity exploration: vary a parameter only as a control for a new reachable mechanism, never as the entire innovation plan
 4. Opponent-model-driven changes: add per-opponent-type exploitation logic
 
 **DISCOURAGED at plateaus** (Critic records advisory strategy risk; native TCP precommit is the measured strategy gate):
@@ -356,10 +422,11 @@ Required schema (emit exactly this structure as raw JSON):
       "skill_layer": "runtime_architecture",
       "architecture_focus_id": "copy the exact selected_focus id, or empty only when selected_focus=none",
       "files_allowed": ["strategy.py"],
+      "read_only_dependencies": ["national_bot.py"],
       "prohibited_files": ["sever/", "engine/", "web/core/tool_gates.py"],
       "expected_diff_shape": "Add one helper and wire it into the live decision path.",
-      "behavior_hypothesis": "Low-SPR marginal bluffcatchers fold more often instead of stack-off calling.",
-      "checks_required": ["decision_tests", "national_acceptance", "stderr_telemetry_nonzero"],
+      "behavior_hypothesis": "Uncertainty-gated refinement spends extra compute only where additional batches change the sanitized action, while obvious spots finish at baseline.",
+      "checks_required": ["decision_tests", "national_acceptance", "fast_strategy_baseline", "incremental_refinement_protocol", "budget_scaled_refinement"],
       "merge_policy": "disjoint_target_files",
       "difficulty": "medium",
       "runtime_contract": {
@@ -370,15 +437,32 @@ Required schema (emit exactly this structure as raw JSON):
           "refinement_budget_ms": 54000,
           "baseline_path": "compute the existing deterministic legal action before optional refinement",
           "fallback_action": "return the baseline through the existing legal action sanitizer",
-          "refinement_bound": "no file/network I/O; no full-history scan; at most 64 samples",
+          "refinement_bound": "no file/network I/O; no full-history scan; at most 64 system-counted candidate batches with trusted elapsed and exhaustion evidence",
           "max_samples": 64
         },
         "precompute_artifacts": [],
-        "match_memory": null,
+        "match_memory": {
+          "tracker_class": "OpponentTracker",
+          "owner_file": "national_bot.py",
+          "reset_boundary": "tcp_connection",
+          "update_events": ["hand_start", "street_start", "opponent_action", "settlement", "showdown"],
+          "snapshot_field": "opponent_runtime",
+          "max_recent_hands": 8,
+          "prior_rule": "beta_prior_weight_8",
+          "confidence_rule": "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8",
+          "adaptation_cap": 0.65,
+          "consumer": "strategy.get_baseline_action"
+        },
+        "state_learning": {
+          "work_primitive": "sample_counted_candidate_batch",
+          "profile_dimensions": [],
+          "line_controls": [],
+          "oracle_refs": ["docs/official-raise-boundary-oracle-2026-07-11.md", "docs/official-terminal-settlement-oracle-2026-07-11.md"]
+        },
         "official_feedback_refs": [],
         "forbidden_runtime_work": ["file_io_in_decision", "network_io_in_decision", "unbounded_history_scan"]
       },
-      "worker_prompt": "Implement a bounded decision budget: compute the legal strategy baseline before refinement, enforce the monotonic deadline, and return the baseline through the legal fallback path on timeout or error."
+      "worker_prompt": "Implement only the typed sample_counted_candidate_batch primary in strategy.get_baseline_action and iter_refinements; preserve the system-owned national_bot.py memory, confidence, opponent_runtime, and official oracle behavior without editing that read-only dependency. Compute and sanitize the legal baseline strictly under the 250 ms budget and retain the legal fallback at every deadline. Use a fixed seed and bounded max_samples, terminate low-uncertainty spots early, and let ambiguous spots scale within the local 1.8 s refinement envelope and formal 54 s ceiling. Candidate sample_count/confidence/complete fields are diagnostic only: prove real work with system-trusted iterator steps, at least 5 ms elapsed work, true exhaustion or larger-budget scaling, sanitized action trajectories, and telemetry. Do not yield the input baseline or empty candidates as fake refinement."
     }
   ]
 }
@@ -403,3 +487,8 @@ When a task adds a detector or helper, require a reachable embedded fixture unde
 `if __name__ == "__main__":` when that is the repository's executable self-test
 pattern. Never leave new standalone `_self_test_*` helpers uncalled. Telemetry
 must report the total value consumed by strategy rather than only one nested arm.
+Line/history features must be consumed from authoritative `req['hand_runtime']`,
+and cross-hand features from bounded `req['opponent_runtime']`; scanning archived
+`requests` to reconstruct either is a regression. A named module without its
+dynamic producer-to-telemetry chain, firing tuple, and one-predicate control pair
+is dead code even when static call sites exist.

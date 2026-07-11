@@ -102,6 +102,67 @@ You check ONLY these five areas:
    `opponent_runtime` compatibility fields used by existing strategy consumers;
    replacing a rich model with a sparse snapshot and silent default priors is a
    behavior regression, not successful incremental modeling.
+   The official EXE may omit a street-closing call/check. Reject a wrapper that
+   clears street bets or advances to a new street/showdown/settlement/hand before
+   it infers the forced missing closer exactly once and updates pot, both stacks,
+   contributions, history, and opponent tracking. Also reject double counting
+   when the closer was relayed. This repair must precede request publication;
+   strategy must not infer transport omissions.
+   Line/history strategy state must come from authoritative
+   `req['hand_runtime']` (`preflop_aggressor`, `preflop_spot`, `hero_position`,
+   `previous_street`, `can_donk`, `can_delayed_probe`, `street_open`, `spr`,
+   `pot_odds`), and cross-hand state only from bounded
+   `req['opponent_runtime']`. Reject old `requests` rescans that recompute these
+   values or silently bypass the runtime snapshots.
+   Verify terminal folds/calls survive the hand boundary. Showdowns must update
+   `opponent_runtime.showdown_range` with an explicit prior, effective sample
+   count/confidence, capped influence, and showdown-selection-bias protection,
+   and a reachable strategy consumer must use that posterior. Counts or logs
+   without action influence are incomplete.
+
+   **Dynamic reachability check** — Every new or materially changed structural
+   module must demonstrate `producer -> consumer -> sanitized action -> telemetry`
+   on a real national transcript. Require an exact firing tuple and a
+   one-predicate control pair, plus an observable action difference and nonzero
+   consumed telemetry. Static
+   imports/call sites and isolated helper tests do not prove reachability. For
+   donk, verify hero BB calls an SB raise and acts first on the flop with
+   `hand_runtime.can_donk`. For delayed probe, verify
+   hero BB calls an SB raise, checks flop, the in-position aggressor passes with
+   official `call` (relayed or boundary-inferred), and hero acts first on turn
+   with `previous_street.checked_through`,
+   `previous_street.opponent_checked_back`, and `can_delayed_probe`; a literal
+   check/check or hero-in-position requirement makes the module unreachable.
+
+   **Refinement evidence check** — Measure a sanitized legal baseline strictly under 250 ms,
+   then compare fixed-seed bounded budget tiers. Candidate `sample_count`,
+   confidence, and `complete` are diagnostic only; require system-trusted
+   iterator steps, CPU/elapsed time, true exhaustion/termination, and sanitized
+   trajectories. Reject an iterator that yields its original baseline, emits
+   eight empty candidates, repeats cached work, self-declares completion, or
+   never produces its hypothesized improved action in a predeclared scenario. When staged computation is
+   the typed primary, require at least eight trusted steps and 5 ms measured
+   long-tier work, followed by larger-budget scaling or equal proven finite
+   exhaustion. Local strength uses 2.0 s/1.8 s within a 420 s match; formal
+   runtime retains the 55-second hard return and latest-safe fallback.
+
+   **Attribution check** — For the v4 focus, exactly one state-learning primary
+   may be newly blocking: one work primitive, one opponent-profile dimension, or
+   one line control. Reject kitchen-sink plans/diffs that modify shadow
+   dimensions without a parent-preservation need.
+
+   **Official oracle alignment** — Formal policy `official-full-v5` and both
+   content-pinned oracle documents are authoritative. Exact consecutive 2x is legal; a retained
+   `2x + 1` sanitizer is only conservative headroom. A natural 70-hand official
+   finish may have starts 1..70 and paired TCP settlements only 1..69, but it is
+   complete only with no pending action/wire issue and a new strict THP proving
+   `STATE:0..69`, the cross-bound prefix, final zero-sum earnings, and footer.
+   Reject fabricated hand-70 `earnChips`, acceptance of 69 settlements alone,
+   or any use of official/THP winners or chips in Glicko, H2H, source selection,
+   precommit strength, or experience.
+   Treat `docs/official-raise-boundary-oracle-2026-07-11.md` and
+   `docs/official-terminal-settlement-oracle-2026-07-11.md` as the exact,
+   non-negotiable evaluation sources.
 
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.
 

@@ -14,8 +14,8 @@ import re
 from typing import Any
 
 
-NATIONAL_CAPABILITY_DETECTOR_VERSION = "3.0.0"
-CAPABILITY_SCHEMA_VERSION = 2
+NATIONAL_CAPABILITY_DETECTOR_VERSION = "4.1.0"
+CAPABILITY_SCHEMA_VERSION = 3
 DECISION_GRAPH_MAX_DEPTH = 5
 MIN_PRECOMPUTE_ENTRIES = 20
 MAX_PRECOMPUTE_ENTRIES = 65_536
@@ -57,6 +57,12 @@ _OPPONENT_RUNTIME_CORE_FIELDS = frozenset({
     "flop_aggr",
     "turn_aggr",
     "river_aggr",
+    "fold_to_jam_rate",
+    "fold_to_jam_samples",
+    "river_overcall_freq",
+    "river_overcall_samples",
+    "terminal_response",
+    "showdown_range",
 })
 
 
@@ -668,6 +674,11 @@ def _decision_path_risks(
     risks = {"external_io": [], "history_scans": [], "large_runtime_tables": []}
     for key, chain in decision_chains.items():
         profile = profiles.get(key) or {}
+        # national_bot.py is a system-provided socket/runtime owner. Its pipe,
+        # process-tree cleanup and wire I/O are required infrastructure, not
+        # candidate strategy-path I/O. Candidate modules remain fully checked.
+        if profile.get("filename") == "national_bot.py":
+            continue
         for risk_name in risks:
             risks[risk_name].extend(
                 _format_path(chain, item) for item in profile.get(risk_name) or []
@@ -945,10 +956,50 @@ def _opponent_tracker_provider(
         "action_updates": mutation_reaches_snapshot("observe_action") and ".observe_action(" in native,
         "settlement_updates": mutation_reaches_snapshot("observe_settlement") and ".observe_settlement(" in native,
         "showdown_updates": mutation_reaches_snapshot("observe_showdown") and ".observe_showdown(" in native,
+        "showdown_range_posterior": (
+            mutation_reaches_snapshot("observe_showdown")
+            and methods.get("_showdown_class") is not None
+            and {
+                "showdown_range",
+                "selection_scope",
+                "selection_bias_guard",
+                "showdown_reach_rate",
+                "adaptation_weight",
+                "prior_source",
+                "bucket_rates",
+            }.issubset(snapshot_strings)
+        ),
+        "terminal_response_updates": (
+            mutation_reaches_snapshot("observe_action")
+            and {
+                "fold_to_jam_rate",
+                "fold_to_jam_samples",
+                "river_overcall_freq",
+                "river_overcall_samples",
+                "facing_raise_by_street",
+                "facing_allin_by_street",
+                "terminal_response",
+            }.issubset(snapshot_strings)
+        ),
+        "suppressed_terminal_repair": (
+            "def _infer_suppressed_terminal_opponent_action" in native
+            and native.count("._infer_suppressed_terminal_opponent_action(") >= 3
+        ),
         "snapshot_injected": bool(
             re.search(
                 r"['\"]opponent_runtime['\"]\s*:\s*self\._opponent_tracker\.snapshot\s*\(",
                 native,
+            )
+        ),
+        "hand_context_injected": bool(
+            re.search(
+                r"['\"]hand_runtime['\"]\s*:\s*self\._hand_runtime\s*\(",
+                native,
+            )
+            and "def _hand_runtime" in native
+            and all(
+                f'"{field}"' in native or f"'{field}'" in native
+                for field in ("can_donk", "can_delayed_probe", "preflop_aggressor")
             )
         ),
         "bounded_recent_state": bounded_recent_state,
@@ -971,12 +1022,39 @@ def _incremental_model_evidence(
     native = sources.get("national_bot.py", "")
     provider = _opponent_tracker_provider(trees, native)
     consumer_locations: list[str] = []
+    tracked_fields = (
+        "fold_to_raise",
+        "fold_to_jam_rate",
+        "river_overcall_freq",
+        "showdown_range",
+        "tightness",
+        "bucket_rates",
+        "confidence",
+        "adaptation_weight",
+        "selection_scope",
+        "showdown_reach_rate",
+        "terminal_response",
+        "contexts",
+        "hand_runtime",
+        "can_donk",
+        "can_delayed_probe",
+    )
+    field_locations: dict[str, list[str]] = {field: [] for field in tracked_fields}
     for key in decision_chains:
         profile = profiles.get(key) or {}
         if profile.get("filename") == "national_bot.py":
             continue
         for location in profile.get("weighted_runtime_locations") or []:
             consumer_locations.append(_format_path(decision_chains.get(key) or [key], location))
+        literals = {str(item).lower() for item in profile.get("string_literals") or []}
+        for field in tracked_fields:
+            if field in literals:
+                field_locations[field].append(
+                    _format_path(
+                        decision_chains.get(key) or [key],
+                        _line_label(str(profile.get("filename") or ""), None, field),
+                    )
+                )
     required_provider = (
         "tracker_defined",
         "tracker_instantiated",
@@ -984,7 +1062,11 @@ def _incremental_model_evidence(
         "action_updates",
         "settlement_updates",
         "showdown_updates",
+        "showdown_range_posterior",
+        "terminal_response_updates",
+        "suppressed_terminal_repair",
         "snapshot_injected",
+        "hand_context_injected",
         "bounded_recent_state",
         "confidence_scaled",
         "compatibility_schema",
@@ -994,6 +1076,10 @@ def _incremental_model_evidence(
         "provider": provider,
         "provider_complete": provider_complete,
         "consumer_locations": sorted(consumer_locations),
+        "decision_field_locations": {
+            field: sorted(dict.fromkeys(locations))
+            for field, locations in field_locations.items()
+        },
         "consumed_by_decision": bool(consumer_locations),
         "incremental_complete": provider_complete and bool(consumer_locations),
     }
@@ -1136,6 +1222,34 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         precompute["passed"] = bool(precompute.get("passed") and dynamic_artifacts)
     incremental["dynamic_tracker"] = dynamic_probe.get("tracker") or {}
     incremental["dynamic_strategy_influence"] = dynamic_probe.get("strategy_influence") or {}
+    hand_context = dynamic_probe.get("hand_context") or {}
+    influence_dimensions = incremental["dynamic_strategy_influence"].get("dimensions") or {}
+    decision_field_locations = incremental.get("decision_field_locations") or {}
+    terminal_flat_fields_consumed = all(
+        decision_field_locations.get(field)
+        for field in ("fold_to_raise", "fold_to_jam_rate", "river_overcall_freq")
+    )
+    terminal_context_fields_consumed = all(
+        decision_field_locations.get(field)
+        for field in ("terminal_response", "contexts", "confidence", "adaptation_weight")
+    )
+    terminal_fields_consumed = bool(
+        terminal_flat_fields_consumed or terminal_context_fields_consumed
+    )
+    showdown_fields_consumed = bool(
+        decision_field_locations.get("showdown_range")
+        and (
+            decision_field_locations.get("tightness")
+            or decision_field_locations.get("bucket_rates")
+        )
+        and decision_field_locations.get("confidence")
+        and decision_field_locations.get("adaptation_weight")
+        and decision_field_locations.get("selection_scope")
+    )
+    line_fields_consumed = all(
+        decision_field_locations.get(field)
+        for field in ("hand_runtime", "can_donk", "can_delayed_probe")
+    )
     decision_runtime = dynamic_probe.get("decision_runtime") or {}
     baseline_samples_ms = [
         float(value)
@@ -1147,6 +1261,9 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         for row in (dynamic_probe.get("strategy_influence") or {}).get("rows") or []
         if isinstance(row, dict)
         for label in ("baseline", "aggressive", "passive")
+    ) or any(
+        int((decision_runtime.get("budget_scaling") or {}).get(tier, {}).get("trusted_steps") or 0) > 0
+        for tier in ("short", "long")
     )
     if not probe_infrastructure_failure:
         incremental["provider_complete"] = bool(
@@ -1156,7 +1273,7 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         incremental["incremental_complete"] = bool(
             incremental.get("provider_complete")
             and incremental.get("consumed_by_decision")
-            and incremental["dynamic_strategy_influence"].get("ok")
+            and (influence_dimensions.get("action_profile") or {}).get("ok")
         )
 
     checks = [
@@ -1202,7 +1319,7 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         ),
         _check(
             "killable_decision_runtime",
-            bool(decision_runtime.get("ok")),
+            bool(decision_runtime.get("safety_ok", decision_runtime.get("ok"))),
             "advisory",
             "runtime_architecture",
             "a hanging strategy is terminated and the next decision restarts a fresh worker",
@@ -1235,10 +1352,22 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
             "advisory",
             "runtime_architecture",
             "strategy yields sanitized, decision-id-scoped candidates before the monotonic deadline",
-            "Implement iter_refinements(req, current_hand_view, baseline, deadline) and yield bounded candidate batches with sample_count.",
+            "Implement iter_refinements(req, current_hand_view, baseline, deadline); reported sample_count is diagnostic, while the system counts yielded batches.",
             facts={
                 "function_present": "iter_refinements" in strategy_function_names,
                 "refinement_observed": refinement_observed,
+            },
+        ),
+        _check(
+            "budget_scaled_refinement",
+            bool(decision_runtime.get("refinement_ok")),
+            "advisory",
+            "runtime_architecture",
+            "refinement has trusted iterator/elapsed work, changes a sanitized baseline, and scales or proves finite exhaustion under a longer budget",
+            "Yield real candidate batches; candidate sample_count/complete metadata is non-authoritative, and empty or baseline-only yields are not refinement.",
+            facts={
+                "refinement_issues": decision_runtime.get("refinement_issues") or [],
+                "budget_scaling": decision_runtime.get("budget_scaling") or {},
             },
         ),
         _check(
@@ -1295,6 +1424,53 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
             facts=incremental["provider"],
         ),
         _check(
+            "terminal_response_memory",
+            bool(
+                incremental["provider"].get("suppressed_terminal_repair")
+                and incremental["provider"].get("terminal_response_updates")
+                and incremental["dynamic_tracker"].get("ok")
+            ),
+            "advisory",
+            "match_memory",
+            "relayed folds and relayed/inferred terminal calls update street-specific response posteriors across hands",
+            "Repair only boundary-proven omitted call/check tokens before clearing street bets, then persist fold-to-raise, fold-to-jam, and river-overcall samples in OpponentTracker.",
+            facts={
+                "suppressed_terminal_repair": incremental["provider"].get("suppressed_terminal_repair"),
+                "terminal_response_updates": incremental["provider"].get("terminal_response_updates"),
+                "tracker_issues": incremental["dynamic_tracker"].get("issues") or [],
+            },
+        ),
+        _check(
+            "showdown_range_posterior",
+            bool(
+                incremental["provider"].get("showdown_range_posterior")
+                and incremental["dynamic_tracker"].get("ok")
+            ),
+            "advisory",
+            "opponent_model",
+            "revealed cards update a bounded prior-smoothed, line-conditioned reached-showdown range posterior",
+            "Convert oppo_hands into bounded range buckets/classes with priors, confidence, and explicit reached-showdown selection scope.",
+            facts={
+                "provider": incremental["provider"].get("showdown_range_posterior"),
+                "tracker_issues": incremental["dynamic_tracker"].get("issues") or [],
+            },
+        ),
+        _check(
+            "authoritative_hand_context",
+            bool(
+                incremental["provider"].get("hand_context_injected")
+                and hand_context.get("ok")
+            ),
+            "advisory",
+            "line_template",
+            "wrapper-owned hand_runtime preserves preflop aggressor and official check/call street semantics for live line flags",
+            "Consume req['hand_runtime'] for cross-street spots; do not rediscover donk or delayed-probe eligibility from current-street history.",
+            facts={
+                "provider": incremental["provider"].get("hand_context_injected"),
+                "dynamic_issues": hand_context.get("issues") or [],
+            },
+        ),
+        _check(
             "incremental_opponent_model",
             incremental["incremental_complete"],
             "advisory",
@@ -1306,8 +1482,56 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
                 "provider_complete": incremental["provider_complete"],
                 "consumed_by_decision": incremental["consumed_by_decision"],
                 "dynamic_strategy_influence": bool(
-                    incremental["dynamic_strategy_influence"].get("ok")
+                    (influence_dimensions.get("action_profile") or {}).get("ok")
                 ),
+            },
+        ),
+        _check(
+            "terminal_response_adaptation",
+            bool(
+                terminal_fields_consumed
+                and (influence_dimensions.get("terminal_response") or {}).get("ok")
+            ),
+            "advisory",
+            "opponent_model",
+            "terminal fold/call response profiles produce an observable legal action difference",
+            "Consume fold-to-raise, fold-to-jam, and river-overcall evidence with confidence in a reachable decision path.",
+            facts={
+                "ok": (influence_dimensions.get("terminal_response") or {}).get("ok"),
+                "changed_pairs": (influence_dimensions.get("terminal_response") or {}).get("changed_pairs", 0),
+                "required_fields_consumed": terminal_fields_consumed,
+            },
+        ),
+        _check(
+            "showdown_range_adaptation",
+            bool(
+                showdown_fields_consumed
+                and (influence_dimensions.get("showdown_range") or {}).get("ok")
+            ),
+            "advisory",
+            "opponent_model",
+            "showdown-only tight and loose counterfactuals produce an observable legal action difference",
+            "Feed opponent_runtime.showdown_range posterior weights into range/EV logic; reading a counter without changing a decision is insufficient.",
+            facts={
+                "ok": (influence_dimensions.get("showdown_range") or {}).get("ok"),
+                "changed_pairs": (influence_dimensions.get("showdown_range") or {}).get("changed_pairs", 0),
+                "required_fields_consumed": showdown_fields_consumed,
+            },
+        ),
+        _check(
+            "semantic_line_reachability",
+            bool(
+                line_fields_consumed
+                and (influence_dimensions.get("semantic_lines") or {}).get("ok")
+            ),
+            "advisory",
+            "line_template",
+            "donk and delayed-probe positive/control pairs both reach distinct sanitized actions",
+            "Wire hand_runtime.can_donk and can_delayed_probe into live strategy using the official BB-check/SB-pass-call transcript.",
+            facts={
+                "ok": (influence_dimensions.get("semantic_lines") or {}).get("ok"),
+                "changed_pairs": (influence_dimensions.get("semantic_lines") or {}).get("changed_pairs", 0),
+                "required_fields_consumed": line_fields_consumed,
             },
         ),
     ]
@@ -1318,9 +1542,16 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
                 "killable_decision_runtime",
                 "fast_strategy_baseline",
                 "incremental_refinement_protocol",
+                "budget_scaled_refinement",
                 "precompute_lookup_path",
                 "persistent_match_memory",
+                "terminal_response_memory",
+                "showdown_range_posterior",
+                "authoritative_hand_context",
                 "incremental_opponent_model",
+                "terminal_response_adaptation",
+                "showdown_range_adaptation",
+                "semantic_line_reachability",
             }:
                 item["passed"] = None
                 item["evidence"]["status"] = "inconclusive_infrastructure"

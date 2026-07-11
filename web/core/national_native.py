@@ -44,7 +44,11 @@ ROOT = Path(__file__).resolve().parents[2]
 NATIVE_ENTRY = "national_bot.py"
 PRECOMPUTE_ENTRY = "precompute.py"
 TRACE_PREFIX = "POK_TRACE_DECISION "
-NATIONAL_DECISION_RUNTIME_VERSION = 6
+NATIONAL_DECISION_RUNTIME_VERSION = 7
+LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC = 2.0
+LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC = 1.8
+LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC = 0.20
+LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC = 420.0
 
 
 NATIVE_BOT_TEMPLATE = r'''#!/usr/bin/env python3
@@ -68,7 +72,9 @@ import os
 import random
 import re
 import select
+import signal
 import socket
+import subprocess
 import sys
 import time
 import traceback
@@ -93,16 +99,34 @@ NATIONAL_DECISION_RUNTIME_VERSION = __POK_DECISION_RUNTIME_VERSION__
 DEFAULT_STREAM_IDLE_FLUSH_SEC = 0.10
 STREAM_IDLE_FLUSH_ENV = "POK_NATIONAL_STREAM_IDLE_FLUSH"
 MAX_STREAM_BUFFER_CHARS = 16_384
-OPPONENT_TRACKER_SCHEMA_VERSION = 3
+OPPONENT_TRACKER_SCHEMA_VERSION = 4
+HAND_RUNTIME_SCHEMA_VERSION = 1
+SHOWDOWN_RANGE_SCHEMA_VERSION = 1
 OPPONENT_PRIOR_WEIGHT = 8.0
 OPPONENT_ADAPTATION_CAP = 0.65
+SHOWDOWN_RANGE_PRIOR_SOURCE = "uniform_1326_hole_combinations_v1"
+SHOWDOWN_RANGE_BUCKET_COMBOS = {
+    "premium_pair": 30,
+    "small_pair": 48,
+    "ace_broadway": 64,
+    "broadway": 96,
+    "suited_connector": 64,
+    "suited_ace": 32,
+    "offsuit_ace": 96,
+    "suited_other": 176,
+    "offsuit_other": 720,
+}
+SHOWDOWN_RANGE_BUCKET_PRIORS = {
+    bucket: combinations / 1326.0
+    for bucket, combinations in SHOWDOWN_RANGE_BUCKET_COMBOS.items()
+}
+RANK_SYMBOLS = "23456789TJQKA"
 DEFAULT_DECISION_HARD_DEADLINE_SEC = 55.0
 DEFAULT_DECISION_BASELINE_TARGET_SEC = 0.25
 DEFAULT_DECISION_REFINEMENT_BUDGET_SEC = 54.0
 DECISION_HARD_DEADLINE_ENV = "POK_DECISION_HARD_DEADLINE_SEC"
 DECISION_BASELINE_TARGET_ENV = "POK_DECISION_BASELINE_TARGET_SEC"
 DECISION_REFINEMENT_BUDGET_ENV = "POK_DECISION_REFINEMENT_BUDGET_SEC"
-STRATEGY_WORKER_STOP_GRACE_SEC = 0.05
 STRATEGY_WORKER_KILL_GRACE_SEC = 0.05
 MAX_REFINEMENT_MESSAGES = 4096
 
@@ -305,6 +329,7 @@ class OpponentTracker:
 
     _STREETS = ("preflop", "flop", "turn", "river")
     _ACTIONS = ("fold", "check", "call", "raise", "allin")
+    _SEMANTIC_ACTIONS = (*_ACTIONS, "pass")
 
     def __init__(self) -> None:
         self.reset_match()
@@ -325,28 +350,53 @@ class OpponentTracker:
             street: {action: 0 for action in self._ACTIONS}
             for street in self._STREETS
         }
+        self.semantic_street_actions = {
+            street: {action: 0 for action in self._SEMANTIC_ACTIONS}
+            for street in self._STREETS
+        }
+        self.facing_check = self._response_counter(include_pass=True)
+        self.facing_check_by_street = {
+            street: self._response_counter(include_pass=True)
+            for street in self._STREETS
+        }
         self.street_raise_sum = {street: 0.0 for street in self._STREETS}
         self.street_raise_sumsq = {street: 0.0 for street in self._STREETS}
         self.street_raise_count = {street: 0 for street in self._STREETS}
         self.facing_raise = self._response_counter()
         self.facing_allin = self._response_counter()
+        self.facing_raise_by_street = {
+            street: self._response_counter() for street in self._STREETS
+        }
+        self.facing_allin_by_street = {
+            street: self._response_counter() for street in self._STREETS
+        }
         self.context_actions: dict[str, dict] = {}
         self.showdown_hole_classes = {"pair": 0, "suited": 0, "offsuit": 0}
+        self.showdown_range_samples = 0
+        self.showdown_range_buckets = {
+            bucket: 0 for bucket in SHOWDOWN_RANGE_BUCKET_PRIORS
+        }
+        self.showdown_hand_classes: dict[str, int] = {}
+        self.showdown_contexts: dict[str, dict] = {}
         self._active_hand: dict | None = None
-        self._pending_hero_pressure: str | None = None
+        self._pending_hero_pressure: dict[str, object] | None = None
         self._last_hero_action: str | None = None
         self._settled_hands: set[int] = set()
         self._showdown_hands: set[int] = set()
         self._recent_hands = deque(maxlen=8)
 
-    def _response_counter(self) -> dict[str, int]:
-        return {
+    def _response_counter(self, *, include_pass: bool = False) -> dict[str, int]:
+        counter = {
             "opportunities": 0,
             "fold": 0,
             "call": 0,
             "raise": 0,
             "allin": 0,
         }
+        if include_pass:
+            counter["check"] = 0
+            counter["pass"] = 0
+        return counter
 
     def begin_hand(self, hand: int, *, opponent_is_sb: bool) -> None:
         self.hands_started += 1
@@ -356,6 +406,7 @@ class OpponentTracker:
             "opponent_actions": 0,
             "opponent_vpip": False,
             "opponent_pfr": False,
+            "opponent_preflop_line": "none",
             "showdown": False,
             "last_opponent_action": None,
         }
@@ -375,10 +426,17 @@ class OpponentTracker:
 
     def _context_key(self, street: str, amount: int | None) -> str:
         position = "sb" if (self._active_hand or {}).get("opponent_is_sb") else "bb"
-        facing = self._pending_hero_pressure or (
+        pressure = self._pending_hero_pressure
+        facing = str(pressure["action"]) if pressure else (
             "check" if self._last_hero_action == "check" else "unopened"
         )
-        return "|".join((street, position, facing, self._size_bucket(amount)))
+        # A response context is conditioned on the hero's pressure size, never
+        # on the observed outcome.  In particular, an omitted terminal fold has
+        # no amount while a terminal call carries the final stage bet; using the
+        # response amount would split the same decision into outcome-dependent
+        # buckets and introduce selection bias.
+        context_amount = pressure.get("amount") if pressure else amount
+        return "|".join((street, position, facing, self._size_bucket(context_amount)))
 
     def observe_action(
         self,
@@ -387,24 +445,48 @@ class OpponentTracker:
         action: str,
         *,
         amount: int | None = None,
+        committed: int | None = None,
     ) -> None:
         if actor == "hero":
-            self._pending_hero_pressure = action if action in {"raise", "allin"} else None
+            self._pending_hero_pressure = (
+                {"action": action, "amount": amount}
+                if action in {"raise", "allin"}
+                else None
+            )
             self._last_hero_action = action
             return
         if actor != "opponent" or action not in self._ACTIONS:
             return
 
         street = street if street in self._STREETS else "preflop"
+        semantic_action = action
+        if (
+            street != "preflop"
+            and action == "call"
+            and committed == 0
+            and self._last_hero_action == "check"
+        ):
+            # The official protocol encodes the second player's zero-chip pass
+            # after a check as ``call``.  Preserve the raw wire action above but
+            # expose its poker meaning to every persistent statistic.
+            semantic_action = "pass"
         self.total_actions += 1
         self.street_actions[street][action] += 1
+        self.semantic_street_actions[street][semantic_action] += 1
         context_key = self._context_key(street, amount)
         context = self.context_actions.setdefault(
             context_key,
-            {"samples": 0, **{name: 0 for name in self._ACTIONS}},
+            {
+                "samples": 0,
+                "raw_actions": {name: 0 for name in self._ACTIONS},
+                "semantic_actions": {
+                    name: 0 for name in self._SEMANTIC_ACTIONS
+                },
+            },
         )
         context["samples"] += 1
-        context[action] += 1
+        context["raw_actions"][action] += 1
+        context["semantic_actions"][semantic_action] += 1
         if action in {"raise", "allin"} and amount is not None:
             try:
                 raise_total = max(0, int(amount))
@@ -428,17 +510,81 @@ class OpponentTracker:
                 if not self._active_hand["opponent_pfr"]:
                     self.preflop_raise_hands += 1
                 self._active_hand["opponent_pfr"] = True
+                self._active_hand["opponent_preflop_line"] = "raise"
+            elif street == "preflop" and action == "call":
+                self._active_hand["opponent_preflop_line"] = (
+                    "called_pressure" if self._pending_hero_pressure else "limp"
+                )
+            elif street == "preflop" and action == "check":
+                self._active_hand["opponent_preflop_line"] = "checked_option"
+
+        if self._last_hero_action == "check" and street != "preflop":
+            self.facing_check["opportunities"] += 1
+            self.facing_check[semantic_action] += 1
+            street_check = self.facing_check_by_street[street]
+            street_check["opportunities"] += 1
+            street_check[semantic_action] += 1
 
         if self._pending_hero_pressure is not None:
+            pressure_action = str(self._pending_hero_pressure["action"])
             counter = (
                 self.facing_allin
-                if self._pending_hero_pressure == "allin"
+                if pressure_action == "allin"
                 else self.facing_raise
             )
             counter["opportunities"] += 1
             if action in counter:
                 counter[action] += 1
+            street_counter = (
+                self.facing_allin_by_street[street]
+                if pressure_action == "allin"
+                else self.facing_raise_by_street[street]
+            )
+            street_counter["opportunities"] += 1
+            if action in street_counter:
+                street_counter[action] += 1
             self._pending_hero_pressure = None
+
+    @staticmethod
+    def _showdown_class(cards: list[int]) -> tuple[str, str]:
+        rank_a, rank_b = cards[0] // 4 + 2, cards[1] // 4 + 2
+        high, low = max(rank_a, rank_b), min(rank_a, rank_b)
+        suited = cards[0] % 4 == cards[1] % 4
+        if high == low:
+            hand_class = RANK_SYMBOLS[high - 2] * 2
+            bucket = "premium_pair" if high >= 10 else "small_pair"
+        else:
+            hand_class = (
+                RANK_SYMBOLS[high - 2]
+                + RANK_SYMBOLS[low - 2]
+                + ("s" if suited else "o")
+            )
+            if high == 14 and low >= 10:
+                bucket = "ace_broadway"
+            elif low >= 10:
+                bucket = "broadway"
+            elif suited and high - low <= 2:
+                bucket = "suited_connector"
+            elif suited and high == 14:
+                bucket = "suited_ace"
+            elif not suited and high == 14:
+                bucket = "offsuit_ace"
+            elif suited:
+                bucket = "suited_other"
+            else:
+                bucket = "offsuit_other"
+        return hand_class, bucket
+
+    def _showdown_context_key(self) -> str:
+        active = self._active_hand or {}
+        position = "sb" if active.get("opponent_is_sb") else "bb"
+        if active.get("opponent_pfr"):
+            line = "pfr"
+        elif active.get("opponent_vpip"):
+            line = "passive_vpip"
+        else:
+            line = str(active.get("opponent_preflop_line") or "unobserved")
+        return f"{position}|{line}"
 
     def observe_settlement(self, hand: int, *, hero_earned: int) -> None:
         hand = int(hand)
@@ -475,6 +621,24 @@ class OpponentTracker:
             suits = [card % 4 for card in cards]
             hole_class = "pair" if ranks[0] == ranks[1] else "suited" if suits[0] == suits[1] else "offsuit"
             self.showdown_hole_classes[hole_class] += 1
+            hand_class, bucket = self._showdown_class(cards)
+            self.showdown_range_samples += 1
+            self.showdown_range_buckets[bucket] += 1
+            self.showdown_hand_classes[hand_class] = (
+                self.showdown_hand_classes.get(hand_class, 0) + 1
+            )
+            context_key = self._showdown_context_key()
+            context = self.showdown_contexts.setdefault(
+                context_key,
+                {
+                    "samples": 0,
+                    "buckets": {
+                        name: 0 for name in SHOWDOWN_RANGE_BUCKET_PRIORS
+                    },
+                },
+            )
+            context["samples"] += 1
+            context["buckets"][bucket] += 1
         if self._active_hand is not None and self._active_hand.get("hand") == hand:
             self._active_hand["showdown"] = True
         for summary in reversed(self._recent_hands):
@@ -514,7 +678,8 @@ class OpponentTracker:
             for street in ("flop", "turn", "river")
         )
         postflop_checks = sum(
-            self.street_actions[street]["check"]
+            self.semantic_street_actions[street]["check"]
+            + self.semantic_street_actions[street]["pass"]
             for street in ("flop", "turn", "river")
         )
         allins = sum(counts["allin"] for counts in self.street_actions.values())
@@ -560,8 +725,91 @@ class OpponentTracker:
                     min(OPPONENT_ADAPTATION_CAP, context_confidence * OPPONENT_ADAPTATION_CAP),
                     6,
                 ),
-                "actions": {action: int(counts[action]) for action in self._ACTIONS},
+                # ``actions`` remains the schema-3 raw-wire compatibility view.
+                "actions": {
+                    action: int(counts["raw_actions"][action])
+                    for action in self._ACTIONS
+                },
+                "raw_actions": {
+                    action: int(counts["raw_actions"][action])
+                    for action in self._ACTIONS
+                },
+                "semantic_actions": {
+                    action: int(counts["semantic_actions"][action])
+                    for action in self._SEMANTIC_ACTIONS
+                },
             }
+        showdown_denominator = self.showdown_range_samples + OPPONENT_PRIOR_WEIGHT
+        showdown_confidence = self.showdown_range_samples / showdown_denominator
+        showdown_reach_rate = min(
+            1.0,
+            self.showdown_range_samples / max(1.0, float(self.hands_started)),
+        )
+        # Revealed hands are selected by reaching showdown, so even a large
+        # posterior must not become an uncapped unconditional range estimate.
+        # Reach coverage discounts sparse/selected observations and the shared
+        # adaptation cap bounds their maximum effect on live decisions.
+        showdown_adaptation_weight = min(
+            OPPONENT_ADAPTATION_CAP,
+            OPPONENT_ADAPTATION_CAP * showdown_confidence * showdown_reach_rate,
+        )
+        showdown_bucket_rates = {
+            bucket: round(
+                (self.showdown_range_buckets[bucket] + prior * OPPONENT_PRIOR_WEIGHT)
+                / showdown_denominator,
+                6,
+            )
+            for bucket, prior in SHOWDOWN_RANGE_BUCKET_PRIORS.items()
+        }
+        showdown_tightness = sum(
+            showdown_bucket_rates[bucket]
+            for bucket in ("premium_pair", "ace_broadway", "broadway")
+        )
+        showdown_context_profiles = {}
+        for key, context in sorted(self.showdown_contexts.items()):
+            samples = int(context["samples"])
+            denominator = samples + OPPONENT_PRIOR_WEIGHT
+            showdown_context_profiles[key] = {
+                "samples": samples,
+                "confidence": round(samples / denominator, 6),
+                "adaptation_weight": round(
+                    min(
+                        OPPONENT_ADAPTATION_CAP,
+                        OPPONENT_ADAPTATION_CAP
+                        * (samples / denominator)
+                        * showdown_reach_rate,
+                    ),
+                    6,
+                ),
+                "bucket_rates": {
+                    bucket: round(
+                        (context["buckets"][bucket] + prior * OPPONENT_PRIOR_WEIGHT)
+                        / denominator,
+                        6,
+                    )
+                    for bucket, prior in SHOWDOWN_RANGE_BUCKET_PRIORS.items()
+                },
+            }
+        river_raise_responses = self.facing_raise_by_street["river"]
+        river_allin_responses = self.facing_allin_by_street["river"]
+        river_overcall_opportunities = (
+            river_raise_responses["opportunities"]
+            + river_allin_responses["opportunities"]
+        )
+        river_overcalls = (
+            river_raise_responses["call"] + river_allin_responses["call"]
+        )
+        river_overcall_freq = self._smoothed_rate(
+            river_overcalls,
+            river_overcall_opportunities,
+            0.55,
+        )
+        terminal_response_samples = (
+            self.facing_raise["opportunities"] + self.facing_allin["opportunities"]
+        )
+        terminal_response_confidence = terminal_response_samples / (
+            terminal_response_samples + OPPONENT_PRIOR_WEIGHT
+        )
         return {
             "schema_version": OPPONENT_TRACKER_SCHEMA_VERSION,
             "hands_started": self.hands_started,
@@ -586,7 +834,60 @@ class OpponentTracker:
                 "raises": self.raise_total_count,
             },
             "contexts": context_profiles,
+            "raw_street_actions": {
+                street: dict(counts) for street, counts in self.street_actions.items()
+            },
+            "semantic_street_actions": {
+                street: dict(counts)
+                for street, counts in self.semantic_street_actions.items()
+            },
+            "terminal_response": {
+                "samples": terminal_response_samples,
+                "confidence": round(terminal_response_confidence, 6),
+                "adaptation_weight": round(
+                    min(
+                        OPPONENT_ADAPTATION_CAP,
+                        terminal_response_confidence * OPPONENT_ADAPTATION_CAP,
+                    ),
+                    6,
+                ),
+                "fold_to_raise": round(fold_to_raise, 6),
+                "fold_to_jam": round(fold_to_allin, 6),
+                "river_overcall": round(river_overcall_freq, 6),
+                "facing_raise": dict(self.facing_raise),
+                "facing_allin": dict(self.facing_allin),
+                "facing_raise_by_street": {
+                    street: dict(counts)
+                    for street, counts in self.facing_raise_by_street.items()
+                },
+                "facing_allin_by_street": {
+                    street: dict(counts)
+                    for street, counts in self.facing_allin_by_street.items()
+                },
+                "contexts": {
+                    key: profile
+                    for key, profile in context_profiles.items()
+                    if "|raise|" in key or "|allin|" in key
+                },
+            },
             "showdown_hole_classes": dict(self.showdown_hole_classes),
+            "showdown_range": {
+                "schema_version": SHOWDOWN_RANGE_SCHEMA_VERSION,
+                "samples": self.showdown_range_samples,
+                "confidence": round(showdown_confidence, 6),
+                "adaptation_weight": round(showdown_adaptation_weight, 6),
+                "showdown_reach_rate": round(showdown_reach_rate, 6),
+                "selection_scope": "reached_showdown_only",
+                "selection_bias_guard": "reach_rate_discount_and_capped_influence",
+                "prior_source": SHOWDOWN_RANGE_PRIOR_SOURCE,
+                "bucket_combo_counts": dict(SHOWDOWN_RANGE_BUCKET_COMBOS),
+                "bucket_priors": dict(SHOWDOWN_RANGE_BUCKET_PRIORS),
+                "bucket_counts": dict(self.showdown_range_buckets),
+                "bucket_rates": showdown_bucket_rates,
+                "tightness": round(showdown_tightness, 6),
+                "class_counts": dict(sorted(self.showdown_hand_classes.items())),
+                "contexts": showdown_context_profiles,
+            },
             "average_raise_total": round(
                 self.raise_total_sum / self.raise_total_count,
                 3,
@@ -606,6 +907,15 @@ class OpponentTracker:
             "postflop_check_rate": round(
                 self._smoothed_rate(postflop_checks, postflop_actions, 0.42), 6
             ),
+            "postflop_checkback_rate": round(
+                self._smoothed_rate(
+                    self.facing_check["pass"],
+                    self.facing_check["opportunities"],
+                    0.50,
+                ),
+                6,
+            ),
+            "postflop_checkback_samples": self.facing_check["opportunities"],
             "fold_to_raise": round(fold_to_raise, 6),
             "aggression": round(
                 self._smoothed_rate(aggressive, self.total_actions, 0.32), 6
@@ -621,8 +931,8 @@ class OpponentTracker:
             "avg_turn_raise_bb": round(avg_turn_raise, 3),
             "avg_river_raise_bb": round(avg_river_raise, 3),
             "barrel_freq": 0.45,
-            "river_overcall_freq": 0.55,
-            "river_overcall_samples": 0,
+            "river_overcall_freq": round(river_overcall_freq, 6),
+            "river_overcall_samples": river_overcall_opportunities,
             "fold_to_jam_rate": round(fold_to_allin, 6),
             "fold_to_jam_samples": self.facing_allin["opportunities"],
             "betsize_polarity": round(
@@ -666,6 +976,18 @@ class OpponentTracker:
             "river_polarity": round(street_polarity("river"), 6),
             "street_actions": {
                 street: dict(counts) for street, counts in self.street_actions.items()
+            },
+            "facing_raise_by_street": {
+                street: dict(counts)
+                for street, counts in self.facing_raise_by_street.items()
+            },
+            "facing_allin_by_street": {
+                street: dict(counts)
+                for street, counts in self.facing_allin_by_street.items()
+            },
+            "facing_check_by_street": {
+                street: dict(counts)
+                for street, counts in self.facing_check_by_street.items()
             },
             "match_result": {
                 "hero_wins": self.hero_wins,
@@ -715,6 +1037,13 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
     """Persistent, killable strategy runtime. It never owns the TCP socket."""
     started = time.monotonic()
     try:
+        if hasattr(os, "setsid"):
+            # Own a process group so any candidate-created CPU workers inherit a
+            # tree the socket process can terminate atomically at the deadline.
+            try:
+                os.setsid()
+            except OSError:
+                pass
         if random_seed is not None:
             random.seed(int(random_seed))
         if bot_dir not in sys.path:
@@ -740,6 +1069,7 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
             "has_iterator": callable(iter_refinements),
             "has_refine_action": callable(refine_action),
             "random_seed": random_seed,
+            "process_group": os.getpgrp() if hasattr(os, "getpgrp") else None,
         })
     except BaseException as exc:
         try:
@@ -768,11 +1098,17 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
         current_view = tuple(job.get("current_request_view") or (req,))
         deadline = float(job.get("deadline_monotonic") or time.monotonic())
         fallback = int(job.get("fallback_action") or 0)
+        raw_candidate_limit = job.get("max_refinement_candidates")
+        candidate_limit = (
+            None
+            if raw_candidate_limit is None
+            else max(0, min(MAX_REFINEMENT_MESSAGES, int(raw_candidate_limit)))
+        )
         sequence = 0
         try:
             state = reconstruct_state(req)
 
-            def publish(phase: str, raw_action, metadata=None) -> int:
+            def publish(phase: str, raw_action, metadata=None, trusted=None) -> int:
                 nonlocal sequence
                 sanitized = int(sanitize_action(raw_action, state, int(req.get("my_chips", 0))))
                 sequence += 1
@@ -784,6 +1120,7 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
                     "action": sanitized,
                     "published_monotonic": time.monotonic(),
                     "metadata": dict(metadata or {}),
+                    "trusted": dict(trusted or {}),
                 })
                 return sanitized
 
@@ -801,27 +1138,92 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
                     {"source": "legacy_get_action"},
                 )
 
-            if callable(iter_refinements) and time.monotonic() < deadline:
+            refinement_started_cpu = time.process_time_ns()
+            refinement_started_wall = time.monotonic_ns()
+            iterator_steps = 0
+            iterator_exhausted = False
+            termination_reason = "not_available"
+            if (
+                callable(iter_refinements)
+                and candidate_limit != 0
+                and time.monotonic() < deadline
+            ):
                 iterator = iter_refinements(req, current_view, baseline, deadline)
-                for raw_candidate in iterator:
-                    if sequence >= MAX_REFINEMENT_MESSAGES or time.monotonic() >= deadline:
+                termination_reason = "deadline"
+                while True:
+                    if iterator_steps >= MAX_REFINEMENT_MESSAGES:
+                        termination_reason = "message_limit"
                         break
+                    if candidate_limit is not None and iterator_steps >= candidate_limit:
+                        termination_reason = "probe_candidate_limit"
+                        break
+                    if time.monotonic() >= deadline:
+                        termination_reason = "deadline"
+                        break
+                    try:
+                        raw_candidate = next(iterator)
+                    except StopIteration:
+                        iterator_exhausted = True
+                        termination_reason = "iterator_exhausted"
+                        break
+                    iterator_steps += 1
                     candidate, metadata = _strategy_worker_candidate(raw_candidate)
-                    baseline = publish("refinement", candidate, metadata)
-                    if metadata.get("complete") is True:
-                        break
-            elif callable(refine_action) and time.monotonic() < deadline:
+                    baseline = publish(
+                        "refinement",
+                        candidate,
+                        metadata,
+                        {
+                            "iterator_step": iterator_steps,
+                            "process_cpu_ms": round(
+                                (time.process_time_ns() - refinement_started_cpu) / 1_000_000.0,
+                                6,
+                            ),
+                            "elapsed_ms": round(
+                                (time.monotonic_ns() - refinement_started_wall) / 1_000_000.0,
+                                6,
+                            ),
+                        },
+                    )
+            elif callable(refine_action) and candidate_limit != 0 and time.monotonic() < deadline:
+                iterator_steps = 1
+                termination_reason = "one_shot_refine_action"
                 baseline = publish(
                     "refinement",
                     refine_action(req, current_view, baseline, deadline),
                     {"source": "refine_action"},
+                    {
+                        "iterator_step": iterator_steps,
+                        "process_cpu_ms": round(
+                            (time.process_time_ns() - refinement_started_cpu) / 1_000_000.0,
+                            6,
+                        ),
+                        "elapsed_ms": round(
+                            (time.monotonic_ns() - refinement_started_wall) / 1_000_000.0,
+                            6,
+                        ),
+                    },
                 )
+            elif candidate_limit == 0:
+                termination_reason = "probe_candidate_limit"
             connection.send({
                 "kind": "done",
                 "decision_id": decision_id,
                 "sequence": sequence,
                 "action": baseline,
                 "completed_monotonic": time.monotonic(),
+                "refinement_stats": {
+                    "iterator_steps": iterator_steps,
+                    "iterator_exhausted": iterator_exhausted,
+                    "termination_reason": termination_reason,
+                    "process_cpu_ms": round(
+                        (time.process_time_ns() - refinement_started_cpu) / 1_000_000.0,
+                        6,
+                    ),
+                    "elapsed_ms": round(
+                        (time.monotonic_ns() - refinement_started_wall) / 1_000_000.0,
+                        6,
+                    ),
+                },
             })
         except BaseException as exc:
             try:
@@ -856,11 +1258,14 @@ class NativeNationalBot:
         except (KeyError, TypeError, ValueError):
             self._strategy_base_seed = None
         self._strategy_worker_seed = None
+        self._strategy_max_refinement_candidates = None
         self._decision_serial = 0
         self._retired_strategy_processes = []
+        self._unconfirmed_strategy_tree_pids = set()
         self._last_stopped_worker_pid = None
         self._last_stopped_worker_exitcode = None
-        self._last_stopped_worker_termination_requested = False
+        self._last_stopped_worker_tree_termination_requested = False
+        self._last_stopped_worker_terminated = False
 
     def _reset_match(self) -> None:
         self._buf = ""
@@ -897,7 +1302,7 @@ class NativeNationalBot:
 
     def _responding_to_check(self) -> bool:
         round_num = self._round_num()
-        return (
+        return bool(
             self._my_action_count == 0
             and self._history
             and self._history[-1].get("round") == round_num
@@ -919,6 +1324,188 @@ class NativeNationalBot:
             "opponent_allin": self._opponent_chips == 0 and self._opponent_stage_bet > 0,
         }
 
+    def _actor_label(self, player_id: int | None) -> str:
+        if player_id == self._my_id:
+            return "hero"
+        if player_id == self._opponent_id:
+            return "opponent"
+        return "unknown"
+
+    def _street_records(self, round_num: int) -> list[dict]:
+        return [
+            record for record in self._history
+            if record.get("round") == round_num
+        ]
+
+    def _semantic_street_summary(self, round_num: int) -> dict:
+        records = self._street_records(round_num)
+        actions = []
+        saw_opening_check = False
+        for record in records:
+            action_type = str(record.get("action_type") or "unknown")
+            committed = int(record.get("committed", 0) or 0)
+            semantic_action = action_type
+            if action_type == "check":
+                saw_opening_check = True
+                semantic_action = "check"
+            elif action_type == "call" and committed == 0 and saw_opening_check:
+                semantic_action = "pass"
+            elif action_type == "call":
+                semantic_action = "match"
+            actions.append({
+                "actor": self._actor_label(record.get("player_id")),
+                "action": action_type,
+                "semantic_action": semantic_action,
+                "committed": committed,
+                "inferred": bool(record.get("inferred")),
+            })
+        checked_through = bool(
+            len(actions) >= 2
+            and actions[0]["semantic_action"] == "check"
+            and actions[-1]["semantic_action"] == "pass"
+            and not any(
+                item["action"] in {"raise", "allin"} for item in actions
+            )
+        )
+        last = actions[-1] if actions else None
+        return {
+            "round": round_num,
+            "actions": actions,
+            "checked_through": checked_through,
+            "closed_by": last["actor"] if last else None,
+            "opponent_checked_back": bool(
+                checked_through
+                and last
+                and last["actor"] == "opponent"
+            ),
+            "hero_checked_back": bool(
+                checked_through
+                and last
+                and last["actor"] == "hero"
+            ),
+        }
+
+    def _preflop_line(self) -> tuple[str, str]:
+        records = self._street_records(0)
+        raises = [
+            record for record in records
+            if record.get("action_type") in {"raise", "allin"}
+        ]
+        aggressor = (
+            self._actor_label(raises[-1].get("player_id"))
+            if raises else "none"
+        )
+        opponent_raised = any(
+            record.get("player_id") == self._opponent_id
+            and record.get("action_type") in {"raise", "allin"}
+            for record in records
+        )
+        hero_raised = any(
+            record.get("player_id") == self._my_id
+            and record.get("action_type") in {"raise", "allin"}
+            for record in records
+        )
+        first_raise_index = next(
+            (
+                index for index, record in enumerate(records)
+                if record.get("action_type") in {"raise", "allin"}
+            ),
+            len(records),
+        )
+        opponent_limped = any(
+            record.get("player_id") == self._opponent_id
+            and record.get("action_type") == "call"
+            for record in records[:first_raise_index]
+        )
+        hero_limped = any(
+            record.get("player_id") == self._my_id
+            and record.get("action_type") == "call"
+            for record in records[:first_raise_index]
+        )
+        if not self._is_sb:
+            if opponent_raised:
+                spot = "bb_vs_raise"
+            elif opponent_limped:
+                spot = "bb_vs_limp"
+            else:
+                spot = "bb_option"
+        elif opponent_raised:
+            spot = "sb_vs_reraise"
+        elif hero_raised:
+            spot = "sb_open"
+        elif hero_limped:
+            spot = "sb_limp"
+        else:
+            spot = "sb_open"
+        return aggressor, spot
+
+    def _hand_runtime(self) -> dict:
+        """Return wrapper-owned, cross-street semantics for strategy consumers.
+
+        The socket state machine is the only authority for these fields.  In
+        particular, strategy modules must not rediscover the preflop aggressor
+        or checked-through streets from a current-street-only request view.
+        """
+        round_num = self._round_num()
+        current = self._semantic_street_summary(round_num)
+        previous = (
+            self._semantic_street_summary(round_num - 1)
+            if round_num > 0 else None
+        )
+        preflop_aggressor, preflop_spot = self._preflop_line()
+        street_open = not current["actions"]
+        hero_position = "sb" if self._is_sb else "bb"
+        can_donk = bool(
+            round_num == 1
+            and street_open
+            and hero_position == "bb"
+            and preflop_aggressor == "opponent"
+        )
+        can_delayed_probe = bool(
+            round_num in {2, 3}
+            and street_open
+            and hero_position == "bb"
+            and preflop_aggressor == "opponent"
+            and previous
+            and previous["opponent_checked_back"]
+        )
+        to_call = max(0, self._opponent_stage_bet - self._my_stage_bet)
+        effective_stack = min(self._my_chips, self._opponent_chips)
+        line_tags = []
+        if can_donk:
+            line_tags.append("donk_opportunity")
+        if can_delayed_probe:
+            line_tags.append("delayed_probe_opportunity")
+        if previous and previous["checked_through"]:
+            line_tags.append("previous_street_checked_through")
+        if self._responding_to_check():
+            line_tags.append("responding_to_check")
+        return {
+            "schema_version": HAND_RUNTIME_SCHEMA_VERSION,
+            "street": self._stage,
+            "round": round_num,
+            "hero_position": hero_position,
+            "hero_in_position_postflop": self._is_sb,
+            "preflop_aggressor": preflop_aggressor,
+            "preflop_spot": preflop_spot,
+            "street_open": street_open,
+            "responding_to_check": self._responding_to_check(),
+            "can_donk": can_donk,
+            "can_delayed_probe": can_delayed_probe,
+            "line_tags": line_tags,
+            "current_street": current,
+            "previous_street": previous,
+            "pot": self._pot,
+            "my_chips": self._my_chips,
+            "opponent_chips": self._opponent_chips,
+            "effective_stack": effective_stack,
+            "my_stage_bet": self._my_stage_bet,
+            "opponent_stage_bet": self._opponent_stage_bet,
+            "to_call": to_call,
+            "spr": round(effective_stack / max(1.0, float(self._pot)), 6),
+            "pot_odds": round(to_call / max(1.0, float(self._pot + to_call)), 6),
+        }
+
     def _request(self) -> dict:
         req = {
             "num_players": 2,
@@ -937,6 +1524,7 @@ class NativeNationalBot:
             # showdown list to decision code and reintroduce batch rescans.
             "opponent_showdowns": [],
             "opponent_runtime": self._opponent_tracker.snapshot(),
+            "hand_runtime": self._hand_runtime(),
             **self._betting_snapshot(),
         }
         req["remaining_hands"] = max(1, TOTAL_HANDS - int(req["hand"]))
@@ -959,29 +1547,89 @@ class NativeNationalBot:
     def _strategy_worker_alive(self) -> bool:
         return bool(self._strategy_process is not None and self._strategy_process.is_alive())
 
+    @staticmethod
+    def _terminate_worker_tree(process, *, force: bool) -> bool:
+        """Request whole-tree termination, returning whether that request landed.
+
+        A parent-only ``Process.kill`` fallback is deliberately not reported as
+        whole-tree success: candidate-created children could otherwise survive
+        while the runtime advertises a clean kill.  Callers separately verify
+        that the multiprocessing worker itself has actually exited.
+        """
+        pid = getattr(process, "pid", None)
+        tree_requested = False
+        if pid and os.name == "posix" and hasattr(os, "killpg"):
+            try:
+                os.killpg(pid, signal.SIGKILL if force else signal.SIGTERM)
+                tree_requested = True
+            except ProcessLookupError:
+                # No process remains in that process group: cleanup is already
+                # complete and replacement is safe.
+                return True
+            except (PermissionError, OSError):
+                pass
+        elif pid and os.name == "nt":
+            try:
+                killer = subprocess.Popen(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+                try:
+                    tree_requested = (
+                        killer.wait(timeout=STRATEGY_WORKER_KILL_GRACE_SEC) == 0
+                    )
+                except subprocess.TimeoutExpired:
+                    try:
+                        killer.kill()
+                        killer.wait(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+            except OSError:
+                pass
+        if not tree_requested:
+            try:
+                if force and hasattr(process, "kill"):
+                    process.kill()
+                else:
+                    process.terminate()
+            except (AssertionError, OSError, ValueError):
+                pass
+        return tree_requested
+
     def _reap_retired_strategy_workers(self, *, wait: bool) -> None:
         """Reap workers terminated on a decision deadline at a safe point."""
         remaining = []
         for process in self._retired_strategy_processes:
+            pid = getattr(process, "pid", None)
             try:
-                process.join(timeout=STRATEGY_WORKER_STOP_GRACE_SEC if wait else 0)
-                if process.is_alive() and wait:
-                    process.terminate()
+                process.join(timeout=0)
+                if wait:
+                    tree_confirmed = self._terminate_worker_tree(process, force=True)
+                    if tree_confirmed and pid is not None:
+                        self._unconfirmed_strategy_tree_pids.discard(pid)
+                    elif pid is not None:
+                        self._unconfirmed_strategy_tree_pids.add(pid)
                     process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
-                if process.is_alive() and wait and hasattr(process, "kill"):
-                    process.kill()
-                    process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
-                if process.is_alive():
+                if (
+                    process.is_alive()
+                    or pid in self._unconfirmed_strategy_tree_pids
+                ):
                     remaining.append(process)
             except (AssertionError, OSError, ValueError):
-                if process.is_alive():
+                if pid is not None:
+                    self._unconfirmed_strategy_tree_pids.add(pid)
+                if process.is_alive() or pid in self._unconfirmed_strategy_tree_pids:
                     remaining.append(process)
         self._retired_strategy_processes = remaining
 
     def _stop_strategy_worker(self, reason: str, *, wait: bool = True) -> None:
         process = self._strategy_process
         connection = self._strategy_connection
-        termination_requested = False
+        tree_termination_requested = False
+        terminated = process is None
         if connection is not None and wait:
             try:
                 connection.send({"kind": "stop", "reason": reason})
@@ -990,35 +1638,52 @@ class NativeNationalBot:
         if process is not None:
             stopped_pid = process.pid
             if wait:
-                process.join(timeout=STRATEGY_WORKER_STOP_GRACE_SEC)
-                if process.is_alive():
-                    process.terminate()
-                    termination_requested = True
-                    process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
-                if process.is_alive() and hasattr(process, "kill"):
-                    process.kill()
-                    termination_requested = True
-                    process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
+                # A polite worker exit is insufficient when candidate code may
+                # have spawned a fixed CPU pool or subprocess. Always target the
+                # process group/tree while the parent PID is still available;
+                # otherwise a clean parent return could orphan live compute.
+                tree_termination_requested = self._terminate_worker_tree(
+                    process,
+                    force=True,
+                )
+                process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
             else:
                 # The socket deadline owns this path. Request termination but
-                # never spend the remaining send budget waiting for process
-                # teardown; reap it before a later decision or at client close.
+                # use the reserved hard-deadline margin for one bounded join.
+                # SIGKILL/taskkill cannot be ignored, unlike the old SIGTERM-only
+                # path that could accumulate one live CPU worker per decision.
                 try:
                     if process.is_alive():
-                        process.terminate()
-                        termination_requested = True
-                    process.join(timeout=0)
+                        tree_termination_requested = self._terminate_worker_tree(
+                            process,
+                            force=True,
+                        )
+                    process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
                 except (AssertionError, OSError, ValueError):
-                    termination_requested = True
+                    tree_termination_requested = False
                 if process.is_alive():
                     self._retired_strategy_processes.append(process)
+            terminated = not process.is_alive()
+            if tree_termination_requested:
+                self._unconfirmed_strategy_tree_pids.discard(stopped_pid)
+            else:
+                self._unconfirmed_strategy_tree_pids.add(stopped_pid)
+            if (
+                process.is_alive()
+                or stopped_pid in self._unconfirmed_strategy_tree_pids
+            ) and process not in self._retired_strategy_processes:
+                self._retired_strategy_processes.append(process)
             _log(
                 f"DECISION_WORKER stop reason={reason} pid={process.pid} "
-                f"alive={process.is_alive()} exitcode={process.exitcode} wait={wait}"
+                f"alive={process.is_alive()} exitcode={process.exitcode} wait={wait} "
+                f"tree_request={tree_termination_requested} terminated={terminated}"
             )
             self._last_stopped_worker_pid = stopped_pid
             self._last_stopped_worker_exitcode = process.exitcode
-            self._last_stopped_worker_termination_requested = termination_requested
+            self._last_stopped_worker_tree_termination_requested = (
+                tree_termination_requested
+            )
+            self._last_stopped_worker_terminated = terminated
         if connection is not None:
             try:
                 connection.close()
@@ -1028,10 +1693,23 @@ class NativeNationalBot:
         self._strategy_connection = None
 
     def _ensure_strategy_worker(self) -> bool:
-        self._reap_retired_strategy_workers(wait=False)
+        # Never replace a timed-out worker until the old process is confirmed
+        # dead.  This is fail-closed on platforms where whole-tree termination
+        # cannot be confirmed and prevents silent CPU oversubscription.
+        self._reap_retired_strategy_workers(wait=True)
+        if self._retired_strategy_processes or self._unconfirmed_strategy_tree_pids:
+            _log(
+                "DECISION_WORKER replacement_blocked "
+                f"retired={len(self._retired_strategy_processes)} "
+                f"unconfirmed_trees={len(self._unconfirmed_strategy_tree_pids)}"
+            )
+            return False
         if self._strategy_worker_alive() and self._strategy_connection is not None:
             return True
         self._stop_strategy_worker("replace_dead_worker")
+        if self._retired_strategy_processes or self._unconfirmed_strategy_tree_pids:
+            _log("DECISION_WORKER replacement_blocked_after_dead_worker_cleanup")
+            return False
         parent_connection, child_connection = self._mp_context.Pipe(duplex=True)
         next_generation = self._strategy_worker_generation + 1
         worker_seed = (
@@ -1043,7 +1721,10 @@ class NativeNationalBot:
             target=_strategy_worker_main,
             args=(child_connection, BOT_DIR, worker_seed),
             name=f"national-strategy-{next_generation}",
-            daemon=True,
+            # Non-daemon is intentional: strategy may own a bounded fixed CPU
+            # pool. The socket owner enforces the deadline on its whole process
+            # group/tree rather than allowing descendants to escape.
+            daemon=False,
         )
         try:
             process.start()
@@ -1094,7 +1775,15 @@ class NativeNationalBot:
             "socket_fallback_ready_ms": round((time.monotonic() - started) * 1000.0, 3),
             "baseline_published_ms": None,
             "baseline_target_met": False,
+            "strategy_baseline_action": None,
             "refinement_messages": 0,
+            "refinement_action_changes": 0,
+            "refinement_progress": [],
+            "trusted_refinement_steps": 0,
+            "trusted_refinement_cpu_ms": 0.0,
+            "trusted_refinement_elapsed_ms": 0.0,
+            "refinement_iterator_exhausted": False,
+            "refinement_termination_reason": None,
             "latest_sequence": 0,
             "timed_out": False,
             "worker_terminated": False,
@@ -1128,6 +1817,7 @@ class NativeNationalBot:
                 "current_request_view": (req,),
                 "fallback_action": baseline,
                 "deadline_monotonic": refinement_deadline,
+                "max_refinement_candidates": self._strategy_max_refinement_candidates,
             })
         except (BrokenPipeError, EOFError, OSError) as exc:
             _log(f"DECIDE worker_send_error={type(exc).__name__}:{str(exc)[:160]}")
@@ -1153,10 +1843,8 @@ class NativeNationalBot:
                 decision_metrics["worker_terminated"] = (
                     timed_out_pid is not None
                     and self._last_stopped_worker_pid == timed_out_pid
-                    and (
-                        self._last_stopped_worker_exitcode is not None
-                        or self._last_stopped_worker_termination_requested
-                    )
+                    and self._last_stopped_worker_terminated
+                    and self._last_stopped_worker_tree_termination_requested
                 )
                 self._last_decision_source = "refinement_deadline_latest_safe"
                 _log(
@@ -1205,8 +1893,21 @@ class NativeNationalBot:
                 continue
             result_at = time.monotonic()
             if result_at >= hard_deadline:
+                timed_out_pid = self._strategy_process.pid if self._strategy_process else None
                 self._stop_strategy_worker("hard_deadline", wait=False)
+                decision_metrics["timed_out"] = True
+                decision_metrics["worker_terminated"] = (
+                    timed_out_pid is not None
+                    and self._last_stopped_worker_pid == timed_out_pid
+                    and self._last_stopped_worker_terminated
+                    and self._last_stopped_worker_tree_termination_requested
+                )
                 self._last_decision_source = "hard_deadline_latest_safe"
+                _log(
+                    f"DECIDE hard_deadline decision_id={decision_id} "
+                    f"latest_safe={baseline} sequence={latest_sequence} "
+                    f"hard_deadline={self._decision_hard_deadline_sec:.3f}s"
+                )
                 return baseline
             if kind == "candidate":
                 sequence = int(message.get("sequence") or 0)
@@ -1214,12 +1915,15 @@ class NativeNationalBot:
                     continue
                 latest_sequence = sequence
                 decision_metrics["latest_sequence"] = sequence
+                previous_action = baseline
                 baseline = self._sanitize_worker_action(message.get("action"), baseline)
                 phase = str(message.get("phase") or "refinement")
                 req["decision_baseline_action"] = baseline
                 elapsed = result_at - started
                 metadata = message.get("metadata") or {}
+                trusted = message.get("trusted") or {}
                 if phase == "baseline":
+                    decision_metrics["strategy_baseline_action"] = baseline
                     decision_metrics["baseline_published_ms"] = round(elapsed * 1000.0, 3)
                     decision_metrics["baseline_target_met"] = (
                         elapsed <= self._decision_baseline_target_sec
@@ -1232,18 +1936,69 @@ class NativeNationalBot:
                     )
                 else:
                     decision_metrics["refinement_messages"] += 1
+                    if baseline != previous_action:
+                        decision_metrics["refinement_action_changes"] += 1
+                    if len(decision_metrics["refinement_progress"]) < 64:
+                        decision_metrics["refinement_progress"].append({
+                            "sequence": sequence,
+                            "action": baseline,
+                            "reported_sample_count": metadata.get("sample_count"),
+                            "reported_confidence": metadata.get("confidence"),
+                            "reported_complete": metadata.get("complete"),
+                            "trusted_iterator_step": trusted.get("iterator_step"),
+                            "trusted_process_cpu_ms": trusted.get("process_cpu_ms"),
+                            "trusted_elapsed_ms": trusted.get("elapsed_ms"),
+                        })
+                    decision_metrics["trusted_refinement_steps"] = max(
+                        int(decision_metrics["trusted_refinement_steps"]),
+                        int(trusted.get("iterator_step") or 0),
+                    )
+                    decision_metrics["trusted_refinement_cpu_ms"] = max(
+                        float(decision_metrics["trusted_refinement_cpu_ms"]),
+                        float(trusted.get("process_cpu_ms") or 0.0),
+                    )
+                    decision_metrics["trusted_refinement_elapsed_ms"] = max(
+                        float(decision_metrics["trusted_refinement_elapsed_ms"]),
+                        float(trusted.get("elapsed_ms") or 0.0),
+                    )
                     self._last_decision_source = "incremental_refinement"
                     _log(
                         f"DECIDE refinement decision_id={decision_id} sequence={sequence} "
                         f"action={baseline} elapsed={elapsed:.3f}s "
-                        f"samples={metadata.get('sample_count')} confidence={metadata.get('confidence')}"
+                        f"trusted_step={trusted.get('iterator_step')} "
+                        f"trusted_cpu_ms={trusted.get('process_cpu_ms')} "
+                        f"reported_samples={metadata.get('sample_count')} "
+                        f"reported_confidence={metadata.get('confidence')}"
                     )
                 continue
             if kind == "done":
                 decision_metrics["completed"] = True
+                refinement_stats = message.get("refinement_stats") or {}
+                decision_metrics["trusted_refinement_steps"] = max(
+                    int(decision_metrics["trusted_refinement_steps"]),
+                    int(refinement_stats.get("iterator_steps") or 0),
+                )
+                decision_metrics["trusted_refinement_cpu_ms"] = max(
+                    float(decision_metrics["trusted_refinement_cpu_ms"]),
+                    float(refinement_stats.get("process_cpu_ms") or 0.0),
+                )
+                decision_metrics["trusted_refinement_elapsed_ms"] = max(
+                    float(decision_metrics["trusted_refinement_elapsed_ms"]),
+                    float(refinement_stats.get("elapsed_ms") or 0.0),
+                )
+                decision_metrics["refinement_iterator_exhausted"] = bool(
+                    refinement_stats.get("iterator_exhausted")
+                )
+                decision_metrics["refinement_termination_reason"] = str(
+                    refinement_stats.get("termination_reason") or ""
+                )
                 _log(
                     f"DECIDE worker_done decision_id={decision_id} sequence={latest_sequence} "
-                    f"latest_safe={baseline} elapsed={result_at - started:.3f}s"
+                    f"latest_safe={baseline} elapsed={result_at - started:.3f}s "
+                    f"trusted_steps={decision_metrics['trusted_refinement_steps']} "
+                    f"trusted_cpu_ms={decision_metrics['trusted_refinement_cpu_ms']} "
+                    f"iterator_exhausted={decision_metrics['refinement_iterator_exhausted']} "
+                    f"termination={decision_metrics['refinement_termination_reason']}"
                 )
                 return baseline
             if kind == "decision_error":
@@ -1306,6 +2061,7 @@ class NativeNationalBot:
             self._stage,
             action_type,
             amount=entry.get("stage_bet", amount),
+            committed=committed,
         )
 
     def _infer_suppressed_terminal_opponent_action(self, boundary: str) -> str | None:
@@ -1524,6 +2280,11 @@ class NativeNationalBot:
             self._ensure_strategy_worker()
             return
         if line.startswith("preflop"):
+            # Normal hands settle before the next preflop token.  Keep this
+            # boundary defensive and idempotent so an already relayed/repaired
+            # closer is never duplicated, while no prior-hand state is cleared
+            # before a boundary-proven omitted call/check has been recorded.
+            self._infer_suppressed_terminal_opponent_action("hand_start")
             parts = line.split("|", 2)
             blind = parts[1]
             self._is_sb = blind == "SMALLBLIND"
@@ -1996,6 +2757,11 @@ def check_native_contract(
             "decision_id",
             "process.terminate()",
             "process.kill()",
+            "daemon=False",
+            "os.killpg",
+            '"taskkill"',
+            "trusted_refinement_steps",
+            "reported_sample_count",
             "def _reap_retired_strategy_workers",
             '_stop_strategy_worker("decision_deadline", wait=False)',
             "def _socket_safe_fallback_action",
@@ -2236,9 +3002,16 @@ async def _run_tcp_server_with_processes(
                 else:
                     base_environment[str(key)] = str(value)
             action_delay = base_environment.get("POK_NATIVE_LOCAL_ACTION_DELAY", "0")
+            default_local_hard_deadline = max(
+                0.05,
+                min(
+                    LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
+                    action_timeout - 0.25,
+                ),
+            )
             local_hard_deadline_raw = base_environment.get(
                 "POK_NATIVE_DECISION_HARD_DEADLINE_SEC",
-                str(max(0.05, min(55.0, action_timeout - 0.25))),
+                str(default_local_hard_deadline),
             )
             try:
                 local_hard_deadline_value = max(
@@ -2246,15 +3019,52 @@ async def _run_tcp_server_with_processes(
                     min(55.0, float(local_hard_deadline_raw)),
                 )
             except (TypeError, ValueError):
-                local_hard_deadline_value = max(0.05, min(55.0, action_timeout - 0.25))
-            refinement_budget = base_environment.get(
+                local_hard_deadline_value = default_local_hard_deadline
+            default_refinement_budget = max(
+                0.04,
+                min(
+                    LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
+                    local_hard_deadline_value - 0.10,
+                ),
+            )
+            refinement_budget_raw = base_environment.get(
                 "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC",
-                str(max(0.04, local_hard_deadline_value - 0.10)),
+                str(default_refinement_budget),
             )
-            baseline_target = base_environment.get(
+            refinement_ceiling = max(
+                0.04,
+                local_hard_deadline_value
+                - min(0.10, local_hard_deadline_value * 0.10),
+            )
+            try:
+                refinement_budget = max(
+                    0.04,
+                    min(float(refinement_budget_raw), refinement_ceiling),
+                )
+            except (TypeError, ValueError):
+                refinement_budget = min(
+                    default_refinement_budget,
+                    refinement_ceiling,
+                )
+            default_baseline_target = min(
+                LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
+                max(0.01, local_hard_deadline_value * 0.25),
+            )
+            baseline_target_raw = base_environment.get(
                 "POK_NATIVE_DECISION_BASELINE_TARGET_SEC",
-                str(min(0.25, max(0.01, local_hard_deadline_value * 0.25))),
+                str(default_baseline_target),
             )
+            baseline_ceiling = max(
+                0.01,
+                refinement_budget - min(0.05, refinement_budget * 0.10),
+            )
+            try:
+                baseline_target = max(
+                    0.01,
+                    min(float(baseline_target_raw), baseline_ceiling),
+                )
+            except (TypeError, ValueError):
+                baseline_target = min(default_baseline_target, baseline_ceiling)
             seed = _native_bot_seed(bot_seed_base, idx)
             bot_seeds[label] = seed
             log_path = None
@@ -2269,8 +3079,8 @@ async def _run_tcp_server_with_processes(
                 port=int(port),
                 action_delay=float(action_delay),
                 hard_deadline=local_hard_deadline_value,
-                refinement_budget=float(refinement_budget),
-                baseline_target=float(baseline_target),
+                refinement_budget=refinement_budget,
+                baseline_target=baseline_target,
                 decision_log=log_path,
                 seed=seed,
                 base_environment=base_environment,
@@ -2982,6 +3792,17 @@ async def run_native_precommit(
                 require_native_b=True,
                 deck_seed_base=seed,
                 bot_seed_base=bot_seed,
+                timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+                bot_a_env_overrides={
+                    "POK_NATIVE_DECISION_HARD_DEADLINE_SEC": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
+                    "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
+                    "POK_NATIVE_DECISION_BASELINE_TARGET_SEC": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
+                },
+                bot_b_env_overrides={
+                    "POK_NATIVE_DECISION_HARD_DEADLINE_SEC": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
+                    "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
+                    "POK_NATIVE_DECISION_BASELINE_TARGET_SEC": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
+                },
             )
             net = int(result.get("net_chips_a", 0) or 0)
             hands_played = int(result.get("hands_played", 0) or 0)
@@ -3018,6 +3839,13 @@ async def run_native_precommit(
                 "passed_compliance": compliance_passed,
                 "sample_valid": sample_valid,
                 "strength_admitted": strength_admitted,
+                "local_runtime_budget": {
+                    "hard_deadline_sec": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
+                    "refinement_budget_sec": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
+                    "baseline_target_sec": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
+                    "match_timeout_sec": LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+                    "scope": "local_strength_only",
+                },
                 "raw": result,
             })
         wins = sum(1 for value in samples if value > 0)

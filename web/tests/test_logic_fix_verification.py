@@ -130,24 +130,76 @@ def get_state(last_raise_to, my_round_bet):
     min_raise_action = max(0, 2 * last_raise_to + 1 - my_round_bet)
     return min_raise_action
 '''
-    STATE_UNFIXED = '''
+    STATE_EXACT_BOUNDARY = '''
 def get_state(last_raise_to, my_round_bet):
     min_raise_action = max(0, 2 * last_raise_to - my_round_bet)
     return min_raise_action
 '''
+    STATE_BELOW_BOUNDARY = '''
+def get_state(last_raise_to, my_round_bet):
+    min_raise_action = max(0, 2 * last_raise_to - 1 - my_round_bet)
+    return min_raise_action
+'''
+    STATE_RENAMED_EXACT_BOUNDARY = '''
+def get_state(judge_round_raise, own_contribution):
+    min_raise_action = max(0, 2 * judge_round_raise - own_contribution)
+    return min_raise_action
+'''
+    STATE_EXTRA_POSITIVE_SLOPE = '''
+def get_state(last_raise_to, my_round_bet):
+    min_raise_action = max(0, 2.5 * last_raise_to - my_round_bet - 1)
+    return min_raise_action
+'''
+    STATE_UNRELATED_EXACT_SHAPE = '''
+def get_state(unrelated, another):
+    min_raise_action = max(0, 2 * unrelated - another)
+    return min_raise_action
+'''
 
     def test_min_raise_plus_one_ok(self, fv, make_bot):
-        """The verifier enforces retained policy headroom, not official legality."""
+        """Conservative +1 headroom remains accepted."""
         bot_dir = make_bot(state=self.STATE_FIXED)
         r = fv.verify_fixes(bot_dir)["BOT-002a"]
         assert r["ok"] is True
 
-    def test_min_raise_missing_plus_one_not_ok(self, fv, make_bot):
-        """Exact 2x is official-legal but still outside this compatibility policy."""
-        bot_dir = make_bot(state=self.STATE_UNFIXED)
+    def test_min_raise_exact_inclusive_boundary_ok(self, fv, make_bot):
+        """The official oracle proves exact consecutive 2x is legal."""
+        bot_dir = make_bot(state=self.STATE_EXACT_BOUNDARY)
+        r = fv.verify_fixes(bot_dir)["BOT-002a"]
+        assert r["ok"] is True
+        assert "exact inclusive 2x" in r["reason"]
+
+    def test_min_raise_below_inclusive_boundary_not_ok(self, fv, make_bot):
+        bot_dir = make_bot(state=self.STATE_BELOW_BOUNDARY)
         r = fv.verify_fixes(bot_dir)["BOT-002a"]
         assert r["ok"] is False
-        assert "+ 1" in r["reason"] or "+1" in r["reason"]
+        assert "inclusive 2x" in r["reason"]
+
+    def test_min_raise_renamed_exact_boundary_ok(self, fv, make_bot):
+        bot_dir = make_bot(state=self.STATE_RENAMED_EXACT_BOUNDARY)
+        r = fv.verify_fixes(bot_dir)["BOT-002a"]
+        assert r["ok"] is True
+        assert "exact inclusive 2x" in r["reason"]
+
+    def test_min_raise_extra_positive_slope_preserves_headroom(self, fv, make_bot):
+        bot_dir = make_bot(state=self.STATE_EXTRA_POSITIVE_SLOPE)
+        r = fv.verify_fixes(bot_dir)["BOT-002a"]
+        assert r["ok"] is True
+        assert "conservative headroom" in r["reason"]
+
+    def test_min_raise_unrelated_variables_are_not_boundary_evidence(self, fv, make_bot):
+        bot_dir = make_bot(state=self.STATE_UNRELATED_EXACT_SHAPE)
+        r = fv.verify_fixes(bot_dir)["BOT-002a"]
+        assert r["ok"] is True
+        assert "inconclusive" in r["reason"]
+
+    def test_min_raise_unknown_shape_is_non_blocking(self, fv, make_bot):
+        bot_dir = make_bot(
+            state="def get_state(x):\n    min_raise_action = helper(x)\n    return min_raise_action\n"
+        )
+        r = fv.verify_fixes(bot_dir)["BOT-002a"]
+        assert r["ok"] is True
+        assert "inconclusive" in r["reason"]
 
     def test_min_raise_no_assignment_ok(self, fv, make_bot):
         """A state.py with no min_raise_action assignment does not block."""

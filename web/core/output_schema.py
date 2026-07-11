@@ -29,6 +29,11 @@ PRECOMPUTE_CONSUMER_PATTERN = (
 
 MatchMemoryResetBoundary = Literal["tcp_connection"]
 MatchMemorySnapshotField = Literal["opponent_runtime"]
+MatchMemoryPriorRule = Literal["beta_prior_weight_8"]
+MatchMemoryConfidenceRule = Literal[
+    "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
+]
+MatchMemoryConsumer = Literal["strategy.get_baseline_action", "strategy.get_action"]
 MatchMemoryUpdateEvent = Literal[
     "hand_start",
     "street_start",
@@ -39,6 +44,9 @@ MatchMemoryUpdateEvent = Literal[
 ]
 MATCH_MEMORY_RESET_BOUNDARIES = tuple(get_args(MatchMemoryResetBoundary))
 MATCH_MEMORY_SNAPSHOT_FIELDS = tuple(get_args(MatchMemorySnapshotField))
+MATCH_MEMORY_PRIOR_RULES = tuple(get_args(MatchMemoryPriorRule))
+MATCH_MEMORY_CONFIDENCE_RULES = tuple(get_args(MatchMemoryConfidenceRule))
+MATCH_MEMORY_CONSUMERS = tuple(get_args(MatchMemoryConsumer))
 MATCH_MEMORY_ALLOWED_UPDATE_EVENTS = tuple(get_args(MatchMemoryUpdateEvent))
 MATCH_MEMORY_REQUIRED_UPDATE_EVENTS = frozenset({
     "hand_start",
@@ -48,6 +56,47 @@ MATCH_MEMORY_REQUIRED_UPDATE_EVENTS = frozenset({
 })
 MATCH_MEMORY_MIN_UPDATE_EVENTS = 4
 MATCH_MEMORY_MAX_UPDATE_EVENTS = 6
+
+StateLearningWorkPrimitive = Literal[
+    "sample_counted_candidate_batch",
+    "bounded_precompute_lookup",
+]
+StateLearningProfileDimension = Literal[
+    "action_profile",
+    "terminal_response",
+    "showdown_range",
+]
+StateLearningLineControl = Literal["donk", "delayed_probe"]
+StateLearningOracleRef = Literal[
+    "docs/official-raise-boundary-oracle-2026-07-11.md",
+    "docs/official-terminal-settlement-oracle-2026-07-11.md",
+]
+STATE_LEARNING_WORK_PRIMITIVES = tuple(get_args(StateLearningWorkPrimitive))
+STATE_LEARNING_PROFILE_DIMENSIONS = tuple(get_args(StateLearningProfileDimension))
+STATE_LEARNING_LINE_CONTROLS = tuple(get_args(StateLearningLineControl))
+STATE_LEARNING_ORACLE_REFS = tuple(get_args(StateLearningOracleRef))
+STATE_LEARNING_PRIMARY_CHECKS = {
+    "sample_counted_candidate_batch": (
+        "fast_strategy_baseline",
+        "incremental_refinement_protocol",
+        "budget_scaled_refinement",
+    ),
+    "bounded_precompute_lookup": ("precompute_lookup_path",),
+    "action_profile": ("incremental_opponent_model",),
+    "terminal_response": ("terminal_response_adaptation",),
+    "showdown_range": ("showdown_range_adaptation",),
+    "donk": ("semantic_line_reachability",),
+    "delayed_probe": ("semantic_line_reachability",),
+}
+STATE_LEARNING_PRIMARY_PROMPT_TERMS = {
+    "sample_counted_candidate_batch": ("sample_count", "deadline"),
+    "bounded_precompute_lookup": ("precompute", "fallback"),
+    "action_profile": ("action_profile", "opponent_runtime"),
+    "terminal_response": ("terminal_response", "confidence"),
+    "showdown_range": ("showdown_range", "confidence"),
+    "donk": ("can_donk", "positive/control"),
+    "delayed_probe": ("can_delayed_probe", "positive/control"),
+}
 
 RUNTIME_CONTRACT_WORKER_PROMPT_TERMS = {
     "decision": ("budget", "fallback", "baseline", "deadline"),
@@ -65,6 +114,7 @@ RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_LAYER = {
     "native_tcp": ("decision",),
 }
 RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_FOCUS = {
+    "national_runtime_v4_state_learning": ("state_learning",),
     "incremental_match_model": ("match_memory",),
     "reusable_precompute": ("precompute_artifacts",),
     "deadline_refinement": ("decision",),
@@ -184,10 +234,10 @@ class MatchMemoryRuntimeContract(BaseModel):
     )
     snapshot_field: MatchMemorySnapshotField
     max_recent_hands: int = Field(ge=0, le=70)
-    prior_rule: str = Field(min_length=5)
-    confidence_rule: str = Field(min_length=5)
+    prior_rule: MatchMemoryPriorRule
+    confidence_rule: MatchMemoryConfidenceRule
     adaptation_cap: float = Field(gt=0.0, le=1.0)
-    consumer: str = Field(min_length=3)
+    consumer: MatchMemoryConsumer
 
     @field_validator("tracker_class", "owner_file", "prior_rule", "confidence_rule", "consumer")
     @classmethod
@@ -207,6 +257,70 @@ class MatchMemoryRuntimeContract(BaseModel):
         return value
 
 
+class StateLearningRuntimeContract(BaseModel):
+    """One mechanically selected strategy innovation for a v4 generation.
+
+    The official oracle references and candidate dimension are closed literals,
+    not reviewer prose. Exactly one work primitive, opponent-profile dimension,
+    or line control is primary in a generation; the other dimensions remain
+    shadow evidence unless a passing parent capability would regress.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    work_primitive: Optional[StateLearningWorkPrimitive] = None
+    profile_dimensions: list[StateLearningProfileDimension] = Field(
+        default_factory=list,
+        max_length=1,
+    )
+    line_controls: list[StateLearningLineControl] = Field(
+        default_factory=list,
+        max_length=1,
+    )
+    oracle_refs: list[StateLearningOracleRef] = Field(min_length=2, max_length=2)
+
+    @field_validator("profile_dimensions", "line_controls")
+    @classmethod
+    def _unique_primary_values(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("state-learning primary values must be unique")
+        return value
+
+    @field_validator("oracle_refs")
+    @classmethod
+    def _complete_oracle_pair(cls, value: list[str]) -> list[str]:
+        if set(value) != set(STATE_LEARNING_ORACLE_REFS):
+            raise ValueError(
+                "oracle_refs must contain the exact raise-boundary and "
+                "terminal-settlement oracle documents"
+            )
+        return list(STATE_LEARNING_ORACLE_REFS)
+
+    @model_validator(mode="after")
+    def _exactly_one_primary_innovation(self):
+        selected = (
+            int(self.work_primitive is not None)
+            + len(self.profile_dimensions)
+            + len(self.line_controls)
+        )
+        if selected != 1:
+            raise ValueError(
+                "state_learning must declare exactly one primary innovation across "
+                "work_primitive, profile_dimensions, and line_controls"
+            )
+        return self
+
+    def primary_innovation(self) -> str:
+        if self.work_primitive is not None:
+            return self.work_primitive
+        if self.profile_dimensions:
+            return self.profile_dimensions[0]
+        return self.line_controls[0]
+
+    def primary_checks(self) -> tuple[str, ...]:
+        return STATE_LEARNING_PRIMARY_CHECKS[self.primary_innovation()]
+
+
 class RuntimeContract(BaseModel):
     """Executable contract shared by Master, worker prompt, and quality policy."""
 
@@ -215,6 +329,7 @@ class RuntimeContract(BaseModel):
     decision: Optional[DecisionRuntimeContract] = None
     precompute_artifacts: list[PrecomputeArtifactContract] = Field(default_factory=list, max_length=4)
     match_memory: Optional[MatchMemoryRuntimeContract] = None
+    state_learning: Optional[StateLearningRuntimeContract] = None
     official_feedback_refs: list[str] = Field(default_factory=list, max_length=8)
     forbidden_runtime_work: list[str] = Field(default_factory=list, max_length=8)
 
@@ -234,6 +349,12 @@ def runtime_contract_worker_prompt_terms(contract: RuntimeContract) -> tuple[str
     terms: list[str] = []
     for section in populated_sections:
         terms.extend(RUNTIME_CONTRACT_WORKER_PROMPT_TERMS[section])
+    if contract.state_learning is not None:
+        terms.extend(
+            STATE_LEARNING_PRIMARY_PROMPT_TERMS[
+                contract.state_learning.primary_innovation()
+            ]
+        )
     return tuple(dict.fromkeys(terms))
 
 
@@ -268,7 +389,8 @@ def master_plan_executable_contract_text() -> str:
             f"- each task.target_files: {WORKER_TASK_MIN_TARGET_FILES}.."
             f"{WORKER_TASK_MAX_TARGET_FILES} files (never more than "
             f"{WORKER_TASK_MAX_TARGET_FILES}); every runtime artifact owner_file must "
-            "also appear in target_files or files_allowed."
+            "also appear in target_files/files_allowed (writable) or "
+            "read_only_dependencies (context only; never writable)."
         ),
         (
             f"- each task.worker_prompt: {WORKER_PROMPT_MIN_CHARS}.."
@@ -288,11 +410,27 @@ def master_plan_executable_contract_text() -> str:
             "- match_memory: "
             f'reset_boundary="{MATCH_MEMORY_RESET_BOUNDARIES[0]}"; '
             f'snapshot_field="{MATCH_MEMORY_SNAPSHOT_FIELDS[0]}"; '
+            f'prior_rule="{MATCH_MEMORY_PRIOR_RULES[0]}"; '
+            f'confidence_rule="{MATCH_MEMORY_CONFIDENCE_RULES[0]}"; '
+            f"consumer must be one of {list(MATCH_MEMORY_CONSUMERS)}; "
             f"update_events must contain {MATCH_MEMORY_MIN_UPDATE_EVENTS}.."
             f"{MATCH_MEMORY_MAX_UPDATE_EVENTS} unique values chosen only from "
             f"[{allowed_events}], and must include [{required_events}]."
         ),
+        (
+            "- state_learning: declare exactly one primary innovation across "
+            f"work_primitive={list(STATE_LEARNING_WORK_PRIMITIVES)}, "
+            f"profile_dimensions={list(STATE_LEARNING_PROFILE_DIMENSIONS)}, or "
+            f"line_controls={list(STATE_LEARNING_LINE_CONTROLS)}; oracle_refs must "
+            f"equal {list(STATE_LEARNING_ORACLE_REFS)}."
+        ),
     ]
+    for primary, terms in STATE_LEARNING_PRIMARY_PROMPT_TERMS.items():
+        lines.append(
+            f"- state_learning primary {primary!r} requires worker_prompt terms: "
+            + ", ".join(f'\"{term}\"' for term in terms)
+            + "."
+        )
     for section, terms in RUNTIME_CONTRACT_WORKER_PROMPT_TERMS.items():
         rendered_terms = ", ".join(f'"{term}"' for term in terms)
         lines.append(
@@ -319,6 +457,13 @@ class WorkerTask(BaseModel):
     difficulty: str = "medium"
     skill_layer: str = Field(min_length=1, description="Primary strategy/protocol layer: preflop_range, texture, spr, blocker, line_template, protocol, adapter, native_tcp, telemetry, etc.")
     files_allowed: list[str] = Field(default_factory=list)
+    read_only_dependencies: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Runtime-contract owner files the worker may inspect but must not edit; "
+            "this field never expands the write boundary."
+        ),
+    )
     prohibited_files: list[str] = Field(default_factory=list)
     expected_diff_shape: str = ""
     behavior_hypothesis: str = ""
@@ -347,9 +492,22 @@ class WorkerTask(BaseModel):
 
     @model_validator(mode="after")
     def _runtime_contract_matches_layer(self):
+        focus_id = self.architecture_focus_id.strip()
+        writable_scope = {
+            str(item).replace("\\", "/").rsplit("/", 1)[-1]
+            for item in [*self.target_files, *self.files_allowed]
+            if str(item).strip()
+        }
+        if "national_bot.py" in writable_scope:
+            raise ValueError(
+                "system-provided national_bot.py is read-only in Master worker tasks; "
+                "only the deterministic official_repair/official_full protocol-repair "
+                "route may create a narrowly scoped writable entrypoint task"
+            )
+
         required_sections = runtime_contract_required_sections(
             self.skill_layer,
-            self.architecture_focus_id.strip(),
+            focus_id,
         )
         if not runtime_contract_is_required(
             self.skill_layer,
@@ -374,22 +532,57 @@ class WorkerTask(BaseModel):
                 f"{', '.join(missing)}"
             )
 
-        declared_scope = {
+        state_learning = contract.state_learning
+        if state_learning is not None:
+            missing_checks = sorted(
+                set(state_learning.primary_checks()).difference(self.checks_required)
+            )
+            if missing_checks:
+                raise ValueError(
+                    "state_learning primary innovation requires checks_required "
+                    f"to include {missing_checks}"
+                )
+            if (
+                state_learning.work_primitive == "bounded_precompute_lookup"
+                and not contract.precompute_artifacts
+            ):
+                raise ValueError(
+                    "bounded_precompute_lookup requires at least one concrete "
+                    "precompute_artifacts declaration"
+                )
+            if (
+                state_learning.work_primitive == "sample_counted_candidate_batch"
+                and contract.decision is None
+            ):
+                raise ValueError(
+                    "sample_counted_candidate_batch requires a decision contract"
+                )
+
+        read_only_scope = {
             str(item).replace("\\", "/").rsplit("/", 1)[-1]
-            for item in [*self.target_files, *self.files_allowed]
+            for item in self.read_only_dependencies
             if str(item).strip()
         }
+        overlap = sorted(writable_scope.intersection(read_only_scope))
+        if overlap:
+            raise ValueError(
+                f"read_only_dependencies overlap writable target_files/files_allowed: {overlap}"
+            )
         owners: list[str] = []
         if contract.match_memory is not None:
             owners.append(contract.match_memory.owner_file)
         owners.extend(item.owner_file for item in contract.precompute_artifacts)
-        missing_owners = sorted({owner for owner in owners if owner not in declared_scope})
+        missing_owners = sorted({
+            owner
+            for owner in owners
+            if owner not in writable_scope and owner not in read_only_scope
+        })
         if missing_owners:
             raise ValueError(
                 f"runtime_contract owner file(s) {missing_owners} are outside "
-                f"target_files/files_allowed={sorted(declared_scope)}"
+                "the declared writable/read-only scope: "
+                f"writable={sorted(writable_scope)}, read_only={sorted(read_only_scope)}"
             )
-
         prompt_lower = self.worker_prompt.lower()
         required_terms = runtime_contract_worker_prompt_terms(contract)
         missing_terms = [term for term in required_terms if term not in prompt_lower]
@@ -428,6 +621,33 @@ class MasterPlan(BaseModel):
             if t.worker_id in seen:
                 raise ValueError(f"Duplicate worker_id {t.worker_id} in tasks; each worker must have a unique id")
             seen.add(t.worker_id)
+
+        focus_tasks = [
+            task
+            for task in self.tasks
+            if task.architecture_focus_id.strip()
+            == "national_runtime_v4_state_learning"
+        ]
+        primary_tasks = [
+            task
+            for task in self.tasks
+            if task.runtime_contract is not None
+            and task.runtime_contract.state_learning is not None
+        ]
+        if len(primary_tasks) > 1:
+            raise ValueError(
+                "exactly one state_learning primary is allowed across the entire generation"
+            )
+        if focus_tasks and len(primary_tasks) != 1:
+            raise ValueError(
+                "national_runtime_v4_state_learning requires exactly one "
+                "state_learning primary across the entire generation"
+            )
+        if focus_tasks and primary_tasks[0] not in focus_tasks:
+            raise ValueError(
+                "the generation-level state_learning primary must belong to the "
+                "national_runtime_v4_state_learning focus task"
+            )
         return self
 
 

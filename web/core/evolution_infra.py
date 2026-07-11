@@ -108,6 +108,7 @@ MAX_CROSSOVER_RETRIES = 3
 MAX_GENESIS_RETRIES = 3
 MAX_PRECOMMIT_RETRIES = 3   # Max run_precommit_eval attempts against the SAME bot code (resets on worker rework)
 MAX_PRECOMMIT_REWORK_ROUNDS = int(os.environ.get("POK_MAX_PRECOMMIT_REWORK_ROUNDS", "3"))
+MAX_OFFICIAL_REWORK_ROUNDS = int(os.environ.get("POK_MAX_OFFICIAL_REWORK_ROUNDS", "2"))
 MAX_MASTER_AUDIT_RETRIES = 1  # Initial Master plan + one corrective re-plan only
 MAX_GEN_COST = 7.0            # Per-cycle LLM cost cap (safety net above normal 4-attempt retry budget ~$5-7)
 WORKER_TIMEOUT = 1000         # Seconds before a hung worker call is aborted + retried
@@ -458,6 +459,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                audit_attempt=None, reset_audit_attempt=False,
                                precommit_attempt=None, reset_precommit_attempt=False,
                                precommit_rework_count=None,
+                               official_rework_count=None,
                                timeout_extensions=None, touch_stage_timestamp=False,
                                literature_probe=None, prepare_scope_files=None,
                                clear_reviewer_feedback=False,
@@ -516,6 +518,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_audit_context = {}
         existing_precommit_attempt = precommit_attempt
         existing_precommit_rework_count = precommit_rework_count
+        existing_official_rework_count = official_rework_count
         existing_timeout_extensions = 0
         existing_literature_probe = None
         existing_repo_baseline = None
@@ -542,6 +545,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing_precommit_attempt = existing.get("precommit_attempt", 0)
             if precommit_rework_count is None:
                 existing_precommit_rework_count = existing.get("precommit_rework_count", 0)
+            if official_rework_count is None:
+                existing_official_rework_count = existing.get("official_rework_count", 0)
             if timeout_extensions is not None:
                 existing_timeout_extensions = int(timeout_extensions)
             if parent2_v is None:
@@ -881,6 +886,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_precommit_attempt = 0
         if existing_precommit_rework_count is None:
             existing_precommit_rework_count = 0
+        if existing_official_rework_count is None:
+            existing_official_rework_count = 0
         run_id = f"{next_v}#{existing_generation_attempt}"
         _contract_checkpoint = {
             "next_v": next_v,
@@ -921,6 +928,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "audit_attempt": existing_audit_attempt,
             "precommit_attempt": existing_precommit_attempt,
             "precommit_rework_count": existing_precommit_rework_count,
+            "official_rework_count": existing_official_rework_count,
             "timeout_extensions": existing_timeout_extensions,
             "worker_failure_count": existing_failure_count,
             "gate_results": existing_gate_results,

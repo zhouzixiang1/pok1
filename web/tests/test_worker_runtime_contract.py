@@ -36,8 +36,10 @@ def test_worker_prompt_includes_runtime_contract_block():
                 "update_events": ["hand_start", "opponent_action", "settlement", "showdown"],
                 "snapshot_field": "opponent_runtime",
                 "max_recent_hands": 8,
-                "prior_rule": "beta prior weight 8",
-                "confidence_rule": "actions divided by actions plus 24",
+                "prior_rule": "beta_prior_weight_8",
+                "confidence_rule": (
+                    "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
+                ),
                 "adaptation_cap": 0.65,
                 "consumer": "strategy.get_action",
             },

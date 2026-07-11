@@ -1398,6 +1398,86 @@ def test_deterministic_route_abandons_after_precommit_rework_circuit_breaker(mon
     assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
 
 
+def test_deterministic_route_abandons_after_official_rework_circuit_breaker(monkeypatch):
+    """Repeated formal 5+3 repairs must terminate in a fresh generation."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    abandoned = []
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": "OFFICIAL_REWORK_CIRCUIT_BREAKER",
+                        "official_rework_count": 2,
+                        "max_rework_rounds": 2,
+                        "abandoned": True,
+                        "abandon_result": {
+                            "abandoned": True,
+                            "reason": "official_rework_circuit_breaker",
+                            "abandoned_v": 278,
+                        },
+                    }),
+                }]
+            }
+        )
+    )
+
+    async def _fake_abandon(reason="abandon_generation"):
+        abandoned.append(reason)
+        return {"abandoned": True, "reason": reason, "abandoned_v": 278}
+
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_bot_management",
+        SimpleNamespace(_do_abandon_generation=_fake_abandon),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "official_failed",
+            "next_v": 278,
+            "source_v": 277,
+            "official_rework_count": 2,
+        },
+    }
+    ui = _FakeUI()
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, ui)
+    )
+
+    assert handled is True
+    fake_execute.handler.assert_awaited_once_with({"next_v": 278, "source_v": 277})
+    assert abandoned == []
+    assert any(e[0] == "pipeline.deterministic_route_abandoned" for e in events)
+    assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
+
+
 def test_actionable_recovery_calls_prepare_next_gen_from_selected(monkeypatch):
     """selected-stage recovery should dispatch prepare_next_gen."""
     from types import SimpleNamespace
