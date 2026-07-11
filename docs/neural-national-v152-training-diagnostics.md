@@ -1163,9 +1163,45 @@ artifact (SHA-256
 `b5bf27225507db89683cff82a8bfb8fbccf7df50fbe9a81085adbada221bd359`).
 On a real frozen `national_v135` row, Torch-versus-stdlib maximum differences
 were `2.02e-7` for distributional values and `6.94e-8` for outcome logits. The
-head still emits explicitly uncalibrated logits. A protected calibration role
-must fit and bind probability calibration before policy selection. The full
-neural-lab suite now passes 322 tests, and all 30 national protocol tests pass.
+raw head still emits explicitly uncalibrated logits; probability calibration is
+a separate checkpoint-bound artifact rather than hidden model state.
+
+## Protected Outcome Probability Calibration
+
+`calibrate_match_outcome_v4.py` now opens only the frozen
+`model_calibration` role after verifying the early-stop checkpoint,
+authorization, training-role artifact hashes, run ID, and role manifest. It
+fits a positive global logit scale and bias by weighted binary NLL. Identity
+calibration is retained as an optimizer candidate, so an optimization-step
+bookkeeping mismatch cannot associate a measured loss with different
+parameters or return a worse regularized fit. Calibration JSON is self-hashed,
+bound to the exact checkpoint and model format, and explicitly carries false
+deployment and strength claims.
+
+The incomplete pass-24 smoke opened `national_v142` for model calibration and
+left policy-selection and policy-gate roles unopened. It used 144 source rows
+with 429 observed action outcomes. The fitted scale was `0.5265807` and bias
+was `0.3616051`; weighted NLL changed from `0.66576` to `0.65158`, Brier score
+from `0.23673` to `0.22974`, and ECE from `0.12033` to `0.03332`. However, its
+0.5-threshold balanced accuracy fell from 56.0 percent to 50.0 percent because
+all observations became positive predictions. The monotone transform preserves
+ranking but this tiny one-opponent split does not demonstrate useful policy
+discrimination. These results validate calibration mechanics only.
+
+`export_opponent_multitask_v4.py` can embed the calibration only when its
+self-hash, checkpoint SHA-256, and model format match the exported checkpoint.
+The strict stdlib runtime retains both raw logits and calibrated probabilities
+and rejects provenance or payload drift. The calibrated smoke export was
+3,753,996 bytes with SHA-256
+`154e899f2a692df444b9674a3845a41339d5a96368b1a7e5458aea7e8cf10948`.
+On a real frozen `national_v142` row, Torch-versus-stdlib maximum differences
+were `5.47e-8` for raw logits and `2.88e-8` after calibration. The calibration
+payload SHA-256 was
+`bf0df5bc0eaf88e2f09fc4a624c829a8f9774bd41c2401a19670ede817ca21b9`.
+The full neural-lab suite now passes 332 tests, and all 30 national protocol
+tests pass. A complete independently collected role dataset, multi-seed
+selection, protected gate, and fresh native TCP matches remain mandatory before
+this head can influence a formal candidate.
 
 ## Literature Recheck And Search Direction
 

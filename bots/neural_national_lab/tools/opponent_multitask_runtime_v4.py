@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from match_outcome_calibration import (
+    apply_calibration,
+    validate_calibration_artifact,
+)
 import opponent_multitask_runtime_v3 as v3
 
 
@@ -32,6 +36,18 @@ class OpponentMultiTaskRuntimeV4:
         if not isinstance(weights, dict):
             raise ValueError("v4 stdlib model weights are missing")
         self.metadata = dict(metadata)
+        raw_calibration = payload.get("outcome_calibration")
+        if raw_calibration is not None:
+            source = payload.get("source")
+            if not isinstance(source, dict):
+                raise ValueError("v4 calibrated model source is missing")
+            self.outcome_calibration = validate_calibration_artifact(
+                raw_calibration,
+                checkpoint_sha256=source.get("checkpoint_sha256"),
+                model_format=MODEL_FORMAT,
+            )
+        else:
+            self.outcome_calibration = None
         self.hidden = {key: int(hidden.get(key, 0)) for key in v3.HIDDEN_KEYS}
         if set(hidden) != set(v3.HIDDEN_KEYS) or min(self.hidden.values()) <= 0:
             raise ValueError("v4 hidden-size contract is invalid")
@@ -163,11 +179,21 @@ class OpponentMultiTaskRuntimeV4:
             self._outcome_layer("match_outcome_head.0", latent)
         )
         logits = self._outcome_layer("match_outcome_head.2", hidden)
+        calibrated = (
+            apply_calibration(logits, self.outcome_calibration)
+            if self.outcome_calibration is not None
+            else {
+                "logits": logits,
+                "probabilities": [v3._sigmoid(value) for value in logits],
+            }
+        )
         return {
             "schema": OUTCOME_HEAD_SCHEMA,
             "positive_outcome_rule": POSITIVE_OUTCOME_RULE,
-            "logits": logits,
-            "probabilities": [v3._sigmoid(value) for value in logits],
+            "calibrated": self.outcome_calibration is not None,
+            "raw_logits": logits,
+            "logits": calibrated["logits"],
+            "probabilities": calibrated["probabilities"],
         }
 
     def predict_value(self, **inputs: Any):

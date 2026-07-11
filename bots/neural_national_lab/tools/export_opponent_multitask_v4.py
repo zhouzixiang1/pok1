@@ -9,6 +9,8 @@ import sys
 from typing import Any
 
 import export_opponent_multitask_v3 as v3_export
+from match_outcome_calibration import validate_calibration_artifact
+from opponent_multitask_model_v4 import MODEL_FORMAT
 from opponent_multitask_runtime_v4 import (
     OpponentMultiTaskRuntimeV4,
     RUNTIME_FORMAT,
@@ -24,10 +26,17 @@ def build_export_payload(
     checkpoint: dict[str, Any],
     *,
     checkpoint_sha256: str,
+    outcome_calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     checkpoint_sha256 = v3_export._digest(
         checkpoint_sha256, field="checkpoint_sha256"
     )
+    if outcome_calibration is not None:
+        outcome_calibration = validate_calibration_artifact(
+            outcome_calibration,
+            checkpoint_sha256=checkpoint_sha256,
+            model_format=MODEL_FORMAT,
+        )
     weights = {}
     for name, tensor in sorted(model.state_dict().items()):
         if tensor.ndim not in (1, 2):
@@ -63,7 +72,19 @@ def build_export_payload(
         "deployment_policy_value": False,
         "strength_evidence": False,
     }
+    if outcome_calibration is not None:
+        payload["outcome_calibration"] = outcome_calibration
     OpponentMultiTaskRuntimeV4(payload)
+    return payload
+
+
+def load_outcome_calibration(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.resolve().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read outcome calibration: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("outcome calibration must be an object")
     return payload
 
 
@@ -74,16 +95,22 @@ def write_export(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, type=Path)
+    parser.add_argument("--outcome-calibration", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     checkpoint_path = args.checkpoint.resolve()
     try:
         checkpoint_sha256 = v3_export._sha256(checkpoint_path)
         model, checkpoint = load_checkpoint(checkpoint_path, device="cpu")
+        outcome_calibration = (
+            load_outcome_calibration(args.outcome_calibration)
+            if args.outcome_calibration is not None else None
+        )
         payload = build_export_payload(
             model,
             checkpoint,
             checkpoint_sha256=checkpoint_sha256,
+            outcome_calibration=outcome_calibration,
         )
         artifact = write_export(args.output, payload)
         loaded = OpponentMultiTaskRuntimeV4.load(artifact["path"])
@@ -98,6 +125,10 @@ def main(argv: list[str] | None = None) -> int:
         "match_outcome_head_schema": payload["model_metadata"][
             "match_outcome_head_schema"
         ],
+        "outcome_calibrated": "outcome_calibration" in payload,
+        "outcome_calibration_payload_sha256": (
+            payload.get("outcome_calibration", {}).get("payload_sha256")
+        ),
         "deployment_policy_value": False,
         "strength_evidence": False,
     }, indent=2, sort_keys=True))

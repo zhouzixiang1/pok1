@@ -12,6 +12,7 @@ TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import export_opponent_multitask_v4 as exporter  # noqa: E402
+import match_outcome_calibration as calibration  # noqa: E402
 import opponent_multitask_model_v4 as models  # noqa: E402
 import opponent_multitask_runtime_v4 as runtime  # noqa: E402
 
@@ -37,11 +38,33 @@ def _inputs(*, empty: bool = False) -> dict[str, torch.Tensor]:
     }
 
 
-def _payload(model) -> dict:
+def _calibration(*, checkpoint_sha256: str = "a" * 64) -> dict:
+    payload = {
+        "schema": calibration.CALIBRATION_SCHEMA,
+        "method": calibration.CALIBRATION_METHOD,
+        "scale": 2.0,
+        "bias": 0.5,
+        "run_id": "run-1",
+        "model_format": models.MODEL_FORMAT,
+        "checkpoint_sha256": checkpoint_sha256,
+        "role_manifest_sha256": "b" * 64,
+        "model_calibration_artifact_sha256": "c" * 64,
+        "model_calibration_opponents": ["national_v142"],
+        "source_collection_complete": False,
+        "metrics": {},
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+    }
+    payload["payload_sha256"] = calibration.calibration_payload_sha256(payload)
+    return payload
+
+
+def _payload(model, *, calibrated: bool = False) -> dict:
     return exporter.build_export_payload(
         model,
         {"schema": "test_v4_checkpoint", "code_artifacts": {}},
         checkpoint_sha256="a" * 64,
+        outcome_calibration=_calibration() if calibrated else None,
     )
 
 
@@ -79,8 +102,37 @@ def test_stdlib_outcome_logits_and_probabilities_match_torch(encoder: str) -> No
     assert actual["logits"] == pytest.approx(
         expected_logits.tolist(), abs=1.0e-5
     )
+    assert actual["raw_logits"] == pytest.approx(
+        expected_logits.tolist(), abs=1.0e-5
+    )
+    assert actual["calibrated"] is False
     assert actual["probabilities"] == pytest.approx(
         torch.sigmoid(expected_logits).tolist(), abs=1.0e-6
+    )
+
+
+def test_stdlib_runtime_applies_bound_outcome_calibration() -> None:
+    torch.manual_seed(103)
+    model = models.model_from_scale("small", dropout=0.0).eval()
+    inputs = _inputs()
+    with torch.no_grad():
+        expected_raw = model.forward_match_outcome(**_value_inputs(inputs))[0]
+    stdlib = runtime.OpponentMultiTaskRuntimeV4(
+        _payload(model, calibrated=True)
+    )
+
+    actual = stdlib.predict_match_outcome(**_stdlib_inputs(inputs))
+
+    expected_calibrated = 2.0 * expected_raw + 0.5
+    assert actual["calibrated"] is True
+    assert actual["raw_logits"] == pytest.approx(
+        expected_raw.tolist(), abs=1.0e-5
+    )
+    assert actual["logits"] == pytest.approx(
+        expected_calibrated.tolist(), abs=1.0e-5
+    )
+    assert actual["probabilities"] == pytest.approx(
+        torch.sigmoid(expected_calibrated).tolist(), abs=1.0e-6
     )
 
 
@@ -129,6 +181,19 @@ def test_runtime_rejects_outcome_weight_or_metadata_drift() -> None:
     malformed["model_metadata"]["match_outcome_hands"] = 69
     with pytest.raises(ValueError, match="metadata changed"):
         runtime.OpponentMultiTaskRuntimeV4(malformed)
+
+    malformed = _payload(model, calibrated=True)
+    malformed["outcome_calibration"]["bias"] = 9.0
+    with pytest.raises(ValueError, match="payload hash changed"):
+        runtime.OpponentMultiTaskRuntimeV4(malformed)
+
+    with pytest.raises(ValueError, match="checkpoint does not match"):
+        exporter.build_export_payload(
+            model,
+            {"schema": "test_v4_checkpoint", "code_artifacts": {}},
+            checkpoint_sha256="a" * 64,
+            outcome_calibration=_calibration(checkpoint_sha256="d" * 64),
+        )
 
 
 def test_export_bytes_are_deterministic_and_strictly_reloadable(
