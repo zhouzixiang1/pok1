@@ -986,6 +986,30 @@ the replacement independent corpus had completed 13/160 passes with
 609/156/151 train/validation/held-out value rows and 2,785/899/429 response
 rows. These are pipeline and collection-progress facts, not strength evidence.
 
+`export_opponent_multitask_v3.py` and
+`opponent_multitask_runtime_v3.py` now provide a deterministic JSON export and
+stdlib-only forward path for every currently selectable cross-hand encoder:
+none, Deep Sets, GRU, and GRU+MoE. The loader derives the exact expected matrix
+shape from the frozen hidden-size and model metadata contracts, rejects missing
+or extra tensors, checks every value and the total parameter count, and masks
+response-private state again at inference. It implements linear/ReLU stacks,
+PyTorch-compatible GRU gates, Deep Sets masked mean/max, MoE routing,
+monotonic softplus quantiles, sigmoid size heads, and legal-action logit masks
+without Torch, NumPy, or network access. Eight focused tests cover all four
+encoders, empty histories, private-state invariance, malformed weights, and
+byte-deterministic export. Across the four random small-model parity cases, all
+97 value/response outputs differed from Torch by less than `1e-5` (observed
+maxima were approximately `1.7e-7` to `2.6e-7`).
+
+The actual pass-9 small no-cross-hand checkpoint exported to a 3,462,371-byte
+JSON artifact with SHA-256
+`8761501aefd6e53686faa1451e2cbc5abaa4680d3d075dd54e107958a8a0528a`.
+On a real v98 policy-selection row its maximum value and response differences
+from Torch were `1.94e-7` and `4.41e-8`; one-member stdlib value inference
+averaged about 3.5 ms on the local CPU. The export deliberately carries false
+deployment/strength flags. Formal ensemble runtime, selected-policy binding,
+and native TCP joint-policy evaluation are still required.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
