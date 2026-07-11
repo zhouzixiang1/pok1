@@ -44,6 +44,7 @@ def _summary(*, formal: bool) -> dict:
 
 def _common(*, response: bool) -> dict:
     return {
+        "encoded_context_schema": "opponent_multitask_inference_context_v3",
         "encoded_row_schema": "opponent_multitask_encoded_row_v3",
         "response_mode": response,
         "state": [0.1] * 81,

@@ -17,6 +17,7 @@ import opponent_multitask_model_v3 as models  # noqa: E402
 
 def _common(*, response: bool) -> dict:
     return {
+        "encoded_context_schema": "opponent_multitask_inference_context_v3",
         "encoded_row_schema": "opponent_multitask_encoded_row_v3",
         "response_mode": response,
         "state": [0.1] * 81,
@@ -97,11 +98,49 @@ def test_response_collator_masks_legality_and_feeds_model() -> None:
     assert output["logits"][0, 1] < -1.0e8
 
 
+def test_value_inference_collator_requires_no_supervision() -> None:
+    row = _value_row()
+    for key in ("encoded_row_schema", "row_weight", "value_targets",
+                "value_target_masks"):
+        row.pop(key)
+
+    batch = batches.collate_inference_rows([row], response=False)
+
+    assert batch["schema"] == "opponent_multitask_inference_batch_v3"
+    assert "supervision" not in batch
+    assert batch["legal_action_mask"].tolist() == [[0.0, 0.0, 1.0, 1.0, 0.0, 1.0]]
+    model = models.model_from_scale("small", dropout=0.0)
+    output = model.forward_value(**batch["inputs"])
+    assert output["match_delta_vs_rule"]["mean"].shape == (1, 6)
+
+
+def test_response_inference_collator_requires_no_target() -> None:
+    row = _response_row()
+    for key in ("encoded_row_schema", "row_weight", "response_target",
+                "response_size_targets", "response_size_target_mask"):
+        row.pop(key)
+
+    batch = batches.collate_inference_rows([row], response=True)
+
+    assert batch["schema"] == "opponent_multitask_inference_batch_v3"
+    assert "supervision" not in batch
+    assert batch["response_legal_action_mask"].tolist() == [[1.0, 0.0, 1.0, 1.0, 1.0]]
+    model = models.model_from_scale("small", dropout=0.0)
+    output = model.forward_response(**batch["inputs"])
+    assert output["logits"].shape == (1, 5)
+    assert output["logits"][0, 1] < -1.0e8
+
+
 def test_collator_rejects_schema_mode_and_dimension_drift() -> None:
     row = _value_row()
     row["encoded_row_schema"] = "old"
     with pytest.raises(ValueError, match="wrong encoded schema"):
         batches.collate_encoded_rows([row], response=False)
+
+    row = _value_row()
+    row["encoded_context_schema"] = "old"
+    with pytest.raises(ValueError, match="wrong context schema"):
+        batches.collate_inference_rows([row], response=False)
 
     row = _value_row()
     row["response_mode"] = True

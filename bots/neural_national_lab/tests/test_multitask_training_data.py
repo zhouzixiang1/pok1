@@ -321,6 +321,79 @@ def test_encoded_value_accepts_only_versioned_strategy_context() -> None:
         data.encode_prepared_row(row, response=False)
 
 
+def test_value_inference_context_requires_no_target_or_role_weight() -> None:
+    row = _value_row("national_v119", 11)
+    for field in data.VALUE_FIELDS:
+        row.pop(field)
+    row.pop("target_masks")
+    row["strategy_context_schema"] = "v140_strategy_context_v1"
+    row["strategy_context_features"] = [0.25] * 66
+
+    encoded = data.encode_value_inference_row(row)
+
+    assert encoded["encoded_context_schema"] == (
+        "opponent_multitask_inference_context_v3"
+    )
+    assert encoded["response_mode"] is False
+    assert len(encoded["state"]) == 81
+    assert len(encoded["opponent_profile"]) == 12
+    assert len(encoded["history"]) == 0
+    assert encoded["cross_hand_sequence"] == [_cross_hand()]
+    assert encoded["rule_action"] == [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    assert encoded["legal_action_mask"] == [0, 0, 1, 1, 0, 1]
+    assert encoded["strategy_context"] == [0.25] * 66
+    assert "row_weight" not in encoded
+    assert "value_targets" not in encoded
+
+
+def test_hypothetical_response_context_uses_national_legality() -> None:
+    row = _value_row("national_v119", 12)
+    row["hero_action"] = 200
+    row["hero_action_label_id"] = 2
+
+    encoded = data.encode_response_inference_row(row)
+
+    assert encoded is not None
+    assert encoded["encoded_context_schema"] == (
+        "opponent_multitask_inference_context_v3"
+    )
+    assert encoded["response_mode"] is True
+    assert encoded["response_legal_action_mask"] == [1, 0, 1, 1, 1]
+    assert encoded["response_context"]["minimum_raise_to_total"] == 401
+    assert len(encoded["hero_action_features"]) == 10
+    assert all(
+        encoded["state"][index] == 0.0
+        for index in encoded["response_private_state_masked"]
+    )
+    assert "response_target" not in encoded
+    assert "row_weight" not in encoded
+
+
+def test_response_inference_omits_actions_that_settle_or_close() -> None:
+    folded = _value_row("national_v119", 13)
+    folded["hero_action"] = -1
+    folded["hero_action_label_id"] = 0
+    assert data.encode_response_inference_row(folded) is None
+
+    called = _value_row("national_v119", 14)
+    called["hero_action"] = 0
+    called["hero_action_label_id"] = 1
+    called["request"].update({
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 200,
+        "to_call": 100,
+        "history": [{
+            "round": 1,
+            "player_id": 1,
+            "action_type": "raise",
+            "stage_bet": 200,
+            "chips_after": 19_800,
+        }],
+    })
+    called["state"].update({"round": 1, "to_call": 100, "pot": 300})
+    assert data.encode_response_inference_row(called) is None
+
+
 def test_duplicate_opponent_across_model_roles_is_rejected() -> None:
     dataset = _Dataset()
     dataset.payloads["early_stop"]["opponents"] = ["national_v1"]
@@ -377,6 +450,9 @@ def test_metadata_freezes_role_and_feature_contracts() -> None:
     ]
     assert metadata["policy_roles_forbidden"] == ["policy_selection", "policy_gate"]
     assert metadata["frozen_checkpoint_schema"] == "frozen_model_checkpoint_v1"
+    assert metadata["encoded_context_schema"] == (
+        "opponent_multitask_inference_context_v3"
+    )
     assert metadata["model_input"]["state_dim"] == 81
     assert metadata["model_input"]["history_feature_dim"] == 24
     assert metadata["max_current_hand_history"] == 16

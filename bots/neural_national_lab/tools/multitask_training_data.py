@@ -22,6 +22,7 @@ from opponent_response_schema import (
     OPPONENT_ACTION_LABELS,
     OPPONENT_RESPONSE_SCHEMA,
     annotate_response_rows,
+    response_context,
     response_schema_metadata,
 )
 from sampling_weights import attach_training_row_weights, opponent_label
@@ -59,6 +60,7 @@ VALUE_FIELDS = (
     "match_delta_vs_rule",
 )
 ENCODED_ROW_SCHEMA = "opponent_multitask_encoded_row_v3"
+ENCODED_CONTEXT_SCHEMA = "opponent_multitask_inference_context_v3"
 
 
 def _finite(value: Any, *, field: str) -> float:
@@ -422,22 +424,115 @@ def _hero_response_action_features(row: Mapping[str, Any]) -> list[float]:
     ]
 
 
-def encode_prepared_row(
+def _strategy_context(row: Mapping[str, Any]) -> tuple[list[float], str | None, bool]:
+    raw = row.get("strategy_context_features")
+    if raw is None:
+        return [0.0] * STRATEGY_CONTEXT_DIM, None, False
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ValueError("strategy context must be a numeric sequence")
+    strategy = _bounded_vector(raw, field="strategy_context")
+    if len(strategy) != STRATEGY_CONTEXT_DIM:
+        raise ValueError("strategy context has the wrong dimension")
+    schema = str(row.get("strategy_context_schema") or STRATEGY_CONTEXT_SCHEMA)
+    if schema != STRATEGY_CONTEXT_SCHEMA:
+        raise ValueError("unsupported strategy context schema")
+    return strategy, schema, True
+
+
+def encode_model_context(
     row: Mapping[str, Any], *, response: bool,
     max_hist: int = MAX_CURRENT_HAND_HISTORY,
 ) -> dict[str, Any]:
-    """Encode a prepared role row without importing the legacy trainer."""
+    """Encode observable context without requiring a training target."""
     base = row.get("state_features", row.get("features"))
     if not isinstance(base, Sequence) or isinstance(base, (str, bytes)):
         raise ValueError("row is missing state_features")
     encoded = encode_model_input(
         row, list(base), max_hist=max_hist, response=response
     )
+    encoded.update({
+        "encoded_context_schema": ENCODED_CONTEXT_SCHEMA,
+        "opponent_profile_schema": OPPONENT_PROFILE_SCHEMA,
+        "opponent_profile": encode_opponent_profile(row),
+        "cross_hand_sequence_schema": CROSS_HAND_SEQUENCE_SCHEMA,
+        "cross_hand_sequence": _cross_hand_sequence(row),
+        "opponent": opponent_label(dict(row)),
+    })
+    return encoded
+
+
+def encode_value_inference_row(
+    row: Mapping[str, Any], *, max_hist: int = MAX_CURRENT_HAND_HISTORY
+) -> dict[str, Any]:
+    encoded = encode_model_context(row, response=False, max_hist=max_hist)
+    legal = _binary_vector(
+        row.get("legal_mask"), field="legal_mask", dimension=len(LABELS)
+    )
+    try:
+        rule_label_id = int(row.get("rule_label_id"))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("rule_label_id is missing or invalid") from exc
+    if not 0 <= rule_label_id < len(LABELS) or not legal[rule_label_id]:
+        raise ValueError("rule action is absent or illegal")
+    strategy, strategy_schema, strategy_available = _strategy_context(row)
+    encoded.update({
+        "rule_label_id": rule_label_id,
+        "rule_action": [
+            1.0 if index == rule_label_id else 0.0
+            for index in range(len(LABELS))
+        ],
+        "legal_action_mask": legal,
+        "strategy_context": strategy,
+        "strategy_context_schema": strategy_schema,
+        "strategy_context_available": strategy_available,
+    })
+    return encoded
+
+
+def encode_response_inference_row(
+    row: Mapping[str, Any], *, max_hist: int = MAX_CURRENT_HAND_HISTORY
+) -> dict[str, Any] | None:
+    """Encode one hypothetical hero action if the opponent must respond."""
+    context = response_context(row)
+    legal = _binary_vector(
+        context["legal_action_mask"],
+        field="response_legal_action_mask",
+        dimension=len(OPPONENT_ACTION_LABELS),
+    )
+    if context["response_expected"] is not True or not any(legal):
+        return None
+    prepared = dict(row)
+    prepared["response_context"] = context
+    encoded = encode_model_context(prepared, response=True, max_hist=max_hist)
+    encoded.update({
+        "hero_action_schema": HERO_RESPONSE_ACTION_SCHEMA,
+        "hero_action_features": _hero_response_action_features(prepared),
+        "response_legal_action_mask": legal,
+        "response_context": {
+            key: value for key, value in context.items() if key != "game_state"
+        },
+        "strategy_context": [],
+        "strategy_context_schema": None,
+    })
+    return encoded
+
+
+def encode_prepared_row(
+    row: Mapping[str, Any], *, response: bool,
+    max_hist: int = MAX_CURRENT_HAND_HISTORY,
+) -> dict[str, Any]:
+    """Encode a prepared role row without importing the legacy trainer."""
+    prepared = dict(row)
+    if response and row.get("response_schema") != OPPONENT_RESPONSE_SCHEMA:
+        prepared = annotate_response_rows([prepared], strict=True)[0]
+    if response:
+        inferred = encode_response_inference_row(prepared, max_hist=max_hist)
+        if inferred is None:
+            raise ValueError("response target is absent or illegal")
+        encoded = inferred
+    else:
+        encoded = encode_value_inference_row(prepared, max_hist=max_hist)
     encoded["encoded_row_schema"] = ENCODED_ROW_SCHEMA
-    encoded["opponent_profile_schema"] = OPPONENT_PROFILE_SCHEMA
-    encoded["opponent_profile"] = encode_opponent_profile(row)
-    encoded["cross_hand_sequence_schema"] = CROSS_HAND_SEQUENCE_SCHEMA
-    encoded["cross_hand_sequence"] = _cross_hand_sequence(row)
     weight_field = (
         TRAIN_WEIGHT_FIELD if TRAIN_WEIGHT_FIELD in row else EVALUATION_WEIGHT_FIELD
     )
@@ -447,14 +542,8 @@ def encode_prepared_row(
     if encoded["row_weight"] <= 0.0:
         raise ValueError("prepared row weight must be positive")
     encoded["row_weight_field"] = weight_field
-    encoded["opponent"] = opponent_label(dict(row))
 
     if response:
-        prepared = (
-            dict(row)
-            if row.get("response_schema") == OPPONENT_RESPONSE_SCHEMA
-            else annotate_response_rows([dict(row)], strict=True)[0]
-        )
         legal = prepared.get("response_legal_action_mask")
         legal_mask = _binary_vector(
             legal,
@@ -492,52 +581,15 @@ def encode_prepared_row(
             ),
             "response_size_targets": size_targets,
             "response_size_target_mask": [amount_mask, amount_mask],
-            "hero_action_schema": HERO_RESPONSE_ACTION_SCHEMA,
-            "hero_action_features": _hero_response_action_features(prepared),
-            "strategy_context": [],
-            "strategy_context_schema": None,
         })
     else:
-        raw_strategy = row.get("strategy_context_features")
-        if raw_strategy is None:
-            strategy = [0.0] * STRATEGY_CONTEXT_DIM
-            strategy_schema = None
-            strategy_available = False
-        else:
-            if not isinstance(raw_strategy, Sequence) or isinstance(
-                raw_strategy, (str, bytes)
-            ):
-                raise ValueError("strategy context must be a numeric sequence")
-            strategy = _bounded_vector(raw_strategy, field="strategy_context")
-            if len(strategy) != STRATEGY_CONTEXT_DIM:
-                raise ValueError("strategy context has the wrong dimension")
-            strategy_schema = str(
-                row.get("strategy_context_schema") or STRATEGY_CONTEXT_SCHEMA
-            )
-            if strategy_schema != STRATEGY_CONTEXT_SCHEMA:
-                raise ValueError("unsupported strategy context schema")
-            strategy_available = True
         targets, target_masks, legal = _value_supervision(row)
-        try:
-            rule_label_id = int(row.get("rule_label_id"))
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("rule_label_id is missing or invalid") from exc
-        if not 0 <= rule_label_id < len(LABELS) or not legal[rule_label_id]:
-            raise ValueError("rule action is absent or illegal")
+        rule_label_id = encoded["rule_label_id"]
         if any(
             not target_masks[field][rule_label_id] for field in VALUE_FIELDS
         ):
             raise ValueError("rule action must be observed for every value field")
         encoded.update({
-            "strategy_context": strategy,
-            "strategy_context_schema": strategy_schema,
-            "strategy_context_available": strategy_available,
-            "rule_label_id": rule_label_id,
-            "rule_action": [
-                1.0 if index == rule_label_id else 0.0
-                for index in range(len(LABELS))
-            ],
-            "legal_action_mask": legal,
             "value_targets": targets,
             "value_target_masks": target_masks,
         })
@@ -557,6 +609,7 @@ def training_data_metadata() -> dict[str, Any]:
         "train_weight_field": TRAIN_WEIGHT_FIELD,
         "evaluation_weight_field": EVALUATION_WEIGHT_FIELD,
         "encoded_row_schema": ENCODED_ROW_SCHEMA,
+        "encoded_context_schema": ENCODED_CONTEXT_SCHEMA,
         "model_input": model_input_metadata(base_state_dim=48),
         "max_current_hand_history": MAX_CURRENT_HAND_HISTORY,
         "opponent_profile": opponent_profile_metadata(),

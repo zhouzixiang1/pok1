@@ -947,6 +947,45 @@ and produced zero ensemble disagreement as expected. The same summary was
 rejected without the explicit incomplete-smoke flag, so it cannot enter formal
 calibration accidentally.
 
+`multitask_training_data.py` and `opponent_multitask_batch_v3.py` now expose a
+separate inference-only context contract. Value inference requires the legal
+mask, rule action, observable state, opponent profile, current-hand history,
+cross-hand sequence, and optional strategy context, but no role weight or
+target. Hypothetical response inference reconstructs whether the opponent must
+act and its exact legal mask through the national validator; folds, street-
+closing calls, and other settled actions produce no response row. The response
+path retains the complete private-state mask. Supervised collation still
+requires the original role weight and legal target masks, so this interface
+does not weaken training validation merely to support policy inference.
+
+`select_opponent_multitask_v3_policy.py` completes the protected offline
+selection boundary. Before opening policy-selection data it verifies every
+ensemble member and calibration artifact, then freezes the ensemble,
+calibration payload/report, inference device and batch contract, policy grid,
+and all participating code hashes into a candidate manifest. Value lower
+predictions use calibrated mean-member q20 minus between-member mean-value
+standard deviation. Opponent response logits use legal-mask temperature
+calibration, while the bounded response-risk signal also consumes predicted
+aggressive size. Selection reuses the declared single-decision IPW cluster
+estimator and can emit a passing credential only with enough overrides and
+independent clusters, positive ordinary and opponent-stratified CI lower
+bounds, and nonnegative per-opponent means. It always retains
+`deployment_policy_value=false` and `strength_evidence=false`.
+
+The pass-9 incomplete smoke opened 60 v98 value rows and 404 behavior rows only
+after candidate SHA-256
+`015026b5c7f6506e2b6fa2faa44bfed6914c0be85edc8ed27ed700fa2be6da0b`
+froze. It evaluated all 60 decisions, including 97 hypothetical opponent
+responses and 90 policy-grid configurations. The provisional ensemble's very
+negative calibration offsets selected zero overrides, so the result failed all
+coverage and positive-CI gates. Its ledger added only `policy_selection`;
+`policy_gate` remained unopened. Formal mode rejected the incomplete role
+manifest before opening selection data. The complete neural-lab regression
+suite now passes 269 tests. At the contemporaneous atomic collection boundary,
+the replacement independent corpus had completed 13/160 passes with
+609/156/151 train/validation/held-out value rows and 2,785/899/429 response
+rows. These are pipeline and collection-progress facts, not strength evidence.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched

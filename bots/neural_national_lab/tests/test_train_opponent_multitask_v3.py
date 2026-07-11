@@ -18,6 +18,7 @@ import train_opponent_multitask_v3 as trainer  # noqa: E402
 
 def _common(*, response: bool, opponent: str = "national_v1") -> dict:
     return {
+        "encoded_context_schema": "opponent_multitask_inference_context_v3",
         "encoded_row_schema": "opponent_multitask_encoded_row_v3",
         "response_mode": response,
         "state": [0.1] * 81,
