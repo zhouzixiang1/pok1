@@ -1,0 +1,7317 @@
+{
+  "candidate_report": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/versions/v148_national_v147_zeroaware_typegate_tcp",
+  "baseline_report": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/versions/v140_national_v123_overlay_no_large_commit_veto_tcp",
+  "opponent": "national_v119",
+  "deck_seed_base": 7400,
+  "bot_seed_base": 1030,
+  "candidate_net_chips": -20022,
+  "baseline_net_chips": 19804,
+  "delta_net_chips": -39826,
+  "action_differences": 91,
+  "changed_hands": 36,
+  "first_action_difference": {
+    "leg": "forward",
+    "hand": 28,
+    "decision": 3,
+    "candidate": {
+      "hand": 28,
+      "decision": 3,
+      "stage": "turn",
+      "rule_action": -1,
+      "advised_action": 503,
+      "final_action": 503,
+      "cards": [
+        4,
+        45
+      ],
+      "board": [
+        35,
+        15,
+        27,
+        29
+      ],
+      "pot": 301,
+      "to_call": 101,
+      "my_stage_bet": 0,
+      "opponent_stage_bet": 101,
+      "opponent_profile": {
+        "actions_total": 59,
+        "preflop_raise_rate": 0.22580645161290322,
+        "aggression": 0.3050847457627119,
+        "raise_rate": 0.3050847457627119,
+        "fold_rate": 0.1864406779661017
+      }
+    },
+    "baseline": {
+      "hand": 28,
+      "decision": 3,
+      "stage": "turn",
+      "rule_action": -1,
+      "advised_action": -1,
+      "final_action": -1,
+      "cards": [
+        4,
+        45
+      ],
+      "board": [
+        35,
+        15,
+        27,
+        29
+      ],
+      "pot": 301,
+      "to_call": 101,
+      "my_stage_bet": 0,
+      "opponent_stage_bet": 101,
+      "opponent_profile": {
+        "actions_total": 59,
+        "preflop_raise_rate": 0.22580645161290322,
+        "aggression": 0.3050847457627119,
+        "raise_rate": 0.3050847457627119,
+        "fold_rate": 0.1864406779661017
+      }
+    }
+  },
+  "worst_hands": [
+    {
+      "leg": "swapped",
+      "hand": 60,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": 20000,
+      "delta_net_chips": -19900,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 60,
+        "decision": 1,
+        "candidate": null,
+        "baseline": {
+          "hand": 60,
+          "decision": 1,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            50,
+            40
+          ],
+          "board": [],
+          "pot": 20332,
+          "to_call": 19668,
+          "my_stage_bet": 332,
+          "opponent_stage_bet": 20000,
+          "opponent_profile": {
+            "actions_total": 127,
+            "preflop_raise_rate": 0.3333333333333333,
+            "aggression": 0.2755905511811024,
+            "raise_rate": 0.2677165354330709,
+            "fold_rate": 0.2204724409448819
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 67,
+      "candidate_net_chips": -20000,
+      "baseline_net_chips": -100,
+      "delta_net_chips": -19900,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 67,
+        "decision": 0,
+        "candidate": {
+          "hand": 67,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 798,
+          "advised_action": 798,
+          "final_action": 898,
+          "cards": [
+            46,
+            45
+          ],
+          "board": [],
+          "pot": 411,
+          "to_call": 211,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 311,
+          "opponent_profile": {
+            "actions_total": 134,
+            "preflop_raise_rate": 0.3235294117647059,
+            "aggression": 0.291044776119403,
+            "raise_rate": 0.2835820895522388,
+            "fold_rate": 0.26119402985074625
+          }
+        },
+        "baseline": {
+          "hand": 67,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            46,
+            45
+          ],
+          "board": [],
+          "pot": 411,
+          "to_call": 211,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 311,
+          "opponent_profile": {
+            "actions_total": 131,
+            "preflop_raise_rate": 0.375,
+            "aggression": 0.29770992366412213,
+            "raise_rate": 0.2900763358778626,
+            "fold_rate": 0.21374045801526717
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 51,
+      "candidate_net_chips": -822,
+      "baseline_net_chips": 822,
+      "delta_net_chips": -1644,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 51,
+        "decision": 1,
+        "candidate": {
+          "hand": 51,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            36,
+            48
+          ],
+          "board": [
+            29,
+            3,
+            13
+          ],
+          "pot": 1644,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 105,
+            "preflop_raise_rate": 0.3137254901960784,
+            "aggression": 0.2761904761904762,
+            "raise_rate": 0.2761904761904762,
+            "fold_rate": 0.23809523809523808
+          }
+        },
+        "baseline": {
+          "hand": 51,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 1068,
+          "advised_action": 1068,
+          "final_action": 1068,
+          "cards": [
+            36,
+            48
+          ],
+          "board": [
+            29,
+            3,
+            13
+          ],
+          "pot": 1644,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 114,
+            "preflop_raise_rate": 0.3076923076923077,
+            "aggression": 0.2543859649122807,
+            "raise_rate": 0.2543859649122807,
+            "fold_rate": 0.21052631578947367
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 63,
+      "candidate_net_chips": -744,
+      "baseline_net_chips": -100,
+      "delta_net_chips": -644,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 63,
+        "decision": 0,
+        "candidate": {
+          "hand": 63,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 644,
+          "advised_action": 644,
+          "final_action": 744,
+          "cards": [
+            14,
+            46
+          ],
+          "board": [],
+          "pot": 410,
+          "to_call": 210,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 310,
+          "opponent_profile": {
+            "actions_total": 127,
+            "preflop_raise_rate": 0.30158730158730157,
+            "aggression": 0.28346456692913385,
+            "raise_rate": 0.28346456692913385,
+            "fold_rate": 0.25984251968503935
+          }
+        },
+        "baseline": {
+          "hand": 63,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            14,
+            46
+          ],
+          "board": [],
+          "pot": 410,
+          "to_call": 210,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 310,
+          "opponent_profile": {
+            "actions_total": 129,
+            "preflop_raise_rate": 0.3548387096774194,
+            "aggression": 0.2868217054263566,
+            "raise_rate": 0.27906976744186046,
+            "fold_rate": 0.21705426356589147
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 40,
+      "candidate_net_chips": 320,
+      "baseline_net_chips": 744,
+      "delta_net_chips": -424,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 40,
+        "decision": 0,
+        "candidate": {
+          "hand": 40,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            25,
+            45
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 82,
+            "preflop_raise_rate": 0.3,
+            "aggression": 0.2682926829268293,
+            "raise_rate": 0.2682926829268293,
+            "fold_rate": 0.23170731707317074
+          }
+        },
+        "baseline": {
+          "hand": 40,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 260,
+          "advised_action": 260,
+          "final_action": 310,
+          "cards": [
+            25,
+            45
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 84,
+            "preflop_raise_rate": 0.3,
+            "aggression": 0.25,
+            "raise_rate": 0.25,
+            "fold_rate": 0.2261904761904762
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 13,
+      "candidate_net_chips": -320,
+      "baseline_net_chips": 100,
+      "delta_net_chips": -420,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 13,
+        "decision": 1,
+        "candidate": {
+          "hand": 13,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            5,
+            6
+          ],
+          "board": [
+            8,
+            34,
+            44
+          ],
+          "pot": 640,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 24,
+            "preflop_raise_rate": 0.2857142857142857,
+            "aggression": 0.16666666666666666,
+            "raise_rate": 0.16666666666666666,
+            "fold_rate": 0.2916666666666667
+          }
+        },
+        "baseline": null
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 60,
+      "candidate_net_chips": -332,
+      "baseline_net_chips": -100,
+      "delta_net_chips": -232,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 60,
+        "decision": 0,
+        "candidate": {
+          "hand": 60,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            9,
+            35
+          ],
+          "board": [],
+          "pot": 432,
+          "to_call": 232,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 332,
+          "opponent_profile": {
+            "actions_total": 128,
+            "preflop_raise_rate": 0.265625,
+            "aggression": 0.296875,
+            "raise_rate": 0.296875,
+            "fold_rate": 0.2109375
+          }
+        },
+        "baseline": {
+          "hand": 60,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            9,
+            35
+          ],
+          "board": [],
+          "pot": 432,
+          "to_call": 232,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 332,
+          "opponent_profile": {
+            "actions_total": 131,
+            "preflop_raise_rate": 0.23076923076923078,
+            "aggression": 0.2748091603053435,
+            "raise_rate": 0.2748091603053435,
+            "fold_rate": 0.21374045801526717
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 42,
+      "candidate_net_chips": -310,
+      "baseline_net_chips": -100,
+      "delta_net_chips": -210,
+      "first_action_difference": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 57,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": 310,
+      "delta_net_chips": -210,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 57,
+        "decision": 1,
+        "candidate": {
+          "hand": 57,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 210,
+          "advised_action": 210,
+          "final_action": 210,
+          "cards": [
+            34,
+            10
+          ],
+          "board": [
+            33,
+            27,
+            32
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 115,
+            "preflop_raise_rate": 0.32142857142857145,
+            "aggression": 0.28695652173913044,
+            "raise_rate": 0.28695652173913044,
+            "fold_rate": 0.24347826086956523
+          }
+        },
+        "baseline": {
+          "hand": 57,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 662,
+          "advised_action": 662,
+          "final_action": 662,
+          "cards": [
+            34,
+            10
+          ],
+          "board": [
+            33,
+            27,
+            32
+          ],
+          "pot": 620,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 121,
+            "preflop_raise_rate": 0.3392857142857143,
+            "aggression": 0.2727272727272727,
+            "raise_rate": 0.2727272727272727,
+            "fold_rate": 0.21487603305785125
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 58,
+      "candidate_net_chips": -100,
+      "baseline_net_chips": 100,
+      "delta_net_chips": -200,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 58,
+        "decision": 1,
+        "candidate": {
+          "hand": 58,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            30,
+            3
+          ],
+          "board": [
+            5,
+            36,
+            0
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 125,
+            "preflop_raise_rate": 0.24193548387096775,
+            "aggression": 0.28,
+            "raise_rate": 0.28,
+            "fold_rate": 0.216
+          }
+        },
+        "baseline": {
+          "hand": 58,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 130,
+          "advised_action": 130,
+          "final_action": 130,
+          "cards": [
+            30,
+            3
+          ],
+          "board": [
+            5,
+            36,
+            0
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 128,
+            "preflop_raise_rate": 0.20634920634920634,
+            "aggression": 0.265625,
+            "raise_rate": 0.265625,
+            "fold_rate": 0.2109375
+          }
+        }
+      }
+    }
+  ],
+  "best_hands": [
+    {
+      "leg": "swapped",
+      "hand": 45,
+      "candidate_net_chips": 310,
+      "baseline_net_chips": -310,
+      "delta_net_chips": 620,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 45,
+        "decision": 1,
+        "candidate": {
+          "hand": 45,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 620,
+          "final_action": 620,
+          "cards": [
+            31,
+            21
+          ],
+          "board": [
+            26,
+            6,
+            43
+          ],
+          "pot": 620,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 97,
+            "preflop_raise_rate": 0.30434782608695654,
+            "aggression": 0.26804123711340205,
+            "raise_rate": 0.26804123711340205,
+            "fold_rate": 0.2268041237113402
+          }
+        },
+        "baseline": {
+          "hand": 45,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            31,
+            21
+          ],
+          "board": [
+            26,
+            6,
+            43
+          ],
+          "pot": 620,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 99,
+            "preflop_raise_rate": 0.30434782608695654,
+            "aggression": 0.25252525252525254,
+            "raise_rate": 0.25252525252525254,
+            "fold_rate": 0.2222222222222222
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 15,
+      "candidate_net_chips": 263,
+      "baseline_net_chips": -265,
+      "delta_net_chips": 528,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 15,
+        "decision": 1,
+        "candidate": {
+          "hand": 15,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 526,
+          "final_action": 526,
+          "cards": [
+            14,
+            35
+          ],
+          "board": [
+            50,
+            0,
+            18
+          ],
+          "pot": 526,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 30,
+            "preflop_raise_rate": 0.3125,
+            "aggression": 0.2,
+            "raise_rate": 0.2,
+            "fold_rate": 0.26666666666666666
+          }
+        },
+        "baseline": {
+          "hand": 15,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            14,
+            35
+          ],
+          "board": [
+            50,
+            0,
+            18
+          ],
+          "pot": 530,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 33,
+            "preflop_raise_rate": 0.3125,
+            "aggression": 0.15151515151515152,
+            "raise_rate": 0.15151515151515152,
+            "fold_rate": 0.24242424242424243
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 51,
+      "candidate_net_chips": -339,
+      "baseline_net_chips": -822,
+      "delta_net_chips": 483,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 51,
+        "decision": 0,
+        "candidate": {
+          "hand": 51,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            34,
+            42
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 114,
+            "preflop_raise_rate": 0.25925925925925924,
+            "aggression": 0.2719298245614035,
+            "raise_rate": 0.2719298245614035,
+            "fold_rate": 0.21052631578947367
+          }
+        },
+        "baseline": {
+          "hand": 51,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 260,
+          "advised_action": 260,
+          "final_action": 310,
+          "cards": [
+            34,
+            42
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 114,
+            "preflop_raise_rate": 0.2222222222222222,
+            "aggression": 0.2631578947368421,
+            "raise_rate": 0.2631578947368421,
+            "fold_rate": 0.20175438596491227
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 7,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": -284,
+      "delta_net_chips": 384,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 7,
+        "decision": 1,
+        "candidate": {
+          "hand": 7,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 200,
+          "final_action": 200,
+          "cards": [
+            15,
+            5
+          ],
+          "board": [
+            51,
+            44,
+            11
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 10,
+            "preflop_raise_rate": 0.5,
+            "aggression": 0.3,
+            "raise_rate": 0.3,
+            "fold_rate": 0.2
+          }
+        },
+        "baseline": {
+          "hand": 7,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            15,
+            5
+          ],
+          "board": [
+            51,
+            44,
+            11
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 10,
+            "preflop_raise_rate": 0.5,
+            "aggression": 0.3,
+            "raise_rate": 0.3,
+            "fold_rate": 0.2
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 58,
+      "candidate_net_chips": 230,
+      "baseline_net_chips": -100,
+      "delta_net_chips": 330,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 58,
+        "decision": 1,
+        "candidate": {
+          "hand": 58,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": -1,
+          "advised_action": 590,
+          "final_action": 590,
+          "cards": [
+            4,
+            35
+          ],
+          "board": [
+            5,
+            36,
+            0
+          ],
+          "pot": 330,
+          "to_call": 130,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 130,
+          "opponent_profile": {
+            "actions_total": 118,
+            "preflop_raise_rate": 0.3157894736842105,
+            "aggression": 0.288135593220339,
+            "raise_rate": 0.288135593220339,
+            "fold_rate": 0.2457627118644068
+          }
+        },
+        "baseline": {
+          "hand": 58,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            4,
+            35
+          ],
+          "board": [
+            5,
+            36,
+            0
+          ],
+          "pot": 330,
+          "to_call": 130,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 130,
+          "opponent_profile": {
+            "actions_total": 124,
+            "preflop_raise_rate": 0.3333333333333333,
+            "aggression": 0.27419354838709675,
+            "raise_rate": 0.27419354838709675,
+            "fold_rate": 0.21774193548387097
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 28,
+      "candidate_net_chips": 201,
+      "baseline_net_chips": -100,
+      "delta_net_chips": 301,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 28,
+        "decision": 3,
+        "candidate": {
+          "hand": 28,
+          "decision": 3,
+          "stage": "turn",
+          "rule_action": -1,
+          "advised_action": 503,
+          "final_action": 503,
+          "cards": [
+            4,
+            45
+          ],
+          "board": [
+            35,
+            15,
+            27,
+            29
+          ],
+          "pot": 301,
+          "to_call": 101,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 101,
+          "opponent_profile": {
+            "actions_total": 59,
+            "preflop_raise_rate": 0.22580645161290322,
+            "aggression": 0.3050847457627119,
+            "raise_rate": 0.3050847457627119,
+            "fold_rate": 0.1864406779661017
+          }
+        },
+        "baseline": {
+          "hand": 28,
+          "decision": 3,
+          "stage": "turn",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            4,
+            45
+          ],
+          "board": [
+            35,
+            15,
+            27,
+            29
+          ],
+          "pot": 301,
+          "to_call": 101,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 101,
+          "opponent_profile": {
+            "actions_total": 59,
+            "preflop_raise_rate": 0.22580645161290322,
+            "aggression": 0.3050847457627119,
+            "raise_rate": 0.3050847457627119,
+            "fold_rate": 0.1864406779661017
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 52,
+      "candidate_net_chips": 240,
+      "baseline_net_chips": -50,
+      "delta_net_chips": 290,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 52,
+        "decision": 0,
+        "candidate": {
+          "hand": 52,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            0,
+            23
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 107,
+            "preflop_raise_rate": 0.3137254901960784,
+            "aggression": 0.2803738317757009,
+            "raise_rate": 0.2803738317757009,
+            "fold_rate": 0.2336448598130841
+          }
+        },
+        "baseline": {
+          "hand": 52,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            0,
+            23
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 115,
+            "preflop_raise_rate": 0.3076923076923077,
+            "aggression": 0.25217391304347825,
+            "raise_rate": 0.25217391304347825,
+            "fold_rate": 0.21739130434782608
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 59,
+      "candidate_net_chips": 323,
+      "baseline_net_chips": 100,
+      "delta_net_chips": 223,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 59,
+        "decision": 1,
+        "candidate": {
+          "hand": 59,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 430,
+          "advised_action": 430,
+          "final_action": 430,
+          "cards": [
+            19,
+            17
+          ],
+          "board": [
+            21,
+            31,
+            8
+          ],
+          "pot": 646,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 121,
+            "preflop_raise_rate": 0.3050847457627119,
+            "aggression": 0.2809917355371901,
+            "raise_rate": 0.2809917355371901,
+            "fold_rate": 0.24793388429752067
+          }
+        },
+        "baseline": null
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 25,
+      "candidate_net_chips": 320,
+      "baseline_net_chips": 100,
+      "delta_net_chips": 220,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 25,
+        "decision": 1,
+        "candidate": {
+          "hand": 25,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            34,
+            45
+          ],
+          "board": [
+            26,
+            40,
+            10
+          ],
+          "pot": 640,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 47,
+            "preflop_raise_rate": 0.2692307692307692,
+            "aggression": 0.23404255319148937,
+            "raise_rate": 0.23404255319148937,
+            "fold_rate": 0.2553191489361702
+          }
+        },
+        "baseline": null
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 49,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": -100,
+      "delta_net_chips": 200,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 49,
+        "decision": 1,
+        "candidate": {
+          "hand": 49,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 200,
+          "final_action": 200,
+          "cards": [
+            1,
+            25
+          ],
+          "board": [
+            30,
+            43,
+            22
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 102,
+            "preflop_raise_rate": 0.30612244897959184,
+            "aggression": 0.27450980392156865,
+            "raise_rate": 0.27450980392156865,
+            "fold_rate": 0.23529411764705882
+          }
+        },
+        "baseline": {
+          "hand": 49,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            1,
+            25
+          ],
+          "board": [
+            30,
+            43,
+            22
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 105,
+            "preflop_raise_rate": 0.30612244897959184,
+            "aggression": 0.26666666666666666,
+            "raise_rate": 0.26666666666666666,
+            "fold_rate": 0.21904761904761905
+          }
+        }
+      }
+    }
+  ],
+  "action_diff_rows": [
+    {
+      "leg": "forward",
+      "hand": 28,
+      "decision": 3,
+      "candidate": {
+        "hand": 28,
+        "decision": 3,
+        "stage": "turn",
+        "rule_action": -1,
+        "advised_action": 503,
+        "final_action": 503,
+        "cards": [
+          4,
+          45
+        ],
+        "board": [
+          35,
+          15,
+          27,
+          29
+        ],
+        "pot": 301,
+        "to_call": 101,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 101,
+        "opponent_profile": {
+          "actions_total": 59,
+          "preflop_raise_rate": 0.22580645161290322,
+          "aggression": 0.3050847457627119,
+          "raise_rate": 0.3050847457627119,
+          "fold_rate": 0.1864406779661017
+        }
+      },
+      "baseline": {
+        "hand": 28,
+        "decision": 3,
+        "stage": "turn",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          4,
+          45
+        ],
+        "board": [
+          35,
+          15,
+          27,
+          29
+        ],
+        "pot": 301,
+        "to_call": 101,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 101,
+        "opponent_profile": {
+          "actions_total": 59,
+          "preflop_raise_rate": 0.22580645161290322,
+          "aggression": 0.3050847457627119,
+          "raise_rate": 0.3050847457627119,
+          "fold_rate": 0.1864406779661017
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 34,
+      "decision": 0,
+      "candidate": {
+        "hand": 34,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 656,
+        "advised_action": 656,
+        "final_action": 756,
+        "cards": [
+          48,
+          25
+        ],
+        "board": [],
+        "pot": 413,
+        "to_call": 213,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 313,
+        "opponent_profile": {
+          "actions_total": 75,
+          "preflop_raise_rate": 0.21621621621621623,
+          "aggression": 0.25333333333333335,
+          "raise_rate": 0.25333333333333335,
+          "fold_rate": 0.22666666666666666
+        }
+      },
+      "baseline": {
+        "hand": 34,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 647,
+        "advised_action": 647,
+        "final_action": 747,
+        "cards": [
+          48,
+          25
+        ],
+        "board": [],
+        "pot": 409,
+        "to_call": 209,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 309,
+        "opponent_profile": {
+          "actions_total": 74,
+          "preflop_raise_rate": 0.21621621621621623,
+          "aggression": 0.25675675675675674,
+          "raise_rate": 0.25675675675675674,
+          "fold_rate": 0.21621621621621623
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 36,
+      "decision": 0,
+      "candidate": {
+        "hand": 36,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          24,
+          6
+        ],
+        "board": [],
+        "pot": 410,
+        "to_call": 210,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 310,
+        "opponent_profile": {
+          "actions_total": 81,
+          "preflop_raise_rate": 0.25,
+          "aggression": 0.2716049382716049,
+          "raise_rate": 0.2716049382716049,
+          "fold_rate": 0.2222222222222222
+        }
+      },
+      "baseline": {
+        "hand": 36,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          24,
+          6
+        ],
+        "board": [],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 80,
+          "preflop_raise_rate": 0.225,
+          "aggression": 0.2625,
+          "raise_rate": 0.2625,
+          "fold_rate": 0.2125
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 36,
+      "decision": 1,
+      "candidate": null,
+      "baseline": {
+        "hand": 36,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          24,
+          6
+        ],
+        "board": [
+          44,
+          29,
+          2
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 80,
+          "preflop_raise_rate": 0.225,
+          "aggression": 0.2625,
+          "raise_rate": 0.2625,
+          "fold_rate": 0.2125
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 36,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 36,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          24,
+          6
+        ],
+        "board": [
+          44,
+          29,
+          2,
+          51
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 81,
+          "preflop_raise_rate": 0.225,
+          "aggression": 0.25925925925925924,
+          "raise_rate": 0.25925925925925924,
+          "fold_rate": 0.20987654320987653
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 36,
+      "decision": 3,
+      "candidate": null,
+      "baseline": {
+        "hand": 36,
+        "decision": 3,
+        "stage": "turn",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          24,
+          6
+        ],
+        "board": [
+          44,
+          29,
+          2,
+          51
+        ],
+        "pot": 301,
+        "to_call": 101,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 101,
+        "opponent_profile": {
+          "actions_total": 82,
+          "preflop_raise_rate": 0.225,
+          "aggression": 0.2682926829268293,
+          "raise_rate": 0.2682926829268293,
+          "fold_rate": 0.2073170731707317
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 38,
+      "decision": 1,
+      "candidate": {
+        "hand": 38,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 195,
+        "advised_action": 195,
+        "final_action": 195,
+        "cards": [
+          12,
+          8
+        ],
+        "board": [
+          13,
+          10,
+          33
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 84,
+          "preflop_raise_rate": 0.23809523809523808,
+          "aggression": 0.27380952380952384,
+          "raise_rate": 0.27380952380952384,
+          "fold_rate": 0.21428571428571427
+        }
+      },
+      "baseline": {
+        "hand": 38,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 199,
+        "advised_action": 199,
+        "final_action": 199,
+        "cards": [
+          12,
+          8
+        ],
+        "board": [
+          13,
+          10,
+          33
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 85,
+          "preflop_raise_rate": 0.21428571428571427,
+          "aggression": 0.27058823529411763,
+          "raise_rate": 0.27058823529411763,
+          "fold_rate": 0.2
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 48,
+      "decision": 1,
+      "candidate": {
+        "hand": 48,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          35,
+          48
+        ],
+        "board": [
+          31,
+          22,
+          1
+        ],
+        "pot": 1662,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 105,
+          "preflop_raise_rate": 0.2692307692307692,
+          "aggression": 0.2857142857142857,
+          "raise_rate": 0.2857142857142857,
+          "fold_rate": 0.21904761904761905
+        }
+      },
+      "baseline": {
+        "hand": 48,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 1080,
+        "advised_action": 1080,
+        "final_action": 1080,
+        "cards": [
+          35,
+          48
+        ],
+        "board": [
+          31,
+          22,
+          1
+        ],
+        "pot": 1662,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 106,
+          "preflop_raise_rate": 0.23076923076923078,
+          "aggression": 0.27358490566037735,
+          "raise_rate": 0.27358490566037735,
+          "fold_rate": 0.20754716981132076
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 48,
+      "decision": 2,
+      "candidate": {
+        "hand": 48,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 1802,
+        "advised_action": 1802,
+        "final_action": 1802,
+        "cards": [
+          35,
+          48
+        ],
+        "board": [
+          31,
+          22,
+          1,
+          50
+        ],
+        "pot": 1662,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 106,
+          "preflop_raise_rate": 0.2692307692307692,
+          "aggression": 0.2830188679245283,
+          "raise_rate": 0.2830188679245283,
+          "fold_rate": 0.2169811320754717
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "forward",
+      "hand": 51,
+      "decision": 0,
+      "candidate": {
+        "hand": 51,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          34,
+          42
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 114,
+          "preflop_raise_rate": 0.25925925925925924,
+          "aggression": 0.2719298245614035,
+          "raise_rate": 0.2719298245614035,
+          "fold_rate": 0.21052631578947367
+        }
+      },
+      "baseline": {
+        "hand": 51,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 260,
+        "advised_action": 260,
+        "final_action": 310,
+        "cards": [
+          34,
+          42
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 114,
+          "preflop_raise_rate": 0.2222222222222222,
+          "aggression": 0.2631578947368421,
+          "raise_rate": 0.2631578947368421,
+          "fold_rate": 0.20175438596491227
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 55,
+      "decision": 0,
+      "candidate": {
+        "hand": 55,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          9,
+          23
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 121,
+          "preflop_raise_rate": 0.2542372881355932,
+          "aggression": 0.2809917355371901,
+          "raise_rate": 0.2809917355371901,
+          "fold_rate": 0.21487603305785125
+        }
+      },
+      "baseline": {
+        "hand": 55,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          9,
+          23
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 121,
+          "preflop_raise_rate": 0.22033898305084745,
+          "aggression": 0.2727272727272727,
+          "raise_rate": 0.2727272727272727,
+          "fold_rate": 0.2066115702479339
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 55,
+      "decision": 1,
+      "candidate": null,
+      "baseline": {
+        "hand": 55,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 109,
+        "advised_action": 109,
+        "final_action": 109,
+        "cards": [
+          9,
+          23
+        ],
+        "board": [
+          33,
+          46,
+          22
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 123,
+          "preflop_raise_rate": 0.21666666666666667,
+          "aggression": 0.2682926829268293,
+          "raise_rate": 0.2682926829268293,
+          "fold_rate": 0.2032520325203252
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 58,
+      "decision": 1,
+      "candidate": {
+        "hand": 58,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          30,
+          3
+        ],
+        "board": [
+          5,
+          36,
+          0
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 125,
+          "preflop_raise_rate": 0.24193548387096775,
+          "aggression": 0.28,
+          "raise_rate": 0.28,
+          "fold_rate": 0.216
+        }
+      },
+      "baseline": {
+        "hand": 58,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 130,
+        "advised_action": 130,
+        "final_action": 130,
+        "cards": [
+          30,
+          3
+        ],
+        "board": [
+          5,
+          36,
+          0
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 128,
+          "preflop_raise_rate": 0.20634920634920634,
+          "aggression": 0.265625,
+          "raise_rate": 0.265625,
+          "fold_rate": 0.2109375
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 58,
+      "decision": 2,
+      "candidate": {
+        "hand": 58,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          30,
+          3
+        ],
+        "board": [
+          5,
+          36,
+          0
+        ],
+        "pot": 317,
+        "to_call": 117,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 117,
+        "opponent_profile": {
+          "actions_total": 126,
+          "preflop_raise_rate": 0.24193548387096775,
+          "aggression": 0.2857142857142857,
+          "raise_rate": 0.2857142857142857,
+          "fold_rate": 0.21428571428571427
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "forward",
+      "hand": 60,
+      "decision": 0,
+      "candidate": {
+        "hand": 60,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          9,
+          35
+        ],
+        "board": [],
+        "pot": 432,
+        "to_call": 232,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 332,
+        "opponent_profile": {
+          "actions_total": 128,
+          "preflop_raise_rate": 0.265625,
+          "aggression": 0.296875,
+          "raise_rate": 0.296875,
+          "fold_rate": 0.2109375
+        }
+      },
+      "baseline": {
+        "hand": 60,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          9,
+          35
+        ],
+        "board": [],
+        "pot": 432,
+        "to_call": 232,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 332,
+        "opponent_profile": {
+          "actions_total": 131,
+          "preflop_raise_rate": 0.23076923076923078,
+          "aggression": 0.2748091603053435,
+          "raise_rate": 0.2748091603053435,
+          "fold_rate": 0.21374045801526717
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 60,
+      "decision": 1,
+      "candidate": {
+        "hand": 60,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          9,
+          35
+        ],
+        "board": [
+          19,
+          41,
+          2
+        ],
+        "pot": 664,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 128,
+          "preflop_raise_rate": 0.265625,
+          "aggression": 0.296875,
+          "raise_rate": 0.296875,
+          "fold_rate": 0.2109375
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "forward",
+      "hand": 60,
+      "decision": 2,
+      "candidate": {
+        "hand": 60,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          9,
+          35
+        ],
+        "board": [
+          19,
+          41,
+          2
+        ],
+        "pot": 1249,
+        "to_call": 585,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 585,
+        "opponent_profile": {
+          "actions_total": 129,
+          "preflop_raise_rate": 0.265625,
+          "aggression": 0.3023255813953488,
+          "raise_rate": 0.3023255813953488,
+          "fold_rate": 0.20930232558139536
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "forward",
+      "hand": 63,
+      "decision": 0,
+      "candidate": {
+        "hand": 63,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 638,
+        "advised_action": 638,
+        "final_action": 688,
+        "cards": [
+          32,
+          20
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 134,
+          "preflop_raise_rate": 0.2727272727272727,
+          "aggression": 0.29850746268656714,
+          "raise_rate": 0.29850746268656714,
+          "fold_rate": 0.20149253731343283
+        }
+      },
+      "baseline": {
+        "hand": 63,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 260,
+        "advised_action": 260,
+        "final_action": 310,
+        "cards": [
+          32,
+          20
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 136,
+          "preflop_raise_rate": 0.23880597014925373,
+          "aggression": 0.27205882352941174,
+          "raise_rate": 0.27205882352941174,
+          "fold_rate": 0.20588235294117646
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 7,
+      "decision": 1,
+      "candidate": {
+        "hand": 7,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 200,
+        "final_action": 200,
+        "cards": [
+          15,
+          5
+        ],
+        "board": [
+          51,
+          44,
+          11
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 10,
+          "preflop_raise_rate": 0.5,
+          "aggression": 0.3,
+          "raise_rate": 0.3,
+          "fold_rate": 0.2
+        }
+      },
+      "baseline": {
+        "hand": 7,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          15,
+          5
+        ],
+        "board": [
+          51,
+          44,
+          11
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 10,
+          "preflop_raise_rate": 0.5,
+          "aggression": 0.3,
+          "raise_rate": 0.3,
+          "fold_rate": 0.2
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 7,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 7,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          15,
+          5
+        ],
+        "board": [
+          51,
+          44,
+          11,
+          45
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 11,
+          "preflop_raise_rate": 0.5,
+          "aggression": 0.2727272727272727,
+          "raise_rate": 0.2727272727272727,
+          "fold_rate": 0.18181818181818182
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 7,
+      "decision": 3,
+      "candidate": null,
+      "baseline": {
+        "hand": 7,
+        "decision": 3,
+        "stage": "river",
+        "rule_action": 184,
+        "advised_action": 184,
+        "final_action": 184,
+        "cards": [
+          15,
+          5
+        ],
+        "board": [
+          51,
+          44,
+          11,
+          45,
+          46
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 12,
+          "preflop_raise_rate": 0.5,
+          "aggression": 0.25,
+          "raise_rate": 0.25,
+          "fold_rate": 0.16666666666666666
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 10,
+      "decision": 1,
+      "candidate": {
+        "hand": 10,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 101,
+        "final_action": 101,
+        "cards": [
+          28,
+          4
+        ],
+        "board": [
+          50,
+          14,
+          35
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 16,
+          "preflop_raise_rate": 0.4,
+          "aggression": 0.25,
+          "raise_rate": 0.25,
+          "fold_rate": 0.25
+        }
+      },
+      "baseline": {
+        "hand": 10,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          28,
+          4
+        ],
+        "board": [
+          50,
+          14,
+          35
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 18,
+          "preflop_raise_rate": 0.4,
+          "aggression": 0.2222222222222222,
+          "raise_rate": 0.2222222222222222,
+          "fold_rate": 0.16666666666666666
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 10,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 10,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 101,
+        "advised_action": 101,
+        "final_action": 101,
+        "cards": [
+          28,
+          4
+        ],
+        "board": [
+          50,
+          14,
+          35,
+          0
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 19,
+          "preflop_raise_rate": 0.4,
+          "aggression": 0.21052631578947367,
+          "raise_rate": 0.21052631578947367,
+          "fold_rate": 0.15789473684210525
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 11,
+      "decision": 1,
+      "candidate": {
+        "hand": 11,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 136,
+        "advised_action": 136,
+        "final_action": 136,
+        "cards": [
+          0,
+          20
+        ],
+        "board": [
+          11,
+          39,
+          21
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 18,
+          "preflop_raise_rate": 0.36363636363636365,
+          "aggression": 0.2222222222222222,
+          "raise_rate": 0.2222222222222222,
+          "fold_rate": 0.2777777777777778
+        }
+      },
+      "baseline": {
+        "hand": 11,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 137,
+        "advised_action": 137,
+        "final_action": 137,
+        "cards": [
+          0,
+          20
+        ],
+        "board": [
+          11,
+          39,
+          21
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 21,
+          "preflop_raise_rate": 0.36363636363636365,
+          "aggression": 0.19047619047619047,
+          "raise_rate": 0.19047619047619047,
+          "fold_rate": 0.19047619047619047
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 12,
+      "decision": 1,
+      "candidate": {
+        "hand": 12,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 200,
+        "final_action": 200,
+        "cards": [
+          43,
+          0
+        ],
+        "board": [
+          51,
+          19,
+          23
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 21,
+          "preflop_raise_rate": 0.3333333333333333,
+          "aggression": 0.19047619047619047,
+          "raise_rate": 0.19047619047619047,
+          "fold_rate": 0.2857142857142857
+        }
+      },
+      "baseline": {
+        "hand": 12,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          43,
+          0
+        ],
+        "board": [
+          51,
+          19,
+          23
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 24,
+          "preflop_raise_rate": 0.3333333333333333,
+          "aggression": 0.16666666666666666,
+          "raise_rate": 0.16666666666666666,
+          "fold_rate": 0.20833333333333334
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 12,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 12,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 276,
+        "advised_action": 276,
+        "final_action": 276,
+        "cards": [
+          43,
+          0
+        ],
+        "board": [
+          51,
+          19,
+          23,
+          39
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 25,
+          "preflop_raise_rate": 0.3333333333333333,
+          "aggression": 0.16,
+          "raise_rate": 0.16,
+          "fold_rate": 0.2
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 13,
+      "decision": 1,
+      "candidate": {
+        "hand": 13,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          5,
+          6
+        ],
+        "board": [
+          8,
+          34,
+          44
+        ],
+        "pot": 640,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 24,
+          "preflop_raise_rate": 0.2857142857142857,
+          "aggression": 0.16666666666666666,
+          "raise_rate": 0.16666666666666666,
+          "fold_rate": 0.2916666666666667
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 13,
+      "decision": 2,
+      "candidate": {
+        "hand": 13,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          5,
+          6
+        ],
+        "board": [
+          8,
+          34,
+          44
+        ],
+        "pot": 991,
+        "to_call": 351,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 351,
+        "opponent_profile": {
+          "actions_total": 25,
+          "preflop_raise_rate": 0.2857142857142857,
+          "aggression": 0.2,
+          "raise_rate": 0.2,
+          "fold_rate": 0.28
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 15,
+      "decision": 1,
+      "candidate": {
+        "hand": 15,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 526,
+        "final_action": 526,
+        "cards": [
+          14,
+          35
+        ],
+        "board": [
+          50,
+          0,
+          18
+        ],
+        "pot": 526,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 30,
+          "preflop_raise_rate": 0.3125,
+          "aggression": 0.2,
+          "raise_rate": 0.2,
+          "fold_rate": 0.26666666666666666
+        }
+      },
+      "baseline": {
+        "hand": 15,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          14,
+          35
+        ],
+        "board": [
+          50,
+          0,
+          18
+        ],
+        "pot": 530,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 33,
+          "preflop_raise_rate": 0.3125,
+          "aggression": 0.15151515151515152,
+          "raise_rate": 0.15151515151515152,
+          "fold_rate": 0.24242424242424243
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 15,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 15,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          14,
+          35
+        ],
+        "board": [
+          50,
+          0,
+          18,
+          9
+        ],
+        "pot": 530,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 34,
+          "preflop_raise_rate": 0.3125,
+          "aggression": 0.14705882352941177,
+          "raise_rate": 0.14705882352941177,
+          "fold_rate": 0.23529411764705882
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 15,
+      "decision": 3,
+      "candidate": null,
+      "baseline": {
+        "hand": 15,
+        "decision": 3,
+        "stage": "turn",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          14,
+          35
+        ],
+        "board": [
+          50,
+          0,
+          18,
+          9
+        ],
+        "pot": 674,
+        "to_call": 144,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 144,
+        "opponent_profile": {
+          "actions_total": 35,
+          "preflop_raise_rate": 0.3125,
+          "aggression": 0.17142857142857143,
+          "raise_rate": 0.17142857142857143,
+          "fold_rate": 0.22857142857142856
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 18,
+      "decision": 1,
+      "candidate": {
+        "hand": 18,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 101,
+        "advised_action": 101,
+        "final_action": 101,
+        "cards": [
+          21,
+          35
+        ],
+        "board": [
+          50,
+          27,
+          32
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 36,
+          "preflop_raise_rate": 0.3,
+          "aggression": 0.19444444444444445,
+          "raise_rate": 0.19444444444444445,
+          "fold_rate": 0.2777777777777778
+        }
+      },
+      "baseline": {
+        "hand": 18,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 119,
+        "advised_action": 119,
+        "final_action": 119,
+        "cards": [
+          21,
+          35
+        ],
+        "board": [
+          50,
+          27,
+          32
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 40,
+          "preflop_raise_rate": 0.3,
+          "aggression": 0.175,
+          "raise_rate": 0.175,
+          "fold_rate": 0.225
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 25,
+      "decision": 1,
+      "candidate": {
+        "hand": 25,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          34,
+          45
+        ],
+        "board": [
+          26,
+          40,
+          10
+        ],
+        "pot": 640,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 47,
+          "preflop_raise_rate": 0.2692307692307692,
+          "aggression": 0.23404255319148937,
+          "raise_rate": 0.23404255319148937,
+          "fold_rate": 0.2553191489361702
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 25,
+      "decision": 2,
+      "candidate": {
+        "hand": 25,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 537,
+        "advised_action": 537,
+        "final_action": 537,
+        "cards": [
+          34,
+          45
+        ],
+        "board": [
+          26,
+          40,
+          10,
+          32
+        ],
+        "pot": 640,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 48,
+          "preflop_raise_rate": 0.2692307692307692,
+          "aggression": 0.22916666666666666,
+          "raise_rate": 0.22916666666666666,
+          "fold_rate": 0.25
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 26,
+      "decision": 0,
+      "candidate": {
+        "hand": 26,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 288,
+        "advised_action": 288,
+        "final_action": 338,
+        "cards": [
+          38,
+          37
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 49,
+          "preflop_raise_rate": 0.2692307692307692,
+          "aggression": 0.22448979591836735,
+          "raise_rate": 0.22448979591836735,
+          "fold_rate": 0.2653061224489796
+        }
+      },
+      "baseline": {
+        "hand": 26,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 264,
+        "advised_action": 264,
+        "final_action": 314,
+        "cards": [
+          38,
+          37
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 51,
+          "preflop_raise_rate": 0.2692307692307692,
+          "aggression": 0.21568627450980393,
+          "raise_rate": 0.21568627450980393,
+          "fold_rate": 0.23529411764705882
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 26,
+      "decision": 1,
+      "candidate": {
+        "hand": 26,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 535,
+        "advised_action": 535,
+        "final_action": 535,
+        "cards": [
+          38,
+          37
+        ],
+        "board": [
+          7,
+          27,
+          20
+        ],
+        "pot": 676,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 51,
+          "preflop_raise_rate": 0.25925925925925924,
+          "aggression": 0.21568627450980393,
+          "raise_rate": 0.21568627450980393,
+          "fold_rate": 0.2549019607843137
+        }
+      },
+      "baseline": {
+        "hand": 26,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 497,
+        "advised_action": 497,
+        "final_action": 497,
+        "cards": [
+          38,
+          37
+        ],
+        "board": [
+          7,
+          27,
+          20
+        ],
+        "pot": 628,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 53,
+          "preflop_raise_rate": 0.25925925925925924,
+          "aggression": 0.20754716981132076,
+          "raise_rate": 0.20754716981132076,
+          "fold_rate": 0.22641509433962265
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 27,
+      "decision": 1,
+      "candidate": {
+        "hand": 27,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 1135,
+        "advised_action": 1135,
+        "final_action": 1135,
+        "cards": [
+          34,
+          44
+        ],
+        "board": [
+          16,
+          47,
+          49
+        ],
+        "pot": 1474,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 54,
+          "preflop_raise_rate": 0.27586206896551724,
+          "aggression": 0.2222222222222222,
+          "raise_rate": 0.2222222222222222,
+          "fold_rate": 0.25925925925925924
+        }
+      },
+      "baseline": {
+        "hand": 27,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 1134,
+        "advised_action": 1134,
+        "final_action": 1134,
+        "cards": [
+          34,
+          44
+        ],
+        "board": [
+          16,
+          47,
+          49
+        ],
+        "pot": 1474,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 56,
+          "preflop_raise_rate": 0.27586206896551724,
+          "aggression": 0.21428571428571427,
+          "raise_rate": 0.21428571428571427,
+          "fold_rate": 0.23214285714285715
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 29,
+      "decision": 2,
+      "candidate": {
+        "hand": 29,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          4,
+          26
+        ],
+        "board": [
+          13,
+          25,
+          49
+        ],
+        "pot": 309,
+        "to_call": 109,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 109,
+        "opponent_profile": {
+          "actions_total": 61,
+          "preflop_raise_rate": 0.25806451612903225,
+          "aggression": 0.21311475409836064,
+          "raise_rate": 0.21311475409836064,
+          "fold_rate": 0.26229508196721313
+        }
+      },
+      "baseline": {
+        "hand": 29,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          4,
+          26
+        ],
+        "board": [
+          13,
+          25,
+          49,
+          18
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 63,
+          "preflop_raise_rate": 0.25806451612903225,
+          "aggression": 0.19047619047619047,
+          "raise_rate": 0.19047619047619047,
+          "fold_rate": 0.23809523809523808
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 29,
+      "decision": 3,
+      "candidate": null,
+      "baseline": {
+        "hand": 29,
+        "decision": 3,
+        "stage": "turn",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          4,
+          26
+        ],
+        "board": [
+          13,
+          25,
+          49,
+          18
+        ],
+        "pot": 301,
+        "to_call": 101,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 101,
+        "opponent_profile": {
+          "actions_total": 64,
+          "preflop_raise_rate": 0.25806451612903225,
+          "aggression": 0.203125,
+          "raise_rate": 0.203125,
+          "fold_rate": 0.234375
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 34,
+      "decision": 0,
+      "candidate": {
+        "hand": 34,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 263,
+        "advised_action": 263,
+        "final_action": 313,
+        "cards": [
+          44,
+          32
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 68,
+          "preflop_raise_rate": 0.29411764705882354,
+          "aggression": 0.2647058823529412,
+          "raise_rate": 0.2647058823529412,
+          "fold_rate": 0.23529411764705882
+        }
+      },
+      "baseline": {
+        "hand": 34,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 259,
+        "advised_action": 259,
+        "final_action": 309,
+        "cards": [
+          44,
+          32
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 71,
+          "preflop_raise_rate": 0.29411764705882354,
+          "aggression": 0.2535211267605634,
+          "raise_rate": 0.2535211267605634,
+          "fold_rate": 0.2112676056338028
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 34,
+      "decision": 2,
+      "candidate": {
+        "hand": 34,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          44,
+          32
+        ],
+        "board": [
+          39,
+          41,
+          22
+        ],
+        "pot": 1512,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 70,
+          "preflop_raise_rate": 0.3142857142857143,
+          "aggression": 0.2714285714285714,
+          "raise_rate": 0.2714285714285714,
+          "fold_rate": 0.22857142857142856
+        }
+      },
+      "baseline": {
+        "hand": 34,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": 821,
+        "advised_action": 821,
+        "final_action": 821,
+        "cards": [
+          44,
+          32
+        ],
+        "board": [
+          39,
+          41,
+          22
+        ],
+        "pot": 1494,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 73,
+          "preflop_raise_rate": 0.3142857142857143,
+          "aggression": 0.2602739726027397,
+          "raise_rate": 0.2602739726027397,
+          "fold_rate": 0.2054794520547945
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 34,
+      "decision": 3,
+      "candidate": {
+        "hand": 34,
+        "decision": 3,
+        "stage": "turn",
+        "rule_action": 389,
+        "advised_action": 389,
+        "final_action": 389,
+        "cards": [
+          44,
+          32
+        ],
+        "board": [
+          39,
+          41,
+          22,
+          42
+        ],
+        "pot": 1512,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 71,
+          "preflop_raise_rate": 0.3142857142857143,
+          "aggression": 0.2676056338028169,
+          "raise_rate": 0.2676056338028169,
+          "fold_rate": 0.22535211267605634
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 36,
+      "decision": 1,
+      "candidate": {
+        "hand": 36,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 200,
+        "final_action": 200,
+        "cards": [
+          41,
+          16
+        ],
+        "board": [
+          44,
+          29,
+          2
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 77,
+          "preflop_raise_rate": 0.3157894736842105,
+          "aggression": 0.2727272727272727,
+          "raise_rate": 0.2727272727272727,
+          "fold_rate": 0.22077922077922077
+        }
+      },
+      "baseline": {
+        "hand": 36,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          41,
+          16
+        ],
+        "board": [
+          44,
+          29,
+          2
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 79,
+          "preflop_raise_rate": 0.3157894736842105,
+          "aggression": 0.26582278481012656,
+          "raise_rate": 0.26582278481012656,
+          "fold_rate": 0.20253164556962025
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 36,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 36,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 101,
+        "advised_action": 101,
+        "final_action": 101,
+        "cards": [
+          41,
+          16
+        ],
+        "board": [
+          44,
+          29,
+          2,
+          51
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 80,
+          "preflop_raise_rate": 0.3157894736842105,
+          "aggression": 0.2625,
+          "raise_rate": 0.2625,
+          "fold_rate": 0.2
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 39,
+      "decision": 0,
+      "candidate": {
+        "hand": 39,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          38,
+          0
+        ],
+        "board": [],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 81,
+          "preflop_raise_rate": 0.3,
+          "aggression": 0.25925925925925924,
+          "raise_rate": 0.25925925925925924,
+          "fold_rate": 0.2345679012345679
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 39,
+      "decision": 1,
+      "candidate": {
+        "hand": 39,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          38,
+          0
+        ],
+        "board": [
+          16,
+          42,
+          26
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 81,
+          "preflop_raise_rate": 0.3,
+          "aggression": 0.25925925925925924,
+          "raise_rate": 0.25925925925925924,
+          "fold_rate": 0.2345679012345679
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 39,
+      "decision": 2,
+      "candidate": {
+        "hand": 39,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          38,
+          0
+        ],
+        "board": [
+          16,
+          42,
+          26
+        ],
+        "pot": 318,
+        "to_call": 118,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 118,
+        "opponent_profile": {
+          "actions_total": 82,
+          "preflop_raise_rate": 0.3,
+          "aggression": 0.2682926829268293,
+          "raise_rate": 0.2682926829268293,
+          "fold_rate": 0.23170731707317074
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 40,
+      "decision": 0,
+      "candidate": {
+        "hand": 40,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          25,
+          45
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 82,
+          "preflop_raise_rate": 0.3,
+          "aggression": 0.2682926829268293,
+          "raise_rate": 0.2682926829268293,
+          "fold_rate": 0.23170731707317074
+        }
+      },
+      "baseline": {
+        "hand": 40,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 260,
+        "advised_action": 260,
+        "final_action": 310,
+        "cards": [
+          25,
+          45
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 84,
+          "preflop_raise_rate": 0.3,
+          "aggression": 0.25,
+          "raise_rate": 0.25,
+          "fold_rate": 0.2261904761904762
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 40,
+      "decision": 2,
+      "candidate": {
+        "hand": 40,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": 192,
+        "advised_action": 192,
+        "final_action": 192,
+        "cards": [
+          25,
+          45
+        ],
+        "board": [
+          41,
+          46,
+          4
+        ],
+        "pot": 640,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 84,
+          "preflop_raise_rate": 0.3170731707317073,
+          "aggression": 0.27380952380952384,
+          "raise_rate": 0.27380952380952384,
+          "fold_rate": 0.2261904761904762
+        }
+      },
+      "baseline": {
+        "hand": 40,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": 446,
+        "advised_action": 446,
+        "final_action": 446,
+        "cards": [
+          25,
+          45
+        ],
+        "board": [
+          41,
+          46,
+          4
+        ],
+        "pot": 1488,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 86,
+          "preflop_raise_rate": 0.3170731707317073,
+          "aggression": 0.2558139534883721,
+          "raise_rate": 0.2558139534883721,
+          "fold_rate": 0.22093023255813954
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 41,
+      "decision": 1,
+      "candidate": {
+        "hand": 41,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 200,
+        "final_action": 200,
+        "cards": [
+          34,
+          26
+        ],
+        "board": [
+          22,
+          20,
+          11
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 86,
+          "preflop_raise_rate": 0.30952380952380953,
+          "aggression": 0.26744186046511625,
+          "raise_rate": 0.26744186046511625,
+          "fold_rate": 0.23255813953488372
+        }
+      },
+      "baseline": {
+        "hand": 41,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          34,
+          26
+        ],
+        "board": [
+          22,
+          20,
+          11
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 88,
+          "preflop_raise_rate": 0.30952380952380953,
+          "aggression": 0.25,
+          "raise_rate": 0.25,
+          "fold_rate": 0.22727272727272727
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 42,
+      "decision": 1,
+      "candidate": {
+        "hand": 42,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 130,
+        "advised_action": 130,
+        "final_action": 130,
+        "cards": [
+          41,
+          27
+        ],
+        "board": [
+          7,
+          25,
+          46
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 89,
+          "preflop_raise_rate": 0.3023255813953488,
+          "aggression": 0.2696629213483146,
+          "raise_rate": 0.2696629213483146,
+          "fold_rate": 0.2247191011235955
+        }
+      },
+      "baseline": {
+        "hand": 42,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 133,
+        "advised_action": 133,
+        "final_action": 133,
+        "cards": [
+          41,
+          27
+        ],
+        "board": [
+          7,
+          25,
+          46
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 91,
+          "preflop_raise_rate": 0.3023255813953488,
+          "aggression": 0.25274725274725274,
+          "raise_rate": 0.25274725274725274,
+          "fold_rate": 0.21978021978021978
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 45,
+      "decision": 1,
+      "candidate": {
+        "hand": 45,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 620,
+        "final_action": 620,
+        "cards": [
+          31,
+          21
+        ],
+        "board": [
+          26,
+          6,
+          43
+        ],
+        "pot": 620,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 97,
+          "preflop_raise_rate": 0.30434782608695654,
+          "aggression": 0.26804123711340205,
+          "raise_rate": 0.26804123711340205,
+          "fold_rate": 0.2268041237113402
+        }
+      },
+      "baseline": {
+        "hand": 45,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          31,
+          21
+        ],
+        "board": [
+          26,
+          6,
+          43
+        ],
+        "pot": 620,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 99,
+          "preflop_raise_rate": 0.30434782608695654,
+          "aggression": 0.25252525252525254,
+          "raise_rate": 0.25252525252525254,
+          "fold_rate": 0.2222222222222222
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 45,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 45,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          31,
+          21
+        ],
+        "board": [
+          26,
+          6,
+          43
+        ],
+        "pot": 806,
+        "to_call": 186,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 186,
+        "opponent_profile": {
+          "actions_total": 100,
+          "preflop_raise_rate": 0.30434782608695654,
+          "aggression": 0.26,
+          "raise_rate": 0.26,
+          "fold_rate": 0.22
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 48,
+      "decision": 2,
+      "candidate": {
+        "hand": 48,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          47,
+          43
+        ],
+        "board": [
+          31,
+          22,
+          1
+        ],
+        "pot": 3573,
+        "to_call": 1911,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 1911,
+        "opponent_profile": {
+          "actions_total": 101,
+          "preflop_raise_rate": 0.3125,
+          "aggression": 0.27722772277227725,
+          "raise_rate": 0.27722772277227725,
+          "fold_rate": 0.2376237623762376
+        }
+      },
+      "baseline": {
+        "hand": 48,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          47,
+          43
+        ],
+        "board": [
+          31,
+          22,
+          1
+        ],
+        "pot": 1662,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 103,
+          "preflop_raise_rate": 0.3125,
+          "aggression": 0.2621359223300971,
+          "raise_rate": 0.2621359223300971,
+          "fold_rate": 0.22330097087378642
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 48,
+      "decision": 3,
+      "candidate": null,
+      "baseline": {
+        "hand": 48,
+        "decision": 3,
+        "stage": "turn",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          47,
+          43
+        ],
+        "board": [
+          31,
+          22,
+          1,
+          50
+        ],
+        "pot": 3442,
+        "to_call": 1780,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 1780,
+        "opponent_profile": {
+          "actions_total": 104,
+          "preflop_raise_rate": 0.3125,
+          "aggression": 0.2692307692307692,
+          "raise_rate": 0.2692307692307692,
+          "fold_rate": 0.22115384615384615
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 49,
+      "decision": 1,
+      "candidate": {
+        "hand": 49,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 200,
+        "final_action": 200,
+        "cards": [
+          1,
+          25
+        ],
+        "board": [
+          30,
+          43,
+          22
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 102,
+          "preflop_raise_rate": 0.30612244897959184,
+          "aggression": 0.27450980392156865,
+          "raise_rate": 0.27450980392156865,
+          "fold_rate": 0.23529411764705882
+        }
+      },
+      "baseline": {
+        "hand": 49,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          1,
+          25
+        ],
+        "board": [
+          30,
+          43,
+          22
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 105,
+          "preflop_raise_rate": 0.30612244897959184,
+          "aggression": 0.26666666666666666,
+          "raise_rate": 0.26666666666666666,
+          "fold_rate": 0.21904761904761905
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 49,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 49,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          1,
+          25
+        ],
+        "board": [
+          30,
+          43,
+          22,
+          28
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 106,
+          "preflop_raise_rate": 0.30612244897959184,
+          "aggression": 0.2641509433962264,
+          "raise_rate": 0.2641509433962264,
+          "fold_rate": 0.2169811320754717
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 49,
+      "decision": 3,
+      "candidate": null,
+      "baseline": {
+        "hand": 49,
+        "decision": 3,
+        "stage": "river",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          1,
+          25
+        ],
+        "board": [
+          30,
+          43,
+          22,
+          28,
+          37
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 107,
+          "preflop_raise_rate": 0.30612244897959184,
+          "aggression": 0.2616822429906542,
+          "raise_rate": 0.2616822429906542,
+          "fold_rate": 0.21495327102803738
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 50,
+      "decision": 0,
+      "candidate": {
+        "hand": 50,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          18,
+          4
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 103,
+          "preflop_raise_rate": 0.30612244897959184,
+          "aggression": 0.27184466019417475,
+          "raise_rate": 0.27184466019417475,
+          "fold_rate": 0.24271844660194175
+        }
+      },
+      "baseline": {
+        "hand": 50,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          18,
+          4
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 108,
+          "preflop_raise_rate": 0.30612244897959184,
+          "aggression": 0.25925925925925924,
+          "raise_rate": 0.25925925925925924,
+          "fold_rate": 0.21296296296296297
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 50,
+      "decision": 1,
+      "candidate": null,
+      "baseline": {
+        "hand": 50,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          18,
+          4
+        ],
+        "board": [
+          44,
+          27,
+          30
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 110,
+          "preflop_raise_rate": 0.3,
+          "aggression": 0.2545454545454545,
+          "raise_rate": 0.2545454545454545,
+          "fold_rate": 0.20909090909090908
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 50,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 50,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 101,
+        "advised_action": 101,
+        "final_action": 101,
+        "cards": [
+          18,
+          4
+        ],
+        "board": [
+          44,
+          27,
+          30,
+          21
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 111,
+          "preflop_raise_rate": 0.3,
+          "aggression": 0.25225225225225223,
+          "raise_rate": 0.25225225225225223,
+          "fold_rate": 0.2072072072072072
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 51,
+      "decision": 1,
+      "candidate": {
+        "hand": 51,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          36,
+          48
+        ],
+        "board": [
+          29,
+          3,
+          13
+        ],
+        "pot": 1644,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 105,
+          "preflop_raise_rate": 0.3137254901960784,
+          "aggression": 0.2761904761904762,
+          "raise_rate": 0.2761904761904762,
+          "fold_rate": 0.23809523809523808
+        }
+      },
+      "baseline": {
+        "hand": 51,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 1068,
+        "advised_action": 1068,
+        "final_action": 1068,
+        "cards": [
+          36,
+          48
+        ],
+        "board": [
+          29,
+          3,
+          13
+        ],
+        "pot": 1644,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 114,
+          "preflop_raise_rate": 0.3076923076923077,
+          "aggression": 0.2543859649122807,
+          "raise_rate": 0.2543859649122807,
+          "fold_rate": 0.21052631578947367
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 51,
+      "decision": 2,
+      "candidate": {
+        "hand": 51,
+        "decision": 2,
+        "stage": "turn",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          36,
+          48
+        ],
+        "board": [
+          29,
+          3,
+          13,
+          10
+        ],
+        "pot": 1644,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 106,
+          "preflop_raise_rate": 0.3137254901960784,
+          "aggression": 0.27358490566037735,
+          "raise_rate": 0.27358490566037735,
+          "fold_rate": 0.2358490566037736
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 51,
+      "decision": 3,
+      "candidate": {
+        "hand": 51,
+        "decision": 3,
+        "stage": "turn",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          36,
+          48
+        ],
+        "board": [
+          29,
+          3,
+          13,
+          10
+        ],
+        "pot": 2087,
+        "to_call": 443,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 443,
+        "opponent_profile": {
+          "actions_total": 107,
+          "preflop_raise_rate": 0.3137254901960784,
+          "aggression": 0.2803738317757009,
+          "raise_rate": 0.2803738317757009,
+          "fold_rate": 0.2336448598130841
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 52,
+      "decision": 0,
+      "candidate": {
+        "hand": 52,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          0,
+          23
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 107,
+          "preflop_raise_rate": 0.3137254901960784,
+          "aggression": 0.2803738317757009,
+          "raise_rate": 0.2803738317757009,
+          "fold_rate": 0.2336448598130841
+        }
+      },
+      "baseline": {
+        "hand": 52,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          0,
+          23
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 115,
+          "preflop_raise_rate": 0.3076923076923077,
+          "aggression": 0.25217391304347825,
+          "raise_rate": 0.25217391304347825,
+          "fold_rate": 0.21739130434782608
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 52,
+      "decision": 1,
+      "candidate": {
+        "hand": 52,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": 620,
+        "final_action": 620,
+        "cards": [
+          0,
+          23
+        ],
+        "board": [
+          24,
+          12,
+          9
+        ],
+        "pot": 340,
+        "to_call": 140,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 140,
+        "opponent_profile": {
+          "actions_total": 109,
+          "preflop_raise_rate": 0.3076923076923077,
+          "aggression": 0.28440366972477066,
+          "raise_rate": 0.28440366972477066,
+          "fold_rate": 0.22935779816513763
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 53,
+      "decision": 1,
+      "candidate": {
+        "hand": 53,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 660,
+        "advised_action": 660,
+        "final_action": 660,
+        "cards": [
+          13,
+          34
+        ],
+        "board": [
+          12,
+          22,
+          35
+        ],
+        "pot": 628,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 111,
+          "preflop_raise_rate": 0.32075471698113206,
+          "aggression": 0.2882882882882883,
+          "raise_rate": 0.2882882882882883,
+          "fold_rate": 0.23423423423423423
+        }
+      },
+      "baseline": {
+        "hand": 53,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 646,
+        "advised_action": 646,
+        "final_action": 646,
+        "cards": [
+          13,
+          34
+        ],
+        "board": [
+          12,
+          22,
+          35
+        ],
+        "pot": 628,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 116,
+          "preflop_raise_rate": 0.32075471698113206,
+          "aggression": 0.25862068965517243,
+          "raise_rate": 0.25862068965517243,
+          "fold_rate": 0.21551724137931033
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 55,
+      "decision": 0,
+      "candidate": null,
+      "baseline": {
+        "hand": 55,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          10,
+          17
+        ],
+        "board": [],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 119,
+          "preflop_raise_rate": 0.32727272727272727,
+          "aggression": 0.2605042016806723,
+          "raise_rate": 0.2605042016806723,
+          "fold_rate": 0.2184873949579832
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 55,
+      "decision": 1,
+      "candidate": null,
+      "baseline": {
+        "hand": 55,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          10,
+          17
+        ],
+        "board": [
+          33,
+          46,
+          22
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 119,
+          "preflop_raise_rate": 0.32727272727272727,
+          "aggression": 0.2605042016806723,
+          "raise_rate": 0.2605042016806723,
+          "fold_rate": 0.2184873949579832
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 55,
+      "decision": 2,
+      "candidate": null,
+      "baseline": {
+        "hand": 55,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          10,
+          17
+        ],
+        "board": [
+          33,
+          46,
+          22
+        ],
+        "pot": 309,
+        "to_call": 109,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 109,
+        "opponent_profile": {
+          "actions_total": 120,
+          "preflop_raise_rate": 0.32727272727272727,
+          "aggression": 0.26666666666666666,
+          "raise_rate": 0.26666666666666666,
+          "fold_rate": 0.21666666666666667
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 57,
+      "decision": 1,
+      "candidate": {
+        "hand": 57,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 210,
+        "advised_action": 210,
+        "final_action": 210,
+        "cards": [
+          34,
+          10
+        ],
+        "board": [
+          33,
+          27,
+          32
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 115,
+          "preflop_raise_rate": 0.32142857142857145,
+          "aggression": 0.28695652173913044,
+          "raise_rate": 0.28695652173913044,
+          "fold_rate": 0.24347826086956523
+        }
+      },
+      "baseline": {
+        "hand": 57,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 662,
+        "advised_action": 662,
+        "final_action": 662,
+        "cards": [
+          34,
+          10
+        ],
+        "board": [
+          33,
+          27,
+          32
+        ],
+        "pot": 620,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 121,
+          "preflop_raise_rate": 0.3392857142857143,
+          "aggression": 0.2727272727272727,
+          "raise_rate": 0.2727272727272727,
+          "fold_rate": 0.21487603305785125
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 58,
+      "decision": 1,
+      "candidate": {
+        "hand": 58,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": 590,
+        "final_action": 590,
+        "cards": [
+          4,
+          35
+        ],
+        "board": [
+          5,
+          36,
+          0
+        ],
+        "pot": 330,
+        "to_call": 130,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 130,
+        "opponent_profile": {
+          "actions_total": 118,
+          "preflop_raise_rate": 0.3157894736842105,
+          "aggression": 0.288135593220339,
+          "raise_rate": 0.288135593220339,
+          "fold_rate": 0.2457627118644068
+        }
+      },
+      "baseline": {
+        "hand": 58,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          4,
+          35
+        ],
+        "board": [
+          5,
+          36,
+          0
+        ],
+        "pot": 330,
+        "to_call": 130,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 130,
+        "opponent_profile": {
+          "actions_total": 124,
+          "preflop_raise_rate": 0.3333333333333333,
+          "aggression": 0.27419354838709675,
+          "raise_rate": 0.27419354838709675,
+          "fold_rate": 0.21774193548387097
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 59,
+      "decision": 1,
+      "candidate": {
+        "hand": 59,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 430,
+        "advised_action": 430,
+        "final_action": 430,
+        "cards": [
+          19,
+          17
+        ],
+        "board": [
+          21,
+          31,
+          8
+        ],
+        "pot": 646,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 121,
+          "preflop_raise_rate": 0.3050847457627119,
+          "aggression": 0.2809917355371901,
+          "raise_rate": 0.2809917355371901,
+          "fold_rate": 0.24793388429752067
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 60,
+      "decision": 1,
+      "candidate": null,
+      "baseline": {
+        "hand": 60,
+        "decision": 1,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          50,
+          40
+        ],
+        "board": [],
+        "pot": 20332,
+        "to_call": 19668,
+        "my_stage_bet": 332,
+        "opponent_stage_bet": 20000,
+        "opponent_profile": {
+          "actions_total": 127,
+          "preflop_raise_rate": 0.3333333333333333,
+          "aggression": 0.2755905511811024,
+          "raise_rate": 0.2677165354330709,
+          "fold_rate": 0.2204724409448819
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 61,
+      "decision": 0,
+      "candidate": {
+        "hand": 61,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          22,
+          45
+        ],
+        "board": [],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 124,
+          "preflop_raise_rate": 0.29508196721311475,
+          "aggression": 0.27419354838709675,
+          "raise_rate": 0.27419354838709675,
+          "fold_rate": 0.25806451612903225
+        }
+      },
+      "baseline": {
+        "hand": 61,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          22,
+          45
+        ],
+        "board": [],
+        "pot": 788,
+        "to_call": 588,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 688,
+        "opponent_profile": {
+          "actions_total": 128,
+          "preflop_raise_rate": 0.3442622950819672,
+          "aggression": 0.28125,
+          "raise_rate": 0.2734375,
+          "fold_rate": 0.21875
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 61,
+      "decision": 1,
+      "candidate": {
+        "hand": 61,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          22,
+          45
+        ],
+        "board": [
+          26,
+          0,
+          16
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 124,
+          "preflop_raise_rate": 0.29508196721311475,
+          "aggression": 0.27419354838709675,
+          "raise_rate": 0.27419354838709675,
+          "fold_rate": 0.25806451612903225
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 61,
+      "decision": 2,
+      "candidate": {
+        "hand": 61,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          22,
+          45
+        ],
+        "board": [
+          26,
+          0,
+          16
+        ],
+        "pot": 456,
+        "to_call": 256,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 256,
+        "opponent_profile": {
+          "actions_total": 125,
+          "preflop_raise_rate": 0.29508196721311475,
+          "aggression": 0.28,
+          "raise_rate": 0.28,
+          "fold_rate": 0.256
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 62,
+      "decision": 0,
+      "candidate": {
+        "hand": 62,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 280,
+        "advised_action": 280,
+        "final_action": 330,
+        "cards": [
+          26,
+          24
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 125,
+          "preflop_raise_rate": 0.29508196721311475,
+          "aggression": 0.28,
+          "raise_rate": 0.28,
+          "fold_rate": 0.256
+        }
+      },
+      "baseline": {
+        "hand": 62,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          26,
+          24
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 128,
+          "preflop_raise_rate": 0.3442622950819672,
+          "aggression": 0.28125,
+          "raise_rate": 0.2734375,
+          "fold_rate": 0.21875
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 63,
+      "decision": 0,
+      "candidate": {
+        "hand": 63,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 644,
+        "advised_action": 644,
+        "final_action": 744,
+        "cards": [
+          14,
+          46
+        ],
+        "board": [],
+        "pot": 410,
+        "to_call": 210,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 310,
+        "opponent_profile": {
+          "actions_total": 127,
+          "preflop_raise_rate": 0.30158730158730157,
+          "aggression": 0.28346456692913385,
+          "raise_rate": 0.28346456692913385,
+          "fold_rate": 0.25984251968503935
+        }
+      },
+      "baseline": {
+        "hand": 63,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          14,
+          46
+        ],
+        "board": [],
+        "pot": 410,
+        "to_call": 210,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 310,
+        "opponent_profile": {
+          "actions_total": 129,
+          "preflop_raise_rate": 0.3548387096774194,
+          "aggression": 0.2868217054263566,
+          "raise_rate": 0.27906976744186046,
+          "fold_rate": 0.21705426356589147
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 63,
+      "decision": 1,
+      "candidate": {
+        "hand": 63,
+        "decision": 1,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          14,
+          46
+        ],
+        "board": [],
+        "pot": 20744,
+        "to_call": 19256,
+        "my_stage_bet": 744,
+        "opponent_stage_bet": 20000,
+        "opponent_profile": {
+          "actions_total": 128,
+          "preflop_raise_rate": 0.3125,
+          "aggression": 0.2890625,
+          "raise_rate": 0.28125,
+          "fold_rate": 0.2578125
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 64,
+      "decision": 0,
+      "candidate": {
+        "hand": 64,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          1,
+          46
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 128,
+          "preflop_raise_rate": 0.3125,
+          "aggression": 0.2890625,
+          "raise_rate": 0.28125,
+          "fold_rate": 0.2578125
+        }
+      },
+      "baseline": {
+        "hand": 64,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          1,
+          46
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 129,
+          "preflop_raise_rate": 0.3548387096774194,
+          "aggression": 0.2868217054263566,
+          "raise_rate": 0.27906976744186046,
+          "fold_rate": 0.21705426356589147
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 64,
+      "decision": 1,
+      "candidate": {
+        "hand": 64,
+        "decision": 1,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          1,
+          46
+        ],
+        "board": [],
+        "pot": 431,
+        "to_call": 231,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 331,
+        "opponent_profile": {
+          "actions_total": 129,
+          "preflop_raise_rate": 0.3230769230769231,
+          "aggression": 0.29457364341085274,
+          "raise_rate": 0.2868217054263566,
+          "fold_rate": 0.2558139534883721
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 65,
+      "decision": 0,
+      "candidate": null,
+      "baseline": {
+        "hand": 65,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          2,
+          1
+        ],
+        "board": [],
+        "pot": 788,
+        "to_call": 588,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 688,
+        "opponent_profile": {
+          "actions_total": 130,
+          "preflop_raise_rate": 0.36507936507936506,
+          "aggression": 0.2923076923076923,
+          "raise_rate": 0.2846153846153846,
+          "fold_rate": 0.2153846153846154
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 66,
+      "decision": 0,
+      "candidate": {
+        "hand": 66,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 0,
+        "advised_action": 0,
+        "final_action": 0,
+        "cards": [
+          6,
+          23
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 130,
+          "preflop_raise_rate": 0.3181818181818182,
+          "aggression": 0.2923076923076923,
+          "raise_rate": 0.2846153846153846,
+          "fold_rate": 0.26153846153846155
+        }
+      },
+      "baseline": {
+        "hand": 66,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          6,
+          23
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 130,
+          "preflop_raise_rate": 0.36507936507936506,
+          "aggression": 0.2923076923076923,
+          "raise_rate": 0.2846153846153846,
+          "fold_rate": 0.2153846153846154
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 66,
+      "decision": 1,
+      "candidate": {
+        "hand": 66,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 229,
+        "advised_action": 229,
+        "final_action": 229,
+        "cards": [
+          6,
+          23
+        ],
+        "board": [
+          5,
+          46,
+          14
+        ],
+        "pot": 200,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 132,
+          "preflop_raise_rate": 0.31343283582089554,
+          "aggression": 0.2878787878787879,
+          "raise_rate": 0.2803030303030303,
+          "fold_rate": 0.25757575757575757
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 67,
+      "decision": 0,
+      "candidate": {
+        "hand": 67,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 798,
+        "advised_action": 798,
+        "final_action": 898,
+        "cards": [
+          46,
+          45
+        ],
+        "board": [],
+        "pot": 411,
+        "to_call": 211,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 311,
+        "opponent_profile": {
+          "actions_total": 134,
+          "preflop_raise_rate": 0.3235294117647059,
+          "aggression": 0.291044776119403,
+          "raise_rate": 0.2835820895522388,
+          "fold_rate": 0.26119402985074625
+        }
+      },
+      "baseline": {
+        "hand": 67,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          46,
+          45
+        ],
+        "board": [],
+        "pot": 411,
+        "to_call": 211,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 311,
+        "opponent_profile": {
+          "actions_total": 131,
+          "preflop_raise_rate": 0.375,
+          "aggression": 0.29770992366412213,
+          "raise_rate": 0.2900763358778626,
+          "fold_rate": 0.21374045801526717
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 67,
+      "decision": 1,
+      "candidate": {
+        "hand": 67,
+        "decision": 1,
+        "stage": "flop",
+        "rule_action": 2065,
+        "advised_action": 2065,
+        "final_action": 2065,
+        "cards": [
+          46,
+          45
+        ],
+        "board": [
+          29,
+          14,
+          33
+        ],
+        "pot": 1796,
+        "to_call": 0,
+        "my_stage_bet": 0,
+        "opponent_stage_bet": 0,
+        "opponent_profile": {
+          "actions_total": 135,
+          "preflop_raise_rate": 0.3188405797101449,
+          "aggression": 0.28888888888888886,
+          "raise_rate": 0.2814814814814815,
+          "fold_rate": 0.25925925925925924
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 67,
+      "decision": 2,
+      "candidate": {
+        "hand": 67,
+        "decision": 2,
+        "stage": "flop",
+        "rule_action": -2,
+        "advised_action": -2,
+        "final_action": -2,
+        "cards": [
+          46,
+          45
+        ],
+        "board": [
+          29,
+          14,
+          33
+        ],
+        "pot": 12740,
+        "to_call": 6814,
+        "my_stage_bet": 2065,
+        "opponent_stage_bet": 8879,
+        "opponent_profile": {
+          "actions_total": 136,
+          "preflop_raise_rate": 0.3188405797101449,
+          "aggression": 0.29411764705882354,
+          "raise_rate": 0.2867647058823529,
+          "fold_rate": 0.25735294117647056
+        }
+      },
+      "baseline": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 68,
+      "decision": 0,
+      "candidate": {
+        "hand": 68,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 260,
+        "advised_action": 260,
+        "final_action": 310,
+        "cards": [
+          45,
+          16
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 137,
+          "preflop_raise_rate": 0.3188405797101449,
+          "aggression": 0.291970802919708,
+          "raise_rate": 0.2846715328467153,
+          "fold_rate": 0.25547445255474455
+        }
+      },
+      "baseline": {
+        "hand": 68,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          45,
+          16
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 131,
+          "preflop_raise_rate": 0.375,
+          "aggression": 0.29770992366412213,
+          "raise_rate": 0.2900763358778626,
+          "fold_rate": 0.21374045801526717
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 69,
+      "decision": 0,
+      "candidate": null,
+      "baseline": {
+        "hand": 69,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          49,
+          41
+        ],
+        "board": [],
+        "pot": 20100,
+        "to_call": 19900,
+        "my_stage_bet": 100,
+        "opponent_stage_bet": 20000,
+        "opponent_profile": {
+          "actions_total": 132,
+          "preflop_raise_rate": 0.38461538461538464,
+          "aggression": 0.30303030303030304,
+          "raise_rate": 0.2878787878787879,
+          "fold_rate": 0.21212121212121213
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 70,
+      "decision": 0,
+      "candidate": {
+        "hand": 70,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": 260,
+        "advised_action": 260,
+        "final_action": 310,
+        "cards": [
+          51,
+          7
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 139,
+          "preflop_raise_rate": 0.30985915492957744,
+          "aggression": 0.28776978417266186,
+          "raise_rate": 0.2805755395683453,
+          "fold_rate": 0.26618705035971224
+        }
+      },
+      "baseline": {
+        "hand": 70,
+        "decision": 0,
+        "stage": "preflop",
+        "rule_action": -1,
+        "advised_action": -1,
+        "final_action": -1,
+        "cards": [
+          51,
+          7
+        ],
+        "board": [],
+        "pot": 150,
+        "to_call": 50,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "opponent_profile": {
+          "actions_total": 132,
+          "preflop_raise_rate": 0.38461538461538464,
+          "aggression": 0.30303030303030304,
+          "raise_rate": 0.2878787878787879,
+          "fold_rate": 0.21212121212121213
+        }
+      }
+    }
+  ],
+  "hand_diff_rows": [
+    {
+      "leg": "swapped",
+      "hand": 60,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": 20000,
+      "delta_net_chips": -19900,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 60,
+        "decision": 1,
+        "candidate": null,
+        "baseline": {
+          "hand": 60,
+          "decision": 1,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            50,
+            40
+          ],
+          "board": [],
+          "pot": 20332,
+          "to_call": 19668,
+          "my_stage_bet": 332,
+          "opponent_stage_bet": 20000,
+          "opponent_profile": {
+            "actions_total": 127,
+            "preflop_raise_rate": 0.3333333333333333,
+            "aggression": 0.2755905511811024,
+            "raise_rate": 0.2677165354330709,
+            "fold_rate": 0.2204724409448819
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 67,
+      "candidate_net_chips": -20000,
+      "baseline_net_chips": -100,
+      "delta_net_chips": -19900,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 67,
+        "decision": 0,
+        "candidate": {
+          "hand": 67,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 798,
+          "advised_action": 798,
+          "final_action": 898,
+          "cards": [
+            46,
+            45
+          ],
+          "board": [],
+          "pot": 411,
+          "to_call": 211,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 311,
+          "opponent_profile": {
+            "actions_total": 134,
+            "preflop_raise_rate": 0.3235294117647059,
+            "aggression": 0.291044776119403,
+            "raise_rate": 0.2835820895522388,
+            "fold_rate": 0.26119402985074625
+          }
+        },
+        "baseline": {
+          "hand": 67,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            46,
+            45
+          ],
+          "board": [],
+          "pot": 411,
+          "to_call": 211,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 311,
+          "opponent_profile": {
+            "actions_total": 131,
+            "preflop_raise_rate": 0.375,
+            "aggression": 0.29770992366412213,
+            "raise_rate": 0.2900763358778626,
+            "fold_rate": 0.21374045801526717
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 51,
+      "candidate_net_chips": -822,
+      "baseline_net_chips": 822,
+      "delta_net_chips": -1644,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 51,
+        "decision": 1,
+        "candidate": {
+          "hand": 51,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            36,
+            48
+          ],
+          "board": [
+            29,
+            3,
+            13
+          ],
+          "pot": 1644,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 105,
+            "preflop_raise_rate": 0.3137254901960784,
+            "aggression": 0.2761904761904762,
+            "raise_rate": 0.2761904761904762,
+            "fold_rate": 0.23809523809523808
+          }
+        },
+        "baseline": {
+          "hand": 51,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 1068,
+          "advised_action": 1068,
+          "final_action": 1068,
+          "cards": [
+            36,
+            48
+          ],
+          "board": [
+            29,
+            3,
+            13
+          ],
+          "pot": 1644,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 114,
+            "preflop_raise_rate": 0.3076923076923077,
+            "aggression": 0.2543859649122807,
+            "raise_rate": 0.2543859649122807,
+            "fold_rate": 0.21052631578947367
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 63,
+      "candidate_net_chips": -744,
+      "baseline_net_chips": -100,
+      "delta_net_chips": -644,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 63,
+        "decision": 0,
+        "candidate": {
+          "hand": 63,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 644,
+          "advised_action": 644,
+          "final_action": 744,
+          "cards": [
+            14,
+            46
+          ],
+          "board": [],
+          "pot": 410,
+          "to_call": 210,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 310,
+          "opponent_profile": {
+            "actions_total": 127,
+            "preflop_raise_rate": 0.30158730158730157,
+            "aggression": 0.28346456692913385,
+            "raise_rate": 0.28346456692913385,
+            "fold_rate": 0.25984251968503935
+          }
+        },
+        "baseline": {
+          "hand": 63,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            14,
+            46
+          ],
+          "board": [],
+          "pot": 410,
+          "to_call": 210,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 310,
+          "opponent_profile": {
+            "actions_total": 129,
+            "preflop_raise_rate": 0.3548387096774194,
+            "aggression": 0.2868217054263566,
+            "raise_rate": 0.27906976744186046,
+            "fold_rate": 0.21705426356589147
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 40,
+      "candidate_net_chips": 320,
+      "baseline_net_chips": 744,
+      "delta_net_chips": -424,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 40,
+        "decision": 0,
+        "candidate": {
+          "hand": 40,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            25,
+            45
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 82,
+            "preflop_raise_rate": 0.3,
+            "aggression": 0.2682926829268293,
+            "raise_rate": 0.2682926829268293,
+            "fold_rate": 0.23170731707317074
+          }
+        },
+        "baseline": {
+          "hand": 40,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 260,
+          "advised_action": 260,
+          "final_action": 310,
+          "cards": [
+            25,
+            45
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 84,
+            "preflop_raise_rate": 0.3,
+            "aggression": 0.25,
+            "raise_rate": 0.25,
+            "fold_rate": 0.2261904761904762
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 13,
+      "candidate_net_chips": -320,
+      "baseline_net_chips": 100,
+      "delta_net_chips": -420,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 13,
+        "decision": 1,
+        "candidate": {
+          "hand": 13,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            5,
+            6
+          ],
+          "board": [
+            8,
+            34,
+            44
+          ],
+          "pot": 640,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 24,
+            "preflop_raise_rate": 0.2857142857142857,
+            "aggression": 0.16666666666666666,
+            "raise_rate": 0.16666666666666666,
+            "fold_rate": 0.2916666666666667
+          }
+        },
+        "baseline": null
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 60,
+      "candidate_net_chips": -332,
+      "baseline_net_chips": -100,
+      "delta_net_chips": -232,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 60,
+        "decision": 0,
+        "candidate": {
+          "hand": 60,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            9,
+            35
+          ],
+          "board": [],
+          "pot": 432,
+          "to_call": 232,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 332,
+          "opponent_profile": {
+            "actions_total": 128,
+            "preflop_raise_rate": 0.265625,
+            "aggression": 0.296875,
+            "raise_rate": 0.296875,
+            "fold_rate": 0.2109375
+          }
+        },
+        "baseline": {
+          "hand": 60,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            9,
+            35
+          ],
+          "board": [],
+          "pot": 432,
+          "to_call": 232,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 332,
+          "opponent_profile": {
+            "actions_total": 131,
+            "preflop_raise_rate": 0.23076923076923078,
+            "aggression": 0.2748091603053435,
+            "raise_rate": 0.2748091603053435,
+            "fold_rate": 0.21374045801526717
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 42,
+      "candidate_net_chips": -310,
+      "baseline_net_chips": -100,
+      "delta_net_chips": -210,
+      "first_action_difference": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 57,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": 310,
+      "delta_net_chips": -210,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 57,
+        "decision": 1,
+        "candidate": {
+          "hand": 57,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 210,
+          "advised_action": 210,
+          "final_action": 210,
+          "cards": [
+            34,
+            10
+          ],
+          "board": [
+            33,
+            27,
+            32
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 115,
+            "preflop_raise_rate": 0.32142857142857145,
+            "aggression": 0.28695652173913044,
+            "raise_rate": 0.28695652173913044,
+            "fold_rate": 0.24347826086956523
+          }
+        },
+        "baseline": {
+          "hand": 57,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 662,
+          "advised_action": 662,
+          "final_action": 662,
+          "cards": [
+            34,
+            10
+          ],
+          "board": [
+            33,
+            27,
+            32
+          ],
+          "pot": 620,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 121,
+            "preflop_raise_rate": 0.3392857142857143,
+            "aggression": 0.2727272727272727,
+            "raise_rate": 0.2727272727272727,
+            "fold_rate": 0.21487603305785125
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 58,
+      "candidate_net_chips": -100,
+      "baseline_net_chips": 100,
+      "delta_net_chips": -200,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 58,
+        "decision": 1,
+        "candidate": {
+          "hand": 58,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            30,
+            3
+          ],
+          "board": [
+            5,
+            36,
+            0
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 125,
+            "preflop_raise_rate": 0.24193548387096775,
+            "aggression": 0.28,
+            "raise_rate": 0.28,
+            "fold_rate": 0.216
+          }
+        },
+        "baseline": {
+          "hand": 58,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 130,
+          "advised_action": 130,
+          "final_action": 130,
+          "cards": [
+            30,
+            3
+          ],
+          "board": [
+            5,
+            36,
+            0
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 128,
+            "preflop_raise_rate": 0.20634920634920634,
+            "aggression": 0.265625,
+            "raise_rate": 0.265625,
+            "fold_rate": 0.2109375
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 41,
+      "candidate_net_chips": -300,
+      "baseline_net_chips": -100,
+      "delta_net_chips": -200,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 41,
+        "decision": 1,
+        "candidate": {
+          "hand": 41,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 200,
+          "final_action": 200,
+          "cards": [
+            34,
+            26
+          ],
+          "board": [
+            22,
+            20,
+            11
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 86,
+            "preflop_raise_rate": 0.30952380952380953,
+            "aggression": 0.26744186046511625,
+            "raise_rate": 0.26744186046511625,
+            "fold_rate": 0.23255813953488372
+          }
+        },
+        "baseline": {
+          "hand": 41,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            34,
+            26
+          ],
+          "board": [
+            22,
+            20,
+            11
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 88,
+            "preflop_raise_rate": 0.30952380952380953,
+            "aggression": 0.25,
+            "raise_rate": 0.25,
+            "fold_rate": 0.22727272727272727
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 55,
+      "candidate_net_chips": -50,
+      "baseline_net_chips": 100,
+      "delta_net_chips": -150,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 55,
+        "decision": 0,
+        "candidate": {
+          "hand": 55,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            9,
+            23
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 121,
+            "preflop_raise_rate": 0.2542372881355932,
+            "aggression": 0.2809917355371901,
+            "raise_rate": 0.2809917355371901,
+            "fold_rate": 0.21487603305785125
+          }
+        },
+        "baseline": {
+          "hand": 55,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            9,
+            23
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 121,
+            "preflop_raise_rate": 0.22033898305084745,
+            "aggression": 0.2727272727272727,
+            "raise_rate": 0.2727272727272727,
+            "fold_rate": 0.2066115702479339
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 39,
+      "candidate_net_chips": -100,
+      "baseline_net_chips": 50,
+      "delta_net_chips": -150,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 39,
+        "decision": 0,
+        "candidate": {
+          "hand": 39,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            38,
+            0
+          ],
+          "board": [],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 81,
+            "preflop_raise_rate": 0.3,
+            "aggression": 0.25925925925925924,
+            "raise_rate": 0.25925925925925924,
+            "fold_rate": 0.2345679012345679
+          }
+        },
+        "baseline": null
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 50,
+      "candidate_net_chips": -50,
+      "baseline_net_chips": 100,
+      "delta_net_chips": -150,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 50,
+        "decision": 0,
+        "candidate": {
+          "hand": 50,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            18,
+            4
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 103,
+            "preflop_raise_rate": 0.30612244897959184,
+            "aggression": 0.27184466019417475,
+            "raise_rate": 0.27184466019417475,
+            "fold_rate": 0.24271844660194175
+          }
+        },
+        "baseline": {
+          "hand": 50,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            18,
+            4
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 108,
+            "preflop_raise_rate": 0.30612244897959184,
+            "aggression": 0.25925925925925924,
+            "raise_rate": 0.25925925925925924,
+            "fold_rate": 0.21296296296296297
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 64,
+      "candidate_net_chips": -100,
+      "baseline_net_chips": -50,
+      "delta_net_chips": -50,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 64,
+        "decision": 0,
+        "candidate": {
+          "hand": 64,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            1,
+            46
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 128,
+            "preflop_raise_rate": 0.3125,
+            "aggression": 0.2890625,
+            "raise_rate": 0.28125,
+            "fold_rate": 0.2578125
+          }
+        },
+        "baseline": {
+          "hand": 64,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            1,
+            46
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 129,
+            "preflop_raise_rate": 0.3548387096774194,
+            "aggression": 0.2868217054263566,
+            "raise_rate": 0.27906976744186046,
+            "fold_rate": 0.21705426356589147
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 34,
+      "candidate_net_chips": -756,
+      "baseline_net_chips": -747,
+      "delta_net_chips": -9,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 34,
+        "decision": 0,
+        "candidate": {
+          "hand": 34,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 656,
+          "advised_action": 656,
+          "final_action": 756,
+          "cards": [
+            48,
+            25
+          ],
+          "board": [],
+          "pot": 413,
+          "to_call": 213,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 313,
+          "opponent_profile": {
+            "actions_total": 75,
+            "preflop_raise_rate": 0.21621621621621623,
+            "aggression": 0.25333333333333335,
+            "raise_rate": 0.25333333333333335,
+            "fold_rate": 0.22666666666666666
+          }
+        },
+        "baseline": {
+          "hand": 34,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 647,
+          "advised_action": 647,
+          "final_action": 747,
+          "cards": [
+            48,
+            25
+          ],
+          "board": [],
+          "pot": 409,
+          "to_call": 209,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 309,
+          "opponent_profile": {
+            "actions_total": 74,
+            "preflop_raise_rate": 0.21621621621621623,
+            "aggression": 0.25675675675675674,
+            "raise_rate": 0.25675675675675674,
+            "fold_rate": 0.21621621621621623
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 23,
+      "candidate_net_chips": -314,
+      "baseline_net_chips": -319,
+      "delta_net_chips": 5,
+      "first_action_difference": null
+    },
+    {
+      "leg": "swapped",
+      "hand": 34,
+      "candidate_net_chips": 756,
+      "baseline_net_chips": 747,
+      "delta_net_chips": 9,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 34,
+        "decision": 0,
+        "candidate": {
+          "hand": 34,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 263,
+          "advised_action": 263,
+          "final_action": 313,
+          "cards": [
+            44,
+            32
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 68,
+            "preflop_raise_rate": 0.29411764705882354,
+            "aggression": 0.2647058823529412,
+            "raise_rate": 0.2647058823529412,
+            "fold_rate": 0.23529411764705882
+          }
+        },
+        "baseline": {
+          "hand": 34,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 259,
+          "advised_action": 259,
+          "final_action": 309,
+          "cards": [
+            44,
+            32
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 71,
+            "preflop_raise_rate": 0.29411764705882354,
+            "aggression": 0.2535211267605634,
+            "raise_rate": 0.2535211267605634,
+            "fold_rate": 0.2112676056338028
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 26,
+      "candidate_net_chips": 338,
+      "baseline_net_chips": 314,
+      "delta_net_chips": 24,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 26,
+        "decision": 0,
+        "candidate": {
+          "hand": 26,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 288,
+          "advised_action": 288,
+          "final_action": 338,
+          "cards": [
+            38,
+            37
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 49,
+            "preflop_raise_rate": 0.2692307692307692,
+            "aggression": 0.22448979591836735,
+            "raise_rate": 0.22448979591836735,
+            "fold_rate": 0.2653061224489796
+          }
+        },
+        "baseline": {
+          "hand": 26,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 264,
+          "advised_action": 264,
+          "final_action": 314,
+          "cards": [
+            38,
+            37
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 51,
+            "preflop_raise_rate": 0.2692307692307692,
+            "aggression": 0.21568627450980393,
+            "raise_rate": 0.21568627450980393,
+            "fold_rate": 0.23529411764705882
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 55,
+      "candidate_net_chips": 50,
+      "baseline_net_chips": -100,
+      "delta_net_chips": 150,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 55,
+        "decision": 0,
+        "candidate": null,
+        "baseline": {
+          "hand": 55,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            10,
+            17
+          ],
+          "board": [],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 119,
+            "preflop_raise_rate": 0.32727272727272727,
+            "aggression": 0.2605042016806723,
+            "raise_rate": 0.2605042016806723,
+            "fold_rate": 0.2184873949579832
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 62,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": -50,
+      "delta_net_chips": 150,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 62,
+        "decision": 0,
+        "candidate": {
+          "hand": 62,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 280,
+          "advised_action": 280,
+          "final_action": 330,
+          "cards": [
+            26,
+            24
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 125,
+            "preflop_raise_rate": 0.29508196721311475,
+            "aggression": 0.28,
+            "raise_rate": 0.28,
+            "fold_rate": 0.256
+          }
+        },
+        "baseline": {
+          "hand": 62,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            26,
+            24
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 128,
+            "preflop_raise_rate": 0.3442622950819672,
+            "aggression": 0.28125,
+            "raise_rate": 0.2734375,
+            "fold_rate": 0.21875
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 65,
+      "candidate_net_chips": 50,
+      "baseline_net_chips": -100,
+      "delta_net_chips": 150,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 65,
+        "decision": 0,
+        "candidate": null,
+        "baseline": {
+          "hand": 65,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            2,
+            1
+          ],
+          "board": [],
+          "pot": 788,
+          "to_call": 588,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 688,
+          "opponent_profile": {
+            "actions_total": 130,
+            "preflop_raise_rate": 0.36507936507936506,
+            "aggression": 0.2923076923076923,
+            "raise_rate": 0.2846153846153846,
+            "fold_rate": 0.2153846153846154
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 66,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": -50,
+      "delta_net_chips": 150,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 66,
+        "decision": 0,
+        "candidate": {
+          "hand": 66,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            6,
+            23
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 130,
+            "preflop_raise_rate": 0.3181818181818182,
+            "aggression": 0.2923076923076923,
+            "raise_rate": 0.2846153846153846,
+            "fold_rate": 0.26153846153846155
+          }
+        },
+        "baseline": {
+          "hand": 66,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            6,
+            23
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 130,
+            "preflop_raise_rate": 0.36507936507936506,
+            "aggression": 0.2923076923076923,
+            "raise_rate": 0.2846153846153846,
+            "fold_rate": 0.2153846153846154
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 68,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": -50,
+      "delta_net_chips": 150,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 68,
+        "decision": 0,
+        "candidate": {
+          "hand": 68,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 260,
+          "advised_action": 260,
+          "final_action": 310,
+          "cards": [
+            45,
+            16
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 137,
+            "preflop_raise_rate": 0.3188405797101449,
+            "aggression": 0.291970802919708,
+            "raise_rate": 0.2846715328467153,
+            "fold_rate": 0.25547445255474455
+          }
+        },
+        "baseline": {
+          "hand": 68,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            45,
+            16
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 131,
+            "preflop_raise_rate": 0.375,
+            "aggression": 0.29770992366412213,
+            "raise_rate": 0.2900763358778626,
+            "fold_rate": 0.21374045801526717
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 69,
+      "candidate_net_chips": 50,
+      "baseline_net_chips": -100,
+      "delta_net_chips": 150,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 69,
+        "decision": 0,
+        "candidate": null,
+        "baseline": {
+          "hand": 69,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            49,
+            41
+          ],
+          "board": [],
+          "pot": 20100,
+          "to_call": 19900,
+          "my_stage_bet": 100,
+          "opponent_stage_bet": 20000,
+          "opponent_profile": {
+            "actions_total": 132,
+            "preflop_raise_rate": 0.38461538461538464,
+            "aggression": 0.30303030303030304,
+            "raise_rate": 0.2878787878787879,
+            "fold_rate": 0.21212121212121213
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 70,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": -50,
+      "delta_net_chips": 150,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 70,
+        "decision": 0,
+        "candidate": {
+          "hand": 70,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 260,
+          "advised_action": 260,
+          "final_action": 310,
+          "cards": [
+            51,
+            7
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 139,
+            "preflop_raise_rate": 0.30985915492957744,
+            "aggression": 0.28776978417266186,
+            "raise_rate": 0.2805755395683453,
+            "fold_rate": 0.26618705035971224
+          }
+        },
+        "baseline": {
+          "hand": 70,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            51,
+            7
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 132,
+            "preflop_raise_rate": 0.38461538461538464,
+            "aggression": 0.30303030303030304,
+            "raise_rate": 0.2878787878787879,
+            "fold_rate": 0.21212121212121213
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 49,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": -100,
+      "delta_net_chips": 200,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 49,
+        "decision": 1,
+        "candidate": {
+          "hand": 49,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 200,
+          "final_action": 200,
+          "cards": [
+            1,
+            25
+          ],
+          "board": [
+            30,
+            43,
+            22
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 102,
+            "preflop_raise_rate": 0.30612244897959184,
+            "aggression": 0.27450980392156865,
+            "raise_rate": 0.27450980392156865,
+            "fold_rate": 0.23529411764705882
+          }
+        },
+        "baseline": {
+          "hand": 49,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            1,
+            25
+          ],
+          "board": [
+            30,
+            43,
+            22
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 105,
+            "preflop_raise_rate": 0.30612244897959184,
+            "aggression": 0.26666666666666666,
+            "raise_rate": 0.26666666666666666,
+            "fold_rate": 0.21904761904761905
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 25,
+      "candidate_net_chips": 320,
+      "baseline_net_chips": 100,
+      "delta_net_chips": 220,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 25,
+        "decision": 1,
+        "candidate": {
+          "hand": 25,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            34,
+            45
+          ],
+          "board": [
+            26,
+            40,
+            10
+          ],
+          "pot": 640,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 47,
+            "preflop_raise_rate": 0.2692307692307692,
+            "aggression": 0.23404255319148937,
+            "raise_rate": 0.23404255319148937,
+            "fold_rate": 0.2553191489361702
+          }
+        },
+        "baseline": null
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 59,
+      "candidate_net_chips": 323,
+      "baseline_net_chips": 100,
+      "delta_net_chips": 223,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 59,
+        "decision": 1,
+        "candidate": {
+          "hand": 59,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 430,
+          "advised_action": 430,
+          "final_action": 430,
+          "cards": [
+            19,
+            17
+          ],
+          "board": [
+            21,
+            31,
+            8
+          ],
+          "pot": 646,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 121,
+            "preflop_raise_rate": 0.3050847457627119,
+            "aggression": 0.2809917355371901,
+            "raise_rate": 0.2809917355371901,
+            "fold_rate": 0.24793388429752067
+          }
+        },
+        "baseline": null
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 52,
+      "candidate_net_chips": 240,
+      "baseline_net_chips": -50,
+      "delta_net_chips": 290,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 52,
+        "decision": 0,
+        "candidate": {
+          "hand": 52,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            0,
+            23
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 107,
+            "preflop_raise_rate": 0.3137254901960784,
+            "aggression": 0.2803738317757009,
+            "raise_rate": 0.2803738317757009,
+            "fold_rate": 0.2336448598130841
+          }
+        },
+        "baseline": {
+          "hand": 52,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            0,
+            23
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 115,
+            "preflop_raise_rate": 0.3076923076923077,
+            "aggression": 0.25217391304347825,
+            "raise_rate": 0.25217391304347825,
+            "fold_rate": 0.21739130434782608
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 28,
+      "candidate_net_chips": 201,
+      "baseline_net_chips": -100,
+      "delta_net_chips": 301,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 28,
+        "decision": 3,
+        "candidate": {
+          "hand": 28,
+          "decision": 3,
+          "stage": "turn",
+          "rule_action": -1,
+          "advised_action": 503,
+          "final_action": 503,
+          "cards": [
+            4,
+            45
+          ],
+          "board": [
+            35,
+            15,
+            27,
+            29
+          ],
+          "pot": 301,
+          "to_call": 101,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 101,
+          "opponent_profile": {
+            "actions_total": 59,
+            "preflop_raise_rate": 0.22580645161290322,
+            "aggression": 0.3050847457627119,
+            "raise_rate": 0.3050847457627119,
+            "fold_rate": 0.1864406779661017
+          }
+        },
+        "baseline": {
+          "hand": 28,
+          "decision": 3,
+          "stage": "turn",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            4,
+            45
+          ],
+          "board": [
+            35,
+            15,
+            27,
+            29
+          ],
+          "pot": 301,
+          "to_call": 101,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 101,
+          "opponent_profile": {
+            "actions_total": 59,
+            "preflop_raise_rate": 0.22580645161290322,
+            "aggression": 0.3050847457627119,
+            "raise_rate": 0.3050847457627119,
+            "fold_rate": 0.1864406779661017
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 58,
+      "candidate_net_chips": 230,
+      "baseline_net_chips": -100,
+      "delta_net_chips": 330,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 58,
+        "decision": 1,
+        "candidate": {
+          "hand": 58,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": -1,
+          "advised_action": 590,
+          "final_action": 590,
+          "cards": [
+            4,
+            35
+          ],
+          "board": [
+            5,
+            36,
+            0
+          ],
+          "pot": 330,
+          "to_call": 130,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 130,
+          "opponent_profile": {
+            "actions_total": 118,
+            "preflop_raise_rate": 0.3157894736842105,
+            "aggression": 0.288135593220339,
+            "raise_rate": 0.288135593220339,
+            "fold_rate": 0.2457627118644068
+          }
+        },
+        "baseline": {
+          "hand": 58,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": -1,
+          "advised_action": -1,
+          "final_action": -1,
+          "cards": [
+            4,
+            35
+          ],
+          "board": [
+            5,
+            36,
+            0
+          ],
+          "pot": 330,
+          "to_call": 130,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 130,
+          "opponent_profile": {
+            "actions_total": 124,
+            "preflop_raise_rate": 0.3333333333333333,
+            "aggression": 0.27419354838709675,
+            "raise_rate": 0.27419354838709675,
+            "fold_rate": 0.21774193548387097
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 7,
+      "candidate_net_chips": 100,
+      "baseline_net_chips": -284,
+      "delta_net_chips": 384,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 7,
+        "decision": 1,
+        "candidate": {
+          "hand": 7,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 200,
+          "final_action": 200,
+          "cards": [
+            15,
+            5
+          ],
+          "board": [
+            51,
+            44,
+            11
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 10,
+            "preflop_raise_rate": 0.5,
+            "aggression": 0.3,
+            "raise_rate": 0.3,
+            "fold_rate": 0.2
+          }
+        },
+        "baseline": {
+          "hand": 7,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            15,
+            5
+          ],
+          "board": [
+            51,
+            44,
+            11
+          ],
+          "pot": 200,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 10,
+            "preflop_raise_rate": 0.5,
+            "aggression": 0.3,
+            "raise_rate": 0.3,
+            "fold_rate": 0.2
+          }
+        }
+      }
+    },
+    {
+      "leg": "forward",
+      "hand": 51,
+      "candidate_net_chips": -339,
+      "baseline_net_chips": -822,
+      "delta_net_chips": 483,
+      "first_action_difference": {
+        "leg": "forward",
+        "hand": 51,
+        "decision": 0,
+        "candidate": {
+          "hand": 51,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            34,
+            42
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 114,
+            "preflop_raise_rate": 0.25925925925925924,
+            "aggression": 0.2719298245614035,
+            "raise_rate": 0.2719298245614035,
+            "fold_rate": 0.21052631578947367
+          }
+        },
+        "baseline": {
+          "hand": 51,
+          "decision": 0,
+          "stage": "preflop",
+          "rule_action": 260,
+          "advised_action": 260,
+          "final_action": 310,
+          "cards": [
+            34,
+            42
+          ],
+          "board": [],
+          "pot": 150,
+          "to_call": 50,
+          "my_stage_bet": 50,
+          "opponent_stage_bet": 100,
+          "opponent_profile": {
+            "actions_total": 114,
+            "preflop_raise_rate": 0.2222222222222222,
+            "aggression": 0.2631578947368421,
+            "raise_rate": 0.2631578947368421,
+            "fold_rate": 0.20175438596491227
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 15,
+      "candidate_net_chips": 263,
+      "baseline_net_chips": -265,
+      "delta_net_chips": 528,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 15,
+        "decision": 1,
+        "candidate": {
+          "hand": 15,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 526,
+          "final_action": 526,
+          "cards": [
+            14,
+            35
+          ],
+          "board": [
+            50,
+            0,
+            18
+          ],
+          "pot": 526,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 30,
+            "preflop_raise_rate": 0.3125,
+            "aggression": 0.2,
+            "raise_rate": 0.2,
+            "fold_rate": 0.26666666666666666
+          }
+        },
+        "baseline": {
+          "hand": 15,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            14,
+            35
+          ],
+          "board": [
+            50,
+            0,
+            18
+          ],
+          "pot": 530,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 33,
+            "preflop_raise_rate": 0.3125,
+            "aggression": 0.15151515151515152,
+            "raise_rate": 0.15151515151515152,
+            "fold_rate": 0.24242424242424243
+          }
+        }
+      }
+    },
+    {
+      "leg": "swapped",
+      "hand": 45,
+      "candidate_net_chips": 310,
+      "baseline_net_chips": -310,
+      "delta_net_chips": 620,
+      "first_action_difference": {
+        "leg": "swapped",
+        "hand": 45,
+        "decision": 1,
+        "candidate": {
+          "hand": 45,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 620,
+          "final_action": 620,
+          "cards": [
+            31,
+            21
+          ],
+          "board": [
+            26,
+            6,
+            43
+          ],
+          "pot": 620,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 97,
+            "preflop_raise_rate": 0.30434782608695654,
+            "aggression": 0.26804123711340205,
+            "raise_rate": 0.26804123711340205,
+            "fold_rate": 0.2268041237113402
+          }
+        },
+        "baseline": {
+          "hand": 45,
+          "decision": 1,
+          "stage": "flop",
+          "rule_action": 0,
+          "advised_action": 0,
+          "final_action": 0,
+          "cards": [
+            31,
+            21
+          ],
+          "board": [
+            26,
+            6,
+            43
+          ],
+          "pot": 620,
+          "to_call": 0,
+          "my_stage_bet": 0,
+          "opponent_stage_bet": 0,
+          "opponent_profile": {
+            "actions_total": 99,
+            "preflop_raise_rate": 0.30434782608695654,
+            "aggression": 0.25252525252525254,
+            "raise_rate": 0.25252525252525254,
+            "fold_rate": 0.2222222222222222
+          }
+        }
+      }
+    }
+  ]
+}

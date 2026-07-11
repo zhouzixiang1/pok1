@@ -1,0 +1,91 @@
+{
+  "behavior_classes": {
+    "call": 81,
+    "check": 56,
+    "fold": 150,
+    "raise": 76
+  },
+  "behavior_rows": {
+    "held_out": 43,
+    "train": 240,
+    "val": 80
+  },
+  "data_dir": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/data/oppmodel/matchscope_v150_p1_snapshot",
+  "errors": [],
+  "files": {
+    "cf_held_out.jsonl": {
+      "bytes": 80704,
+      "sha256": "d4d4474ebe0b98c76d99be30d8ca4c148baf967f34fe708f8049e117991f50d0"
+    },
+    "cf_train.jsonl": {
+      "bytes": 222370,
+      "sha256": "08d9b869183af616b438e93599bb4a3caf71513c0d4ec4c3bc353b30aa7bb659"
+    },
+    "cf_val.jsonl": {
+      "bytes": 43916,
+      "sha256": "4f05c15a4a7c9912e8171135e2c1f7a22907edcf7dc55e0a1193e3cea95b9c33"
+    },
+    "opponent_actions_held_out.jsonl": {
+      "bytes": 118289,
+      "sha256": "589275b3e1f7634eb9e9c3fc07724fa16bdc70bef0476813faf0c52f0d43f67a"
+    },
+    "opponent_actions_train.jsonl": {
+      "bytes": 1006929,
+      "sha256": "4ad214d36d42a2e17bd014af1dff8743f567ca82debcbf3e16b24581c1708ae7"
+    },
+    "opponent_actions_val.jsonl": {
+      "bytes": 261038,
+      "sha256": "54858dd05be89e8944d76a7220e2e215c1ed7a8aec6979e83196ae30d1ca2f19"
+    }
+  },
+  "invalid_probes_excluded_by_masks": 0,
+  "opponents": {
+    "held_out": [
+      "national_v57",
+      "national_v66"
+    ],
+    "train": [
+      "national_v119",
+      "national_v120",
+      "national_v141",
+      "national_v72"
+    ],
+    "val": [
+      "national_v98"
+    ]
+  },
+  "passed": true,
+  "schema_version": 1,
+  "targets": {
+    "delta_vs_rule": {
+      "max": 20751.0,
+      "median": 0.0,
+      "min": -2480.0,
+      "p05": -1149.1999999999996,
+      "p95": 574.5999999999975,
+      "samples": 167
+    },
+    "match_delta_vs_rule": {
+      "max": 34501.0,
+      "median": 0.0,
+      "min": -6627.0,
+      "p05": -1277.0,
+      "p95": 19479.0,
+      "samples": 167
+    },
+    "tail_delta_vs_rule": {
+      "max": 20565.0,
+      "median": 0.0,
+      "min": -24814.0,
+      "p05": -406.99999999999994,
+      "p95": 16110.799999999956,
+      "samples": 167
+    }
+  },
+  "valid_probes": 112,
+  "value_rows": {
+    "held_out": 16,
+    "train": 32,
+    "val": 8
+  }
+}

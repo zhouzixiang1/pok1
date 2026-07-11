@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "analysis_source": "default_error",
+  "compliance_verdict": "pass",
+  "failure_class": "none",
+  "blocking": false,
+  "confidence": 0.0,
+  "deterministic_blocking": false,
+  "evidence": [],
+  "root_cause": "llm_analysis_error:AttributeError: 'NoneType' object has no attribute 'log_io'",
+  "repair_guidance": "",
+  "prompt_feedback": "",
+  "strength_evaluation": "not_applicable",
+  "ignored_strength_fields": [],
+  "notes": [
+    "llm_analysis_error:AttributeError: 'NoneType' object has no attribute 'log_io'"
+  ]
+}

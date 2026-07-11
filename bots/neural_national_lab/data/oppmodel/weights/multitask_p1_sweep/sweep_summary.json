@@ -1,0 +1,543 @@
+{
+  "config_summaries": [
+    {
+      "config": {
+        "cross_hidden": 128,
+        "gru_hidden": 192,
+        "head_hidden": 256,
+        "hidden": 512,
+        "latent": 256,
+        "name": "large"
+      },
+      "mean_validation_score": 0.8542196844071218,
+      "median_validation_score": 0.8542196844071218,
+      "parameters": 742506,
+      "seeds": 2,
+      "stdev_validation_score": 0.0217904392916054
+    },
+    {
+      "config": {
+        "cross_hidden": 32,
+        "gru_hidden": 48,
+        "head_hidden": 64,
+        "hidden": 128,
+        "latent": 64,
+        "name": "small"
+      },
+      "mean_validation_score": 0.878862068708312,
+      "median_validation_score": 0.878862068708312,
+      "parameters": 57402,
+      "seeds": 2,
+      "stdev_validation_score": 0.12700737790422778
+    },
+    {
+      "config": {
+        "cross_hidden": 64,
+        "gru_hidden": 96,
+        "head_hidden": 128,
+        "hidden": 256,
+        "latent": 128,
+        "name": "medium"
+      },
+      "mean_validation_score": 1.0619087590525167,
+      "median_validation_score": 1.0619087590525167,
+      "parameters": 200266,
+      "seeds": 2,
+      "stdev_validation_score": 0.06789395511245877
+    }
+  ],
+  "dataset_audit": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/data/oppmodel/weights/multitask_p1_sweep/dataset_audit.json",
+  "experiments": [
+    {
+      "config": {
+        "cross_hidden": 32,
+        "gru_hidden": 48,
+        "head_hidden": 64,
+        "hidden": 128,
+        "latent": 64,
+        "name": "small"
+      },
+      "model": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/data/oppmodel/weights/multitask_p1_sweep/small_seed101.json",
+      "model_sha256": "6b20674a5120bb86b7b49a05edf193a1694ecf1b2dc95633e1c377bfb17684b7",
+      "parameters": 57402,
+      "seed": 101,
+      "validation": {
+        "response": {
+          "accuracy": 0.675,
+          "balanced_accuracy": 0.671875,
+          "nll": 1.4760534286499023,
+          "per_class": {
+            "allin": {
+              "accuracy": null,
+              "rows": 0
+            },
+            "call": {
+              "accuracy": 0.6875,
+              "rows": 16
+            },
+            "check": {
+              "accuracy": 1.0,
+              "rows": 17
+            },
+            "fold": {
+              "accuracy": 1.0,
+              "rows": 26
+            },
+            "raise": {
+              "accuracy": 0.0,
+              "rows": 21
+            }
+          },
+          "raise_amount_mae": 0.25669659461293903,
+          "rows": 80
+        },
+        "selection_score": 0.7518546908040842,
+        "value": {
+          "delta_vs_rule": {
+            "lower_quantile_coverage": 0.16666666666666666,
+            "mae": 296.16946709156036,
+            "samples": 24
+          },
+          "match_delta_vs_rule": {
+            "lower_quantile_coverage": 0.0,
+            "mae": 704.9247757196426,
+            "samples": 24
+          },
+          "tail_delta_vs_rule": {
+            "lower_quantile_coverage": 0.0,
+            "mae": 753.0584138234457,
+            "samples": 24
+          }
+        }
+      }
+    },
+    {
+      "config": {
+        "cross_hidden": 32,
+        "gru_hidden": 48,
+        "head_hidden": 64,
+        "hidden": 128,
+        "latent": 64,
+        "name": "small"
+      },
+      "model": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/data/oppmodel/weights/multitask_p1_sweep/small_seed211.json",
+      "model_sha256": "da37118fe098d563e35c4ed194707878d507eaa26691aa67dafeadcb6e9f9cc5",
+      "parameters": 57402,
+      "seed": 211,
+      "validation": {
+        "response": {
+          "accuracy": 0.55,
+          "balanced_accuracy": 0.4680059523809524,
+          "nll": 1.5733075141906738,
+          "per_class": {
+            "allin": {
+              "accuracy": null,
+              "rows": 0
+            },
+            "call": {
+              "accuracy": 0.0625,
+              "rows": 16
+            },
+            "check": {
+              "accuracy": 0.0,
+              "rows": 17
+            },
+            "fold": {
+              "accuracy": 1.0,
+              "rows": 26
+            },
+            "raise": {
+              "accuracy": 0.8095238095238095,
+              "rows": 21
+            }
+          },
+          "raise_amount_mae": 0.24518778920173645,
+          "rows": 80
+        },
+        "selection_score": 1.0058694466125397,
+        "value": {
+          "delta_vs_rule": {
+            "lower_quantile_coverage": 0.5416666666666666,
+            "mae": 384.81070200602215,
+            "samples": 24
+          },
+          "match_delta_vs_rule": {
+            "lower_quantile_coverage": 0.5,
+            "mae": 772.914990901947,
+            "samples": 24
+          },
+          "tail_delta_vs_rule": {
+            "lower_quantile_coverage": 0.2916666666666667,
+            "mae": 814.7380434672037,
+            "samples": 24
+          }
+        }
+      }
+    },
+    {
+      "config": {
+        "cross_hidden": 64,
+        "gru_hidden": 96,
+        "head_hidden": 128,
+        "hidden": 256,
+        "latent": 128,
+        "name": "medium"
+      },
+      "model": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/data/oppmodel/weights/multitask_p1_sweep/medium_seed101.json",
+      "model_sha256": "ac947b666c02ddebd53702601b12c1cd8b401f15ae75c432e27a549bbbe84566",
+      "parameters": 200266,
+      "seed": 101,
+      "validation": {
+        "response": {
+          "accuracy": 0.3625,
+          "balanced_accuracy": 0.3028846153846154,
+          "nll": 1.598467230796814,
+          "per_class": {
+            "allin": {
+              "accuracy": null,
+              "rows": 0
+            },
+            "call": {
+              "accuracy": 0.25,
+              "rows": 16
+            },
+            "check": {
+              "accuracy": 0.0,
+              "rows": 17
+            },
+            "fold": {
+              "accuracy": 0.9615384615384616,
+              "rows": 26
+            },
+            "raise": {
+              "accuracy": 0.0,
+              "rows": 21
+            }
+          },
+          "raise_amount_mae": 0.24494035612969173,
+          "rows": 80
+        },
+        "selection_score": 1.1298027141649754,
+        "value": {
+          "delta_vs_rule": {
+            "lower_quantile_coverage": 0.3333333333333333,
+            "mae": 351.2907015482585,
+            "samples": 24
+          },
+          "match_delta_vs_rule": {
+            "lower_quantile_coverage": 0.3333333333333333,
+            "mae": 709.4618436495463,
+            "samples": 24
+          },
+          "tail_delta_vs_rule": {
+            "lower_quantile_coverage": 0.20833333333333334,
+            "mae": 740.2549133102099,
+            "samples": 24
+          }
+        }
+      }
+    },
+    {
+      "config": {
+        "cross_hidden": 64,
+        "gru_hidden": 96,
+        "head_hidden": 128,
+        "hidden": 256,
+        "latent": 128,
+        "name": "medium"
+      },
+      "model": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/data/oppmodel/weights/multitask_p1_sweep/medium_seed211.json",
+      "model_sha256": "db2468123c62e302a0777fb981a90ef607909a3df53c5efd4ae4b4c8622e0dcc",
+      "parameters": 200266,
+      "seed": 211,
+      "validation": {
+        "response": {
+          "accuracy": 0.45,
+          "balanced_accuracy": 0.40625,
+          "nll": 1.5400397777557373,
+          "per_class": {
+            "allin": {
+              "accuracy": null,
+              "rows": 0
+            },
+            "call": {
+              "accuracy": 0.625,
+              "rows": 16
+            },
+            "check": {
+              "accuracy": 0.0,
+              "rows": 17
+            },
+            "fold": {
+              "accuracy": 1.0,
+              "rows": 26
+            },
+            "raise": {
+              "accuracy": 0.0,
+              "rows": 21
+            }
+          },
+          "raise_amount_mae": 0.2490034500757853,
+          "rows": 80
+        },
+        "selection_score": 0.9940148039400578,
+        "value": {
+          "delta_vs_rule": {
+            "lower_quantile_coverage": 0.125,
+            "mae": 183.70169681310654,
+            "samples": 24
+          },
+          "match_delta_vs_rule": {
+            "lower_quantile_coverage": 0.25,
+            "mae": 716.5193524360657,
+            "samples": 24
+          },
+          "tail_delta_vs_rule": {
+            "lower_quantile_coverage": 0.041666666666666664,
+            "mae": 737.5785058736801,
+            "samples": 24
+          }
+        }
+      }
+    },
+    {
+      "config": {
+        "cross_hidden": 128,
+        "gru_hidden": 192,
+        "head_hidden": 256,
+        "hidden": 512,
+        "latent": 256,
+        "name": "large"
+      },
+      "model": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/data/oppmodel/weights/multitask_p1_sweep/large_seed101.json",
+      "model_sha256": "cecee5e0a655e4912b1a81c56200baf0834c2ebe4621c722c9909280907be38e",
+      "parameters": 742506,
+      "seed": 101,
+      "validation": {
+        "response": {
+          "accuracy": 0.6,
+          "balanced_accuracy": 0.5729739010989011,
+          "nll": 0.9640944719314575,
+          "per_class": {
+            "allin": {
+              "accuracy": null,
+              "rows": 0
+            },
+            "call": {
+              "accuracy": 0.1875,
+              "rows": 16
+            },
+            "check": {
+              "accuracy": 1.0,
+              "rows": 17
+            },
+            "fold": {
+              "accuracy": 0.9615384615384616,
+              "rows": 26
+            },
+            "raise": {
+              "accuracy": 0.14285714285714285,
+              "rows": 21
+            }
+          },
+          "raise_amount_mae": 0.18218185007572174,
+          "rows": 80
+        },
+        "selection_score": 0.8760101236987272,
+        "value": {
+          "delta_vs_rule": {
+            "lower_quantile_coverage": 0.125,
+            "mae": 225.83704360326132,
+            "samples": 24
+          },
+          "match_delta_vs_rule": {
+            "lower_quantile_coverage": 0.08333333333333333,
+            "mae": 795.5189029375712,
+            "samples": 24
+          },
+          "tail_delta_vs_rule": {
+            "lower_quantile_coverage": 0.041666666666666664,
+            "mae": 819.7475613703331,
+            "samples": 24
+          }
+        }
+      }
+    },
+    {
+      "config": {
+        "cross_hidden": 128,
+        "gru_hidden": 192,
+        "head_hidden": 256,
+        "hidden": 512,
+        "latent": 256,
+        "name": "large"
+      },
+      "model": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/data/oppmodel/weights/multitask_p1_sweep/large_seed211.json",
+      "model_sha256": "4dc68418d15568cd927d5af9475c79afc96a98cd869927138bc9dffc83416684",
+      "parameters": 742506,
+      "seed": 211,
+      "validation": {
+        "response": {
+          "accuracy": 0.625,
+          "balanced_accuracy": 0.61996336996337,
+          "nll": 0.9774471759796143,
+          "per_class": {
+            "allin": {
+              "accuracy": null,
+              "rows": 0
+            },
+            "call": {
+              "accuracy": 0.5,
+              "rows": 16
+            },
+            "check": {
+              "accuracy": 1.0,
+              "rows": 17
+            },
+            "fold": {
+              "accuracy": 0.8846153846153846,
+              "rows": 26
+            },
+            "raise": {
+              "accuracy": 0.09523809523809523,
+              "rows": 21
+            }
+          },
+          "raise_amount_mae": 0.17586066041673934,
+          "rows": 80
+        },
+        "selection_score": 0.8324292451155164,
+        "value": {
+          "delta_vs_rule": {
+            "lower_quantile_coverage": 0.4166666666666667,
+            "mae": 272.06115913391113,
+            "samples": 24
+          },
+          "match_delta_vs_rule": {
+            "lower_quantile_coverage": 0.041666666666666664,
+            "mae": 776.2558279832205,
+            "samples": 24
+          },
+          "tail_delta_vs_rule": {
+            "lower_quantile_coverage": 0.041666666666666664,
+            "mae": 815.6657050251961,
+            "samples": 24
+          }
+        }
+      }
+    }
+  ],
+  "schema_version": 1,
+  "selected": {
+    "config": {
+      "cross_hidden": 128,
+      "gru_hidden": 192,
+      "head_hidden": 256,
+      "hidden": 512,
+      "latent": 256,
+      "name": "large"
+    },
+    "held_out": {
+      "response": {
+        "accuracy": 0.06976744186046512,
+        "balanced_accuracy": 0.5,
+        "nll": 1.890793201535247,
+        "per_class": {
+          "allin": {
+            "accuracy": null,
+            "rows": 0
+          },
+          "call": {
+            "accuracy": 1.0,
+            "rows": 2
+          },
+          "check": {
+            "accuracy": 1.0,
+            "rows": 1
+          },
+          "fold": {
+            "accuracy": 0.0,
+            "rows": 33
+          },
+          "raise": {
+            "accuracy": 0.0,
+            "rows": 7
+          }
+        },
+        "raise_amount_mae": 0.4085084966250828,
+        "rows": 43
+      },
+      "selection_score": 0.6885750115891298,
+      "value": {
+        "delta_vs_rule": {
+          "lower_quantile_coverage": 0.125,
+          "mae": 385.39563279847306,
+          "samples": 48
+        },
+        "match_delta_vs_rule": {
+          "lower_quantile_coverage": 0.16666666666666666,
+          "mae": 280.3205686410268,
+          "samples": 48
+        },
+        "tail_delta_vs_rule": {
+          "lower_quantile_coverage": 0.125,
+          "mae": 165.6629714767138,
+          "samples": 48
+        }
+      }
+    },
+    "model": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/data/oppmodel/weights/multitask_p1_sweep/selected_large_seed101.json",
+    "model_sha256": "60fcdd5bbac3764ca416f8057c0e5d5a682d205282678825c9597ce66867e134",
+    "seed": 101,
+    "validation": {
+      "response": {
+        "accuracy": 0.6,
+        "balanced_accuracy": 0.5729739010989011,
+        "nll": 0.9640944719314575,
+        "per_class": {
+          "allin": {
+            "accuracy": null,
+            "rows": 0
+          },
+          "call": {
+            "accuracy": 0.1875,
+            "rows": 16
+          },
+          "check": {
+            "accuracy": 1.0,
+            "rows": 17
+          },
+          "fold": {
+            "accuracy": 0.9615384615384616,
+            "rows": 26
+          },
+          "raise": {
+            "accuracy": 0.14285714285714285,
+            "rows": 21
+          }
+        },
+        "raise_amount_mae": 0.18218185007572174,
+        "rows": 80
+      },
+      "selection_score": 0.8760101236987272,
+      "value": {
+        "delta_vs_rule": {
+          "lower_quantile_coverage": 0.125,
+          "mae": 225.83704360326132,
+          "samples": 24
+        },
+        "match_delta_vs_rule": {
+          "lower_quantile_coverage": 0.08333333333333333,
+          "mae": 795.5189029375712,
+          "samples": 24
+        },
+        "tail_delta_vs_rule": {
+          "lower_quantile_coverage": 0.041666666666666664,
+          "mae": 819.7475613703331,
+          "samples": 24
+        }
+      }
+    }
+  },
+  "selection_used_held_out": false
+}

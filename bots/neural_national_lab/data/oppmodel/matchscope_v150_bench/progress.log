@@ -1,0 +1,2 @@
+[20260710T164637] pass 1/1: pool=3 min_hand=28 rows_this_pass=6 behavior_this_pass=177 cumul={'train': 2, 'val': 2, 'held_out': 2} behavior_cumul={'train': 58, 'val': 80, 'held_out': 39} dt=85s elapsed=85s
+[20260710T164637] DONE: values={'train': 2, 'val': 2, 'held_out': 2} value_total=6 behavior={'train': 58, 'val': 80, 'held_out': 39} behavior_total=177 elapsed=85s

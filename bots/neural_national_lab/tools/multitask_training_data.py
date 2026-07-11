@@ -1,0 +1,638 @@
+"""Leakage-safe data assembly for the next multi-task trainer."""
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+import math
+from typing import Any
+
+from cross_hand_sequence import (
+    CROSS_HAND_SEQUENCE_DIM,
+    CROSS_HAND_SEQUENCE_SCHEMA,
+    FEATURE_NAMES as CROSS_HAND_SEQUENCE_FIELDS,
+    MAX_CROSS_HANDS,
+)
+from feature_spec import LABELS, label_action
+from match_outcome_schema import (
+    derive_match_outcome_supervision,
+    match_outcome_metadata,
+)
+from model_input_schema import encode_model_input, model_input_metadata
+from opponent_profile_schema import (
+    OPPONENT_PROFILE_SCHEMA,
+    encode_opponent_profile,
+    opponent_profile_metadata,
+)
+from opponent_response_schema import (
+    OPPONENT_ACTION_LABELS,
+    OPPONENT_RESPONSE_SCHEMA,
+    annotate_response_rows,
+    response_context,
+    response_schema_metadata,
+)
+from sampling_weights import attach_training_row_weights, opponent_label
+from strategy_context_schema import (
+    STRATEGY_CONTEXT_DIM,
+    STRATEGY_CONTEXT_SCHEMA,
+    strategy_context_metadata,
+)
+
+
+MULTITASK_TRAINING_DATA_SCHEMA = "multitask_role_training_data_v1"
+MODEL_DEVELOPMENT_ROLES = ("train", "early_stop", "model_calibration")
+MODEL_TRAINING_ROLES = ("train", "early_stop")
+MODEL_CALIBRATION_ROLE = "model_calibration"
+POLICY_ROLES = ("policy_selection", "policy_gate")
+FROZEN_CHECKPOINT_SCHEMA = "frozen_model_checkpoint_v1"
+VALUE_WEIGHTING = "opponent_balanced_sampling_ipw"
+BEHAVIOR_WEIGHTING = "opponent_balanced"
+TRAIN_WEIGHT_FIELD = "_training_loss_weight"
+EVALUATION_WEIGHT_FIELD = "_evaluation_metric_weight"
+HERO_RESPONSE_ACTION_SCHEMA = "hero_response_action_v2"
+HERO_RESPONSE_ACTION_FIELDS = (
+    *(f"hero_{label}" for label in LABELS),
+    "hero_commit_fraction",
+    "hero_commit_pot_ratio_norm",
+    "opponent_to_call_fraction",
+    "hero_stack_after_fraction",
+)
+HERO_RESPONSE_ACTION_DIM = len(HERO_RESPONSE_ACTION_FIELDS)
+INITIAL_CHIPS = 20_000.0
+MAX_CURRENT_HAND_HISTORY = 16
+VALUE_FIELDS = (
+    "delta_vs_rule",
+    "tail_delta_vs_rule",
+    "match_delta_vs_rule",
+)
+ENCODED_ROW_SCHEMA = "opponent_multitask_encoded_row_v3"
+ENCODED_CONTEXT_SCHEMA = "opponent_multitask_inference_context_v3"
+
+
+def _finite(value: Any, *, field: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{field} must be finite") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{field} must be finite")
+    return number
+
+
+def _bounded_vector(values: Sequence[Any], *, field: str) -> list[float]:
+    result = []
+    for value in values:
+        number = _finite(value, field=field)
+        if not 0.0 <= number <= 1.0:
+            raise ValueError(f"{field} values must be in [0, 1]")
+        result.append(number)
+    return result
+
+
+def _binary_vector(
+    values: Any, *, field: str, dimension: int
+) -> list[int]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        raise ValueError(f"{field} must be a binary sequence")
+    if len(values) != dimension:
+        raise ValueError(f"{field} has the wrong dimension")
+    result = []
+    for value in values:
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{field} must be binary") from exc
+        if number not in (0, 1) or bool(value) != bool(number):
+            raise ValueError(f"{field} must be binary")
+        result.append(number)
+    return result
+
+
+def _validate_cross_hand_sequence(
+    raw: Any, *, schema: Any
+) -> list[list[float]]:
+    if schema != CROSS_HAND_SEQUENCE_SCHEMA:
+        raise ValueError("unsupported cross-hand sequence schema")
+    if not isinstance(raw, list):
+        raise ValueError("cross_hand_sequence must be a list")
+    result = []
+    for row_index, raw_hand in enumerate(raw[-MAX_CROSS_HANDS:]):
+        if not isinstance(raw_hand, Sequence) or isinstance(
+            raw_hand, (str, bytes)
+        ):
+            raise ValueError("cross-hand sequence rows must be numeric sequences")
+        if len(raw_hand) != CROSS_HAND_SEQUENCE_DIM:
+            raise ValueError("cross-hand sequence row has the wrong dimension")
+        hand = []
+        for feature_index, value in enumerate(raw_hand):
+            number = _finite(
+                value,
+                field=f"cross_hand_sequence[{row_index}][{feature_index}]",
+            )
+            lower = -1.0 if feature_index == CROSS_HAND_SEQUENCE_DIM - 1 else 0.0
+            if not lower <= number <= 1.0:
+                raise ValueError("cross-hand sequence feature is out of range")
+            hand.append(number)
+        result.append(hand)
+    return result
+
+
+def _cross_hand_sequence(row: Mapping[str, Any]) -> list[list[float]]:
+    request = row.get("request") if isinstance(row.get("request"), Mapping) else {}
+    sequences = []
+    if "cross_hand_sequence" in row:
+        sequences.append(_validate_cross_hand_sequence(
+            row.get("cross_hand_sequence"),
+            schema=row.get("cross_hand_sequence_schema"),
+        ))
+    if "cross_hand_sequence" in request:
+        sequences.append(_validate_cross_hand_sequence(
+            request.get("cross_hand_sequence"),
+            schema=request.get("cross_hand_sequence_schema"),
+        ))
+    if not sequences:
+        return []
+    if len(sequences) > 1 and sequences[0] != sequences[1]:
+        raise ValueError("row and request cross-hand sequences disagree")
+    return sequences[0]
+
+
+def _value_supervision(
+    row: Mapping[str, Any]
+) -> tuple[dict[str, list[float]], dict[str, list[int]], list[int]]:
+    legal = _binary_vector(
+        row.get("legal_mask"), field="legal_mask", dimension=len(LABELS)
+    )
+    if not any(legal):
+        raise ValueError("value row has no legal action")
+    masks = row.get("target_masks")
+    masks = masks if isinstance(masks, Mapping) else {}
+    targets: dict[str, list[float]] = {}
+    target_masks: dict[str, list[int]] = {}
+    for field in VALUE_FIELDS:
+        raw = row.get(field)
+        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+            raise ValueError(f"{field} must be a numeric target sequence")
+        if len(raw) != len(LABELS):
+            raise ValueError(f"{field} has the wrong dimension")
+        raw_mask = masks.get(field, row.get("target_mask"))
+        mask = _binary_vector(
+            raw_mask, field=f"target_masks.{field}", dimension=len(LABELS)
+        )
+        if any(observed and not legal[index] for index, observed in enumerate(mask)):
+            raise ValueError(f"{field} observes an illegal action")
+        values = []
+        for index, value in enumerate(raw):
+            if mask[index]:
+                values.append(_finite(value, field=f"{field}[{index}]"))
+            else:
+                if value is not None:
+                    raise ValueError(f"{field} has a target outside its mask")
+                values.append(0.0)
+        targets[field] = values
+        target_masks[field] = mask
+    return targets, target_masks, legal
+
+
+def _model_weight_rows(
+    rows: list[dict[str, Any]], *, role: str, modality: str
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    scheme = VALUE_WEIGHTING if modality == "value" else BEHAVIOR_WEIGHTING
+    weighted, report = attach_training_row_weights(
+        rows, scheme=scheme, modality=modality
+    )
+    if role != "train":
+        for row in weighted:
+            row[EVALUATION_WEIGHT_FIELD] = row.pop(TRAIN_WEIGHT_FIELD)
+        report = dict(report)
+        report["row_weight_field"] = EVALUATION_WEIGHT_FIELD
+        report["used_for_gradient_updates"] = False
+    else:
+        report = dict(report)
+        report["row_weight_field"] = TRAIN_WEIGHT_FIELD
+        report["used_for_gradient_updates"] = True
+    return weighted, report
+
+
+def _prepare_model_role(dataset: Any, role: str) -> dict[str, Any]:
+    if role not in MODEL_DEVELOPMENT_ROLES:
+        raise ValueError(f"role is not available to model training: {role}")
+    opened = dataset.open_role(role)
+    if opened.get("role") != role:
+        raise RuntimeError(f"dataset returned the wrong role: {opened.get('role')}")
+    value_source = opened.get("value")
+    behavior_source = opened.get("behavior")
+    if not isinstance(value_source, list) or not isinstance(behavior_source, list):
+        raise RuntimeError(f"dataset role has invalid row containers: {role}")
+    value_rows = [dict(row) for row in value_source]
+    behavior_rows = annotate_response_rows(
+        [dict(row) for row in behavior_source], strict=True
+    )
+    if any(
+        row.get("response_schema") != OPPONENT_RESPONSE_SCHEMA
+        or row.get("response_target_mask") != 1
+        for row in behavior_rows
+    ):
+        raise RuntimeError(f"role contains incomplete response supervision: {role}")
+
+    value_rows, value_weighting = _model_weight_rows(
+        value_rows, role=role, modality="value"
+    )
+    behavior_rows, behavior_weighting = _model_weight_rows(
+        behavior_rows, role=role, modality="behavior"
+    )
+    opponents = sorted({
+        *(opponent_label(row) for row in value_rows),
+        *(opponent_label(row) for row in behavior_rows),
+    })
+    expected_opponents = sorted(str(name) for name in opened.get("opponents", []))
+    if opponents != expected_opponents:
+        raise RuntimeError(f"prepared role opponent coverage changed: {role}")
+    return {
+        "role": role,
+        "opponents": opponents,
+        "value": value_rows,
+        "behavior": behavior_rows,
+        "weighting": {
+            "value": value_weighting,
+            "behavior": behavior_weighting,
+        },
+        "provenance": {
+            "artifact_sha256": opened.get("artifact_sha256"),
+            "manifest_sha256": opened.get("manifest_sha256"),
+            "candidate_sha256": opened.get("candidate_sha256"),
+        },
+    }
+
+
+def _manifest_sha256(dataset: Any) -> str:
+    digest = str(getattr(dataset, "manifest_sha256", ""))
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("dataset manifest_sha256 must be a lowercase SHA-256 digest")
+    return digest
+
+
+def _checkpoint_authorization(
+    dataset: Any,
+    training_phase: Mapping[str, Any],
+    authorization: Mapping[str, Any],
+) -> str:
+    if not isinstance(authorization, Mapping):
+        raise ValueError("model calibration requires a frozen checkpoint authorization")
+    if not isinstance(training_phase, Mapping):
+        raise ValueError("model calibration requires a prepared training phase")
+    digest = str(authorization.get("checkpoint_sha256", ""))
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("checkpoint_sha256 must be a lowercase SHA-256 digest")
+    phase_roles = training_phase.get("roles")
+    if (
+        training_phase.get("schema") != MULTITASK_TRAINING_DATA_SCHEMA
+        or training_phase.get("phase") != "training"
+        or training_phase.get("run_id") != getattr(dataset, "run_id", None)
+        or training_phase.get("role_manifest_sha256") != _manifest_sha256(dataset)
+        or training_phase.get("opened_roles") != list(MODEL_TRAINING_ROLES)
+        or not isinstance(phase_roles, Mapping)
+        or set(phase_roles) != set(MODEL_TRAINING_ROLES)
+    ):
+        raise ValueError("checkpoint authorization is not bound to this training run")
+    training_artifacts = {
+        role: phase_roles[role]["provenance"]["artifact_sha256"]
+        for role in MODEL_TRAINING_ROLES
+    }
+    if (
+        authorization.get("schema") != FROZEN_CHECKPOINT_SCHEMA
+        or authorization.get("frozen") is not True
+        or authorization.get("early_stop_complete") is not True
+        or authorization.get("run_id") != getattr(dataset, "run_id", None)
+        or authorization.get("role_manifest_sha256") != _manifest_sha256(dataset)
+        or authorization.get("training_roles") != list(MODEL_TRAINING_ROLES)
+        or authorization.get("training_artifact_sha256") != training_artifacts
+    ):
+        raise ValueError("checkpoint authorization is not bound to this training run")
+    return digest
+
+
+def prepare_training_phase(dataset: Any) -> dict[str, Any]:
+    """Open gradient training and early-stop roles, but not calibration."""
+    roles = {
+        role: _prepare_model_role(dataset, role)
+        for role in MODEL_TRAINING_ROLES
+    }
+    return {
+        "schema": MULTITASK_TRAINING_DATA_SCHEMA,
+        "phase": "training",
+        "run_id": getattr(dataset, "run_id", None),
+        "role_manifest_sha256": _manifest_sha256(dataset),
+        "opened_roles": list(MODEL_TRAINING_ROLES),
+        "roles": roles,
+    }
+
+
+def prepare_model_calibration(
+    dataset: Any,
+    training_phase: Mapping[str, Any],
+    authorization: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Open calibration only after a run-bound early-stop checkpoint freezes."""
+    checkpoint_sha256 = _checkpoint_authorization(
+        dataset, training_phase, authorization
+    )
+    role = _prepare_model_role(dataset, MODEL_CALIBRATION_ROLE)
+    return {
+        "schema": MULTITASK_TRAINING_DATA_SCHEMA,
+        "phase": "model_calibration",
+        "run_id": getattr(dataset, "run_id", None),
+        "role_manifest_sha256": _manifest_sha256(dataset),
+        "checkpoint_sha256": checkpoint_sha256,
+        "opened_roles": [MODEL_CALIBRATION_ROLE],
+        "roles": {MODEL_CALIBRATION_ROLE: role},
+    }
+
+
+def combine_model_development(
+    training: Mapping[str, Any], calibration: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Combine two already-opened phases without granting any new access."""
+    if (
+        training.get("schema") != MULTITASK_TRAINING_DATA_SCHEMA
+        or training.get("phase") != "training"
+        or calibration.get("schema") != MULTITASK_TRAINING_DATA_SCHEMA
+        or calibration.get("phase") != "model_calibration"
+        or training.get("run_id") != calibration.get("run_id")
+        or training.get("role_manifest_sha256")
+        != calibration.get("role_manifest_sha256")
+    ):
+        raise ValueError("training and calibration phases are not compatible")
+    roles = {**training["roles"], **calibration["roles"]}
+    seen: dict[str, str] = {}
+    for role, payload in roles.items():
+        for opponent in payload["opponents"]:
+            if opponent in seen:
+                raise RuntimeError(
+                    f"opponent appears in multiple model roles: "
+                    f"{opponent} ({seen[opponent]}, {role})"
+                )
+            seen[opponent] = role
+    manifest_sha256 = str(training["role_manifest_sha256"])
+    if any(
+        payload["provenance"]["manifest_sha256"] != manifest_sha256
+        for payload in roles.values()
+    ):
+        raise RuntimeError("model roles came from different role manifests")
+    return {
+        "schema": MULTITASK_TRAINING_DATA_SCHEMA,
+        "run_id": training.get("run_id"),
+        "role_manifest_sha256": manifest_sha256,
+        "checkpoint_sha256": calibration["checkpoint_sha256"],
+        "opened_roles": list(MODEL_DEVELOPMENT_ROLES),
+        "policy_roles_opened": False,
+        "roles": roles,
+        "contracts": training_data_metadata(),
+    }
+
+
+def _hero_response_action_features(row: Mapping[str, Any]) -> list[float]:
+    request = row.get("request") if isinstance(row.get("request"), Mapping) else {}
+    context = (
+        row.get("response_context")
+        if isinstance(row.get("response_context"), Mapping)
+        else {}
+    )
+    try:
+        label_id = int(row.get("hero_action_label_id"))
+    except (TypeError, ValueError):
+        label_id = label_action(int(row.get("hero_action", 0) or 0), dict(request))
+    if not 0 <= label_id < len(LABELS):
+        raise ValueError("hero action label is out of range")
+    one_hot = [1.0 if index == label_id else 0.0 for index in range(len(LABELS))]
+    commit = max(0.0, _finite(context.get("hero_commit", 0.0), field="hero_commit"))
+    pot_before_response = max(
+        1.0,
+        _finite(
+            context.get("pot_before_response", request.get("pot", 150.0)),
+            field="pot_before_response",
+        ),
+    )
+    pot_before_hero = max(1.0, pot_before_response - commit)
+    opponent_to_call = max(
+        0.0,
+        _finite(context.get("opponent_to_call", 0.0), field="opponent_to_call"),
+    )
+    hero_stack_after = max(
+        0.0,
+        _finite(context.get("hero_stack_after", 0.0), field="hero_stack_after"),
+    )
+    return one_hot + [
+        min(1.0, commit / INITIAL_CHIPS),
+        min(1.0, commit / pot_before_hero / 4.0),
+        min(1.0, opponent_to_call / INITIAL_CHIPS),
+        min(1.0, hero_stack_after / INITIAL_CHIPS),
+    ]
+
+
+def _strategy_context(row: Mapping[str, Any]) -> tuple[list[float], str | None, bool]:
+    raw = row.get("strategy_context_features")
+    if raw is None:
+        return [0.0] * STRATEGY_CONTEXT_DIM, None, False
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ValueError("strategy context must be a numeric sequence")
+    strategy = _bounded_vector(raw, field="strategy_context")
+    if len(strategy) != STRATEGY_CONTEXT_DIM:
+        raise ValueError("strategy context has the wrong dimension")
+    schema = str(row.get("strategy_context_schema") or STRATEGY_CONTEXT_SCHEMA)
+    if schema != STRATEGY_CONTEXT_SCHEMA:
+        raise ValueError("unsupported strategy context schema")
+    return strategy, schema, True
+
+
+def encode_model_context(
+    row: Mapping[str, Any], *, response: bool,
+    max_hist: int = MAX_CURRENT_HAND_HISTORY,
+) -> dict[str, Any]:
+    """Encode observable context without requiring a training target."""
+    base = row.get("state_features", row.get("features"))
+    if not isinstance(base, Sequence) or isinstance(base, (str, bytes)):
+        raise ValueError("row is missing state_features")
+    encoded = encode_model_input(
+        row, list(base), max_hist=max_hist, response=response
+    )
+    encoded.update({
+        "encoded_context_schema": ENCODED_CONTEXT_SCHEMA,
+        "opponent_profile_schema": OPPONENT_PROFILE_SCHEMA,
+        "opponent_profile": encode_opponent_profile(row),
+        "cross_hand_sequence_schema": CROSS_HAND_SEQUENCE_SCHEMA,
+        "cross_hand_sequence": _cross_hand_sequence(row),
+        "opponent": opponent_label(dict(row)),
+    })
+    return encoded
+
+
+def encode_value_inference_row(
+    row: Mapping[str, Any], *, max_hist: int = MAX_CURRENT_HAND_HISTORY
+) -> dict[str, Any]:
+    encoded = encode_model_context(row, response=False, max_hist=max_hist)
+    legal = _binary_vector(
+        row.get("legal_mask"), field="legal_mask", dimension=len(LABELS)
+    )
+    try:
+        rule_label_id = int(row.get("rule_label_id"))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("rule_label_id is missing or invalid") from exc
+    if not 0 <= rule_label_id < len(LABELS) or not legal[rule_label_id]:
+        raise ValueError("rule action is absent or illegal")
+    strategy, strategy_schema, strategy_available = _strategy_context(row)
+    encoded.update({
+        "rule_label_id": rule_label_id,
+        "rule_action": [
+            1.0 if index == rule_label_id else 0.0
+            for index in range(len(LABELS))
+        ],
+        "legal_action_mask": legal,
+        "strategy_context": strategy,
+        "strategy_context_schema": strategy_schema,
+        "strategy_context_available": strategy_available,
+    })
+    return encoded
+
+
+def encode_response_inference_row(
+    row: Mapping[str, Any], *, max_hist: int = MAX_CURRENT_HAND_HISTORY
+) -> dict[str, Any] | None:
+    """Encode one hypothetical hero action if the opponent must respond."""
+    context = response_context(row)
+    legal = _binary_vector(
+        context["legal_action_mask"],
+        field="response_legal_action_mask",
+        dimension=len(OPPONENT_ACTION_LABELS),
+    )
+    if context["response_expected"] is not True or not any(legal):
+        return None
+    prepared = dict(row)
+    prepared["response_context"] = context
+    encoded = encode_model_context(prepared, response=True, max_hist=max_hist)
+    encoded.update({
+        "hero_action_schema": HERO_RESPONSE_ACTION_SCHEMA,
+        "hero_action_features": _hero_response_action_features(prepared),
+        "response_legal_action_mask": legal,
+        "response_context": {
+            key: value for key, value in context.items() if key != "game_state"
+        },
+        "strategy_context": [],
+        "strategy_context_schema": None,
+    })
+    return encoded
+
+
+def encode_prepared_row(
+    row: Mapping[str, Any], *, response: bool,
+    max_hist: int = MAX_CURRENT_HAND_HISTORY,
+) -> dict[str, Any]:
+    """Encode a prepared role row without importing the legacy trainer."""
+    prepared = dict(row)
+    if response and row.get("response_schema") != OPPONENT_RESPONSE_SCHEMA:
+        prepared = annotate_response_rows([prepared], strict=True)[0]
+    if response:
+        inferred = encode_response_inference_row(prepared, max_hist=max_hist)
+        if inferred is None:
+            raise ValueError("response target is absent or illegal")
+        encoded = inferred
+    else:
+        encoded = encode_value_inference_row(prepared, max_hist=max_hist)
+    encoded["encoded_row_schema"] = ENCODED_ROW_SCHEMA
+    weight_field = (
+        TRAIN_WEIGHT_FIELD if TRAIN_WEIGHT_FIELD in row else EVALUATION_WEIGHT_FIELD
+    )
+    if weight_field not in row:
+        raise ValueError("prepared row is missing its role weight")
+    encoded["row_weight"] = _finite(row[weight_field], field=weight_field)
+    if encoded["row_weight"] <= 0.0:
+        raise ValueError("prepared row weight must be positive")
+    encoded["row_weight_field"] = weight_field
+
+    if response:
+        legal = prepared.get("response_legal_action_mask")
+        legal_mask = _binary_vector(
+            legal,
+            field="response_legal_action_mask",
+            dimension=len(OPPONENT_ACTION_LABELS),
+        )
+        target = int(prepared.get("opponent_action_label_id", -1))
+        target_mask = _binary_vector(
+            [prepared.get("response_target_mask", 0)],
+            field="response_target_mask",
+            dimension=1,
+        )[0]
+        if target_mask != 1 or not 0 <= target < len(legal_mask) or not legal_mask[target]:
+            raise ValueError("response target is absent or illegal")
+        amount_mask = _binary_vector(
+            [prepared.get("response_amount_target_mask", 0)],
+            field="response_amount_target_mask",
+            dimension=1,
+        )[0]
+        size_targets = _bounded_vector(
+            [
+                prepared.get("response_amount_target", 0.0),
+                prepared.get("response_aggressive_stack_fraction", 0.0),
+            ],
+            field="response_size_targets",
+        )
+        encoded.update({
+            "response_schema": OPPONENT_RESPONSE_SCHEMA,
+            "response_target": target,
+            "response_target_mask": target_mask,
+            "response_legal_action_mask": legal_mask,
+            "response_amount_target": size_targets[0],
+            "response_amount_target_mask": int(
+                amount_mask
+            ),
+            "response_size_targets": size_targets,
+            "response_size_target_mask": [amount_mask, amount_mask],
+        })
+    else:
+        targets, target_masks, legal = _value_supervision(row)
+        rule_label_id = encoded["rule_label_id"]
+        if any(
+            not target_masks[field][rule_label_id] for field in VALUE_FIELDS
+        ):
+            raise ValueError("rule action must be observed for every value field")
+        encoded.update({
+            "value_targets": targets,
+            "value_target_masks": target_masks,
+        })
+        match_outcome = derive_match_outcome_supervision(row, required=False)
+        if match_outcome is not None:
+            encoded["match_outcome_supervision"] = match_outcome
+    return encoded
+
+
+def training_data_metadata() -> dict[str, Any]:
+    return {
+        "schema": MULTITASK_TRAINING_DATA_SCHEMA,
+        "model_development_roles": list(MODEL_DEVELOPMENT_ROLES),
+        "model_training_roles": list(MODEL_TRAINING_ROLES),
+        "model_calibration_role": MODEL_CALIBRATION_ROLE,
+        "frozen_checkpoint_schema": FROZEN_CHECKPOINT_SCHEMA,
+        "policy_roles_forbidden": list(POLICY_ROLES),
+        "value_weighting": VALUE_WEIGHTING,
+        "behavior_weighting": BEHAVIOR_WEIGHTING,
+        "train_weight_field": TRAIN_WEIGHT_FIELD,
+        "evaluation_weight_field": EVALUATION_WEIGHT_FIELD,
+        "encoded_row_schema": ENCODED_ROW_SCHEMA,
+        "encoded_context_schema": ENCODED_CONTEXT_SCHEMA,
+        "model_input": model_input_metadata(base_state_dim=48),
+        "max_current_hand_history": MAX_CURRENT_HAND_HISTORY,
+        "opponent_profile": opponent_profile_metadata(),
+        "cross_hand_sequence": {
+            "schema": CROSS_HAND_SEQUENCE_SCHEMA,
+            "dim": CROSS_HAND_SEQUENCE_DIM,
+            "fields": list(CROSS_HAND_SEQUENCE_FIELDS),
+            "max_hands": MAX_CROSS_HANDS,
+            "padding": "right_zero_with_explicit_length",
+        },
+        "opponent_response": response_schema_metadata(),
+        "hero_response_action": {
+            "schema": HERO_RESPONSE_ACTION_SCHEMA,
+            "dim": HERO_RESPONSE_ACTION_DIM,
+            "fields": list(HERO_RESPONSE_ACTION_FIELDS),
+        },
+        "strategy_context": strategy_context_metadata(),
+        "match_outcome": match_outcome_metadata(),
+    }
