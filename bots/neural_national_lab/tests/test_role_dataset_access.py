@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+import pytest
+
+
+TOOLS = Path(__file__).resolve().parents[1] / "tools"
+sys.path.insert(0, str(TOOLS))
+
+import freeze_opponent_role_dataset as freeze  # noqa: E402
+import opponent_exposure_ledger as ledger  # noqa: E402
+import role_dataset_access as access  # noqa: E402
+
+
+CANDIDATE_SHA = "a" * 64
+
+
+def _sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
+    root = tmp_path / "dataset"
+    root.mkdir()
+    roles = {
+        role: [f"national_v{index}"]
+        for index, role in enumerate(freeze.EVIDENCE_ROLES, 1)
+    }
+    outputs = {}
+    for prefix in freeze.PREFIXES:
+        for role, opponents in roles.items():
+            filename = f"{prefix}_{role}.jsonl"
+            row = {
+                "opponent": opponents[0],
+                "_split": role,
+                "_evidence_role": role,
+            }
+            raw = (json.dumps(row) + "\n").encode()
+            (root / filename).write_bytes(raw)
+            outputs[filename] = {
+                "rows": 1,
+                "bytes": len(raw),
+                "sha256": _sha(raw),
+                "opponents": opponents,
+            }
+    manifest = {
+        "schema": freeze.SCHEMA,
+        "source_collection_complete": complete,
+        "roles": roles,
+        "outputs": outputs,
+        "invariants": {
+            "opponent_disjoint": True,
+            "match_cluster_disjoint": True,
+            "deck_blocks_non_overlapping": True,
+            "uniform_decision_ipw_validated": True,
+            "artifact_snapshots_verified": True,
+            "final_blind_in_dataset": False,
+        },
+    }
+    manifest_path = root / "role_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest_path, tmp_path / "ledger.json"
+
+
+def _access(tmp_path: Path, *, complete: bool = True) -> access.RoleDatasetAccess:
+    manifest, ledger_path = _dataset(tmp_path, complete=complete)
+    return access.RoleDatasetAccess(
+        manifest,
+        ledger_path=ledger_path,
+        run_id="run-1",
+    )
+
+
+def _selection_result(
+    dataset: access.RoleDatasetAccess,
+    path: Path,
+    *,
+    passed: bool = True,
+) -> Path:
+    path.write_text(json.dumps({
+        "schema": access.POLICY_SELECTION_RESULT_SCHEMA,
+        "passed": passed,
+        "run_id": dataset.run_id,
+        "candidate_sha256": CANDIDATE_SHA,
+        "role_manifest_sha256": dataset.manifest_sha256,
+    }), encoding="utf-8")
+    return path
+
+
+def test_manifest_load_does_not_touch_role_files(tmp_path: Path) -> None:
+    manifest, ledger_path = _dataset(tmp_path)
+    policy_gate = manifest.parent / "cf_policy_gate.jsonl"
+    policy_gate.unlink()
+
+    dataset = access.RoleDatasetAccess(
+        manifest, ledger_path=ledger_path, run_id="run-1"
+    )
+
+    assert dataset.roles["policy_gate"] == ["national_v5"]
+    assert not ledger_path.exists()
+
+
+def test_open_records_exposure_and_validates_both_modalities(tmp_path: Path) -> None:
+    dataset = _access(tmp_path)
+
+    opened = dataset.open_role("train")
+
+    assert len(opened["value"]) == 1
+    assert len(opened["behavior"]) == 1
+    report = ledger.status(dataset.ledger_path)
+    exposure = report["opponents"]["national_v1"]["exposures"][0]
+    assert exposure["role"] == "train"
+    assert exposure["artifact_sha256"] == opened["artifact_sha256"]
+
+
+def test_policy_role_cannot_open_before_prerequisites(tmp_path: Path) -> None:
+    dataset = _access(tmp_path)
+    gate_path = dataset.root / "cf_policy_selection.jsonl"
+    gate_path.unlink()
+
+    with pytest.raises(RuntimeError, match="prerequisite"):
+        dataset.open_role(
+            "policy_selection", candidate_sha256=CANDIDATE_SHA
+        )
+    assert not dataset.ledger_path.exists()
+
+
+def test_policy_gate_is_bound_to_same_frozen_candidate(tmp_path: Path) -> None:
+    dataset = _access(tmp_path)
+    for role in ("train", "early_stop", "model_calibration"):
+        dataset.open_role(role)
+    dataset.open_role("policy_selection", candidate_sha256=CANDIDATE_SHA)
+    result = _selection_result(dataset, tmp_path / "selection_result.json")
+
+    with pytest.raises(RuntimeError, match="prerequisite"):
+        dataset.open_role("policy_gate", candidate_sha256="b" * 64)
+    opened = dataset.open_role(
+        "policy_gate",
+        candidate_sha256=CANDIDATE_SHA,
+        prerequisite_report=result,
+    )
+
+    assert opened["candidate_sha256"] == CANDIDATE_SHA
+    assert opened["prerequisite_sha256"] is not None
+
+
+def test_failed_policy_selection_does_not_open_policy_gate_data(
+    tmp_path: Path,
+) -> None:
+    dataset = _access(tmp_path)
+    for role in ("train", "early_stop", "model_calibration"):
+        dataset.open_role(role)
+    dataset.open_role("policy_selection", candidate_sha256=CANDIDATE_SHA)
+    result = _selection_result(
+        dataset, tmp_path / "selection_result.json", passed=False
+    )
+    gate_path = dataset.root / "cf_policy_gate.jsonl"
+    gate_path.unlink()
+
+    with pytest.raises(RuntimeError, match="did not authorize"):
+        dataset.open_role(
+            "policy_gate",
+            candidate_sha256=CANDIDATE_SHA,
+            prerequisite_report=result,
+        )
+
+    report = ledger.status(dataset.ledger_path)
+    assert "national_v5" not in report["opponents"]
+
+
+def test_failed_file_validation_remains_conservatively_exposed(
+    tmp_path: Path,
+) -> None:
+    dataset = _access(tmp_path)
+    path = dataset.root / "cf_train.jsonl"
+    path.write_text("corrupt\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="artifact changed"):
+        dataset.open_role("train")
+
+    report = ledger.status(dataset.ledger_path)
+    assert report["opponents"]["national_v1"]["exposures"][0]["role"] == "train"
+
+
+def test_complete_collection_is_required_for_training_access(
+    tmp_path: Path,
+) -> None:
+    manifest, ledger_path = _dataset(tmp_path, complete=False)
+
+    with pytest.raises(ValueError, match="incomplete"):
+        access.RoleDatasetAccess(
+            manifest, ledger_path=ledger_path, run_id="run-1"
+        )
+    smoke = access.RoleDatasetAccess(
+        manifest,
+        ledger_path=ledger_path,
+        run_id="smoke",
+        require_complete=False,
+    )
+    assert smoke.manifest["source_collection_complete"] is False

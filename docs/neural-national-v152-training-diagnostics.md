@@ -736,6 +736,17 @@ counterfactual rows and 782 behavior rows across 12 non-overlapping match
 blocks. These counts only validate the freeze contract; they are far below the
 minimum needed to train or claim strength, and the live collection continues.
 
+`role_dataset_access.py` is the matching lazy reader. Construction reads only
+`role_manifest.json`; role JSONL files are not opened, statted, or hashed. Each
+role exposure is written to the append-only ledger before its two data files
+are read and hash/row/opponent validated, so a corrupt read remains
+conservatively exposed. Policy selection requires the three model-development
+roles to have been opened by the same run. Policy gate additionally requires
+the same frozen candidate and a `passed=true` policy-selection result bound to
+that run, candidate, and role-manifest digest. A failed result cannot touch or
+register the gate data. The active pass-98 sweep predates this reader; it will
+be integrated only after that process stops reading the old trainer from disk.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
