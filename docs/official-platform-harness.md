@@ -30,11 +30,15 @@ replay must not label exact 2x illegal.
 ## Observed Server Message Semantics
 
 The archived 2026-07-10 full-suite capture contains eight official rounds
-(560 hand starts). It proves the following wire behavior:
+(560 hand starts), and a controlled 2026-07-11 formal sandbox round reproduced
+the same terminal behavior. Together they prove the following wire behavior:
 
-- every completed hand sends each seat its own signed `earnChips <amount>`;
-  the 552 captured settlement pairs were zero-sum. This is per-hand net chip
-  change, not a cumulative match-result message;
+- hands 1 through 69 send each seat its own signed `earnChips <amount>` and the
+  paired values are zero-sum. At the natural end of hand 70, this 2021 EXE
+  writes the complete 70-record THP and match footer but does not send the
+  final `earnChips` pair. The older capture therefore has exactly 552 pairs
+  (69 × 8), not eight incomplete matches. See
+  [official-terminal-settlement-oracle-2026-07-11.md](official-terminal-settlement-oracle-2026-07-11.md);
 - `oppo_hands|...` is sent only at showdown. The 68 messages represented 34
   showdowns, and every exposed hand matched the peer's actual hole cards;
 - the EXE relayed all 696 raises, 526 folds, and 13 all-ins in the capture, but
@@ -42,7 +46,8 @@ The archived 2026-07-10 full-suite capture contains eight official rounds
   checks were terminal street-closing actions followed directly by a street or
   settlement boundary;
 - there is no separate final winner, cumulative chip total, or complete action
-  history token.
+  history TCP token. The official THP footer does contain the cumulative match
+  result, and every `STATE` record contains named per-hand earnings.
 
 The current generated native runtime therefore records relayed opponent
 actions normally and infers only a terminal call/check that is proven by the
@@ -164,7 +169,7 @@ export POK_OFFICIAL_JOB_RECONCILER=1
 
 Quality and precommit start short durable compliance jobs while local native
 gates continue to own strength. The final `commit_bot` stage always requires the
-immutable `official-full-v4` profile: five self-play rounds plus three eligible
+immutable `official-full-v5` profile: five self-play rounds plus three eligible
 opponent rounds, every round complete at 70 hands. The checkpoint moves to
 `official_certifying` and polls the same identity-bound job; commit/tag cannot
 occur before the signed certificate validates.
@@ -182,12 +187,18 @@ so recovery cannot cherry-pick successful evidence.
 
 ## Completion Rules
 
-A 70-hand round requires all 70 preflop starts and all 70 paired `earnChips`
-settlements in both bot logs and the wire replay. The harness must wait for the
-final settlement instead of treating the 70th preflop start as completion.
-Formal acceptance additionally requires an official THP file containing
-exactly 70 `STATE` records. Missing hand-70 settlement evidence is
-infrastructure-inconclusive, never a successful certificate.
+A 70-hand round still requires proof of exactly 70 completed hands. Policy
+`official-full-v5` accepts either 70 paired TCP settlements, or the official
+EXE's empirically verified terminal form: exact wire starts 1..70, exact paired
+wire settlements 1..69 with no pending action, plus a new stable THP whose
+strict states are exactly 0..69. In the terminal form, every named wire earning
+for hands 1..69 must equal THP states 0..68, state 69 must have named zero-sum
+earnings, and all 70 earnings must equal the THP footer result. The receipt
+binds both raw wire and THP hashes and is later signed and archived.
+
+This is not a `target - 1` allowance: 69 settlements without the exact
+cross-bound THP proof still fails. Short smoke/compliance runs continue to
+require all requested paired TCP settlements.
 
 Every outbound action is checked against the exact wire grammar. Leading or
 trailing whitespace, extra spaces, tabs, `bet`, unknown actions, illegal

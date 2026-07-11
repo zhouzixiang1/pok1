@@ -316,7 +316,7 @@ def test_official_full_pass_is_persisted_in_verified_gate_ledger(monkeypatch, tm
         "status": {
             "status": "official-certified",
             "mode": "full",
-            "policy_id": "official-full-v4",
+            "policy_id": "official-full-v5",
             "certificate_digest": "cert-digest",
         },
         "certificate_digest": "cert-digest",
@@ -426,7 +426,7 @@ def test_commit_bot_attaches_pending_official_job_without_git(monkeypatch, tmp_p
         "outcome": "pending",
         "spec": {
             "mode": "full",
-            "policy_id": "official-full-v4",
+            "policy_id": "official-full-v5",
             "candidate": str(candidate),
             "opponent": str(candidate),
             "self_play_rounds": 5,
@@ -483,7 +483,7 @@ def test_required_push_failure_keeps_checkpoint_and_candidate_incomplete(monkeyp
     status = {
         "status": STATUS_CERTIFIED,
         "mode": "full",
-        "policy_id": "official-full-v4",
+        "policy_id": "official-full-v5",
         "certificate_digest": "cert-digest",
         "certification_identity": {"candidate_hash": "candidate-hash"},
     }
@@ -567,7 +567,7 @@ def test_git_commit_bot_rejects_certificate_drift_before_staging(monkeypatch, tm
             official_certificate={
                 "certificate_digest": "cert-digest",
                 "candidate_hash": "certified-hash",
-                "policy_id": "official-full-v4",
+                "policy_id": "official-full-v5",
             },
         )
 
@@ -622,7 +622,7 @@ def test_git_commit_bot_rejects_certificate_drift_while_staging(monkeypatch, tmp
             official_certificate={
                 "certificate_digest": "cert-digest",
                 "candidate_hash": "certified-hash",
-                "policy_id": "official-full-v4",
+                "policy_id": "official-full-v5",
             },
         )
 

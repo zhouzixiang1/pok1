@@ -517,6 +517,7 @@ def _round_evidence(
         "classification": classification,
         "attribution": attributed,
         "log_summary": receipt.get("log_summary", {}),
+        "completion_evidence": receipt.get("completion_evidence"),
         "thp_summaries": artifacts.get("thp_summaries", []),
         "canonical_thp": artifacts.get("canonical_thp"),
         "wire_replay_summary": replay_summary,

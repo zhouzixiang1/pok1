@@ -152,7 +152,7 @@ def test_completion_tag_validation_rejects_duplicate_metadata(monkeypatch, tmp_p
     expected = {
         "official-certificate": "a" * 64,
         "official-candidate-hash": "b" * 64,
-        "official-policy": "official-full-v4",
+        "official-policy": "official-full-v5",
     }
     monkeypatch.setattr(
         bot_artifact,
@@ -181,7 +181,7 @@ def test_completion_tag_validation_accepts_exact_annotated_tag(monkeypatch, tmp_
     expected = {
         "official-certificate": "a" * 64,
         "official-candidate-hash": "b" * 64,
-        "official-policy": "official-full-v4",
+        "official-policy": "official-full-v5",
     }
     monkeypatch.setattr(
         bot_artifact,

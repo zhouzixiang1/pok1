@@ -10,11 +10,15 @@ strategy scores.
 
 ## Formal Certificate
 
-`official-full-v4` is the immutable formal profile for every new national bot:
+`official-full-v5` is the immutable formal profile for every new national bot:
 
 - five candidate self-play rounds;
 - three rounds against one policy-eligible native opponent;
 - exactly 70 hands in every round;
+- an exact completion proof: normally 70 paired TCP settlements, or the
+  official 2021 EXE terminal form with wire hands 1..70, wire settlements
+  1..69, and a strict 70-state THP whose named earnings and footer cross-bind
+  the omitted terminal settlement;
 - complete THP, wire capture/replay, bot logs, stdout/stderr, platform log, and
   screenshot evidence;
 - sealed read-only bot artifacts launched in an isolated network namespace with
@@ -30,12 +34,14 @@ emit or change pass, fail, blocking, certificate, rating, or strength fields.
 Uncited feedback and strength-tuning text are discarded. LLM failure, timeout,
 or absence never changes the deterministic result.
 
-A v4 certificate binds:
+A v5 certificate binds:
 
 - the exact candidate and opponent artifact hashes;
 - the full profile and official-opponent selection receipt;
 - EXE, Wine/UI, harness, wire parser, attribution, and policy fingerprints;
 - a deterministic 5+3 round receipt;
+- each round's completed-hand method and, for the terminal form, the raw wire
+  hash, THP hash, prefix-earnings digest, final state, named totals, and footer;
 - the official evidence manifest and content-addressed archive receipt;
 - the issuing Ed25519 identity.
 

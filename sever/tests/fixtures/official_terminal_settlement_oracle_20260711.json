@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "oracle": "official-2021-exe-terminal-hand-settlement",
+  "observed_at": "2026-07-11T17:22:25+08:00",
+  "official_job_id": "dca6bdd0e10a5cdb73b6195913369f8ddb19a3aaf9dcd9c62f3d97e761e7deb4",
+  "round": "self_play_01",
+  "exe_sha256": "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a",
+  "wire_events_sha256": "ca6e29cee830740ab511f06a3231df39edde26229529fc91bcc8a1c4a482d234",
+  "thp_sha256": "c70b60ac80375a2bf41fa72825bd91358cc48c5369eaee778aec0dd10226ca50",
+  "wire_hands_started": 70,
+  "wire_settlement_hands": {
+    "first": 1,
+    "last": 69,
+    "count": 69,
+    "gaps": [],
+    "duplicates": []
+  },
+  "wire_prefix_digest": "b5079bf195205a2c90e1aeb8a9fcb28a35efe922ef12392b945212590c6acd07",
+  "thp_prefix_digest": "b5079bf195205a2c90e1aeb8a9fcb28a35efe922ef12392b945212590c6acd07",
+  "thp_state_indices": {
+    "first": 0,
+    "last": 69,
+    "count": 70,
+    "gaps": [],
+    "duplicates": []
+  },
+  "terminal_state": "STATE:69:f:Jc9s|3cTs:50|-50:BotB|BotA;",
+  "wire_totals_before_terminal": {
+    "BotA": 19721,
+    "BotB": -19721
+  },
+  "terminal_earnings": {
+    "BotA": -50,
+    "BotB": 50
+  },
+  "thp_match_totals": {
+    "BotA": 19671,
+    "BotB": -19671
+  },
+  "thp_footer_result": "BotA赢得19671个筹码",
+  "strength_evaluation": "not_applicable"
+}

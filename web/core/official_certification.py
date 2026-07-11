@@ -28,6 +28,7 @@ from official_eligibility import epoch_lifecycle_eligibility, grandfather_eligib
 from official_platform_harness import (
     OfficialPlatformConfig,
     _copy_config,
+    round_completion_issues,
     run_official_acceptance_sync,
 )
 from official_evidence import build_official_evidence_bundle
@@ -60,10 +61,10 @@ EXECUTION_PROFILE_CODE_PATH = ROOT / "web" / "core" / "official_execution_profil
 BOT_SANDBOX_PATH = ROOT / "web" / "core" / "official_bot_sandbox.py"
 
 CertificationMode = Literal["smoke", "compliance", "full"]
-FULL_POLICY_ID = "official-full-v4"
-CERTIFICATE_SCHEMA_VERSION = 4
+FULL_POLICY_ID = "official-full-v5"
+CERTIFICATE_SCHEMA_VERSION = 5
 PUBLISHED_ATTESTATION_SCHEMA_VERSION = 2
-DETERMINISTIC_RECEIPT_SCHEMA_VERSION = 2
+DETERMINISTIC_RECEIPT_SCHEMA_VERSION = 3
 DETERMINISTIC_STATUS_RECEIPT_SCHEMA_VERSION = 1
 OPPONENT_ELIGIBILITY_RECEIPT_SCHEMA_VERSION = 1
 
@@ -606,7 +607,11 @@ def _formal_thp_artifact_issues(
         raw = path.read_bytes()
         actual_sha256 = hashlib.sha256(raw).hexdigest()
         text = raw.decode("gb2312", errors="replace")
-        actual_hands = len(re.findall(r"\bSTATE:\d+:", text))
+        actual_indices = [
+            int(value)
+            for value in re.findall(r"\bSTATE:(\d+):", text)
+        ]
+        actual_hands = len(actual_indices)
     except Exception as exc:
         return [f"canonical_thp_read_error:{type(exc).__name__}"]
     if canonical.get("sha256") != actual_sha256:
@@ -624,6 +629,11 @@ def _formal_thp_artifact_issues(
         issues.append(
             "thp_hand_count_mismatch_for_full_certification: "
             f"hands={actual_hands} expected={expected_hands}"
+        )
+    if actual_indices != list(range(expected_hands)):
+        issues.append(
+            "thp_hand_index_sequence_mismatch_for_full_certification: "
+            f"expected=0..{max(0, expected_hands - 1)}"
         )
     summaries = artifacts.get("thp_summaries") or []
     if not isinstance(summaries, list) or not summaries:
@@ -684,15 +694,7 @@ def _formal_execution_issues(receipt: dict[str, Any]) -> list[str]:
 def _log_target_reached(receipt: Any, target_hands: int) -> bool:
     if not isinstance(receipt, dict):
         return False
-    summary = receipt.get("log_summary") or {}
-    if not isinstance(summary, dict):
-        return False
-    try:
-        hands_started = int(summary.get("hands_started_min", 0) or 0)
-        settlements = int(summary.get("settlements_min", 0) or 0)
-    except Exception:
-        return False
-    return hands_started >= target_hands and settlements >= target_hands
+    return not round_completion_issues(receipt, target_hands)
 
 
 def _same_resolved_path(left: Any, right: str | None) -> bool:
@@ -819,7 +821,9 @@ def receipt_validation_issues(
 
     thp_hands = _max_thp_hands(receipt)
     if spec.mode == "full" or spec.target_hands >= 70:
-        if not _log_target_reached(receipt, spec.target_hands):
+        completion_issues = round_completion_issues(receipt, spec.target_hands)
+        if completion_issues:
+            issues.extend(completion_issues)
             summary = receipt.get("log_summary") or {}
             issues.append(
                 "official_full_settlement_incomplete: "
@@ -1584,6 +1588,11 @@ def _build_deterministic_receipt(
         log_summary = item.get("log_summary") or {}
         thp_summaries = item.get("thp_summaries") or []
         canonical_thp = item.get("canonical_thp") if isinstance(item.get("canonical_thp"), dict) else {}
+        completion = (
+            item.get("completion_evidence")
+            if isinstance(item.get("completion_evidence"), dict)
+            else {}
+        )
         rounds.append({
             "round_kind": item.get("round_kind"),
             "round_index": item.get("round_index"),
@@ -1595,8 +1604,17 @@ def _build_deterministic_receipt(
             "countable": bool(attribution.get("countable")),
             "hands_started": int(log_summary.get("hands_started_min", 0) or 0),
             "settlements": int(log_summary.get("settlements_min", 0) or 0),
+            "completed_hands": int(
+                completion.get("completed_hands")
+                or min(
+                    int(log_summary.get("hands_started_min", 0) or 0),
+                    int(log_summary.get("settlements_min", 0) or 0),
+                )
+            ),
             "thp_hands": int(canonical_thp.get("hand_records", 0) or 0),
             "thp_sha256": str(canonical_thp.get("sha256") or ""),
+            "completion_kind": str(completion.get("kind") or "paired-tcp-settlements"),
+            "completion_evidence_digest": str(completion.get("evidence_digest") or ""),
             "issue_count": len(item.get("issues") or []),
         })
     payload = {
@@ -1688,11 +1706,26 @@ def _deterministic_receipt_issues(
             round_index = int(item.get("round_index"))
             target_hands = int(item.get("target_hands", 0) or 0)
             thp_hands = int(item.get("thp_hands", 0) or 0)
+            hands_started = int(item.get("hands_started", 0) or 0)
+            settlements = int(item.get("settlements", 0) or 0)
+            completed_hands = int(item.get("completed_hands", 0) or 0)
             issue_count = int(item.get("issue_count", -1) or 0)
         except (TypeError, ValueError, OverflowError):
             issues.append("certificate_deterministic_round_identity_invalid")
             continue
         actual_rounds.append((str(item.get("round_kind")), round_index))
+        paired_completion = (
+            hands_started >= target_hands
+            and settlements >= target_hands
+            and item.get("completion_kind") == "paired-tcp-settlements"
+        )
+        thp_terminal_completion = (
+            target_hands == 70
+            and hands_started == 70
+            and settlements == 69
+            and item.get("completion_kind") == "official-thp-terminal-settlement"
+            and len(str(item.get("completion_evidence_digest") or "")) == 64
+        )
         if not (
             item.get("passed") is True
             and item.get("classification") == "pass"
@@ -1701,7 +1734,9 @@ def _deterministic_receipt_issues(
             and item.get("countable") is True
             and target_hands == spec.target_hands
             and thp_hands == spec.target_hands
+            and completed_hands == spec.target_hands
             and len(str(item.get("thp_sha256") or "")) == 64
+            and (paired_completion or thp_terminal_completion)
             and issue_count == 0
         ):
             issues.append(

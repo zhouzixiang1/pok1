@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Any, Callable
 
+from bot_artifact import canonical_digest
 from pipeline_schema import NationalAcceptanceResult
 from official_attribution import round_topology
 from official_bot_sandbox import (
@@ -79,7 +80,15 @@ CRITICAL_LOG_PATTERNS = (
 )
 SEND_MSG_RE = re.compile(r"\bSEND\b.*\bmsg='([^']*)'")
 RAISE_ACTION_RE = re.compile(r"^raise [1-9]\d*$")
-THP_HAND_RE = re.compile(r"\bSTATE:\d+:")
+THP_HAND_RE = re.compile(r"\bSTATE:(\d+):")
+THP_RECORD_RE = re.compile(
+    r"\bSTATE:(\d+):([^:]*):([^:]*):(-?\d+)\|(-?\d+):([^|;]+)\|([^;]+);"
+)
+THP_FOOTER_RE = re.compile(
+    r"\{\[THP\]\[([^\]]+)\]\[([^\]]+)\]\[([^\]]+)\]"
+    r"\[([^\]]+)\]\[([^\]]+)\]\}"
+)
+TERMINAL_COMPLETION_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -676,6 +685,79 @@ def _target_reached(summary: dict[str, Any], target_hands: int) -> bool:
     return hands_started >= target_hands and settlements >= target_hands
 
 
+def _terminal_socket_boundary(
+    log_summary: dict[str, Any],
+    wire_summary: dict[str, Any],
+    target_hands: int,
+) -> bool:
+    """Recognize the EXE's natural hand-70 TCP boundary, not a generic -1.
+
+    The 2021 official EXE records hand 70 in THP but omits that hand's final
+    ``earnChips`` pair.  This predicate is deliberately exact and is useful
+    only while waiting for the independent official THP completion artifact.
+    """
+    if (
+        target_hands != 70
+        or not isinstance(wire_summary, dict)
+        or not wire_summary
+    ):
+        return False
+    try:
+        log_hands = int(log_summary.get("hands_started_min", 0) or 0)
+        log_settlements = int(log_summary.get("settlements_min", 0) or 0)
+        wire_hands = int(wire_summary.get("hands_started_min", 0) or 0)
+        wire_settlements = int(wire_summary.get("settlements_min", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if (log_hands, log_settlements, wire_hands, wire_settlements) != (
+        70,
+        69,
+        70,
+        69,
+    ):
+        return False
+    if wire_summary.get("pending_expected_actions"):
+        return False
+    seats = wire_summary.get("seats")
+    if not isinstance(seats, dict) or len(seats) != 2:
+        return False
+    records_by_label: dict[str, list[dict[str, int]]] = {}
+    for label, seat in seats.items():
+        if not isinstance(seat, dict):
+            return False
+        try:
+            if int(seat.get("hands_started", 0) or 0) != 70:
+                return False
+            if int(seat.get("settlements", 0) or 0) != 69:
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if bool(seat.get("pending_expected_action")):
+            return False
+        records = seat.get("settlement_records")
+        if not isinstance(records, list) or len(records) != 69:
+            return False
+        normalized: list[dict[str, int]] = []
+        for item in records:
+            if not isinstance(item, dict):
+                return False
+            hand = item.get("hand")
+            amount = item.get("amount")
+            if not isinstance(hand, int) or not isinstance(amount, int):
+                return False
+            normalized.append({"hand": hand, "amount": amount})
+        if [item["hand"] for item in normalized] != list(range(1, 70)):
+            return False
+        records_by_label[str(label)] = normalized
+    labels = sorted(records_by_label)
+    if len(labels) != 2:
+        return False
+    for index in range(69):
+        if sum(records_by_label[label][index]["amount"] for label in labels) != 0:
+            return False
+    return True
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -992,7 +1074,9 @@ def _summarize_thp_files(paths: list[str]) -> list[dict[str, Any]]:
                 summary["bytes"] = len(raw)
                 summary["sha256"] = hashlib.sha256(raw).hexdigest()
                 text = raw.decode("gb2312", errors="replace")
-                summary["hand_records"] = len(THP_HAND_RE.findall(text))
+                hand_indices = [int(value) for value in THP_HAND_RE.findall(text)]
+                summary["hand_records"] = len(hand_indices)
+                summary["hand_indices"] = hand_indices
             except OSError as exc:
                 summary["issue"] = f"thp_read_error: {type(exc).__name__}: {exc}"
             except Exception as exc:
@@ -1040,6 +1124,12 @@ def _canonical_thp_evidence(
             "thp_hand_count_mismatch: "
             f"hands={hand_records} expected={expected_hands}"
         )
+    expected_indices = list(range(expected_hands))
+    if selected.get("hand_indices") != expected_indices:
+        issues.append(
+            "thp_hand_index_sequence_mismatch: "
+            f"expected=0..{max(0, expected_hands - 1)}"
+        )
     canonical = {
         "path": str(selected.get("path") or ""),
         "sha256": str(selected.get("sha256") or ""),
@@ -1052,6 +1142,452 @@ def _canonical_thp_evidence(
         ),
     }
     return canonical, issues
+
+
+def _changed_thp_paths(
+    platform_dirs: Path | list[Path] | tuple[Path, ...],
+    *,
+    before: dict[str, tuple[int, int]],
+) -> list[Path]:
+    paths: dict[str, Path] = {}
+    for platform_dir in _coerce_platform_dirs(platform_dirs):
+        for path in platform_dir.glob("THP-*.txt"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                resolved = path.resolve()
+                stat = path.stat()
+            except OSError:
+                continue
+            if before.get(str(resolved)) != (stat.st_size, stat.st_mtime_ns):
+                paths[str(resolved)] = path
+    return [paths[key] for key in sorted(paths)]
+
+
+def _strict_thp_match(
+    text: str,
+    *,
+    expected_hands: int,
+    expected_names: tuple[str, str],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    issues: list[str] = []
+    if len(set(expected_names)) != 2 or any(not name for name in expected_names):
+        return None, ["thp_expected_players_invalid"]
+    markers = [int(value) for value in THP_HAND_RE.findall(text)]
+    if markers != list(range(expected_hands)):
+        issues.append("thp_hand_index_sequence_mismatch")
+    matches = list(THP_RECORD_RE.finditer(text))
+    if len(matches) != expected_hands:
+        issues.append(
+            "thp_strict_record_count_mismatch: "
+            f"records={len(matches)} expected={expected_hands}"
+        )
+    records: list[dict[str, Any]] = []
+    totals = {name: 0 for name in expected_names}
+    for match in matches:
+        index = int(match.group(1))
+        earnings = [int(match.group(4)), int(match.group(5))]
+        players = [match.group(6), match.group(7)]
+        if not match.group(2) or not match.group(3):
+            issues.append(f"thp_record_payload_empty:{index}")
+        if sum(earnings) != 0:
+            issues.append(f"thp_record_earnings_not_zero_sum:{index}")
+        if set(players) != set(expected_names) or len(set(players)) != 2:
+            issues.append(f"thp_record_players_mismatch:{index}")
+            continue
+        earnings_by_player = {
+            players[0]: earnings[0],
+            players[1]: earnings[1],
+        }
+        for name, amount in earnings_by_player.items():
+            totals[name] += amount
+        records.append({
+            "index": index,
+            "actions": match.group(2),
+            "cards": match.group(3),
+            "earnings": earnings,
+            "players": players,
+            "earnings_by_player": earnings_by_player,
+        })
+    if [item["index"] for item in records] != list(range(expected_hands)):
+        issues.append("thp_strict_record_index_sequence_mismatch")
+    footers = list(THP_FOOTER_RE.finditer(text))
+    if len(footers) != 1:
+        issues.append(f"thp_footer_count_mismatch:{len(footers)}")
+        footer = None
+    else:
+        footer = footers[0]
+    footer_result = ""
+    if footer is not None:
+        footer_players = [footer.group(1), footer.group(2)]
+        footer_result = footer.group(3)
+        if set(footer_players) != set(expected_names) or len(set(footer_players)) != 2:
+            issues.append("thp_footer_players_mismatch")
+        values = list(totals.values())
+        if sum(values) != 0:
+            issues.append("thp_match_totals_not_zero_sum")
+        elif all(value == 0 for value in values):
+            if footer_result != "平局":
+                issues.append("thp_footer_draw_result_mismatch")
+        else:
+            winner = max(totals, key=totals.get)
+            amount = totals[winner]
+            expected_result = f"{winner}赢得{amount}个筹码"
+            if amount <= 0 or footer_result != expected_result:
+                issues.append(
+                    "thp_footer_result_mismatch: "
+                    f"result={footer_result!r} expected={expected_result!r}"
+                )
+    if issues:
+        return None, list(dict.fromkeys(issues))
+    return {
+        "records": records,
+        "match_totals": totals,
+        "footer_result": footer_result,
+        "footer_timestamp": footer.group(4) if footer is not None else "",
+        "footer_event": footer.group(5) if footer is not None else "",
+    }, []
+
+
+def _wire_settlement_prefix(
+    wire_summary: dict[str, Any],
+    *,
+    expected_hands: int,
+    expected_names: tuple[str, str],
+) -> tuple[list[dict[str, Any]] | None, list[str]]:
+    seats = wire_summary.get("seats") if isinstance(wire_summary, dict) else None
+    if not isinstance(seats, dict) or len(seats) != 2:
+        return None, ["wire_settlement_seats_invalid"]
+    by_name: dict[str, list[dict[str, int]]] = {}
+    for seat in seats.values():
+        if not isinstance(seat, dict):
+            return None, ["wire_settlement_seat_invalid"]
+        name = str(seat.get("name") or "")
+        records = seat.get("settlement_records")
+        if name in by_name or name not in expected_names or not isinstance(records, list):
+            return None, ["wire_settlement_player_identity_invalid"]
+        normalized: list[dict[str, int]] = []
+        for item in records:
+            if not isinstance(item, dict):
+                return None, ["wire_settlement_record_invalid"]
+            hand = item.get("hand")
+            amount = item.get("amount")
+            if not isinstance(hand, int) or not isinstance(amount, int):
+                return None, ["wire_settlement_record_invalid"]
+            normalized.append({"hand": hand, "amount": amount})
+        if [item["hand"] for item in normalized] != list(range(1, expected_hands)):
+            return None, ["wire_settlement_hand_sequence_invalid"]
+        by_name[name] = normalized
+    if set(by_name) != set(expected_names):
+        return None, ["wire_settlement_player_set_mismatch"]
+    prefix: list[dict[str, Any]] = []
+    for hand in range(1, expected_hands):
+        earnings = {
+            name: by_name[name][hand - 1]["amount"]
+            for name in expected_names
+        }
+        if sum(earnings.values()) != 0:
+            return None, [f"wire_settlement_not_zero_sum:{hand}"]
+        prefix.append({"hand": hand, "earnings_by_player": earnings})
+    return prefix, []
+
+
+def _terminal_thp_observation(
+    platform_dirs: Path | list[Path] | tuple[Path, ...],
+    *,
+    before: dict[str, tuple[int, int]],
+    expected_hands: int,
+    expected_names: tuple[str, str],
+    wire_summary: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Read, but do not move, a new exact official THP terminal artifact."""
+    paths = _changed_thp_paths(platform_dirs, before=before)
+    summaries = _summarize_thp_files([str(path) for path in paths])
+    canonical, issues = _canonical_thp_evidence(
+        summaries,
+        expected_hands=expected_hands,
+    )
+    if canonical is None or issues:
+        return None, issues
+    path = Path(str(canonical.get("path") or ""))
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("gb2312", errors="replace")
+    except OSError as exc:
+        return None, [f"terminal_thp_read_error:{type(exc).__name__}"]
+    strict_match, strict_issues = _strict_thp_match(
+        text,
+        expected_hands=expected_hands,
+        expected_names=expected_names,
+    )
+    if strict_match is None or strict_issues:
+        return None, strict_issues
+    wire_prefix, wire_issues = _wire_settlement_prefix(
+        wire_summary,
+        expected_hands=expected_hands,
+        expected_names=expected_names,
+    )
+    if wire_prefix is None or wire_issues:
+        return None, wire_issues
+    thp_prefix = [
+        {
+            "hand": record["index"] + 1,
+            "earnings_by_player": {
+                name: record["earnings_by_player"][name]
+                for name in expected_names
+            },
+        }
+        for record in strict_match["records"][:-1]
+    ]
+    if wire_prefix != thp_prefix:
+        return None, ["terminal_thp_wire_prefix_earnings_mismatch"]
+    final_hand = strict_match["records"][-1]
+    payload = {
+        "schema_version": TERMINAL_COMPLETION_SCHEMA_VERSION,
+        "kind": "official-thp-terminal-hand-observation",
+        "target_hands": expected_hands,
+        "thp_sha256": str(canonical.get("sha256") or ""),
+        "thp_bytes": int(canonical.get("bytes", 0) or 0),
+        "hand_records": int(canonical.get("hand_records", 0) or 0),
+        "hand_index_digest": canonical_digest(list(range(expected_hands))),
+        "wire_prefix_digest": canonical_digest(wire_prefix),
+        "thp_prefix_digest": canonical_digest(thp_prefix),
+        "final_hand": final_hand,
+        "match_totals": strict_match["match_totals"],
+        "footer_result": strict_match["footer_result"],
+    }
+    return {**payload, "observation_digest": canonical_digest(payload)}, []
+
+
+def _build_terminal_completion_evidence(
+    receipt: dict[str, Any],
+    observation: dict[str, Any],
+    canonical_thp: dict[str, Any],
+    *,
+    target_hands: int,
+) -> dict[str, Any]:
+    log_summary = receipt.get("log_summary") or {}
+    wire_summary = receipt.get("wire_replay_summary") or {}
+    artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
+    try:
+        wire_events_sha256 = hashlib.sha256(
+            Path(str(artifacts.get("wire_events") or "")).read_bytes()
+        ).hexdigest()
+    except OSError:
+        wire_events_sha256 = ""
+    payload = {
+        "schema_version": TERMINAL_COMPLETION_SCHEMA_VERSION,
+        "kind": "official-thp-terminal-settlement",
+        "target_hands": target_hands,
+        "completed_hands": target_hands,
+        "wire_settled_hands": target_hands - 1,
+        "log_hands_started": int(log_summary.get("hands_started_min", 0) or 0),
+        "log_tcp_settlements": int(log_summary.get("settlements_min", 0) or 0),
+        "wire_hands_started": int(wire_summary.get("hands_started_min", 0) or 0),
+        "wire_tcp_settlements": int(wire_summary.get("settlements_min", 0) or 0),
+        "canonical_thp_sha256": str(canonical_thp.get("sha256") or ""),
+        "canonical_thp_bytes": int(canonical_thp.get("bytes", 0) or 0),
+        "canonical_thp_hand_records": int(canonical_thp.get("hand_records", 0) or 0),
+        "wire_events_sha256": wire_events_sha256,
+        "hand_index_digest": str(observation.get("hand_index_digest") or ""),
+        "wire_prefix_digest": str(observation.get("wire_prefix_digest") or ""),
+        "thp_prefix_digest": str(observation.get("thp_prefix_digest") or ""),
+        "final_hand": observation.get("final_hand"),
+        "match_totals": observation.get("match_totals"),
+        "footer_result": str(observation.get("footer_result") or ""),
+        "terminal_observation_digest": str(observation.get("observation_digest") or ""),
+        "strength_evaluation": "not_applicable",
+    }
+    return {**payload, "evidence_digest": canonical_digest(payload)}
+
+
+def round_completion_issues(
+    receipt: dict[str, Any],
+    target_hands: int,
+) -> list[str]:
+    """Validate complete-round evidence, including the EXE hand-70 THP rule."""
+    log_summary = receipt.get("log_summary") if isinstance(receipt, dict) else None
+    if not isinstance(log_summary, dict):
+        return ["official_round_log_summary_missing"]
+    if _target_reached(log_summary, target_hands):
+        return []
+    if target_hands != 70:
+        return [
+            "official_round_completion_incomplete: "
+            f"hands_started={log_summary.get('hands_started_min', 0)} "
+            f"settlements={log_summary.get('settlements_min', 0)} "
+            f"target={target_hands}"
+        ]
+    wire_summary = receipt.get("wire_replay_summary")
+    if not isinstance(wire_summary, dict) or not _terminal_socket_boundary(
+        log_summary,
+        wire_summary,
+        target_hands,
+    ):
+        return ["official_terminal_socket_boundary_invalid"]
+    evidence = receipt.get("completion_evidence")
+    if not isinstance(evidence, dict):
+        return ["official_terminal_completion_evidence_missing"]
+    issues: list[str] = []
+    payload = {key: value for key, value in evidence.items() if key != "evidence_digest"}
+    if evidence.get("evidence_digest") != canonical_digest(payload):
+        issues.append("official_terminal_completion_evidence_digest_mismatch")
+    expected_scalars = {
+        "schema_version": TERMINAL_COMPLETION_SCHEMA_VERSION,
+        "kind": "official-thp-terminal-settlement",
+        "target_hands": 70,
+        "completed_hands": 70,
+        "wire_settled_hands": 69,
+        "log_hands_started": 70,
+        "log_tcp_settlements": 69,
+        "wire_hands_started": 70,
+        "wire_tcp_settlements": 69,
+        "canonical_thp_hand_records": 70,
+        "hand_index_digest": canonical_digest(list(range(70))),
+        "strength_evaluation": "not_applicable",
+    }
+    for key, value in expected_scalars.items():
+        if evidence.get(key) != value:
+            issues.append(f"official_terminal_completion_{key}_mismatch")
+    artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
+    canonical = artifacts.get("canonical_thp") if isinstance(artifacts.get("canonical_thp"), dict) else {}
+    if evidence.get("canonical_thp_sha256") != canonical.get("sha256"):
+        issues.append("official_terminal_completion_thp_sha256_mismatch")
+    if evidence.get("canonical_thp_bytes") != canonical.get("bytes"):
+        issues.append("official_terminal_completion_thp_bytes_mismatch")
+    wire_events_path = artifacts.get("wire_events")
+    try:
+        actual_wire_sha256 = hashlib.sha256(Path(str(wire_events_path)).read_bytes()).hexdigest()
+    except OSError:
+        actual_wire_sha256 = ""
+    if len(actual_wire_sha256) != 64 or evidence.get("wire_events_sha256") != actual_wire_sha256:
+        issues.append("official_terminal_completion_wire_sha256_mismatch")
+    if (
+        len(str(evidence.get("wire_prefix_digest") or "")) != 64
+        or evidence.get("wire_prefix_digest") != evidence.get("thp_prefix_digest")
+    ):
+        issues.append("official_terminal_completion_prefix_digest_mismatch")
+    final_hand = evidence.get("final_hand") if isinstance(evidence.get("final_hand"), dict) else {}
+    if final_hand.get("index") != 69 or not final_hand.get("actions") or not final_hand.get("cards"):
+        issues.append("official_terminal_completion_final_hand_invalid")
+    earnings = final_hand.get("earnings")
+    if (
+        not isinstance(earnings, list)
+        or len(earnings) != 2
+        or any(not isinstance(value, int) for value in earnings)
+        or sum(earnings) != 0
+    ):
+        issues.append("official_terminal_completion_final_earnings_invalid")
+    bot_a = receipt.get("bot_a") if isinstance(receipt.get("bot_a"), dict) else {}
+    bot_b = receipt.get("bot_b") if isinstance(receipt.get("bot_b"), dict) else {}
+    expected_name_order = (
+        str(bot_a.get("name") or ""),
+        str(bot_b.get("name") or ""),
+    )
+    expected_names = set(expected_name_order)
+    players = final_hand.get("players")
+    if (
+        len(expected_names) != 2
+        or not isinstance(players, list)
+        or len(players) != 2
+        or set(players) != expected_names
+    ):
+        issues.append("official_terminal_completion_final_players_invalid")
+    try:
+        canonical_path = Path(str(canonical.get("path") or ""))
+        raw = canonical_path.read_bytes()
+        canonical_text = raw.decode("gb2312", errors="replace")
+        actual_indices = [int(value) for value in THP_HAND_RE.findall(canonical_text)]
+        actual_matches = [
+            match
+            for match in THP_RECORD_RE.finditer(canonical_text)
+            if int(match.group(1)) == 69
+        ]
+        if hashlib.sha256(raw).hexdigest() != canonical.get("sha256"):
+            issues.append("official_terminal_completion_thp_artifact_digest_mismatch")
+        if actual_indices != list(range(70)):
+            issues.append("official_terminal_completion_thp_indices_invalid")
+        if len(actual_matches) != 1:
+            issues.append("official_terminal_completion_thp_final_record_missing")
+        else:
+            actual_match = actual_matches[0]
+            actual_final_hand = {
+                "index": 69,
+                "actions": actual_match.group(2),
+                "cards": actual_match.group(3),
+                "earnings": [int(actual_match.group(4)), int(actual_match.group(5))],
+                "players": [actual_match.group(6), actual_match.group(7)],
+                "earnings_by_player": {
+                    actual_match.group(6): int(actual_match.group(4)),
+                    actual_match.group(7): int(actual_match.group(5)),
+                },
+            }
+            if final_hand != actual_final_hand:
+                issues.append("official_terminal_completion_final_hand_thp_mismatch")
+        strict_match, strict_issues = _strict_thp_match(
+            canonical_text,
+            expected_hands=70,
+            expected_names=expected_name_order,
+        )
+        if strict_match is None or strict_issues:
+            issues.extend(
+                f"official_terminal_completion_{issue}"
+                for issue in strict_issues
+            )
+        else:
+            wire_prefix, prefix_issues = _wire_settlement_prefix(
+                wire_summary,
+                expected_hands=70,
+                expected_names=expected_name_order,
+            )
+            if wire_prefix is None or prefix_issues:
+                issues.extend(
+                    f"official_terminal_completion_{issue}"
+                    for issue in prefix_issues
+                )
+            else:
+                thp_prefix = [
+                    {
+                        "hand": record["index"] + 1,
+                        "earnings_by_player": {
+                            name: record["earnings_by_player"][name]
+                            for name in expected_name_order
+                        },
+                    }
+                    for record in strict_match["records"][:-1]
+                ]
+                if wire_prefix != thp_prefix:
+                    issues.append("official_terminal_completion_wire_thp_prefix_mismatch")
+                if evidence.get("wire_prefix_digest") != canonical_digest(wire_prefix):
+                    issues.append("official_terminal_completion_wire_prefix_digest_mismatch")
+                if evidence.get("thp_prefix_digest") != canonical_digest(thp_prefix):
+                    issues.append("official_terminal_completion_thp_prefix_digest_mismatch")
+            if evidence.get("match_totals") != strict_match["match_totals"]:
+                issues.append("official_terminal_completion_match_totals_mismatch")
+            if evidence.get("footer_result") != strict_match["footer_result"]:
+                issues.append("official_terminal_completion_footer_result_mismatch")
+    except (OSError, ValueError, TypeError) as exc:
+        issues.append(
+            "official_terminal_completion_thp_read_error:"
+            f"{type(exc).__name__}"
+        )
+    observation_payload = {
+        "schema_version": TERMINAL_COMPLETION_SCHEMA_VERSION,
+        "kind": "official-thp-terminal-hand-observation",
+        "target_hands": 70,
+        "thp_sha256": evidence.get("canonical_thp_sha256"),
+        "thp_bytes": evidence.get("canonical_thp_bytes"),
+        "hand_records": evidence.get("canonical_thp_hand_records"),
+        "hand_index_digest": evidence.get("hand_index_digest"),
+        "wire_prefix_digest": evidence.get("wire_prefix_digest"),
+        "thp_prefix_digest": evidence.get("thp_prefix_digest"),
+        "final_hand": final_hand,
+        "match_totals": evidence.get("match_totals"),
+        "footer_result": evidence.get("footer_result"),
+    }
+    if evidence.get("terminal_observation_digest") != canonical_digest(observation_payload):
+        issues.append("official_terminal_completion_observation_digest_mismatch")
+    return list(dict.fromkeys(issues))
 
 
 def run_official_round(
@@ -1150,6 +1686,11 @@ def run_official_round(
     artifact_issues: list[str] = []
     wire_capture = OfficialWireCapture(round_dir, cfg)
     wire_summary: dict[str, Any] = {}
+    terminal_thp_observation: dict[str, Any] | None = None
+    terminal_thp_signature = ""
+    terminal_thp_stable_since: float | None = None
+    terminal_boundary_at: float | None = None
+    terminal_probe_issues: list[str] = []
 
     try:
         xvfb_log = (round_dir / "xvfb.log").open("wb")
@@ -1234,7 +1775,12 @@ def run_official_round(
                 if wire_issues:
                     receipt["issues"].extend(wire_issues)
                     break
-                if not _target_reached(summary, target_hands):
+                terminal_boundary = _terminal_socket_boundary(
+                    summary,
+                    wire_summary,
+                    target_hands,
+                )
+                if not _target_reached(summary, target_hands) and not terminal_boundary:
                     # Observe all processes in one poll and attribute the EXE
                     # first. A normal bot exit after the platform closes its
                     # sockets must not be rewritten as a candidate crash.
@@ -1279,6 +1825,36 @@ def run_official_round(
                         target_reached_at = time.time()
                     if time.time() - target_reached_at >= cfg.settlement_grace_sec:
                         break
+                elif terminal_boundary:
+                    now = time.time()
+                    if terminal_boundary_at is None:
+                        terminal_boundary_at = now
+                    observation, probe_issues = _terminal_thp_observation(
+                        platform_thp_dirs,
+                        before=thp_snapshot,
+                        expected_hands=target_hands,
+                        expected_names=(bot_a.name, bot_b.name),
+                        wire_summary=wire_summary,
+                    )
+                    terminal_probe_issues = probe_issues
+                    if observation is not None:
+                        signature = str(observation.get("observation_digest") or "")
+                        if signature != terminal_thp_signature:
+                            terminal_thp_signature = signature
+                            terminal_thp_stable_since = now
+                        elif (
+                            terminal_thp_stable_since is not None
+                            and now - terminal_thp_stable_since >= 0.5
+                        ):
+                            terminal_thp_observation = observation
+                            break
+                    if now - terminal_boundary_at > cfg.artifact_grace_sec:
+                        detail = "; ".join(terminal_probe_issues[:3]) or "no exact THP appeared"
+                        receipt["issues"].append(
+                            "terminal_thp_timeout: "
+                            f"waited={cfg.artifact_grace_sec:g}s detail={detail}"
+                        )
+                        break
                 elif time.time() - last_progress_at > cfg.no_progress_timeout_sec:
                     receipt["issues"].append(
                         f"no_progress_timeout: {cfg.no_progress_timeout_sec:g}s "
@@ -1312,6 +1888,11 @@ def run_official_round(
         if "log_summary" not in receipt:
             receipt["log_summary"] = summarize_round_logs(log_a, log_b)
     finally:
+        platform_closed_for_terminal = False
+        if terminal_thp_observation is not None and platform_env is not None:
+            _close_window(platform_env, window_id)
+            platform_closed_for_terminal = True
+            time.sleep(2.0)
         for proc in (bot_a_proc, bot_b_proc):
             _terminate_process(proc)
             _close_process_files(proc)
@@ -1320,7 +1901,7 @@ def run_official_round(
             if wire_summary:
                 receipt["wire_replay_summary"] = wire_summary
         wire_capture.stop()
-        if platform_env is not None:
+        if platform_env is not None and not platform_closed_for_terminal:
             _close_window(platform_env, window_id)
             time.sleep(2.0)
         _terminate_process(wine_proc)
@@ -1333,8 +1914,7 @@ def run_official_round(
         _terminate_process(xvfb_proc)
         for proc in (wine_proc, xvfb_proc):
             _close_process_files(proc)
-    if "log_summary" not in receipt:
-        receipt["log_summary"] = summarize_round_logs(log_a, log_b)
+    receipt["log_summary"] = summarize_round_logs(log_a, log_b)
     if wire_capture.enabled and not wire_summary:
         try:
             wire_summary = json.loads(wire_capture.replay_summary_path.read_text(encoding="utf-8"))
@@ -1342,7 +1922,12 @@ def run_official_round(
             wire_summary = {}
     if wire_summary:
         receipt["wire_replay_summary"] = wire_summary
-    artifact_wait_sec = cfg.artifact_grace_sec if _target_reached(receipt.get("log_summary", {}), target_hands) else 1.0
+    artifact_wait_sec = (
+        cfg.artifact_grace_sec
+        if _target_reached(receipt.get("log_summary", {}), target_hands)
+        or terminal_thp_observation is not None
+        else 1.0
+    )
     thp_artifacts, artifact_issues = _collect_new_thp_files(
         platform_thp_dirs,
         before=thp_snapshot,
@@ -1383,6 +1968,22 @@ def run_official_round(
     if wire_capture.enabled:
         receipt["artifacts"]["wire_events"] = str(wire_capture.wire_events_path)
         receipt["artifacts"]["replay_summary"] = str(wire_capture.replay_summary_path)
+    if terminal_thp_observation is not None and _terminal_socket_boundary(
+        receipt.get("log_summary") or {},
+        receipt.get("wire_replay_summary") or {},
+        target_hands,
+    ):
+        if canonical_thp is None:
+            receipt["issues"].append("terminal_thp_observation_without_canonical_artifact")
+        elif canonical_thp.get("sha256") != terminal_thp_observation.get("thp_sha256"):
+            receipt["issues"].append("terminal_thp_observation_artifact_digest_mismatch")
+        else:
+            receipt["completion_evidence"] = _build_terminal_completion_evidence(
+                receipt,
+                terminal_thp_observation,
+                canonical_thp,
+                target_hands=target_hands,
+            )
     receipt["issues"].extend((receipt.get("log_summary") or {}).get("issues") or [])
     if wire_summary:
         receipt["issues"].extend(_format_wire_issues(wire_summary))
@@ -1394,14 +1995,9 @@ def run_official_round(
     receipt["issues"].extend(_read_issue_file(bot_a_stderr))
     receipt["issues"].extend(_read_issue_file(bot_b_stdout))
     receipt["issues"].extend(_read_issue_file(bot_b_stderr))
+    receipt["issues"].extend(round_completion_issues(receipt, target_hands))
     receipt["issues"] = list(dict.fromkeys(str(issue) for issue in receipt["issues"]))
-    summary = receipt.get("log_summary", {})
-    receipt["passed"] = not receipt["issues"] and _target_reached(summary, target_hands)
-    if not receipt["passed"] and not receipt["issues"]:
-        receipt["issues"].append(
-            f"incomplete_round: hands_started={summary.get('hands_started_min', 0)} "
-            f"settlements={summary.get('settlements_min', 0)} target={target_hands}"
-        )
+    receipt["passed"] = not receipt["issues"]
     _write_json(round_dir / "receipt.json", receipt)
     return receipt
 
@@ -1470,7 +2066,7 @@ def _load_reusable_round(
         return None
     if receipt.get("issues"):
         return None
-    if not _target_reached(receipt.get("log_summary") or {}, target_hands):
+    if round_completion_issues(receipt, target_hands):
         return None
     artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
     required = (

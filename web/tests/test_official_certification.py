@@ -167,7 +167,7 @@ def _selection(candidate: Path, opponent: Path) -> dict:
         "role": "official_opponent",
         "bot": opponent.name,
         "artifact_hash": artifact_hash,
-        "policy_id": "official-full-v4",
+        "policy_id": "official-full-v5",
         "certificate_digest": "a" * 64,
     }
     return {
@@ -364,7 +364,7 @@ def test_queued_smoke_result_cannot_downgrade_newer_full_certificate(
         candidate,
         STATUS_CERTIFIED,
         mode="full",
-        policy_id="official-full-v4",
+        policy_id="official-full-v5",
         certificate_digest="full-certificate",
         certification_identity=identity,
         issues=[],
@@ -409,7 +409,7 @@ def test_stale_full_result_cannot_overwrite_newer_certificate_but_new_run_can(
         candidate,
         STATUS_CERTIFIED,
         mode="full",
-        policy_id="official-full-v4",
+        policy_id="official-full-v5",
         certificate_digest="newer-certificate",
         certification_identity=identity,
         request_started_ns=200,
@@ -420,7 +420,7 @@ def test_stale_full_result_cannot_overwrite_newer_certificate_but_new_run_can(
         candidate,
         STATUS_INCONCLUSIVE,
         mode="full",
-        policy_id="official-full-v4",
+        policy_id="official-full-v5",
         certification_identity=identity,
         request_started_ns=100,
         issues=["stale harness result"],
@@ -429,7 +429,7 @@ def test_stale_full_result_cannot_overwrite_newer_certificate_but_new_run_can(
         candidate,
         STATUS_FAILED,
         mode="full",
-        policy_id="official-full-v4",
+        policy_id="official-full-v5",
         certification_identity=identity,
         request_started_ns=300,
         issues=["new protocol failure"],
@@ -576,7 +576,7 @@ def test_enqueue_does_not_reuse_stronger_status_for_changed_candidate(tmp_path, 
         candidate,
         STATUS_CERTIFIED,
         mode="full",
-        policy_id="official-full-v4",
+        policy_id="official-full-v5",
         cache_key="stale-full",
         certification_identity={"candidate_hash": "stale-hash"},
         issues=[],
@@ -1011,6 +1011,92 @@ def test_full_certification_rejects_missing_final_settlement(tmp_path):
 
     assert report_valid_for_spec(payload, spec) is False
     assert any("official_full_settlement_incomplete" in issue for issue in issues)
+
+
+def test_full_certification_accepts_exe_terminal_thp_completion_proof(tmp_path):
+    import official_platform_harness as harness
+
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    spec = build_spec("full", candidate, opponent=opponent)
+    payload = _full_report(tmp_path, candidate, opponent)
+    receipt = payload["report"]["rounds"][0]
+    receipt["bot_a"]["name"] = "BotA"
+    receipt["bot_b"]["name"] = "BotB"
+    receipt["log_summary"]["settlements_min"] = 69
+    receipt["wire_replay_summary"] = {
+        "hands_started_min": 70,
+        "settlements_min": 69,
+        "pending_expected_actions": [],
+        "seats": {
+            "A": {
+                "name": "BotA",
+                "hands_started": 70,
+                "settlements": 69,
+                "settlement_records": [
+                    {"hand": hand, "amount": 50}
+                    for hand in range(1, 70)
+                ],
+                "pending_expected_action": False,
+            },
+            "B": {
+                "name": "BotB",
+                "hands_started": 70,
+                "settlements": 69,
+                "settlement_records": [
+                    {"hand": hand, "amount": -50}
+                    for hand in range(1, 70)
+                ],
+                "pending_expected_action": False,
+            },
+        },
+    }
+    original_thp_path = Path(receipt["artifacts"]["canonical_thp"]["path"])
+    thp_path = original_thp_path.with_name("THP-terminal.txt")
+    original_thp_path.unlink()
+    thp_path.write_text(
+        "".join(
+            f"STATE:{index}:f:AhKh|QsQd:50|-50:BotA|BotB;"
+            for index in range(70)
+        )
+        + "{[THP][BotA][BotB][BotA赢得3500个筹码][2026-07-11 17:22 合肥][2018 CCGC]}",
+        encoding="gb2312",
+    )
+    summaries = harness._summarize_thp_files([str(thp_path)])
+    canonical, canonical_issues = harness._canonical_thp_evidence(
+        summaries,
+        expected_hands=70,
+    )
+    assert canonical_issues == []
+    receipt["artifacts"]["thp_summaries"] = summaries
+    receipt["artifacts"]["thp_files"] = [str(thp_path)]
+    receipt["artifacts"]["canonical_thp"] = canonical
+    observation, observation_issues = harness._terminal_thp_observation(
+        thp_path.parent,
+        before={},
+        expected_hands=70,
+        expected_names=("BotA", "BotB"),
+        wire_summary=receipt["wire_replay_summary"],
+    )
+    assert observation_issues == []
+    receipt["completion_evidence"] = harness._build_terminal_completion_evidence(
+        receipt,
+        observation,
+        canonical,
+        target_hands=70,
+    )
+
+    assert report_validation_issues(payload, spec) == []
+    assert report_valid_for_spec(payload, spec) is True
+    from official_evidence import build_official_evidence_bundle
+
+    evidence = build_official_evidence_bundle(payload)
+    assert evidence["rounds"][0]["completion_evidence"] == receipt["completion_evidence"]
+
+    receipt["completion_evidence"]["canonical_thp_sha256"] = "0" * 64
+    issues = report_validation_issues(payload, spec)
+    assert report_valid_for_spec(payload, spec) is False
+    assert any("official_terminal_completion" in issue for issue in issues)
 
 
 def test_run_certification_uses_valid_cache(tmp_path, monkeypatch):

@@ -267,9 +267,28 @@ def _suite_dir(directory: Path, attempt: int) -> Path:
 
 
 def _live_log_progress(round_dir: Path) -> tuple[int, int, int]:
+    log_dir = round_dir
+    executions_dir = round_dir / "executions"
+    try:
+        execution_dirs = sorted(
+            (
+                path
+                for path in executions_dir.iterdir()
+                if path.is_dir() and not path.is_symlink()
+            ),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+    except OSError:
+        execution_dirs = []
+    if not any((round_dir / name).is_file() for name in ("botA.log", "botB.log")):
+        for candidate in execution_dirs:
+            if any((candidate / name).is_file() for name in ("botA.log", "botB.log")):
+                log_dir = candidate
+                break
     values: list[tuple[int, int, int]] = []
     for name in ("botA.log", "botB.log"):
-        path = round_dir / name
+        path = log_dir / name
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

@@ -409,7 +409,7 @@ describe exact 2x as illegal. See `docs/official-raise-boundary-oracle-2026-07-1
 2. Server sends `preflop|{ROLE}|<s,r><s,r>` → SB acts first
 3. Opponent actions forwarded: `call`, `fold`, `check`, `raise X`, `allin`
 4. Stage cards: `flop|<s,r><s,r><s,r>`, `turn|<s,r>`, `river|<s,r>` → BB acts first
-5. Settlement: `earnChips {amount}` (net change), `oppo_hands|<s,r><s,r>` (showdown only)
+5. Settlement: `earnChips {amount}` (net change), `oppo_hands|<s,r><s,r>` (showdown only). The 2021 EXE omits the hand-70 `earnChips` pair at natural match end but records that hand and the cumulative result in THP; formal v5 certification requires a wire/THP cross-bound completion proof rather than treating 69 as sufficient.
 
 **13-rule action validation** (`sever/engine/validator.py`):
 1. `bet` always illegal

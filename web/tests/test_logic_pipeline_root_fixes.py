@@ -1885,7 +1885,7 @@ def test_git_commit_bot_refuses_preexisting_blocking_staged_files(monkeypatch):
             official_certificate={
                 "certificate_digest": "cert-digest",
                 "candidate_hash": "candidate-hash",
-                "policy_id": "official-full-v4",
+                "policy_id": "official-full-v5",
             },
         )
 
@@ -1960,7 +1960,7 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
         official_certificate={
             "certificate_digest": "cert-digest",
             "candidate_hash": "candidate-hash",
-            "policy_id": "official-full-v4",
+            "policy_id": "official-full-v5",
         },
     )
 
@@ -2008,7 +2008,7 @@ def test_git_commit_bot_binds_official_certificate_to_commit_and_tag(monkeypatch
             return ""
         if args[:3] == ("tag", "national-bot-v999", "-m"):
             assert "official-certificate: cert-digest" in args[3]
-            assert "official-policy: official-full-v4" in args[3]
+            assert "official-policy: official-full-v5" in args[3]
             return ""
         raise AssertionError(args)
 
@@ -2041,7 +2041,7 @@ def test_git_commit_bot_binds_official_certificate_to_commit_and_tag(monkeypatch
         official_certificate={
             "certificate_digest": "cert-digest",
             "candidate_hash": "candidate-hash",
-            "policy_id": "official-full-v4",
+            "policy_id": "official-full-v5",
         },
     )
 

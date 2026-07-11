@@ -7,6 +7,7 @@ import tarfile
 
 import pytest
 
+from bot_artifact import canonical_digest
 from official_evidence_archive import build_evidence_archive, validate_evidence_archive
 
 
@@ -153,3 +154,68 @@ def test_archive_binds_official_evidence_artifact_manifest(tmp_path):
 
     assert result["valid"] is False
     assert "evidence_archive_artifact_mismatch:external.log" in result["issues"]
+
+
+def test_archive_binds_terminal_completion_to_wire_and_thp_artifacts(tmp_path):
+    suite = _suite(tmp_path / "suite")
+    wire = suite / "self_play_01" / "wire_events.jsonl"
+    thp = suite / "self_play_01" / "thp" / "match.txt"
+    wire_digest = hashlib.sha256(wire.read_bytes()).hexdigest()
+    thp_digest = hashlib.sha256(thp.read_bytes()).hexdigest()
+    completion_payload = {
+        "schema_version": 1,
+        "kind": "official-thp-terminal-settlement",
+        "wire_events_sha256": wire_digest,
+        "canonical_thp_sha256": thp_digest,
+        "strength_evaluation": "not_applicable",
+    }
+    completion = {
+        **completion_payload,
+        "evidence_digest": canonical_digest(completion_payload),
+    }
+    evidence = {
+        "schema_version": 1,
+        "rounds": [{
+            "completion_evidence": completion,
+            "artifacts": {
+                "wire_events": {
+                    "path": str(wire),
+                    "exists": True,
+                    "size_bytes": wire.stat().st_size,
+                    "sha256": wire_digest,
+                    "archive_path": "self_play_01/wire_events.jsonl",
+                },
+                "thp_files": [{
+                    "path": str(thp),
+                    "exists": True,
+                    "size_bytes": thp.stat().st_size,
+                    "sha256": thp_digest,
+                    "archive_path": "self_play_01/thp/match.txt",
+                }],
+            },
+        }],
+    }
+    evidence_path = suite / "official_evidence.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    receipt = build_evidence_archive(suite)
+
+    valid = validate_evidence_archive(
+        receipt,
+        expected_evidence_sha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+    )
+    assert valid["valid"] is True
+
+    completion_payload["canonical_thp_sha256"] = "0" * 64
+    evidence["rounds"][0]["completion_evidence"] = {
+        **completion_payload,
+        "evidence_digest": canonical_digest(completion_payload),
+    }
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    tampered_receipt = build_evidence_archive(suite)
+    invalid = validate_evidence_archive(
+        tampered_receipt,
+        expected_evidence_sha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+    )
+
+    assert invalid["valid"] is False
+    assert "evidence_archive_completion_thp_digest_mismatch" in invalid["issues"]

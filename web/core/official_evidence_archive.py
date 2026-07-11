@@ -418,6 +418,33 @@ def validate_evidence_archive(
                             issues.append(
                                 f"evidence_archive_artifact_mismatch:{archive_path}"
                             )
+                completion = round_item.get("completion_evidence")
+                if isinstance(completion, dict) and completion.get("kind") == "official-thp-terminal-settlement":
+                    completion_payload = {
+                        key: value
+                        for key, value in completion.items()
+                        if key != "evidence_digest"
+                    }
+                    if completion.get("evidence_digest") != canonical_digest(completion_payload):
+                        issues.append("evidence_archive_completion_proof_digest_mismatch")
+                    wire_item = artifacts.get("wire_events")
+                    if (
+                        not isinstance(wire_item, dict)
+                        or completion.get("wire_events_sha256") != wire_item.get("sha256")
+                    ):
+                        issues.append("evidence_archive_completion_wire_digest_mismatch")
+                    thp_items = artifacts.get("thp_files")
+                    if not isinstance(thp_items, list):
+                        thp_items = []
+                    thp_digests = {
+                        str(item.get("sha256") or "")
+                        for item in thp_items
+                        if isinstance(item, dict)
+                    }
+                    if completion.get("canonical_thp_sha256") not in thp_digests:
+                        issues.append("evidence_archive_completion_thp_digest_mismatch")
+                    if completion.get("strength_evaluation") != "not_applicable":
+                        issues.append("evidence_archive_completion_strength_scope_invalid")
             if artifact_count == 0:
                 issues.append("evidence_archive_artifact_manifest_missing")
     return {

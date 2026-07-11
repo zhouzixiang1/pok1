@@ -41,7 +41,7 @@ def _status(outcome: str, candidate_hash: str, *, certificate_digest: str = ""):
         "bot": "national_v143",
         "status": outcome,
         "mode": "full",
-        "policy_id": "official-full-v4",
+        "policy_id": "official-full-v5",
         "certification_identity": {"candidate_hash": candidate_hash},
         "certificate_digest": certificate_digest,
         "official_evidence_summary": {

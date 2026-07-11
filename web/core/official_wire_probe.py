@@ -22,7 +22,7 @@ from typing import Any
 CARD_RE = re.compile(r"<(\d+),(\d+)>")
 SERVER_ACTION_RE = re.compile(r"^(raise|bet)\s+(\d+)")
 CLIENT_RAISE_RE = re.compile(r"^raise [1-9]\d*")
-EARN_RE = re.compile(r"^earnChips\s+-?\d+")
+EARN_RE = re.compile(r"^earnChips\s+(-?\d+)")
 SMALL_BLIND = 50
 BIG_BLIND = 100
 INITIAL_CHIPS = 20000
@@ -167,6 +167,7 @@ class SeatReplay:
     hand_num: int = 0
     hands_started: int = 0
     settlements: int = 0
+    settlement_records: list[dict[str, int]] = field(default_factory=list)
     player_chips: int = INITIAL_CHIPS
     opponent_chips: int = INITIAL_CHIPS
     player_bet: int = 0
@@ -371,7 +372,22 @@ class OfficialWireReplay:
                 seat.expect(t, f"{stage}_first_action")
             return
         if message.startswith("earnChips"):
-            seat.settlements += 1
+            match = EARN_RE.fullmatch(message)
+            amount = int(match.group(1)) if match else 0
+            expected_hand = seat.settlements + 1
+            if seat.hand_num != expected_hand:
+                self._add_issue(
+                    "settlement_hand_sequence",
+                    seat,
+                    message,
+                    event,
+                    expected_hand=expected_hand,
+                )
+            if any(item["hand"] == seat.hand_num for item in seat.settlement_records):
+                self._add_issue("duplicate_settlement", seat, message, event)
+            else:
+                seat.settlement_records.append({"hand": seat.hand_num, "amount": amount})
+                seat.settlements = len(seat.settlement_records)
             seat.expected_since = None
             seat.expected_reason = ""
             return
@@ -553,6 +569,7 @@ class OfficialWireReplay:
                 "name": seat.name,
                 "hands_started": seat.hands_started,
                 "settlements": seat.settlements,
+                "settlement_records": list(seat.settlement_records),
                 "max_response_sec": round(seat.max_response_sec, 3),
                 "pending_expected_action": seat.expected_since is not None,
                 "expected_reason": seat.expected_reason,

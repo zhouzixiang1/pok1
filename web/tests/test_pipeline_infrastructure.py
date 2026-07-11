@@ -77,7 +77,7 @@ def test_official_job_attachment_uses_cas_and_clears_on_rework(tmp_path, monkeyp
         "job_id": "job-a",
         "identity_digest": "identity-a",
         "candidate_hash": "candidate-a",
-        "policy_id": "official-full-v4",
+        "policy_id": "official-full-v5",
         "state": "running",
         "revision": 1,
     }
@@ -127,7 +127,7 @@ def test_profile_refresh_clears_official_job_and_old_full_gate(tmp_path, monkeyp
         "job_id": "job-a",
         "identity_digest": "identity-a",
         "candidate_hash": "candidate-a",
-        "policy_id": "official-full-v4",
+        "policy_id": "official-full-v5",
         "state": "running",
         "revision": 1,
     }

@@ -12,6 +12,13 @@ from official_wire_probe import (
 
 ROOT = Path(__file__).resolve().parents[2]
 ORACLE_FIXTURE = ROOT / "sever" / "tests" / "fixtures" / "official_raise_boundary_oracle_20260711.json"
+TERMINAL_ORACLE_FIXTURE = (
+    ROOT
+    / "sever"
+    / "tests"
+    / "fixtures"
+    / "official_terminal_settlement_oracle_20260711.json"
+)
 
 
 def _event(t, conn, direction, messages):
@@ -106,6 +113,24 @@ def test_replay_accepts_real_official_exact_2x_oracle_fixture():
     assert summary["settlements_min"] == 2
 
 
+def test_terminal_settlement_oracle_fixture_binds_wire_and_thp_prefixes():
+    oracle = json.loads(TERMINAL_ORACLE_FIXTURE.read_text(encoding="utf-8"))
+
+    assert oracle["wire_hands_started"] == 70
+    assert oracle["wire_settlement_hands"] == {
+        "first": 1,
+        "last": 69,
+        "count": 69,
+        "gaps": [],
+        "duplicates": [],
+    }
+    assert oracle["thp_state_indices"]["count"] == 70
+    assert oracle["wire_prefix_digest"] == oracle["thp_prefix_digest"]
+    assert sum(oracle["terminal_earnings"].values()) == 0
+    assert sum(oracle["thp_match_totals"].values()) == 0
+    assert oracle["strength_evaluation"] == "not_applicable"
+
+
 def test_replay_rejects_reraise_below_inclusive_2x_boundary():
     summary = replay_events([
         _event(0, "B", "server_to_bot", ["preflop|BIGBLIND|<0,1><1,2>"]),
@@ -178,6 +203,40 @@ def test_replay_reports_real_pending_bot_response_timeout():
 
     assert summary["issues"][0]["kind"] == "pending_bot_response_timeout"
     assert summary["pending_expected_actions"][0]["expected_reason"] == "flop_first_action"
+
+
+def test_replay_records_settlement_hand_ids_and_signed_amounts():
+    summary = replay_events([
+        _event(0, "A", "server_to_bot", ["preflop|BIGBLIND|<0,1><1,2>"]),
+        _event(1, "A", "server_to_bot", ["earnChips -50"]),
+        _event(2, "A", "server_to_bot", ["preflop|SMALLBLIND|<0,3><1,4>"]),
+        _event(3, "A", "server_to_bot", ["earnChips 100"]),
+    ])
+
+    assert summary["seats"]["A"]["settlement_records"] == [
+        {"hand": 1, "amount": -50},
+        {"hand": 2, "amount": 100},
+    ]
+    assert summary["issues"] == []
+
+
+def test_replay_rejects_duplicate_and_gapped_settlement_hands():
+    duplicate = replay_events([
+        _event(0, "A", "server_to_bot", ["preflop|BIGBLIND|<0,1><1,2>"]),
+        _event(1, "A", "server_to_bot", ["earnChips -50"]),
+        _event(2, "A", "server_to_bot", ["earnChips -50"]),
+    ])
+    gap = replay_events([
+        _event(0, "A", "server_to_bot", ["preflop|BIGBLIND|<0,1><1,2>"]),
+        _event(1, "A", "server_to_bot", ["preflop|SMALLBLIND|<0,3><1,4>"]),
+        _event(2, "A", "server_to_bot", ["earnChips 50"]),
+    ])
+
+    assert {item["kind"] for item in duplicate["issues"]} == {
+        "settlement_hand_sequence",
+        "duplicate_settlement",
+    }
+    assert any(item["kind"] == "settlement_hand_sequence" for item in gap["issues"])
 
 
 def test_sample_wrapper_patches_hardcoded_server_address():

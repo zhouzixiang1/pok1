@@ -22,8 +22,12 @@ from official_platform_harness import (
     _sent_action_issue,
     _snapshot_platform_thp_files,
     _summarize_thp_files,
+    _terminal_socket_boundary,
+    _terminal_thp_observation,
+    _build_terminal_completion_evidence,
     _read_issue_file,
     _target_reached,
+    round_completion_issues,
 )
 
 
@@ -721,20 +725,236 @@ def test_summarize_thp_files_counts_state_records(tmp_path):
         "path": str(thp),
         "exists": True,
         "hand_records": 2,
+        "hand_indices": [1, 2],
         "bytes": thp.stat().st_size,
         "sha256": hashlib.sha256(thp.read_bytes()).hexdigest(),
     }]
+
+
+def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path):
+    platform_dir = tmp_path / "platform"
+    platform_dir.mkdir()
+    before = _snapshot_platform_thp_files(platform_dir)
+    thp = platform_dir / "THP-BotA-vs-BotB.txt"
+    thp.write_text(
+        "".join(
+            f"STATE:{index}:f:AhKh|QsQd:50|-50:BotA|BotB;"
+            for index in range(70)
+        )
+        + "{[THP][BotA][BotB][BotA赢得3500个筹码][2026-07-11 17:22 合肥][2018 CCGC]}",
+        encoding="gb2312",
+    )
+    log_summary = {"hands_started_min": 70, "settlements_min": 69}
+    wire_summary = {
+        "hands_started_min": 70,
+        "settlements_min": 69,
+        "pending_expected_actions": [],
+        "seats": {
+            "A": {
+                "name": "BotA",
+                "hands_started": 70,
+                "settlements": 69,
+                "settlement_records": [
+                    {"hand": hand, "amount": 50}
+                    for hand in range(1, 70)
+                ],
+                "pending_expected_action": False,
+            },
+            "B": {
+                "name": "BotB",
+                "hands_started": 70,
+                "settlements": 69,
+                "settlement_records": [
+                    {"hand": hand, "amount": -50}
+                    for hand in range(1, 70)
+                ],
+                "pending_expected_action": False,
+            },
+        },
+    }
+
+    assert _terminal_socket_boundary(log_summary, wire_summary, 70) is True
+    observation, issues = _terminal_thp_observation(
+        platform_dir,
+        before=before,
+        expected_hands=70,
+        expected_names=("BotA", "BotB"),
+        wire_summary=wire_summary,
+    )
+    assert issues == []
+    summaries = _summarize_thp_files([str(thp)])
+    canonical, canonical_issues = _canonical_thp_evidence(
+        summaries,
+        expected_hands=70,
+    )
+    assert canonical_issues == []
+    receipt = {
+        "bot_a": {"name": "BotA"},
+        "bot_b": {"name": "BotB"},
+        "log_summary": log_summary,
+        "wire_replay_summary": wire_summary,
+        "artifacts": {
+            "canonical_thp": canonical,
+            "wire_events": str(tmp_path / "wire_events.jsonl"),
+        },
+    }
+    (tmp_path / "wire_events.jsonl").write_text("{}\n", encoding="utf-8")
+    receipt["completion_evidence"] = _build_terminal_completion_evidence(
+        receipt,
+        observation,
+        canonical,
+        target_hands=70,
+    )
+
+    assert round_completion_issues(receipt, 70) == []
+
+    missing = {key: value for key, value in receipt.items() if key != "completion_evidence"}
+    assert round_completion_issues(missing, 70) == [
+        "official_terminal_completion_evidence_missing"
+    ]
+    tampered = json.loads(json.dumps(receipt))
+    tampered["completion_evidence"]["final_hand"]["earnings"] = [49, -49]
+    assert "official_terminal_completion_evidence_digest_mismatch" in round_completion_issues(
+        tampered,
+        70,
+    )
+
+
+def test_terminal_thp_rejects_wire_prefix_and_footer_mismatches(tmp_path):
+    wire_summary = {
+        "hands_started_min": 70,
+        "settlements_min": 69,
+        "pending_expected_actions": [],
+        "seats": {
+            "A": {
+                "name": "BotA",
+                "hands_started": 70,
+                "settlements": 69,
+                "settlement_records": [
+                    {"hand": hand, "amount": 50}
+                    for hand in range(1, 70)
+                ],
+                "pending_expected_action": False,
+            },
+            "B": {
+                "name": "BotB",
+                "hands_started": 70,
+                "settlements": 69,
+                "settlement_records": [
+                    {"hand": hand, "amount": -50}
+                    for hand in range(1, 70)
+                ],
+                "pending_expected_action": False,
+            },
+        },
+    }
+    prefix_dir = tmp_path / "prefix"
+    prefix_dir.mkdir()
+    prefix_before = _snapshot_platform_thp_files(prefix_dir)
+    (prefix_dir / "THP-prefix.txt").write_text(
+        "STATE:0:f:AhKh|QsQd:60|-60:BotA|BotB;"
+        + "".join(
+            f"STATE:{index}:f:AhKh|QsQd:50|-50:BotA|BotB;"
+            for index in range(1, 70)
+        )
+        + "{[THP][BotA][BotB][BotA赢得3510个筹码][2026-07-11 17:22 合肥][2018 CCGC]}",
+        encoding="gb2312",
+    )
+
+    observation, issues = _terminal_thp_observation(
+        prefix_dir,
+        before=prefix_before,
+        expected_hands=70,
+        expected_names=("BotA", "BotB"),
+        wire_summary=wire_summary,
+    )
+    assert observation is None
+    assert issues == ["terminal_thp_wire_prefix_earnings_mismatch"]
+
+    footer_dir = tmp_path / "footer"
+    footer_dir.mkdir()
+    footer_before = _snapshot_platform_thp_files(footer_dir)
+    (footer_dir / "THP-footer.txt").write_text(
+        "".join(
+            f"STATE:{index}:f:AhKh|QsQd:50|-50:BotA|BotB;"
+            for index in range(70)
+        )
+        + "{[THP][BotA][BotB][BotA赢得3499个筹码][2026-07-11 17:22 合肥][2018 CCGC]}",
+        encoding="gb2312",
+    )
+
+    observation, issues = _terminal_thp_observation(
+        footer_dir,
+        before=footer_before,
+        expected_hands=70,
+        expected_names=("BotA", "BotB"),
+        wire_summary=wire_summary,
+    )
+    assert observation is None
+    assert any("thp_footer_result_mismatch" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda summary: summary.update(settlements_min=68),
+        lambda summary: summary.update(hands_started_min=69),
+        lambda summary: summary.update(pending_expected_actions=[{"conn": "A"}]),
+        lambda summary: summary["seats"]["A"].update(pending_expected_action=True),
+    ],
+)
+def test_terminal_socket_boundary_rejects_non_exact_or_pending_states(mutation):
+    logs = {"hands_started_min": 70, "settlements_min": 69}
+    wire = {
+        "hands_started_min": 70,
+        "settlements_min": 69,
+        "pending_expected_actions": [],
+        "seats": {
+            "A": {
+                "name": "BotA",
+                "hands_started": 70,
+                "settlements": 69,
+                "settlement_records": [
+                    {"hand": hand, "amount": 50}
+                    for hand in range(1, 70)
+                ],
+                "pending_expected_action": False,
+            },
+            "B": {
+                "name": "BotB",
+                "hands_started": 70,
+                "settlements": 69,
+                "settlement_records": [
+                    {"hand": hand, "amount": -50}
+                    for hand in range(1, 70)
+                ],
+                "pending_expected_action": False,
+            },
+        },
+    }
+    mutation(wire)
+
+    assert _terminal_socket_boundary(logs, wire, 70) is False
 
 
 def test_canonical_thp_requires_exact_match_length_and_one_content_identity(tmp_path):
     first = tmp_path / "THP-first.txt"
     duplicate = tmp_path / "THP-duplicate.txt"
     overrun = tmp_path / "THP-overrun.txt"
+    duplicate_index = tmp_path / "THP-duplicate-index.txt"
     exact_text = "\n".join(f"STATE:{index}:x:y:z:p;" for index in range(70)) + "\n"
     first.write_text(exact_text, encoding="gb2312")
     duplicate.write_text(exact_text, encoding="gb2312")
     overrun.write_text(
         "\n".join(f"STATE:{index}:x:y:z:p;" for index in range(71)) + "\n",
+        encoding="gb2312",
+    )
+    duplicate_index.write_text(
+        "\n".join(
+            f"STATE:{index if index < 69 else 68}:x:y:z:p;"
+            for index in range(70)
+        )
+        + "\n",
         encoding="gb2312",
     )
 
@@ -761,6 +981,13 @@ def test_canonical_thp_requires_exact_match_length_and_one_content_identity(tmp_
     )
     assert canonical["hand_records"] == 71
     assert any("thp_hand_count_mismatch" in issue for issue in issues)
+
+    canonical, issues = _canonical_thp_evidence(
+        _summarize_thp_files([str(duplicate_index)]),
+        expected_hands=70,
+    )
+    assert canonical["hand_records"] == 70
+    assert any("thp_hand_index_sequence_mismatch" in issue for issue in issues)
 
 
 def test_collect_new_thp_files_scans_platform_root_and_exe_dir(tmp_path):

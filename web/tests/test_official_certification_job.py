@@ -79,6 +79,47 @@ def test_worker_pythonpath_imports_core_and_repo_packages_from_arbitrary_cwd(tmp
     assert env["PYTHONPATH"].split(os.pathsep)[-1] == "/preserved/operator/path"
 
 
+def test_progress_scanner_reads_live_formal_execution_logs(tmp_path):
+    directory = tmp_path / "job"
+    run_dir = (
+        directory
+        / "suite_attempt_01"
+        / "self_play_01"
+        / "executions"
+        / "run_0000000000000000001_123"
+    )
+    run_dir.mkdir(parents=True)
+    log = "\n".join([
+        "DISPATCH line='preflop|SMALLBLIND|<0,3><1,3>'",
+        "DISPATCH line='earnChips 100'",
+        "DISPATCH line='preflop|BIGBLIND|<2,3><3,3>'",
+        "DISPATCH line='earnChips -100'",
+        "DISPATCH line='preflop|SMALLBLIND|<4,3><5,3>'",
+    ])
+    (run_dir / "botA.log").write_text(log, encoding="utf-8")
+    (run_dir / "botB.log").write_text(log, encoding="utf-8")
+    request = {
+        "spec": {
+            "self_play_rounds": 1,
+            "opponent_rounds": 0,
+        },
+    }
+
+    progress = jobs._scan_progress(directory, request, attempt=1)
+
+    assert progress["rounds_completed"] == 0
+    assert progress["active_round"] == {
+        "kind": "self_play",
+        "index": 1,
+        "passed": False,
+        "hands_started": 3,
+        "settlements": 2,
+        "observed_bytes": len(log.encode("utf-8")) * 2,
+        "duration_sec": None,
+        "issue_count": 0,
+    }
+
+
 def test_job_start_and_poll_are_identity_stable(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(tmp_path / "jobs"))
     monkeypatch.setattr(jobs, "_spawn_worker", _fake_spawn)
@@ -542,7 +583,7 @@ def test_volatile_selection_diagnostics_do_not_change_job_identity(tmp_path, mon
         "role": "official_opponent",
         "bot": opponent.name,
         "artifact_hash": stable_opponent["artifact_hash"],
-        "policy_id": "official-full-v4",
+        "policy_id": "official-full-v5",
         "certificate_digest": "a" * 64,
     }
     stable_opponent["eligibility_receipt"] = {

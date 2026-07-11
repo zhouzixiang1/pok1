@@ -303,7 +303,12 @@ Core protocol facts from those documents:
   showdown. The EXE can suppress a street-closing peer `call`/`check` and jump
   directly to the next street or settlement; generated native runtimes must
   infer only actions proven by that boundary. The EXE sends no cumulative match
-  result token, and none of its chip/win outputs may enter strength ratings.
+  result TCP token. At the natural end of hand 70, the 2021 EXE omits the final
+  `earnChips` pair but writes `STATE:69` and the cumulative result in its THP.
+  Formal v5 completion therefore cross-binds wire hands/earnings 1..69 to THP
+  states 0..68 and uses strict state 69 plus the footer as the independent final
+  proof; a bare 69-settlement count still fails. None of these chip/win outputs
+  may enter strength ratings.
 
 All illegal actions are treated as fold. The validator implements the national document's bet/call/check/raise/allin restrictions in `sever/engine/validator.py`.
 
