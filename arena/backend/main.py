@@ -97,7 +97,25 @@ async def run_server(
     app = create_app(manager, static_dir=static_dir)
     config = uvicorn.Config(app, host=host, port=web_port, log_level="warning")
     web_server = uvicorn.Server(config)
-    tcp_coro = manager.serve_loop(host, tcp_port, max_matches=max_matches)
+    tcp_task = asyncio.create_task(manager.serve_loop(host, tcp_port, max_matches=max_matches))
+    web_task = asyncio.create_task(web_server.serve())
     logger.info("pok-arena starting: tcp=%s:%d web=http://%s:%d (max_matches=%s)",
                 host, tcp_port, host, web_port, max_matches)
-    await asyncio.gather(tcp_coro, web_server.serve())
+    # 任一完成即停:serve_loop 在 --once/max_matches 跑完后退出 -> 关 web;
+    # web 异常也停。长驻(max_matches=None)两者都不退,正常服务。
+    done, pending = await asyncio.wait({tcp_task, web_task}, return_when=asyncio.FIRST_COMPLETED)
+    # 优雅停 web(should_exit),避免 cancel 触发 uvicorn lifespan CancelledError 噪声
+    web_server.should_exit = True
+    for t in pending:
+        try:
+            await asyncio.wait_for(t, timeout=3.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+    for t in done:
+        exc = t.exception()
+        if exc is not None and not isinstance(exc, asyncio.CancelledError):
+            raise exc

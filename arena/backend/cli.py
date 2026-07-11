@@ -61,6 +61,7 @@ def serve(
     once: bool = typer.Option(False, "--once", help="只跑一场(等价 --max-matches 1)"),
     records_dir: Path = typer.Option(DEFAULT_RECORDS_DIR, "--records-dir", help="THP/索引目录"),
     event_name: str = typer.Option("CCGC", "--event-name", help="赛事名(写入 THP footer)"),
+    hands_per_match: int = typer.Option(70, "--hands-per-match", help="每场手数(默认 70;测试可调小)"),
     log_file: str | None = typer.Option(None, "--log-file", help="日志文件(默认仅 stderr)"),
     log_level: str = typer.Option("INFO", "--log-level", help="DEBUG/INFO/WARNING/ERROR"),
 ) -> None:
@@ -69,7 +70,8 @@ def serve(
         typer.echo("WARNING: binding 0.0.0.0 (all interfaces); arena 无鉴权, 仅限可信网络。", err=True)
     _setup_logging(log_file, log_level)
     n = 1 if once else max_matches
-    manager = MatchManager(records_dir=str(records_dir), event_name=event_name)
+    manager = MatchManager(records_dir=str(records_dir), event_name=event_name,
+                           hands_per_match=hands_per_match)
     static_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     try:
         asyncio.run(run_server(
@@ -117,17 +119,20 @@ async def _connect_client(
     reader, writer = await asyncio.open_connection(host, port)
     suffix = "" if bare else "\n"
 
+    # 本街是否已行动:防止轮次结束后对对手 call/check 再发多余动作 -> 粘包
+    # (transport 会把连续动作解析为 protocol_multiple_actions -> 非法 -> fold)。
+    state = {"acted": False}
+    is_small_blind = False
+    in_allin_runout = False
+    buf = ""
+
     def send(msg: str) -> None:
         writer.write((msg + suffix).encode("utf-8"))
+        state["acted"] = True
         if verbose:
             log.info("> %r", msg)
 
-    buf = ""
-    is_small_blind = False
-    in_allin_runout = False
-
-    def respond(default_follow: str) -> None:
-        """按 policy 响应(收到需要本方动作的对手动作/新街时调)。"""
+    def do_policy(default_follow: str) -> None:
         if policy == "fold":
             send("fold")
         elif policy == "allin":
@@ -161,44 +166,49 @@ async def _connect_client(
                 log.info("< %r", line)
 
             if line == "name":
-                send(name)
+                writer.write((name + suffix).encode("utf-8"))  # name 不算行动
+                if verbose:
+                    log.info("> name=%r", name)
                 continue
             if line.startswith("preflop|"):
                 parts = line.split("|")
                 is_small_blind = (len(parts) > 1 and parts[1] == "SMALLBLIND")
                 in_allin_runout = False
-                # SB 翻前先动 -> 跟到大注(call);BB 等 SB 动作
-                if is_small_blind:
-                    respond("call")
+                state["acted"] = False
+                if is_small_blind:            # SB 翻前先动 -> limp(call)
+                    do_policy("call")
                 continue
             if line.startswith(("flop|", "turn|", "river|")):
-                # 新街;BB 翻后先手 -> check(SB 在 allin runout 外通常后动)
+                state["acted"] = False
+                # postflop BB 先手 -> check;SB 在对手动作后再动
                 if not in_allin_runout and not is_small_blind:
-                    respond("check")
+                    do_policy("check")
                 continue
             if line.startswith("earnChips"):
                 in_allin_runout = False
                 continue
             if line.startswith("oppo_hands|"):
                 continue
-            # 对手动作转发
+            # 对手动作转发:仅本街未行动时响应(已行动说明轮次将/已结束,避免粘包)
             if line == "allin":
                 in_allin_runout = True
-                respond("call")
+                if not state["acted"]:
+                    do_policy("call")
                 continue
             if line.startswith("raise"):
-                respond("call")
+                if not state["acted"]:
+                    do_policy("call")
                 continue
             if line == "check":
-                # 对手过牌 -> 本方 call(0 跟注=过牌,非首动作须用 call)
-                respond("call")
+                if not state["acted"]:        # 对手 check -> 本方 call(过牌)
+                    do_policy("call")
                 continue
             if line == "call":
-                respond("check")
+                if not state["acted"]:        # 对手 call(SB limp) -> BB check
+                    do_policy("check")
                 continue
             if line == "fold":
                 continue
-            # 未识别:打印,不响应(等下一条)
             log.warning("unhandled message: %r", line)
     finally:
         writer.close()
