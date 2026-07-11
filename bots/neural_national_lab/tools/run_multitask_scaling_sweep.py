@@ -524,7 +524,6 @@ def _run_post_selection_policy(
         return result, len(raw_rows)
 
     calibration, calibration_rows = evaluate(calibration_path)
-    held_out, held_out_rows = evaluate(held_out_path)
     calibration_gate = policy_safety_gate(
         calibration,
         min_overrides=args.policy_min_calibration_overrides,
@@ -535,14 +534,25 @@ def _run_post_selection_policy(
             args.policy_min_calibration_ci_lower
         ),
     )
-    held_out_gate = policy_safety_gate(
-        held_out,
-        min_overrides=args.policy_min_held_out_overrides,
-        min_override_clusters=args.policy_min_held_out_override_clusters,
-        require_nonnegative_opponent_mean=True,
-        min_cluster_ci_lower=args.policy_min_held_out_ci_lower,
-        min_opponent_stratified_ci_lower=args.policy_min_held_out_ci_lower,
-    )
+    held_out = None
+    held_out_rows = None
+    held_out_opened = bool(calibration_gate and calibration_gate["passed"])
+    if held_out_opened:
+        held_out, held_out_rows = evaluate(held_out_path)
+        held_out_gate = policy_safety_gate(
+            held_out,
+            min_overrides=args.policy_min_held_out_overrides,
+            min_override_clusters=args.policy_min_held_out_override_clusters,
+            require_nonnegative_opponent_mean=True,
+            min_cluster_ci_lower=args.policy_min_held_out_ci_lower,
+            min_opponent_stratified_ci_lower=args.policy_min_held_out_ci_lower,
+        )
+    else:
+        held_out_gate = {
+            "passed": False,
+            "evaluated": False,
+            "errors": ["not_opened:calibration_gate_failed"],
+        }
     passed = bool(
         calibration_gate
         and calibration_gate["passed"]
@@ -551,8 +561,9 @@ def _run_post_selection_policy(
     )
     path = out_dir / "post_selection_policy.json"
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "selection_used_held_out": False,
+        "held_out_opened": held_out_opened,
         "policy_config_frozen_before_post_selection": policy_config,
         "models": [
             {
@@ -569,8 +580,9 @@ def _run_post_selection_policy(
             },
             "held_out": {
                 "path": str(held_out_path.resolve()),
-                "sha256": _sha256(held_out_path),
+                "sha256": _sha256(held_out_path) if held_out_opened else None,
                 "rows": held_out_rows,
+                "opened": held_out_opened,
             },
         },
         "gate_criteria": {
@@ -614,12 +626,15 @@ def _run_post_selection_policy(
         "policy_config": policy_config,
         "calibration_gate": calibration_gate,
         "held_out_gate": held_out_gate,
+        "held_out_opened": held_out_opened,
         "calibration_match_mean_per_opportunity": calibration[
             "match_mean_per_opportunity"
         ],
-        "held_out_match_mean_per_opportunity": held_out[
-            "match_mean_per_opportunity"
-        ],
+        "held_out_match_mean_per_opportunity": (
+            held_out["match_mean_per_opportunity"]
+            if held_out is not None
+            else None
+        ),
     }
 
 
@@ -715,6 +730,9 @@ def _model_matches(
     for name, data_path in data_paths.items():
         manifest = manifests.get(name) or {}
         if manifest.get("sha256") != _sha256(data_path):
+            return False
+    for name in ("value_held_out", "behavior_held_out"):
+        if name not in data_paths and manifests.get(name) is not None:
             return False
     return True
 
@@ -1135,9 +1153,9 @@ def main() -> int:
     )
     selected_seed = int(selected_row["seed"])
 
-    # The architecture and complete seed ensemble are frozen before held-out
-    # paths are passed to the trainer. Every deterministic rerun must reproduce
-    # its selection-only validation score.
+    # Freeze the architecture and complete seed ensemble without exposing
+    # held-out data. The post-selection gate opens held-out only after the
+    # independently evaluated calibration split passes.
     final_members = []
     for row in selected_rows:
         seed = int(row["seed"])
@@ -1145,7 +1163,7 @@ def main() -> int:
         final_payload = _run_training(
             config=selected_config,
             seed=seed,
-            data_paths={**candidate_data, **held_out_data},
+            data_paths=candidate_data,
             output=final_path,
             log_path=out_dir / f"selected_{selected_config['name']}_seed{seed}.log",
             args=args,
@@ -1161,7 +1179,7 @@ def main() -> int:
             "model": str(final_path),
             "model_sha256": _sha256(final_path),
             "validation": final_payload["meta"]["validation"],
-            "held_out": final_payload["meta"]["held_out"],
+            "held_out": final_payload["meta"].get("held_out"),
             "stdlib_runtime": _benchmark_runtime(
                 final_path, repeats=args.runtime_benchmark_repeats
             ),
@@ -1235,7 +1253,7 @@ def main() -> int:
         json.dumps(ensemble_manifest, indent=2, sort_keys=True), encoding="utf-8"
     )
     summary = {
-        "schema_version": 5,
+        "schema_version": 6,
         "selection_used_held_out": False,
         "deployment_eligible": deployment_eligible,
         "deployment_blockers": deployment_blockers,

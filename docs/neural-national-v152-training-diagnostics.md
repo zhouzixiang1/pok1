@@ -494,14 +494,65 @@ context-integrity, and statistical helpers pass unit tests. It has not yet run
 an end-to-end TCP replicate while the four-slot long-run collector is active,
 so it is tooling rather than evidence at this checkpoint.
 
+## Completed Pass-40 Sweep And Q10 Control
+
+The fixed `rule_relative_zero_v1` pass-40 sweep subsequently completed. The
+ordinary-row training sweep evaluated GRU and GRU+MoE encoders at lower-ranking
+weights 0, 0.1, 0.25, and 0.5 over seeds 101/211/307. None of its eight
+ensembles passed the validation policy gate. Its architecture report SHA-256
+is `34e5af186d164d6f36315b6f09e128992751375a1535d9f896780b3f32b5d4c8`.
+
+The controlled whole-match-cluster bootstrap rerun evaluated weights 0 and 0.5.
+Only the 106,046-parameter GRU+MoE weight-0 ensemble passed validation
+selection. Its three-member stdlib runtime was about 61 ms. The selected policy
+made 15 overrides over 10 of 40 match clusters, all of them `allin`. Validation
+match value per opportunity was +86.06, with ordinary, match-cluster, and
+opponent-stratified CI lower bounds of only +0.0128, +0.0129, and +0.0129.
+Those near-zero bounds were selection evidence, not deployable strength.
+
+The policy was frozen before post-selection evaluation and then failed to
+generalize. On calibration opponents v121/v135 it made four overrides over
+three clusters, returned -5.80 match chips per opportunity, and had a
+match-cluster CI of `[-17.61, +0.84]`; both opponent means were negative. On
+v57/v66 held-out it made eight overrides over five clusters and returned only
++0.21 per opportunity with both CI lower bounds equal to zero. Consequently
+`offline_candidate_eligible=false`, no native candidate was created, and no
+strength claim is attached to this model. The architecture, sweep, and
+post-selection report SHA-256 values are:
+
+- `5f068b583e437044579dfd3bb9aa6902d9e570486c8dbb50870602824ad7ec10`;
+- `8e1a915d1eea5cbcc3af63c2094d4610c97ac1679f1d60ba4dbdb6fd664ff2f0`;
+- `cb79d5810686472f28fff35b2f1d858a55f5606607149afbb4683b246e8e39c7`.
+
+Because the post-selection report exposed v57/v66 outcomes, those opponents
+remain valid audit evidence for this already-frozen pass-40 policy but are no
+longer an untouched final test for future recipes. The pass-160 process must
+reserve newly unseen tagged opponents before final training and must not open
+them when calibration fails.
+
+A separate q=0.10 GRU control completed over the same three seeds. Median
+validation match-direction and lower-direction balanced accuracy were 75.2%
+and 74.6%, but the policy gate still rejected every configuration. The
+highest-CI grid entries reduced to one v98 call override in one cluster, whose
+single observed +20,100 result left both clustered CI lower bounds at zero.
+This is jackpot sparsity, not evidence of a usable policy. Held-out was not
+opened by this control. Its report SHA-256 is
+`1a5c96fafaa17a2a187690153015a52c3244139e6f1bf9a9f39459198acbd3d5`.
+
+At 2026-07-11 09:30 +08:00, the live 70-hand collection had reached 96/160
+completed passes. The completed state contained 4,446/1,132/1,117 value rows
+and 18,723/5,968/3,275 opponent-action rows in train/validation/held-out.
+The conditional common-runout diagnostic remains queued until the four native
+TCP collection slots are released.
+
 ## Next Evidence
 
-1. Finish the pass-40 fixed `rule_relative_zero_v1` non-bootstrap sweep and
-   targeted match-cluster bootstrap control; do not tune from held-out results.
+1. Finish and atomically freeze the 160-pass opponent-disjoint collection.
 2. Repeat the full GRU, GRU+MoE, Deep Sets, and Transformer scaling grid after
    the 160-pass dataset is frozen.
-3. Use calibration only for output calibration and coverage diagnostics; keep
-   held-out completely outside architecture, recipe, and policy selection.
+3. Use calibration only for output calibration and coverage diagnostics;
+   reserve fresh tagged opponents outside all current partitions for the final
+   blind test and do not open them after a failed calibration gate.
 4. Use offline clustered policy selection before creating an active TCP bot.
 5. Treat native paired classic-pool EV, not these supervised metrics, as the
    eventual strength criterion.

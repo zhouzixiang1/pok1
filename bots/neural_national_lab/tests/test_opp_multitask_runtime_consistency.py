@@ -404,6 +404,153 @@ def test_offline_candidate_gate_rejects_relaxed_or_incomplete_evidence(
     assert passing["errors"] == []
 
 
+def _post_selection_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        policy_bootstrap_samples=100,
+        policy_bootstrap_seed=17,
+        policy_min_calibration_overrides=5,
+        policy_min_calibration_override_clusters=3,
+        policy_min_calibration_ci_lower=0.0,
+        policy_min_held_out_overrides=10,
+        policy_min_held_out_override_clusters=8,
+        policy_min_held_out_ci_lower=0.0,
+    )
+
+
+@pytest.mark.parametrize("calibration_passes", [False, True])
+def test_post_selection_opens_held_out_only_after_calibration_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    calibration_passes: bool,
+) -> None:
+    model = tmp_path / "model.json"
+    calibration = tmp_path / "calibration.jsonl"
+    held_out = tmp_path / "held_out.jsonl"
+    model.write_text("{}", encoding="utf-8")
+    calibration.write_text("calibration", encoding="utf-8")
+    held_out.write_text("held-out", encoding="utf-8")
+    reads = []
+
+    monkeypatch.setattr(
+        scaling.OpponentMultiTaskEnsemble,
+        "load",
+        staticmethod(lambda _paths: object()),
+    )
+
+    def read_rows(path: Path) -> list[dict[str, object]]:
+        reads.append(path.name)
+        return [{
+            "split": "calibration" if path == calibration else "held_out"
+        }]
+
+    def evaluate(rows, _ensemble, **_kwargs):
+        split = rows[0]["split"]
+        return {
+            "rows": len(rows),
+            "match_mean_per_opportunity": 1.0 if split == "calibration" else 2.0,
+            "gate_passes": calibration_passes if split == "calibration" else True,
+        }
+
+    monkeypatch.setattr(scaling, "read_policy_rows", read_rows)
+    monkeypatch.setattr(scaling, "prepare_policy_rows", lambda rows, _ensemble: rows)
+    monkeypatch.setattr(scaling, "evaluate_policy_config", evaluate)
+    monkeypatch.setattr(
+        scaling,
+        "policy_safety_gate",
+        lambda result, **_kwargs: {
+            "passed": result["gate_passes"],
+            "errors": [] if result["gate_passes"] else ["failed"],
+        },
+    )
+
+    result = scaling._run_post_selection_policy(
+        model_paths=[model],
+        policy_config={"margin": 25.0},
+        calibration_path=calibration,
+        held_out_path=held_out,
+        out_dir=tmp_path,
+        args=_post_selection_args(),
+    )
+    payload = json.loads(Path(result["path"]).read_text(encoding="utf-8"))
+
+    assert result["held_out_opened"] is calibration_passes
+    assert payload["held_out_opened"] is calibration_passes
+    if calibration_passes:
+        assert reads == ["calibration.jsonl", "held_out.jsonl"]
+        assert result["passed"] is True
+        assert result["held_out_match_mean_per_opportunity"] == 2.0
+        assert payload["data"]["held_out"]["sha256"] == scaling._sha256(held_out)
+    else:
+        assert reads == ["calibration.jsonl"]
+        assert result["passed"] is False
+        assert result["held_out_match_mean_per_opportunity"] is None
+        assert payload["held_out"] is None
+        assert payload["data"]["held_out"] == {
+            "opened": False,
+            "path": str(held_out.resolve()),
+            "rows": None,
+            "sha256": None,
+        }
+
+
+def test_resume_rejects_model_that_already_exposed_held_out(tmp_path: Path) -> None:
+    config = scaling._parse_config(
+        "tiny@gru:64:32:16:16:12:32",
+        cross_transformer_heads=2,
+        cross_moe_experts=3,
+    )
+    args = SimpleNamespace(
+        match_ranking_weight=0.5,
+        match_lower_ranking_weight=0.0,
+        ranking_margin=100.0,
+        ranking_temperature=0.1,
+        direction_score_weight=0.5,
+        lower_direction_score_weight=0.5,
+        cluster_bootstrap=False,
+        training_row_weighting="uniform",
+    )
+    data_paths = {}
+    for name in ("value_train", "value_val", "behavior_train", "behavior_val"):
+        path = tmp_path / f"{name}.jsonl"
+        path.write_text(name, encoding="utf-8")
+        data_paths[name] = path
+    manifests = {
+        name: {"sha256": scaling._sha256(path)}
+        for name, path in data_paths.items()
+    }
+    manifests.update({"value_held_out": None, "behavior_held_out": None})
+    payload = {
+        "meta": {
+            "format": "opp_multitask_gru_v2",
+            "response_encoder": "separate_public_v1",
+            "rule_action_dim": 6,
+            "model": config,
+            "training": {
+                "seed": 101,
+                "trainer_sha256": scaling._sha256(scaling.TRAINER),
+                "data": manifests,
+                **scaling._training_recipe(args, config),
+            },
+        }
+    }
+    model = tmp_path / "model.json"
+    model.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert scaling._model_matches(
+        model, config=config, seed=101, data_paths=data_paths, args=args
+    ) is True
+
+    payload["meta"]["training"]["data"]["value_held_out"] = {"sha256": "seen"}
+    payload["meta"]["training"]["data"]["behavior_held_out"] = {
+        "sha256": "seen"
+    }
+    model.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert scaling._model_matches(
+        model, config=config, seed=101, data_paths=data_paths, args=args
+    ) is False
+
+
 @pytest.mark.parametrize(
     "cross_sequence_encoder",
     [None, "gru", "gru_moe", "deep_set", "transformer"],
