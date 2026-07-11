@@ -817,6 +817,19 @@ strategy context value-head-only. A real pass-2 frozen-prefix smoke opened
 84/492 train value/behavior rows, 12/50 early-stop rows, and 12/82 calibration
 rows in the required order without touching policy data.
 
+`multitask_calibration.py` defines the post-checkpoint calibration math that the
+refactored trainer will call. Lower-value offsets use the calibration role's
+opponent-balanced IPW and a weighted residual quantile; an action-specific
+offset is allowed only when both its row count and effective sample size pass
+fixed thresholds, otherwise it falls back to the weighted global offset.
+Opponent-response temperature is selected by weighted NLL after masking every
+illegal national action, so an impossible class with a large raw logit cannot
+distort calibration. Reports include per-opponent before/after NLL and effective
+sample sizes. The final calibration artifact is deterministically bound to the
+frozen checkpoint, role manifest, and model-calibration artifact and declares
+that no policy evidence was used. This remains a standalone interface until the
+active old-data scaling process releases the trainer file.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
