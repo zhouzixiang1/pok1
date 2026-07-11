@@ -124,6 +124,94 @@ def test_reset_without_baseline_falls_back_to_source(tmp_path, monkeypatch):
     assert not (next_dir / "foo.py").exists()
 
 
+def test_reset_restores_invalid_utf8_nested_binary_from_worker_baseline(
+    tmp_path, monkeypatch
+):
+    source_dir, next_dir = _setup_dirs(tmp_path)
+    source_table = source_dir / "tables" / "equity.bin"
+    next_table = next_dir / "tables" / "equity.bin"
+    source_table.parent.mkdir(parents=True)
+    next_table.parent.mkdir(parents=True)
+    source_table.write_bytes(b"source\x00table")
+    next_table.write_bytes(b"partial\xffedit")
+
+    monkeypatch.setattr(
+        aw, "get_bot_dir",
+        lambda v: tmp_path / "bots" / f"claude_v{v}",
+    )
+    baseline = {(0, "tables/equity.bin"): b"sibling\xffbaseline"}
+
+    aw._reset_target_files_to_source(
+        {"target_files": ["tables/equity.bin"]},
+        105,
+        next_dir,
+        106,
+        baseline_snapshots=baseline,
+        task_idx=0,
+    )
+
+    assert next_table.read_bytes() == b"sibling\xffbaseline"
+
+
+def test_binary_target_change_classification_uses_bytes_snapshot(tmp_path):
+    _source_dir, next_dir = _setup_dirs(tmp_path)
+    table = next_dir / "tables" / "equity.bin"
+    table.parent.mkdir(parents=True)
+    table.write_bytes(b"after\xff")
+    task = {
+        "target_files": ["tables/equity.bin"],
+        "must_change_files": ["tables/equity.bin"],
+    }
+
+    changed = aw._classify_target_change_for_worker(
+        task,
+        0,
+        "tables/equity.bin",
+        next_dir,
+        106,
+        source_v=105,
+        baseline_snapshots={(0, "tables/equity.bin"): b"before\xff"},
+    )
+    unchanged = aw._classify_target_change_for_worker(
+        task,
+        0,
+        "tables/equity.bin",
+        next_dir,
+        106,
+        source_v=105,
+        baseline_snapshots={(0, "tables/equity.bin"): b"after\xff"},
+    )
+
+    assert changed == "modified"
+    assert unchanged == "unchanged"
+
+
+@pytest.mark.parametrize("name", ["empty.py", "tables/empty.bin"])
+def test_empty_existing_target_snapshot_is_not_confused_with_missing(
+    tmp_path, monkeypatch, name
+):
+    _source_dir, next_dir = _setup_dirs(tmp_path)
+    target = next_dir / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"")
+    snapshot = aw._target_snapshot_content(target)
+    assert snapshot == (b"" if name.endswith(".bin") else "")
+    assert bool(snapshot) is True
+
+    target.write_bytes(b"partial")
+    aw._reset_target_files_to_source(
+        {"target_files": [name]},
+        105,
+        next_dir,
+        106,
+        baseline_snapshots={(0, name): snapshot},
+        task_idx=0,
+    )
+
+    assert target.is_file()
+    assert target.read_bytes() == b""
+
+
 # ── B-group extension: undeclared-NEW-file unlink (Fix 1) ──
 
 def test_unlink_undeclared_new_files_removes_worker_created_files(tmp_path):

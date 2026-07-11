@@ -679,6 +679,11 @@ class _FunctionVisitor(ast.NodeVisitor):
         "subprocess.call",
         "subprocess.check_call",
         "subprocess.check_output",
+        "os.open",
+        "os.popen",
+        "os.system",
+        "mmap.mmap",
+        "pickle.load",
         "requests.get",
         "requests.post",
         "urllib.request.urlopen",
@@ -894,6 +899,7 @@ def _format_path(chain: list[str], evidence: str) -> str:
 
 
 def _decision_path_risks(
+    trees: dict[str, ast.Module],
     profiles: dict[str, dict[str, Any]],
     decision_chains: dict[str, list[str]],
 ) -> dict[str, Any]:
@@ -909,6 +915,20 @@ def _decision_path_risks(
             risks[risk_name].extend(
                 _format_path(chain, item) for item in profile.get(risk_name) or []
             )
+    # Import-time and dormant helper I/O are also forbidden in candidate-owned
+    # modules.  Otherwise a module can load an untracked /tmp/results policy at
+    # import and expose only a constant to the clean decision call graph.
+    for key, profile in profiles.items():
+        if profile.get("filename") == "national_bot.py":
+            continue
+        risks["external_io"].extend(profile.get("external_io") or [])
+    for filename, tree in trees.items():
+        if filename == "national_bot.py":
+            continue
+        visitor = _FunctionVisitor(filename)
+        for statement in tree.body:
+            visitor.visit(statement)
+        risks["external_io"].extend(visitor.external_io)
     return {
         "decision_functions": sorted(
             key for key, profile in profiles.items() if profile.get("is_decision")
@@ -1427,7 +1447,7 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
     native = sources.get("national_bot.py", "")
     profiles, by_name = _function_profiles(trees)
     decision_chains, _roots = _decision_graph(profiles, by_name)
-    decision_risks = _decision_path_risks(profiles, decision_chains)
+    decision_risks = _decision_path_risks(trees, profiles, decision_chains)
     decision_time = _decision_time_evidence(profiles, decision_chains)
     decision_constant_names = {
         "default_hard_deadline_ms": "DEFAULT_DECISION_HARD_DEADLINE_SEC",
@@ -1542,6 +1562,11 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         for value in decision_runtime.get("baseline_samples_ms") or []
         if isinstance(value, (int, float))
     ]
+    dynamic_baseline_ok = decision_runtime.get("baseline_ok")
+    if not isinstance(dynamic_baseline_ok, bool):
+        dynamic_baseline_ok = bool(
+            baseline_samples_ms and max(baseline_samples_ms) <= 250.0
+        )
     refinement_observed = any(
         int(((row.get(label) or {}).get("runtime_metrics") or {}).get("refinement_messages") or 0) > 0
         for row in (dynamic_probe.get("strategy_influence") or {}).get("rows") or []
@@ -1612,6 +1637,11 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
             "Run strategy and sanitizer inside the persistent process worker; terminate it at the deadline and restart on the next decision.",
             facts={
                 "runtime_version": expected_decision_runtime_version,
+                "safety_ok": decision_runtime.get("safety_ok"),
+                "safety_issues": decision_runtime.get("safety_issues") or [],
+                "fallback_ready_samples_ms": (
+                    decision_runtime.get("fallback_ready_samples_ms") or []
+                ),
                 "timeout_recovery": decision_runtime.get("timeout_recovery") or {},
             },
         ),
@@ -1619,8 +1649,7 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
             "fast_strategy_baseline",
             (
                 "get_baseline_action" in strategy_function_names
-                and bool(baseline_samples_ms)
-                and max(baseline_samples_ms) <= 250.0
+                and dynamic_baseline_ok
             ),
             "advisory",
             "runtime_architecture",
@@ -1628,6 +1657,8 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
             "Implement get_baseline_action(req, current_hand_view) as a bounded lookup path; the socket fallback must already exist at t=0.",
             facts={
                 "function_present": "get_baseline_action" in strategy_function_names,
+                "baseline_ok": decision_runtime.get("baseline_ok"),
+                "baseline_issues": decision_runtime.get("baseline_issues") or [],
                 "sample_count": len(baseline_samples_ms),
                 "max_ms": max(baseline_samples_ms) if baseline_samples_ms else None,
             },
@@ -1659,10 +1690,10 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         _check(
             "decision_path_no_external_io",
             not decision_risks["external_io"],
-            "advisory",
+            "required",
             "runtime_architecture",
-            "decision call graph contains no file, network, or subprocess I/O",
-            "Keep external I/O out of get_action and reachable helpers.",
+            "candidate-owned modules contain no file, network, or subprocess I/O",
+            "Build pure tables in memory; do not load policy from files, network, subprocesses, import-time helpers, or dormant code.",
             locations=decision_risks["external_io"][:8],
         ),
         _check(

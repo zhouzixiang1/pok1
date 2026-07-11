@@ -1101,6 +1101,9 @@ def _probe_decision_runtime(
         "ok": False,
         "issues": [],
         "safety_ok": False,
+        "safety_issues": [],
+        "baseline_ok": False,
+        "baseline_issues": [],
         "refinement_ok": False,
         "refinement_issues": [],
         "refinement_evidence": [],
@@ -1109,38 +1112,47 @@ def _probe_decision_runtime(
         "fallback_ready_samples_ms": [],
         "timeout_recovery": {},
     }
-    try:
-        metrics_rows = []
-        for row in strategy_result.get("rows") or []:
-            for label in ("baseline", "aggressive", "passive"):
-                action = row.get(label) or {}
-                metrics = action.get("runtime_metrics") or {}
-                if metrics:
-                    metrics_rows.append(metrics)
-        if not metrics_rows:
-            result["issues"].append("decision_runtime_metrics_missing")
-        for metrics in metrics_rows:
+    metrics_rows = []
+    for row in strategy_result.get("rows") or []:
+        for label in ("baseline", "aggressive", "passive"):
+            action = row.get(label) or {}
+            metrics = action.get("runtime_metrics") or {}
+            if metrics:
+                metrics_rows.append(metrics)
+    if not metrics_rows:
+        result["safety_issues"].append("decision_runtime_metrics_missing")
+    for metrics in metrics_rows:
+        try:
             actual_runtime_version = int(metrics.get("runtime_version") or 0)
             if actual_runtime_version != expected_runtime_version:
-                result["issues"].append(
+                result["safety_issues"].append(
                     "decision_runtime_version_mismatch:"
                     f"expected={expected_runtime_version}:actual={actual_runtime_version}"
                 )
+        except (TypeError, ValueError):
+            result["safety_issues"].append("decision_runtime_version_invalid")
+        try:
             fallback_ms = metrics.get("socket_fallback_ready_ms")
             if fallback_ms is not None:
                 result["fallback_ready_samples_ms"].append(float(fallback_ms))
+        except (TypeError, ValueError):
+            result["safety_issues"].append("socket_fallback_timing_invalid")
+        try:
             baseline_ms = metrics.get("baseline_published_ms")
             if baseline_ms is not None:
                 result["baseline_samples_ms"].append(float(baseline_ms))
-        if not result["fallback_ready_samples_ms"]:
-            result["issues"].append("socket_fallback_timing_missing")
-        elif max(result["fallback_ready_samples_ms"]) > 25.0:
-            result["issues"].append("socket_fallback_slower_than_25ms")
-        if not result["baseline_samples_ms"]:
-            result["issues"].append("strategy_baseline_never_published")
-        elif max(result["baseline_samples_ms"]) > 250.0:
-            result["issues"].append("strategy_baseline_slower_than_250ms")
+        except (TypeError, ValueError):
+            result["baseline_issues"].append("strategy_baseline_timing_invalid")
+    if not result["fallback_ready_samples_ms"]:
+        result["safety_issues"].append("socket_fallback_timing_missing")
+    elif max(result["fallback_ready_samples_ms"]) > 25.0:
+        result["safety_issues"].append("socket_fallback_slower_than_25ms")
+    if not result["baseline_samples_ms"]:
+        result["baseline_issues"].append("strategy_baseline_never_published")
+    elif max(result["baseline_samples_ms"]) > 250.0:
+        result["baseline_issues"].append("strategy_baseline_slower_than_250ms")
 
+    try:
         scaling_scenario = next(
             scenario for scenario in DECISION_SCENARIOS
             if scenario["id"] == "river_facing_large_bet"
@@ -1222,7 +1234,13 @@ def _probe_decision_runtime(
             "long": long_progress,
             "candidate_reported_metadata_is_non_authoritative": True,
         })
+    except BaseException as exc:
+        result["refinement_issues"].append(
+            "decision_runtime_refinement_probe_error:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
+        )
 
+    try:
         strategy = imports.load("strategy")
         missing = object()
         originals = {
@@ -1239,6 +1257,7 @@ def _probe_decision_runtime(
         strategy.iter_refinements = None
         strategy.refine_action = None
         timeout_bot = None
+        timeout_action = None
         try:
             _native, timeout_bot = _new_native_bot(imports)
             timeout_action = _timed_formal_action(timeout_bot, DECISION_SCENARIOS[1])
@@ -1251,33 +1270,36 @@ def _probe_decision_runtime(
                         pass
                 else:
                     setattr(strategy, name, value)
+        if not isinstance(timeout_action, dict):
+            raise RuntimeError("hanging_strategy_probe_returned_no_action")
         timeout_metrics = timeout_action.get("runtime_metrics") or {}
         if timeout_action.get("wire") != "fold":
-            result["issues"].append("positive_to_call_timeout_fallback_not_fold")
+            result["safety_issues"].append("positive_to_call_timeout_fallback_not_fold")
         if timeout_metrics.get("timed_out") is not True:
-            result["issues"].append("hanging_strategy_not_timed_out")
+            result["safety_issues"].append("hanging_strategy_not_timed_out")
         if timeout_metrics.get("worker_terminated") is not True:
-            result["issues"].append("hanging_strategy_worker_not_terminated")
+            result["safety_issues"].append("hanging_strategy_worker_not_terminated")
 
         recovery_action = _timed_formal_action(timeout_bot, DECISION_SCENARIOS[0])
         recovery_metrics = recovery_action.get("runtime_metrics") or {}
         if int(recovery_metrics.get("decision_id") or 0) <= int(
             timeout_metrics.get("decision_id") or 0
         ):
-            result["issues"].append("decision_id_did_not_advance_after_timeout")
+            result["safety_issues"].append("decision_id_did_not_advance_after_timeout")
         if int(recovery_metrics.get("worker_generation") or 0) <= int(
             timeout_metrics.get("worker_generation") or 0
         ):
-            result["issues"].append("worker_not_restarted_after_timeout")
+            result["safety_issues"].append("worker_not_restarted_after_timeout")
         if recovery_metrics.get("timed_out") is True:
-            result["issues"].append("recovery_decision_timed_out")
+            result["safety_issues"].append("recovery_decision_timed_out")
         result["timeout_recovery"] = {
             "timeout": timeout_action,
             "recovery": recovery_action,
         }
     except BaseException as exc:
-        result["issues"].append(
-            f"decision_runtime_probe_error:{type(exc).__name__}:{str(exc)[:180]}"
+        result["safety_issues"].append(
+            "decision_runtime_safety_probe_error:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
         )
     result["baseline_samples_ms"] = [
         round(value, 3) for value in result["baseline_samples_ms"][:64]
@@ -1285,12 +1307,22 @@ def _probe_decision_runtime(
     result["fallback_ready_samples_ms"] = [
         round(value, 3) for value in result["fallback_ready_samples_ms"][:64]
     ]
+    result["safety_issues"] = list(dict.fromkeys(result["safety_issues"]))
+    result["baseline_issues"] = list(dict.fromkeys(result["baseline_issues"]))
     result["refinement_issues"] = list(dict.fromkeys(result["refinement_issues"]))
-    result["safety_ok"] = not result["issues"]
+    result["safety_ok"] = not result["safety_issues"]
+    result["baseline_ok"] = not result["baseline_issues"]
     result["refinement_ok"] = not result["refinement_issues"]
-    result["issues"].extend(result["refinement_issues"])
-    result["issues"] = list(dict.fromkeys(result["issues"]))
-    result["ok"] = result["safety_ok"] and result["refinement_ok"]
+    result["issues"] = list(dict.fromkeys([
+        *result["safety_issues"],
+        *result["baseline_issues"],
+        *result["refinement_issues"],
+    ]))
+    result["ok"] = (
+        result["safety_ok"]
+        and result["baseline_ok"]
+        and result["refinement_ok"]
+    )
     return result
 
 
@@ -1587,6 +1619,12 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
         else {
             "ok": False,
             "issues": ["decision_runtime_probe_skipped_strategy_failed"],
+            "safety_ok": False,
+            "safety_issues": ["decision_runtime_probe_skipped_strategy_failed"],
+            "baseline_ok": False,
+            "baseline_issues": ["decision_runtime_probe_skipped_strategy_failed"],
+            "refinement_ok": False,
+            "refinement_issues": ["decision_runtime_probe_skipped_strategy_failed"],
             "baseline_samples_ms": [],
             "fallback_ready_samples_ms": [],
             "timeout_recovery": {},

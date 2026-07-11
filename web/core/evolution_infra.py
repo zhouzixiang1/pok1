@@ -470,6 +470,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                expected_infra_failure_digest=None,
                                official_job=None, clear_official_job=False,
                                expected_official_job_id=None,
+                               repair_baseline_artifact_hash=None,
                                reset_runtime_contract_ledger=False,
                                expected_runtime_contract_ledger_digest=None,
                                runtime_contract_ledger_reset_reason=None):
@@ -528,6 +529,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_runtime_contract_ledger = None
         existing_infra_failure = None
         existing_official_job = None
+        existing_repair_baseline_artifact_hash = None
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
@@ -571,6 +573,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                     )
             existing_infra_failure = existing.get("infra_failure")
             existing_official_job = existing.get("official_job")
+            existing_repair_baseline_artifact_hash = existing.get(
+                "repair_baseline_artifact_hash"
+            )
         elif existing:
             active_stage = existing.get("stage")
             dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
@@ -632,6 +637,12 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                     if str(item).strip()
                 ),
             })
+        if repair_baseline_artifact_hash is not None:
+            repair_hash = str(repair_baseline_artifact_hash).strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", repair_hash):
+                log.error("Invalid repair baseline artifact hash")
+                return False
+            existing_repair_baseline_artifact_hash = repair_hash
 
         if infra_failure is not None or clear_infra_failure:
             from pipeline_infrastructure import infrastructure_failure_digest
@@ -945,6 +956,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "runtime_contract_ledger": existing_runtime_contract_ledger,
             "infra_failure": existing_infra_failure,
             "official_job": existing_official_job,
+            "repair_baseline_artifact_hash": existing_repair_baseline_artifact_hash,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write
@@ -2113,7 +2125,7 @@ def git_commit_bot(
             f"unsupported official certificate policy: {certificate_policy or '<missing>'}"
         )
 
-    from bot_artifact import hash_path
+    from bot_artifact import hash_path, validate_staged_artifact
 
     current_bot_hash = hash_path(get_bot_dir(version))
     if current_bot_hash != expected_bot_hash:
@@ -2190,6 +2202,40 @@ def git_commit_bot(
         raise RuntimeError(
             "candidate changed while staging official-certified artifact: "
             f"expected {expected_bot_hash}, current {staged_bot_hash}"
+        )
+    try:
+        staged_artifact = validate_staged_artifact(
+            get_bot_dir(version),
+            repo_root=PROJECT_ROOT,
+        )
+    except Exception as exc:
+        _git("restore", "--staged", "--", bot_path, certificate_path, check=False)
+        raise RuntimeError(
+            "staged bot artifact validation failed: "
+            f"{type(exc).__name__}: {str(exc)[:500]}"
+        ) from exc
+    if (
+        not staged_artifact.get("valid")
+        or staged_artifact.get("working_hash") != expected_bot_hash
+        or staged_artifact.get("staged_hash") != expected_bot_hash
+    ):
+        _git("restore", "--staged", "--", bot_path, certificate_path, check=False)
+        working_files = {
+            str(item.get("path") or "")
+            for item in (staged_artifact.get("working_manifest") or {}).get("entries") or []
+            if item.get("type") == "file"
+        }
+        staged_files = {
+            str(item.get("path") or "")
+            for item in (staged_artifact.get("staged_manifest") or {}).get("entries") or []
+            if item.get("type") == "file"
+        }
+        raise RuntimeError(
+            "staged Git blobs do not reproduce the certified bot artifact: "
+            f"working_hash={staged_artifact.get('working_hash')} "
+            f"staged_hash={staged_artifact.get('staged_hash')} "
+            f"missing={sorted(working_files - staged_files)[:10]} "
+            f"extra={sorted(staged_files - working_files)[:10]}"
         )
     allowed_paths = [bot_path, certificate_path]
     # Capture the staged file list right before commit for auditability.
@@ -2394,10 +2440,134 @@ def archive_generation(version, source_v, ckpt):
 
     snapshot["pool_size"] = len(get_active_bots())
 
+    # commit_bot clears the active checkpoint before the advisory Archivist
+    # runs. Issue one content-bound, single-use handoff so a weak controller
+    # cannot replay run_archivist against an arbitrary historical bot/source.
+    try:
+        from bot_artifact import canonical_digest, hash_path
+
+        receipt_payload = {
+            "schema_version": "post-commit-archivist-v1",
+            "version": int(version),
+            "source_v": int(source_v),
+            "bot_tag": bot_tag(version),
+            "git_commit": _git(
+                "rev-parse",
+                bot_tag(version),
+                check=False,
+            ).strip(),
+            "artifact_hash": hash_path(get_bot_dir(version)),
+            "issued_at": time.time(),
+        }
+        snapshot["post_commit_archivist_receipt"] = {
+            **receipt_payload,
+            "receipt_digest": canonical_digest(receipt_payload),
+            "status": "pending",
+        }
+    except Exception as exc:
+        log.error(
+            "Could not issue post-commit Archivist receipt for v%s: %s",
+            version,
+            exc,
+        )
+
     archive_path = ARCHIVE_DIR / f"v{version}.json"
     with open(archive_path, "w") as f:
         json.dump(snapshot, f, indent=2, ensure_ascii=False)
     return snapshot
+
+
+def _post_commit_archivist_receipt_validation(
+    snapshot,
+    version,
+    source_v,
+    *,
+    require_pending=True,
+):
+    from bot_artifact import canonical_digest, hash_path
+
+    if not isinstance(snapshot, dict):
+        return False, "archive_snapshot_missing", None
+    receipt = snapshot.get("post_commit_archivist_receipt")
+    if not isinstance(receipt, dict):
+        return False, "post_commit_archivist_receipt_missing", None
+    if receipt.get("schema_version") != "post-commit-archivist-v1":
+        return False, "post_commit_archivist_receipt_schema", receipt
+    try:
+        if int(receipt.get("version")) != int(version):
+            return False, "post_commit_archivist_version_mismatch", receipt
+        if int(receipt.get("source_v")) != int(source_v):
+            return False, "post_commit_archivist_source_mismatch", receipt
+    except (TypeError, ValueError):
+        return False, "post_commit_archivist_identity_invalid", receipt
+    payload = {
+        key: receipt.get(key)
+        for key in (
+            "schema_version",
+            "version",
+            "source_v",
+            "bot_tag",
+            "git_commit",
+            "artifact_hash",
+            "issued_at",
+        )
+    }
+    if receipt.get("receipt_digest") != canonical_digest(payload):
+        return False, "post_commit_archivist_digest_mismatch", receipt
+    if require_pending and receipt.get("status") != "pending":
+        return False, "post_commit_archivist_receipt_consumed", receipt
+    if receipt.get("bot_tag") != bot_tag(version) or not git_has_tag(version):
+        return False, "post_commit_archivist_tag_mismatch", receipt
+    current_commit = _git("rev-parse", bot_tag(version), check=False).strip()
+    if not current_commit or receipt.get("git_commit") != current_commit:
+        return False, "post_commit_archivist_commit_mismatch", receipt
+    try:
+        if receipt.get("artifact_hash") != hash_path(get_bot_dir(version)):
+            return False, "post_commit_archivist_artifact_mismatch", receipt
+    except Exception as exc:
+        return False, f"post_commit_archivist_artifact_error:{type(exc).__name__}", receipt
+    return True, "", receipt
+
+
+def validate_post_commit_archivist_receipt(version, source_v):
+    """Read-only validation for the no-checkpoint runtime guard."""
+    archive_path = ARCHIVE_DIR / f"v{int(version)}.json"
+    try:
+        snapshot = json.loads(archive_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False, "post_commit_archivist_archive_unavailable", None
+    return _post_commit_archivist_receipt_validation(
+        snapshot,
+        version,
+        source_v,
+        require_pending=True,
+    )
+
+
+def consume_post_commit_archivist_receipt(version, source_v):
+    """Atomically consume the one-shot post-commit Archivist handoff."""
+    archive_path = ARCHIVE_DIR / f"v{int(version)}.json"
+    try:
+        with locked_file(archive_path, "r+", encoding="utf-8") as handle:
+            snapshot = json.load(handle)
+            ok, reason, receipt = _post_commit_archivist_receipt_validation(
+                snapshot,
+                version,
+                source_v,
+                require_pending=True,
+            )
+            if not ok:
+                return False, reason, receipt
+            receipt = dict(receipt)
+            receipt["status"] = "consumed"
+            receipt["consumed_at"] = time.time()
+            snapshot["post_commit_archivist_receipt"] = receipt
+            handle.seek(0)
+            json.dump(snapshot, handle, indent=2, ensure_ascii=False)
+            handle.truncate()
+        return True, "", receipt
+    except Exception as exc:
+        return False, f"post_commit_archivist_consume_error:{type(exc).__name__}", None
 
 
 def archive_rotate_files(version):

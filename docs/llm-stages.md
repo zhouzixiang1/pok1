@@ -314,6 +314,18 @@ else:
 
 ---
 
+### 步骤 8.5：受治理文献探针 `run_literature_probe(...)`
+
+- **触发条件**: canonical Master context 判定停滞，或 Direction Auditor 判定方向重复。
+- **硬路由**: 此时 `direction_audited` 只能进入 literature probe；不能直接跳到 Master。
+- **上下文身份**: 每个完成、governed skip、timeout 或 provider failure 回执都必须同时绑定
+  Master-context digest、完整 Direction-Audit digest 和 requirement-context digest。旧回执或调用方
+  改写后的 weakness/stagnation 文本不能满足当前世代。
+- **无副作用边界**: 探针只产生待验证 hypothesis，不修改 bot；Master/Worker 与本地 native TCP
+  gates 仍负责实现和盈利性判定。
+
+---
+
 ### 步骤 9：主架构师规划 📎 `run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)`
 
 | 项目 | 内容 |
@@ -329,8 +341,11 @@ else:
 **输入构建** (函数 `_run_master_analysis` 内):
 1. 读取 `prompts/master_prompt.md` 模板
 2. 替换占位符：`{stagnation_info}`、`{match_analysis}`（裁剪至 10K 字符）、`{performance_verification}`（裁剪至 4K 字符）、`{source_v}`
-3. **附加上下文文件路径列表**（在 prompt 文本中提供路径，由 LLM 用 Bash/Read 自行读取）：`glicko_ratings.json`、`rating_history.jsonl`、`head_to_head.json`、`bot_stats.json`、`experience_pool.md`
+3. **附加上下文文件路径列表**（在 prompt 文本中提供路径，由 LLM 用 Bash/Read 自行读取）：代际冻结且带 digest 的 `evidence_snapshot/head_to_head.json`、评分/统计上下文、`experience_pool.md`。H2H 计数禁止回读持续变化的 live 文件。
 4. `run_claude_query()` 的 `context_files` 参数为 **空列表 `[]`** — Master 通过工具自行读取文件，而非通过 context_files 注入
+5. 系统编译并校验 prepared artifact、能力债务、运行时合同和
+   `strategy_reference_pack.py` 的 typed card。LLM 可以消耗更多 token 做分析，
+   但不能用自由文本改写这些权限或凭据。
 
 > ⚠️ **注意**: 早期版本文档错误描述为 `context_files` 传入文件路径列表。实际上 Master 的 `context_files=[]`，LLM 通过 Bash/Read 工具按需读取。
 
@@ -419,16 +434,24 @@ else:
 1. **Worker Circuit Breaker**: 每代最多允许 6 次 worker 失败（`MAX_WORKER_FAILURES = 6`）。计数器持久化在 pipeline checkpoint 中（`worker_failure_count` 字段），**跨 `execute_workers` 调用累计**。仅在失败时递增计数，成功的 worker 批次不消耗预算，防止无限重试的同时允许有价值的迭代改进。见 `tool_planning.py` 中 `failure_count` 检查。
 
 3. **Worker Boundary Validation**: Worker 完成后自动检查：
-   - 是否修改了未声明的 target_files 外的已有文件
-   - 是否在 target_files 外创建了新文件
+   - 对完整 artifact（含二进制表格/模型/配置）做 byte snapshot，是否修改了未声明的 `target_files/files_allowed`
+   - `must_change_files` 只表示必须完成，不能反向扩充写权限
    - Hyperparameter Tuner 是否修改了非数字内容（通过 `_numbers_only_changed` 检测）
    - 见 `tool_helpers.py:_validate_worker_boundaries`
+4. **系统拥有返工权限**: quality/precommit/official 的反馈和 repair task 从
+   checkpoint/gate receipt 重建；调用方非空 echo 必须与 canonical 值完全一致，
+   不能伪造 blocker 或夹带无签名 task。
+5. **批次原子性**: 多 Worker 中任一执行、边界或 transient-context 清理失败，
+   整个批次恢复到执行前的完整 artifact bytes；不会把第一个 Worker 的半成品
+   留给 prepared/repair baseline 的下一轮。
+6. **容量边界**: snapshot 在读取 payload 前先检查 1024 files、2048 entries、
+   depth 64、16 MiB/file、64 MiB total；稀疏巨文件不能借快照导致 OOM。
 
 **输出**: `{success: bool, boundary_errors: [], logs, costs}`
 
 **输出去向**:
 - 返回给 Orchestrator LLM
-- 代码变更已写入 `bots/claude_v{next_v}/` 文件系统
+- 完整 artifact 变更已写入 `bots/national_v{next_v}/` 文件系统
 - 成功 → 写入 checkpoint `stage="workers_done"`
 
 > **💡 真实示例 (v9)**: v9 尝试 Worker 路径但失败。Worker 1（Logic Architect）收到 Master 的任务指令后，用 Edit 工具修改 `strategy.py`。但 boundary validation 发现 Architect 修改了 10+ 个数字常量（属于 Tuner 范围），触发边界违规：
@@ -450,9 +473,9 @@ else:
   2. `run_smoke_test()` — 冒烟对战
   3. `run_decision_test_details()` — 决策测试（≥70% 通过率 + 关键场景全部通过）
   4. `check_code_size()` — 文件行数检查（`strategy.py`/`postflop.py` 基础上限 2000 行，helper 基础上限 1500 行，硬上限 2500 行，并受 source bot +15% growth budget 约束）
-  5. `code_changed` — 与 source_v 的 byte-for-byte diff 检查（workers 必须产生至少一个 .py 文件变更，防止零改动僵尸循环）
-  6. declared scope / protected contract / national protocol / national acceptance / fix verification / telemetry fidelity / reachability 等硬门
-- **注意**: 无前置阶段检查 — 质量门禁无条件运行，即使没有 checkpoint 也会执行（此时 `checkpoint_recorded=false`）
+  5. `code_changed` — 与 frozen prepared artifact 的 regular-file manifest diff（binary-only Worker 合法；source Python diff 仅是 telemetry）
+  6. prepared contract、完整 declared scope、publication shape、protected contract、national protocol / acceptance、fix verification、telemetry fidelity、reachability 等硬门
+- **注意**: 正式世代必须有有效的 prepared artifact contract；缺失、漂移、仅空目录变化或 residual `.task_context` 都失败关闭。
 - **输出**: `{compile_ok, smoke_ok, decision_pass_rate, decision_ok, critical_scenarios_passed, size_ok, code_changed, all_passed}` + 详细字段：`compile_errors, smoke_errors, critical_passed, critical_total, critical_failures, decision_failures, scenario_results, total_lines, oversized_files, checkpoint_recorded`
 - **输出去向**: 全部通过 → 写入 checkpoint `stage="quality_passed"` + gate `quality`
 
@@ -535,15 +558,19 @@ else:
 }
 ```
 
-**通过逻辑** (函数 `run_critic` 内): Critic 是 precommit 前的策略硬门。只有 `approved=true` 且 `score >= 6` 时，checkpoint 推进到 `critic_checked` 并允许 `run_precommit_eval`。若 Critic 返回 `approved=false` 或 `score < 6`，工具把 checkpoint 写到 `repair_planned`，递增 `generation_attempt`，并把 Critic 反馈写入 `reviewer_feedback` 供 `execute_workers` 原样使用。
+**通过逻辑** (函数 `run_critic` 内): Critic 是 advisory。它记录风险和建议，
+不能认证、否决或改写强度结论；本地 native TCP precommit 才是最终策略硬门。
+任何需要执行的返工都必须先变成系统拥有、内容绑定的 repair contract，不能把
+Critic 自由文本直接当成 Worker 写权限。
 
-**⚠️ 重要**: `force_advance` 仅作为历史兼容字段保留，不再能绕过 Critic 硬门。Precommit 仍是最终统计回归门，但只在 Critic 策略门通过之后运行。
+**⚠️ 重要**: `force_advance` 仅作为历史兼容/telemetry 字段保留，不改变
+Critic 或 precommit 结果。只要 Critic 调用和 schema 有效，该 advisory 角色即完成；
+调用/解析失败按 LLM infrastructure retry 处理，不制造策略否决。
 
 **输出去向**:
 - 返回给 Orchestrator LLM
-- `action: "approve"` → 写入 checkpoint `stage="critic_checked"` + gate `critic`
-- `action: "retry_workers"` → 写入 checkpoint `stage="repair_planned"`，`reviewer_feedback` 携带 Critic 原始返工意见
-- `run_precommit_eval` → 在 Critic 通过后决定提交、重试 worker、重新规划或放弃
+- schema-valid advisory → 写入 checkpoint `stage="critic_checked"` + gate `critic`，同时保留 raw score/feedback
+- `run_precommit_eval` → 用本地 native TCP 统计证据决定通过或进入系统合成的返工路线
 
 > **💡 真实示例 (v10)**: Critic 独立评估 Crossover v4×v8 的策略价值，score=6（勉强通过）：
 > ```json
@@ -1028,7 +1055,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 
 | 项目 | 内容 |
 |---|---|
-| **触发者** | Orchestrator LLM 调用 `run_crossover`（停滞严重时替代正常流水线） |
+| **触发者** | Orchestrator LLM 调用 `run_crossover`（停滞严重时生成双亲重组基线，随后仍进入正常规划流水线） |
 | **调用链** | `tool_commit.py:run_crossover()` → `agent_review.py:_run_crossover()` → `run_claude_query()` |
 | **LLM 角色** | CROSSOVER v{A}×v{B}→v{target} |
 | **模型** | Sonnet |
@@ -1037,20 +1064,30 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 | **重试** | 最多 3 次 (`MAX_CROSSOVER_RETRIES`) |
 
 **输入构建**:
-1. 从 `parent_a` 复制目录作为起点
+1. 校验 scheduler checkpoint 中的 `(parent_a, parent_b, target_v)` 与调用参数完全一致，再从 `parent_a` 复制目录作为起点
 2. 读取 `prompts/crossover_prompt.md` 模板
 3. 替换占位符：`{parent_a_version}`、`{parent_b_version}`、`{version}`
 
 **LLM 能做的事**: 读取两个父 bot 的代码，Edit 合并到目标 bot
 
-**每次尝试后的自动检查**: 编译检查 + 冒烟测试
+**每次尝试后的自动检查**: 编译检查 + import/smoke + 国赛位置契约 +
+代码尺寸 + 完整 artifact Parent-B 来源门 + preplan 架构 transition。Python
+胶水必须绑定 Parent-B 符号，非 Python 表格/模型/配置必须是 Parent-B exact
+bytes；纯阈值/启发式改动若不能追溯到 Parent B 会被拒绝；preplan 只阻断父本能力回退和系统 wrapper
+能力缺失；`plan_required_floor_checks` 明确留给 Master/Workers。
 
-**输出去向**: 代码写入 `bots/claude_v{target}/`，成功后由 Orchestrator 决定是否提交
+**输出去向**: 代码写入 `bots/national_v{target}/`，成功后 checkpoint
+进入 `prepared`。下一步固定为 `run_direction_audit` → 停滞时
+`run_literature_probe` → `run_master` → `execute_workers`。Crossover 只允许
+移植可追溯到 Parent B 的组件，不做独立 mutation；系统会冻结子代内容哈希、
+逐文件来源、能力快照、行数和 H2H snapshot 身份。Master 必须以该子代为
+规划基线，不能按 Parent A 覆盖重组结果，也不能直接进入质量门或提交。基础设施
+恢复绑定双亲和子代完整 artifact hash；暂停期间漂移会废弃本世代。
 
-> **💡 真实示例 (v9)**: Combined analysis 检测到 3 代下降（v6 52.7% → v7 47.7% → v8 47%），推荐 branch from v6。策略决策选择 crossover v6×v2。Crossover Agent 分析两个父 bot 后制定了合并策略：
+> **💡 历史 Botzone 示例（仅背景，不是当前契约） (v9)**: Combined analysis 检测到 3 代下降（v6 52.7% → v7 47.7% → v8 47%），推荐 branch from v6。策略决策选择 crossover v6×v2。Crossover Agent 分析两个父 bot 后制定了合并策略：
 > - **从 v2 导入**: `PREFLOP_STRENGTH_TABLE`（169 手牌分级表）、CBet tracking、3bet/4bet logic、lower postflop_call_margin、draw-aware EQR
 > - **保留 v6**: min_raise_action、must_continue_vs_raise、should_fold_postflop（防御性折叠）
-> - **Mutation**: CBet exploitation — 当对手 fold_to_cbet > 55% 时，降低 flop 下注门槛 0.03
+> - 当时还混入了 CBet threshold mutation；当前 pure crossover 来源门会拒绝它，必须留到后续 Master/Worker 阶段并接受完整质量评估。
 >
 > Crossover Agent 用 Read 读取两个父 bot 的全部源码，用 Edit 将合并后的代码写入 `bots/claude_v9/`。执行后自动编译检查+冒烟测试通过。
 

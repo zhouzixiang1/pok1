@@ -56,6 +56,36 @@ def _decode(result):
     return json.loads(result["content"][0]["text"])
 
 
+def _prepared_master_fixture(tmp_path, source_v, next_v):
+    from prepared_baseline_contract import build_prepared_artifact_contract
+
+    bots = tmp_path / "master_bots"
+    source = bots / f"national_v{source_v}"
+    candidate = bots / f"national_v{next_v}"
+    source.mkdir(parents=True)
+    candidate.mkdir(parents=True)
+    source_code = "def decide(state):\n    return state\n"
+    (source / "strategy.py").write_text(source_code, encoding="utf-8")
+    (candidate / "strategy.py").write_text(source_code, encoding="utf-8")
+    checkpoint = {
+        "next_v": next_v,
+        "source_v": source_v,
+        "stage": "direction_audited",
+        "direction_audit": {
+            "repetition_detected": False,
+            "llm_failed": False,
+        },
+        "audit_context": {
+            "prepared_artifact_contract": build_prepared_artifact_contract(
+                candidate,
+                source_v=source_v,
+                next_v=next_v,
+            ),
+        },
+    }
+    return bots, checkpoint
+
+
 # ──────────────────────────────────────────────
 # A. nemesis slot selection
 # ──────────────────────────────────────────────
@@ -601,11 +631,18 @@ class TestOpponentProfileInjectionAsync:
     @pytest.mark.asyncio
     async def test_injects_profiles_when_file_present(self, monkeypatch, tmp_path):
         captured = _CapturedMaster()
+        bots, checkpoint = _prepared_master_fixture(tmp_path, 5, 6)
         monkeypatch.setattr(tool_planning, "_run_master_analysis", captured)
-        monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *a, **k: {
-            "stage": "direction_audited",
-            "direction_audit": {"repetition_detected": False, "llm_failed": False},
-        })
+        monkeypatch.setattr(
+            tool_planning,
+            "_matching_checkpoint",
+            lambda *a, **k: checkpoint,
+        )
+        monkeypatch.setattr(
+            tool_planning,
+            "get_bot_dir",
+            lambda version: bots / f"national_v{version}",
+        )
         monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", lambda *a, **k: None)
         monkeypatch.setattr(tool_planning, "_validate_master_plan", lambda *a, **k: ([], []))
         monkeypatch.setattr(tool_planning, "_extract_exhausted_keywords", lambda: [])
@@ -655,11 +692,18 @@ class TestOpponentProfileInjectionAsync:
     @pytest.mark.asyncio
     async def test_profiles_empty_when_file_missing(self, monkeypatch, tmp_path):
         captured = _CapturedMaster()
+        bots, checkpoint = _prepared_master_fixture(tmp_path, 5, 6)
         monkeypatch.setattr(tool_planning, "_run_master_analysis", captured)
-        monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *a, **k: {
-            "stage": "direction_audited",
-            "direction_audit": {"repetition_detected": False, "llm_failed": False},
-        })
+        monkeypatch.setattr(
+            tool_planning,
+            "_matching_checkpoint",
+            lambda *a, **k: checkpoint,
+        )
+        monkeypatch.setattr(
+            tool_planning,
+            "get_bot_dir",
+            lambda version: bots / f"national_v{version}",
+        )
         monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", lambda *a, **k: None)
         monkeypatch.setattr(tool_planning, "_validate_master_plan", lambda *a, **k: ([], []))
         monkeypatch.setattr(tool_planning, "_extract_exhausted_keywords", lambda: [])

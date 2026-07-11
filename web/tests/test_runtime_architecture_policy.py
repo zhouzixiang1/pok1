@@ -1,4 +1,5 @@
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -6,14 +7,21 @@ import pytest
 from output_schema import RuntimeContract
 from pipeline_state import validate_stage_transition
 from runtime_architecture_policy import (
+    ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
     OFFICIAL_FULL_POLICY_ID,
     OFFICIAL_ORACLE_DOC_DIGESTS,
+    PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION,
     RUNTIME_ARCHITECTURE_POLICY_VERSION,
     RUNTIME_CORRECTNESS_FLOOR_CHECKS,
+    STATE_LEARNING_INNOVATION_CHECKS,
     attach_runtime_contract_ledger,
     architecture_policy_prompt,
     build_architecture_policy,
+    build_prepared_capability_snapshot,
+    crossover_architecture_policy_prompt,
     evaluate_architecture_transition,
+    prepared_capability_snapshot_digest,
+    validate_prepared_capability_snapshot,
     validate_runtime_contract_ledger,
     validate_plan_architecture_focus,
     validate_runtime_contract_implementation,
@@ -154,6 +162,26 @@ def get_action(req, requests):
     return root
 
 
+def _capability_result(state: dict[str, bool]) -> dict:
+    checks = [
+        {
+            "check_id": check_id,
+            "passed": bool(passed),
+            "guidance": f"repair {check_id}",
+            "evidence": {"locations": [f"strategy.py:{check_id}"]},
+        }
+        for check_id, passed in sorted(state.items())
+    ]
+    return {
+        "detector_version": "prepared-baseline-test-detector",
+        "checks": checks,
+        "checks_by_id": {item["check_id"]: item for item in checks},
+        "required_failures": [],
+        "infrastructure_failures": [],
+        "outcome": "passed",
+    }
+
+
 def test_policy_selects_one_coherent_parent_debt(tmp_path):
     source = _write_bot(tmp_path / "national_v1", complete=False)
 
@@ -173,6 +201,173 @@ def test_policy_selects_one_coherent_parent_debt(tmp_path):
     assert f"official_policy_id={OFFICIAL_FULL_POLICY_ID}" in rendered
     for path, digest in OFFICIAL_ORACLE_DOC_DIGESTS.items():
         assert f"{path}:{digest}" in rendered
+
+
+def test_fast_baseline_is_a_universal_correctness_floor():
+    assert "fast_strategy_baseline" in RUNTIME_CORRECTNESS_FLOOR_CHECKS
+    assert "fast_strategy_baseline" not in STATE_LEARNING_INNOVATION_CHECKS
+
+
+def test_prepared_capability_snapshot_is_serializable_and_digest_bound(tmp_path):
+    parent = tmp_path / "national_v1"
+    prepared = tmp_path / "national_v2"
+    parent.mkdir()
+    prepared.mkdir()
+    parent_capabilities = _capability_result({
+        "official_safe_wire_send": True,
+        "precompute_lookup_path": False,
+    })
+    prepared_capabilities = _capability_result({
+        "official_safe_wire_send": True,
+        "precompute_lookup_path": True,
+    })
+
+    snapshot = build_prepared_capability_snapshot(
+        parent,
+        prepared,
+        parent_capabilities=parent_capabilities,
+        prepared_capabilities=prepared_capabilities,
+    )
+
+    assert snapshot["schema_version"] == PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION
+    assert snapshot["acquired_checks"] == ["precompute_lookup_path"]
+    assert snapshot["protected_passed_checks"] == [
+        "official_safe_wire_send",
+        "precompute_lookup_path",
+    ]
+    assert len(json.dumps(snapshot, sort_keys=True)) > 0
+    assert validate_prepared_capability_snapshot(
+        snapshot,
+        parent_bot_dir=parent,
+        prepared_bot_dir=prepared,
+        parent_capabilities=parent_capabilities,
+        prepared_capabilities=prepared_capabilities,
+    ) == []
+    assert prepared_capability_snapshot_digest(snapshot) == snapshot["snapshot_digest"]
+
+    tampered = {**snapshot, "acquired_checks": []}
+    errors = validate_prepared_capability_snapshot(tampered)
+    assert "prepared_capability_snapshot_acquired_checks_mismatch" in "\n".join(errors)
+    assert "prepared_capability_snapshot_digest_mismatch" in errors
+    assert prepared_capability_snapshot_digest(tampered) == ""
+
+
+def test_prepared_child_acquired_capability_is_a_final_regression_baseline(
+    tmp_path, monkeypatch
+):
+    import runtime_architecture_policy as policy_module
+
+    parent = tmp_path / "national_v1"
+    prepared = tmp_path / "national_v2"
+    parent.mkdir()
+    prepared.mkdir()
+    parent_state = {check_id: True for check_id in RUNTIME_CORRECTNESS_FLOOR_CHECKS}
+    parent_state.update({
+        "official_safe_wire_send": True,
+        "precompute_lookup_path": False,
+    })
+    prepared_state = {**parent_state, "precompute_lookup_path": True}
+    final_state = {**prepared_state, "precompute_lookup_path": False}
+    parent_capabilities = _capability_result(parent_state)
+    prepared_capabilities = _capability_result(prepared_state)
+    final_capabilities = _capability_result(final_state)
+    snapshot = build_prepared_capability_snapshot(
+        parent,
+        prepared,
+        parent_capabilities=parent_capabilities,
+        prepared_capabilities=prepared_capabilities,
+    )
+    policy = build_architecture_policy(
+        parent,
+        source_capabilities=parent_capabilities,
+        prepared_capability_snapshot=snapshot,
+    )
+    responses = {
+        parent.resolve(): parent_capabilities,
+        prepared.resolve(): final_capabilities,
+    }
+    monkeypatch.setattr(
+        policy_module,
+        "evaluate_national_capabilities",
+        lambda path: responses[Path(path).resolve()],
+    )
+
+    transition = evaluate_architecture_transition(
+        parent,
+        prepared,
+        expected_policy=policy,
+    )
+
+    assert "precompute_lookup_path" in policy["baseline_passed_checks"]
+    assert policy["prepared_capability_snapshot_digest"] == snapshot["snapshot_digest"]
+    assert transition["ok"] is False
+    regression = next(
+        item
+        for item in transition["regressions"]
+        if item["check_id"] == "precompute_lookup_path"
+    )
+    assert regression["baseline_origin"] == "prepared_child"
+
+
+def test_prepared_child_closed_floor_debt_is_not_reassigned_to_master(tmp_path):
+    parent = tmp_path / "national_v1"
+    prepared = tmp_path / "national_v2"
+    parent.mkdir()
+    prepared.mkdir()
+    parent_state = {check_id: True for check_id in RUNTIME_CORRECTNESS_FLOOR_CHECKS}
+    parent_state["fast_strategy_baseline"] = False
+    parent_state["decision_path_no_full_history_scan"] = False
+    prepared_state = {check_id: True for check_id in RUNTIME_CORRECTNESS_FLOOR_CHECKS}
+    parent_capabilities = _capability_result(parent_state)
+    prepared_capabilities = _capability_result(prepared_state)
+    snapshot = build_prepared_capability_snapshot(
+        parent,
+        prepared,
+        parent_capabilities=parent_capabilities,
+        prepared_capabilities=prepared_capabilities,
+    )
+
+    parent_policy = build_architecture_policy(
+        parent,
+        source_capabilities=parent_capabilities,
+    )
+    prepared_policy = build_architecture_policy(
+        parent,
+        source_capabilities=parent_capabilities,
+        prepared_capability_snapshot=snapshot,
+    )
+
+    assert set(parent_policy["plan_required_floor_checks"]) == {
+        "fast_strategy_baseline",
+        "decision_path_no_full_history_scan",
+    }
+    assert prepared_policy["source_floor_failures"] == [
+        "fast_strategy_baseline",
+        "decision_path_no_full_history_scan",
+    ]
+    assert prepared_policy["baseline_floor_failures"] == []
+    assert prepared_policy["plan_required_floor_checks"] == []
+    assert prepared_policy["effective_baseline_bot"] == prepared.name
+    assert prepared_policy["effective_baseline_checks"]["fast_strategy_baseline"] is True
+
+
+def test_single_parent_policy_keeps_source_as_effective_baseline(tmp_path):
+    parent = tmp_path / "national_v1"
+    parent.mkdir()
+    state = {check_id: True for check_id in RUNTIME_CORRECTNESS_FLOOR_CHECKS}
+    state["fast_strategy_baseline"] = False
+    capabilities = _capability_result(state)
+
+    policy = build_architecture_policy(parent, source_capabilities=capabilities)
+
+    assert policy["prepared_capability_snapshot"] is None
+    assert policy["prepared_capability_snapshot_digest"] is None
+    assert policy["effective_baseline_bot"] == parent.name
+    assert policy["effective_baseline_checks"] == policy["source_checks"]
+    assert policy["baseline_passed_checks"] == sorted(
+        check_id for check_id, passed in policy["source_checks"].items() if passed
+    )
+    assert policy["plan_required_floor_checks"] == ["fast_strategy_baseline"]
 
 
 def test_policy_fails_closed_when_pinned_official_oracle_content_drifts(
@@ -248,6 +443,152 @@ def test_transition_requires_focus_closure_and_no_parent_regression(tmp_path):
     assert passed["ok"] is True
     assert lost["ok"] is False
     assert any(item["check_id"] == "official_safe_wire_send" for item in lost["regressions"])
+
+
+def test_preplan_transition_defers_only_master_owned_source_debt(tmp_path, monkeypatch):
+    import runtime_architecture_policy as policy_module
+
+    source = tmp_path / "national_v1"
+    candidate = tmp_path / "national_v2"
+    source.mkdir()
+    candidate.mkdir()
+
+    provider_checks = {
+        "decision_time_budget_visible",
+        "killable_decision_runtime",
+        "persistent_match_memory",
+        "terminal_response_memory",
+        "showdown_range_posterior",
+        "authoritative_hand_context",
+    }
+    plan_checks = {
+        "fast_strategy_baseline",
+        "decision_path_no_full_history_scan",
+        "decision_path_no_large_runtime_tables",
+    }
+
+    def capabilities(*, candidate_side: bool, lose_parent_capability: bool = False):
+        state = {
+            check_id: bool(candidate_side and check_id in provider_checks)
+            for check_id in provider_checks | plan_checks
+        }
+        state["official_safe_wire_send"] = not lose_parent_capability
+        checks = [
+            {
+                "check_id": check_id,
+                "passed": passed,
+                "guidance": f"repair {check_id}",
+                "evidence": {"locations": [f"strategy.py:{check_id}"]},
+            }
+            for check_id, passed in sorted(state.items())
+        ]
+        return {
+            "detector_version": "test-detector",
+            "checks": checks,
+            "checks_by_id": {item["check_id"]: item for item in checks},
+            "required_failures": [],
+            "infrastructure_failures": [],
+            "outcome": "passed",
+        }
+
+    source_capabilities = capabilities(candidate_side=False)
+    candidate_capabilities = capabilities(candidate_side=True)
+    responses = {
+        source.resolve(): source_capabilities,
+        candidate.resolve(): candidate_capabilities,
+    }
+    monkeypatch.setattr(
+        policy_module,
+        "evaluate_national_capabilities",
+        lambda path: responses[Path(path).resolve()],
+    )
+    policy = build_architecture_policy(
+        source,
+        source_capabilities=source_capabilities,
+    )
+
+    final = evaluate_architecture_transition(
+        source,
+        candidate,
+        expected_policy=policy,
+    )
+    preplan = evaluate_architecture_transition(
+        source,
+        candidate,
+        expected_policy=policy,
+        evaluation_phase=ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
+    )
+
+    assert final["ok"] is False
+    assert {item["check_id"] for item in final["runtime_floor_failures"]} == plan_checks
+    assert preplan["ok"] is True
+    assert preplan["runtime_floor_failures"] == []
+    assert set(preplan["deferred_runtime_floor_checks"]) == plan_checks
+    assert {
+        item["check_id"] for item in preplan["deferred_runtime_floor_failures"]
+    } == plan_checks
+    assert set(preplan["full_unresolved_focus_checks"]) == plan_checks
+    assert set(preplan["deferred_unresolved_focus_checks"]) == plan_checks
+    assert preplan["unresolved_focus_checks"] == []
+
+    provider_failure = capabilities(candidate_side=True)
+    for item in provider_failure["checks"]:
+        if item["check_id"] == "killable_decision_runtime":
+            item["passed"] = False
+    provider_failure["checks_by_id"] = {
+        item["check_id"]: item for item in provider_failure["checks"]
+    }
+    responses[candidate.resolve()] = provider_failure
+    blocked = evaluate_architecture_transition(
+        source,
+        candidate,
+        expected_policy=policy,
+        evaluation_phase=ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
+    )
+    assert blocked["ok"] is False
+    assert "killable_decision_runtime" in blocked["unresolved_focus_checks"]
+
+    regressed = capabilities(candidate_side=True, lose_parent_capability=True)
+    responses[candidate.resolve()] = regressed
+    lost = evaluate_architecture_transition(
+        source,
+        candidate,
+        expected_policy=policy,
+        evaluation_phase=ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
+    )
+    assert lost["ok"] is False
+    assert any(
+        item["check_id"] == "official_safe_wire_send"
+        for item in lost["regressions"]
+    )
+
+
+def test_crossover_policy_prompt_keeps_master_contract_deferred(tmp_path):
+    source = _write_bot(tmp_path / "national_v1", complete=False)
+    policy = build_architecture_policy(source)
+
+    rendered = crossover_architecture_policy_prompt(policy)
+
+    assert "prepares a recombination baseline" in rendered
+    assert "plan_required_floor_checks are deliberately deferred" in rendered
+    assert "direction audit, literature probe, Master, and Workers" in rendered
+    assert "do not emit or simulate downstream planning objects" in rendered
+    assert "traceable Parent B component" in rendered
+    assert "crossover makes no independent strategic innovation" in rendered
+    assert "required_worker_prompt_terms" not in rendered
+    assert "exactly one task MUST" not in rendered
+
+
+def test_transition_rejects_unknown_evaluation_phase(tmp_path):
+    source = _write_bot(tmp_path / "national_v1", complete=False)
+    candidate = _write_bot(tmp_path / "national_v2", complete=False)
+
+    with pytest.raises(ValueError, match="unknown architecture transition evaluation phase"):
+        evaluate_architecture_transition(
+            source,
+            candidate,
+            evaluation_phase="crossover_magic",
+        )
 
 
 def test_unselected_precompute_dimension_is_shadow_not_a_universal_floor(tmp_path):
@@ -1305,8 +1646,7 @@ def test_architecture_regression_skipper_uses_actual_check_files(tmp_path, monke
     assert skipper(task) == ""
 
 
-@pytest.mark.parametrize("parent2_v", [None, 9])
-def test_policy_identity_recovery_resets_candidate_and_replans(tmp_path, monkeypatch, parent2_v):
+def test_single_parent_policy_identity_recovery_resets_candidate_and_replans(tmp_path, monkeypatch):
     source = tmp_path / "national_v1"
     candidate = tmp_path / "national_v2"
     source.mkdir()
@@ -1328,7 +1668,7 @@ def test_policy_identity_recovery_resets_candidate_and_replans(tmp_path, monkeyp
     ckpt = {
         "next_v": 2,
         "source_v": 1,
-        "parent2_v": parent2_v,
+        "parent2_v": None,
         "stage": "quality_failed",
         "master_plan": master_plan,
         "runtime_contract_ledger": master_plan["runtime_contract_ledger"],
@@ -1397,6 +1737,53 @@ def test_policy_identity_recovery_never_reports_replan_when_write_fails(
         tool_planning._recover_architecture_policy_identity(ckpt, candidate, source)
 
     assert (candidate / "strategy.py").read_text(encoding="utf-8") == "SOURCE = True\n"
+
+
+def test_crossover_policy_identity_recovery_never_forges_single_parent_lineage(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "national_v1"
+    candidate = tmp_path / "national_v2"
+    source.mkdir()
+    candidate.mkdir()
+    (source / "strategy.py").write_text("SOURCE = True\n", encoding="utf-8")
+    (candidate / "strategy.py").write_text("CROSSOVER = True\n", encoding="utf-8")
+    ckpt = {
+        "next_v": 2,
+        "source_v": 1,
+        "parent2_v": 7,
+        "stage": "quality_failed",
+        "gate_results": {
+            "quality": {
+                "national_architecture_transition": {
+                    "policy_identity_errors": [
+                        "architecture_policy_contract_digest_mismatch"
+                    ],
+                },
+            },
+        },
+    }
+    writes = []
+    monkeypatch.setattr(
+        tool_planning,
+        "write_pipeline_checkpoint",
+        lambda *_args, **_kwargs: writes.append(True) or True,
+    )
+    monkeypatch.setattr(tool_planning, "log_system_event", lambda *_a, **_k: None)
+
+    result = tool_planning._recover_architecture_policy_identity(
+        ckpt,
+        candidate,
+        source,
+    )
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["error"] == "CROSSOVER_ARCHITECTURE_POLICY_IDENTITY_STALE"
+    assert payload["candidate_reset_to_source"] is False
+    assert payload["next_tool"] == "abandon_generation"
+    assert (candidate / "strategy.py").read_text(encoding="utf-8") == "CROSSOVER = True\n"
+    assert writes == []
 
 
 def test_execute_workers_reports_architecture_recovery_failure_not_replan(

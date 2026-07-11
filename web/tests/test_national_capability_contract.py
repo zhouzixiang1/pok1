@@ -61,6 +61,7 @@ def get_action(req, requests):
 
     result = evaluate_national_capabilities(bot)
     warning_names = {item["name"] for item in result["advisory_warnings"]}
+    required_names = {item["name"] for item in result["required_failures"]}
 
     assert result["ok"] is True
     assert result["required_failures"] == []
@@ -196,8 +197,9 @@ def get_action(req, requests):
 
     result = evaluate_national_capabilities(bot)
     warning_names = {item["name"] for item in result["advisory_warnings"]}
+    required_names = {item["name"] for item in result["required_failures"]}
 
-    assert "decision_path_no_external_io" in warning_names
+    assert "decision_path_no_external_io" in required_names
     assert "decision_path_no_full_history_scan" in warning_names
     assert "decision_path_no_large_runtime_tables" in warning_names
     assert result["decision_path_risks"]["external_io"]
@@ -240,6 +242,30 @@ def get_action(req, requests):
 
     assert "national_bot.py:_action_to_tcp" not in result["decision_path_risks"]["decision_functions"]
     assert "strategy.py:get_action" in result["decision_path_risks"]["decision_functions"]
+
+
+def test_import_time_external_policy_read_is_required_failure(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v_import_io",
+        national_bot="""
+POK_OFFICIAL_ACTION_DELAY = 0.30
+def _send_wire_action(action):
+    return action
+""",
+        strategy="""
+from pathlib import Path
+ACTION = int(Path('/tmp/action').read_text())
+def get_action(req, requests):
+    return ACTION
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    failures = {item["name"]: item for item in result["required_failures"]}
+
+    assert "decision_path_no_external_io" in failures
+    locations = failures["decision_path_no_external_io"]["evidence"]["locations"]
+    assert any("strategy.py" in location and "read_text" in location for location in locations)
 
 
 def test_capability_contract_traces_indirect_decision_path_risks(tmp_path):
@@ -607,6 +633,9 @@ def iter_refinements(req, requests, baseline, deadline):
 
     assert result["checks_by_id"]["incremental_refinement_protocol"]["passed"] is True
     assert result["checks_by_id"]["budget_scaled_refinement"]["passed"] is False
+    assert result["checks_by_id"]["killable_decision_runtime"]["passed"] is True
+    assert runtime["safety_ok"] is True
+    assert runtime["safety_issues"] == []
     assert runtime["refinement_ok"] is False
     assert "long_budget_refinement_has_no_bounded_work" in runtime["refinement_issues"]
     assert "refinement_never_changes_sanitized_baseline_action" in runtime["refinement_issues"]
@@ -773,6 +802,60 @@ def get_action(req, requests):
 
     assert result["checks_by_id"]["decision_time_budget_visible"]["passed"] is False
     assert result["decision_time_evidence"]["deadline_checks"] == []
+
+
+def test_killable_runtime_and_fast_baseline_use_disjoint_dynamic_facts(
+    tmp_path,
+    monkeypatch,
+):
+    import national_runtime_probe
+
+    bot = _write_bot(
+        tmp_path / "national_v14b",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def get_action(req, requests): return 0
+def get_baseline_action(req, requests): return 0
+""",
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "run_national_runtime_probe",
+        lambda *_args, **_kwargs: {
+            "schema_version": 1,
+            "ok": False,
+            "issues": ["strategy_baseline_slower_than_250ms"],
+            "artifacts": [],
+            "tracker": {"ok": False, "issues": []},
+            "hand_context": {"ok": False, "issues": []},
+            "strategy_influence": {"ok": False, "issues": [], "rows": []},
+            "decision_runtime": {
+                "ok": False,
+                "safety_ok": True,
+                "safety_issues": [],
+                "baseline_ok": False,
+                "baseline_issues": ["strategy_baseline_slower_than_250ms"],
+                "refinement_ok": True,
+                "refinement_issues": [],
+                "baseline_samples_ms": [300.0],
+                "fallback_ready_samples_ms": [1.0],
+                "timeout_recovery": {"timeout": {}, "recovery": {}},
+            },
+        },
+    )
+
+    result = evaluate_national_capabilities(bot)
+    killable = result["checks_by_id"]["killable_decision_runtime"]
+    baseline = result["checks_by_id"]["fast_strategy_baseline"]
+
+    assert killable["passed"] is True
+    assert killable["evidence"]["facts"]["safety_ok"] is True
+    assert killable["evidence"]["facts"]["safety_issues"] == []
+    assert baseline["passed"] is False
+    assert baseline["evidence"]["facts"]["baseline_ok"] is False
+    assert baseline["evidence"]["facts"]["baseline_issues"] == [
+        "strategy_baseline_slower_than_250ms"
+    ]
 
 
 def test_cold_cache_or_discarded_table_read_is_not_precompute_evidence(tmp_path):

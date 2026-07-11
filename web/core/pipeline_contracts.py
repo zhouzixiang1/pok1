@@ -41,6 +41,7 @@ STAGE_CONTRACTS: tuple[StageContract, ...] = (
         required_inputs=["changed_files"],
         hard_gates=[
             "code_changed",
+            "post_master_delta",
             "declared_scope",
             "compile",
             "runtime_import",
@@ -82,7 +83,7 @@ STAGE_CONTRACTS: tuple[StageContract, ...] = (
     ),
     StageContract(
         name="archivist",
-        retryable=True,
+        retryable=False,
         required_inputs=["commit"],
         expected_outputs=["experience_updates", "archive_record"],
     ),

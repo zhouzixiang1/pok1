@@ -45,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[2]
 NATIVE_ENTRY = "national_bot.py"
 PRECOMPUTE_ENTRY = "precompute.py"
 TRACE_PREFIX = "POK_TRACE_DECISION "
-NATIONAL_DECISION_RUNTIME_VERSION = 7
+NATIONAL_DECISION_RUNTIME_VERSION = 8
 LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC = 2.0
 LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC = 1.8
 LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC = 0.20
@@ -72,6 +72,10 @@ import multiprocessing as mp
 import os
 import random
 import re
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - non-POSIX submission host
+    _resource = None
 import select
 import signal
 import socket
@@ -1034,6 +1038,27 @@ def _strategy_worker_candidate(raw_value):
     return value, metadata
 
 
+def _apply_strategy_worker_resource_limits() -> None:
+    if _resource is None:
+        return
+    limits = [
+        (_resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024)),
+        (_resource.RLIMIT_FSIZE, (1024 * 1024, 1024 * 1024)),
+        (_resource.RLIMIT_NOFILE, (64, 64)),
+        (_resource.RLIMIT_CORE, (0, 0)),
+    ]
+    for resource_id, value in limits:
+        try:
+            _resource.setrlimit(resource_id, value)
+        except (ValueError, OSError):
+            pass
+    if hasattr(_resource, "RLIMIT_NPROC"):
+        try:
+            _resource.setrlimit(_resource.RLIMIT_NPROC, (32, 32))
+        except (ValueError, OSError):
+            pass
+
+
 def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> None:
     """Persistent, killable strategy runtime. It never owns the TCP socket."""
     started = time.monotonic()
@@ -1045,6 +1070,7 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
                 os.setsid()
             except OSError:
                 pass
+        _apply_strategy_worker_resource_limits()
         if random_seed is not None:
             random.seed(int(random_seed))
         if bot_dir not in sys.path:

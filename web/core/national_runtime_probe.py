@@ -115,16 +115,12 @@ def _runtime_probe_cache_put(key: str, result: dict[str, Any]) -> None:
 
 
 def _bot_code_fingerprint(root: Path) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(root.glob("*.py")):
-        digest.update(path.name.encode("utf-8"))
-        digest.update(b"\0")
-        try:
-            digest.update(path.read_bytes())
-        except OSError as exc:
-            digest.update(f"read_error:{type(exc).__name__}:{exc}".encode("utf-8"))
-        digest.update(b"\0")
-    return digest.hexdigest()
+    # Probe cache/provenance must follow the complete decision artifact.  A
+    # nested packed table or model can change runtime evidence even when every
+    # top-level Python loader remains byte-identical.
+    from bot_artifact import hash_path
+
+    return hash_path(root)
 
 
 def _artifact_requests(static_artifacts: list[dict[str, Any]]) -> list[dict[str, str]]:

@@ -19,9 +19,16 @@ from national_capability_contract import (
 )
 
 
-RUNTIME_ARCHITECTURE_POLICY_VERSION = "3.3.0"
-RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 8
+RUNTIME_ARCHITECTURE_POLICY_VERSION = "3.4.0"
+RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 9
 RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION = 1
+PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION = 1
+ARCHITECTURE_TRANSITION_PHASE_FINAL = "final"
+ARCHITECTURE_TRANSITION_PHASE_PREPLAN = "preplan"
+ARCHITECTURE_TRANSITION_PHASES = frozenset({
+    ARCHITECTURE_TRANSITION_PHASE_FINAL,
+    ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
+})
 OFFICIAL_FULL_POLICY_ID = "official-full-v5"
 OFFICIAL_ORACLE_DOC_DIGESTS: dict[str, str] = {
     "docs/official-raise-boundary-oracle-2026-07-11.md": (
@@ -33,6 +40,7 @@ OFFICIAL_ORACLE_DOC_DIGESTS: dict[str, str] = {
 }
 RUNTIME_CORRECTNESS_FLOOR_CHECKS: tuple[str, ...] = (
     "decision_time_budget_visible",
+    "fast_strategy_baseline",
     "killable_decision_runtime",
     "decision_path_no_full_history_scan",
     "decision_path_no_large_runtime_tables",
@@ -46,7 +54,6 @@ RUNTIME_CORRECTNESS_FLOOR_CHECKS: tuple[str, ...] = (
 # consumption mechanisms are selected one at a time by RuntimeContract.state_learning.
 RUNTIME_FLOOR_CHECKS = RUNTIME_CORRECTNESS_FLOOR_CHECKS
 STATE_LEARNING_INNOVATION_CHECKS: tuple[str, ...] = (
-    "fast_strategy_baseline",
     "incremental_refinement_protocol",
     "budget_scaled_refinement",
     "precompute_lookup_path",
@@ -478,6 +485,234 @@ def _state_digest(state: dict[str, bool]) -> str:
     ).hexdigest()
 
 
+_PREPARED_CAPABILITY_SNAPSHOT_KEYS = frozenset({
+    "schema_version",
+    "detector_version",
+    "parent_bot",
+    "prepared_bot",
+    "parent_checks",
+    "prepared_checks",
+    "parent_capability_digest",
+    "prepared_capability_digest",
+    "parent_passed_checks",
+    "prepared_passed_checks",
+    "protected_passed_checks",
+    "acquired_checks",
+    "snapshot_digest",
+})
+
+
+def _prepared_capability_snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return the immutable, serializable part of a prepared baseline snapshot."""
+    return {
+        key: deepcopy(snapshot.get(key))
+        for key in sorted(_PREPARED_CAPABILITY_SNAPSHOT_KEYS - {"snapshot_digest"})
+    }
+
+
+def _normalized_snapshot_state(value: Any) -> dict[str, bool] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized: dict[str, bool] = {}
+    for raw_key, raw_passed in value.items():
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            return None
+        if not isinstance(raw_passed, bool):
+            return None
+        normalized[raw_key] = raw_passed
+    return {key: normalized[key] for key in sorted(normalized)}
+
+
+def build_prepared_capability_snapshot(
+    parent_bot_dir: str | Path,
+    prepared_bot_dir: str | Path,
+    *,
+    parent_capabilities: dict[str, Any] | None = None,
+    prepared_capabilities: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Freeze the accepted pre-Worker child capability state.
+
+    A crossover child is subsequently edited in place by Workers, so its
+    pre-Worker detector result cannot safely be reconstructed at the final
+    gate.  This snapshot records only normalized detector facts and their
+    derived preservation set.  The complete payload is digest-bound and can be
+    embedded into the system-owned architecture policy.
+    """
+    parent_bot_dir = Path(parent_bot_dir)
+    prepared_bot_dir = Path(prepared_bot_dir)
+    parent_result = (
+        parent_capabilities
+        if parent_capabilities is not None
+        else evaluate_national_capabilities(parent_bot_dir)
+    )
+    prepared_result = (
+        prepared_capabilities
+        if prepared_capabilities is not None
+        else evaluate_national_capabilities(prepared_bot_dir)
+    )
+    infrastructure_failures = [
+        *_capability_infrastructure_failures(parent_result, side="parent"),
+        *_capability_infrastructure_failures(prepared_result, side="prepared"),
+    ]
+    if infrastructure_failures:
+        details = "; ".join(
+            f"{item['side']}/{item['component']}: {', '.join(item['issues'])}"
+            for item in infrastructure_failures
+        )
+        raise RuntimeError(
+            "prepared capability snapshot is inconclusive because infrastructure failed: "
+            + details[:1000]
+        )
+    parent_detector = str(parent_result.get("detector_version") or "")
+    prepared_detector = str(prepared_result.get("detector_version") or "")
+    if not parent_detector or parent_detector != prepared_detector:
+        raise RuntimeError(
+            "prepared capability snapshot detector mismatch: "
+            f"parent={parent_detector!r} prepared={prepared_detector!r}"
+        )
+
+    # Normalize the wrapper-owned external-I/O exception before freezing the
+    # state, exactly as architecture focus selection does.  This prevents the
+    # system's killable worker transport from becoming artificial child debt.
+    parent_state = _focus_check_state(parent_result)
+    prepared_state = _focus_check_state(prepared_result)
+    parent_passed = sorted(key for key, passed in parent_state.items() if passed)
+    prepared_passed = sorted(key for key, passed in prepared_state.items() if passed)
+    protected_passed = sorted(set(parent_passed) | set(prepared_passed))
+    snapshot = {
+        "schema_version": PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION,
+        "detector_version": parent_detector,
+        "parent_bot": parent_bot_dir.name,
+        "prepared_bot": prepared_bot_dir.name,
+        "parent_checks": {key: bool(parent_state[key]) for key in sorted(parent_state)},
+        "prepared_checks": {
+            key: bool(prepared_state[key]) for key in sorted(prepared_state)
+        },
+        "parent_capability_digest": _state_digest(parent_state),
+        "prepared_capability_digest": _state_digest(prepared_state),
+        "parent_passed_checks": parent_passed,
+        "prepared_passed_checks": prepared_passed,
+        "protected_passed_checks": protected_passed,
+        "acquired_checks": sorted(set(prepared_passed) - set(parent_passed)),
+    }
+    snapshot["snapshot_digest"] = _canonical_json_digest(
+        _prepared_capability_snapshot_payload(snapshot)
+    )
+    return snapshot
+
+
+def validate_prepared_capability_snapshot(
+    snapshot: dict[str, Any] | None,
+    *,
+    parent_bot_dir: str | Path | None = None,
+    prepared_bot_dir: str | Path | None = None,
+    parent_capabilities: dict[str, Any] | None = None,
+    prepared_capabilities: dict[str, Any] | None = None,
+) -> list[str]:
+    """Validate structure, derived state, digest, and optional live identities."""
+    if not isinstance(snapshot, dict):
+        return ["prepared_capability_snapshot_missing_or_not_object"]
+    errors: list[str] = []
+    unexpected = sorted(set(snapshot) - _PREPARED_CAPABILITY_SNAPSHOT_KEYS)
+    missing = sorted(_PREPARED_CAPABILITY_SNAPSHOT_KEYS - set(snapshot))
+    if unexpected:
+        errors.append(f"prepared_capability_snapshot_unexpected_fields:{unexpected}")
+    if missing:
+        errors.append(f"prepared_capability_snapshot_missing_fields:{missing}")
+    if snapshot.get("schema_version") != PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION:
+        errors.append(
+            "prepared_capability_snapshot_schema_mismatch: "
+            f"expected={PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION} "
+            f"actual={snapshot.get('schema_version')!r}"
+        )
+    detector_version = snapshot.get("detector_version")
+    if not isinstance(detector_version, str) or not detector_version:
+        errors.append("prepared_capability_snapshot_detector_version_invalid")
+    for field in ("parent_bot", "prepared_bot"):
+        value = snapshot.get(field)
+        if not isinstance(value, str) or not value:
+            errors.append(f"prepared_capability_snapshot_{field}_invalid")
+
+    parent_state = _normalized_snapshot_state(snapshot.get("parent_checks"))
+    prepared_state = _normalized_snapshot_state(snapshot.get("prepared_checks"))
+    if parent_state is None:
+        errors.append("prepared_capability_snapshot_parent_checks_invalid")
+        parent_state = {}
+    if prepared_state is None:
+        errors.append("prepared_capability_snapshot_prepared_checks_invalid")
+        prepared_state = {}
+
+    expected_parent_passed = sorted(key for key, passed in parent_state.items() if passed)
+    expected_prepared_passed = sorted(
+        key for key, passed in prepared_state.items() if passed
+    )
+    expected_protected = sorted(set(expected_parent_passed) | set(expected_prepared_passed))
+    expected_acquired = sorted(set(expected_prepared_passed) - set(expected_parent_passed))
+    for field, expected in (
+        ("parent_passed_checks", expected_parent_passed),
+        ("prepared_passed_checks", expected_prepared_passed),
+        ("protected_passed_checks", expected_protected),
+        ("acquired_checks", expected_acquired),
+    ):
+        if snapshot.get(field) != expected:
+            errors.append(
+                f"prepared_capability_snapshot_{field}_mismatch: "
+                f"expected={expected!r} actual={snapshot.get(field)!r}"
+            )
+    expected_parent_digest = _state_digest(parent_state)
+    expected_prepared_digest = _state_digest(prepared_state)
+    if snapshot.get("parent_capability_digest") != expected_parent_digest:
+        errors.append("prepared_capability_snapshot_parent_capability_digest_mismatch")
+    if snapshot.get("prepared_capability_digest") != expected_prepared_digest:
+        errors.append("prepared_capability_snapshot_prepared_capability_digest_mismatch")
+    expected_snapshot_digest = _canonical_json_digest(
+        _prepared_capability_snapshot_payload(snapshot)
+    )
+    if snapshot.get("snapshot_digest") != expected_snapshot_digest:
+        errors.append("prepared_capability_snapshot_digest_mismatch")
+
+    if parent_bot_dir is not None and snapshot.get("parent_bot") != Path(parent_bot_dir).name:
+        errors.append(
+            "prepared_capability_snapshot_parent_bot_mismatch: "
+            f"expected={Path(parent_bot_dir).name!r} actual={snapshot.get('parent_bot')!r}"
+        )
+    if (
+        prepared_bot_dir is not None
+        and snapshot.get("prepared_bot") != Path(prepared_bot_dir).name
+    ):
+        errors.append(
+            "prepared_capability_snapshot_prepared_bot_mismatch: "
+            f"expected={Path(prepared_bot_dir).name!r} actual={snapshot.get('prepared_bot')!r}"
+        )
+
+    for label, capabilities, expected_state in (
+        ("parent", parent_capabilities, parent_state),
+        ("prepared", prepared_capabilities, prepared_state),
+    ):
+        if capabilities is None:
+            continue
+        infrastructure = _capability_infrastructure_failures(capabilities, side=label)
+        if infrastructure:
+            errors.append(f"prepared_capability_snapshot_{label}_infrastructure_failure")
+            continue
+        live_state = _focus_check_state(capabilities)
+        if live_state != expected_state:
+            errors.append(f"prepared_capability_snapshot_{label}_checks_mismatch")
+        live_detector = str(capabilities.get("detector_version") or "")
+        if live_detector != detector_version:
+            errors.append(
+                f"prepared_capability_snapshot_{label}_detector_version_mismatch"
+            )
+    return errors
+
+
+def prepared_capability_snapshot_digest(snapshot: dict[str, Any] | None) -> str:
+    """Return a validated snapshot digest, or an empty string for bad evidence."""
+    if validate_prepared_capability_snapshot(snapshot):
+        return ""
+    return str(snapshot.get("snapshot_digest") or "")
+
+
 def _policy_contract_payload(policy: dict[str, Any]) -> dict[str, Any]:
     """Return the complete immutable contract represented by a policy."""
     return {
@@ -490,10 +725,20 @@ def _policy_contract_payload(policy: dict[str, Any]) -> dict[str, Any]:
         "source_bot": policy.get("source_bot"),
         "source_capability_digest": policy.get("source_capability_digest"),
         "source_checks": policy.get("source_checks") or {},
+        "prepared_capability_snapshot": policy.get("prepared_capability_snapshot"),
+        "prepared_capability_snapshot_digest": policy.get(
+            "prepared_capability_snapshot_digest"
+        ),
+        "effective_baseline_bot": policy.get("effective_baseline_bot"),
+        "effective_baseline_capability_digest": policy.get(
+            "effective_baseline_capability_digest"
+        ),
+        "effective_baseline_checks": policy.get("effective_baseline_checks") or {},
         "baseline_passed_checks": policy.get("baseline_passed_checks") or [],
         "runtime_floor_checks": policy.get("runtime_floor_checks") or [],
         "strategy_innovation_checks": policy.get("strategy_innovation_checks") or [],
         "source_floor_failures": policy.get("source_floor_failures") or [],
+        "baseline_floor_failures": policy.get("baseline_floor_failures") or [],
         "native_template_provided_checks": policy.get("native_template_provided_checks") or [],
         "plan_required_floor_checks": policy.get("plan_required_floor_checks") or [],
         "selected_focus": policy.get("selected_focus"),
@@ -510,8 +755,9 @@ def _policy_contract_digest(policy: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def select_architecture_focus(capabilities: dict[str, Any]) -> dict[str, Any] | None:
-    state = _focus_check_state(capabilities)
+def _select_architecture_focus_from_state(
+    state: dict[str, bool],
+) -> dict[str, Any] | None:
     for spec in _FOCUS_SPECS:
         selection_checks = spec.get("selection_checks") or spec["required_checks"]
         unresolved = [
@@ -525,10 +771,15 @@ def select_architecture_focus(capabilities: dict[str, Any]) -> dict[str, Any] | 
     return None
 
 
+def select_architecture_focus(capabilities: dict[str, Any]) -> dict[str, Any] | None:
+    return _select_architecture_focus_from_state(_focus_check_state(capabilities))
+
+
 def build_architecture_policy(
     source_bot_dir: str | Path,
     *,
     source_capabilities: dict[str, Any] | None = None,
+    prepared_capability_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_bot_dir = Path(source_bot_dir)
     capabilities = source_capabilities or evaluate_national_capabilities(source_bot_dir)
@@ -546,9 +797,41 @@ def build_architecture_policy(
             + details[:1000]
         )
     state = _check_state(capabilities)
-    focus = select_architecture_focus(capabilities)
+    snapshot = None
+    if prepared_capability_snapshot is not None:
+        snapshot_errors = validate_prepared_capability_snapshot(
+            prepared_capability_snapshot,
+            parent_bot_dir=source_bot_dir,
+            parent_capabilities=capabilities,
+        )
+        if snapshot_errors:
+            raise ValueError(
+                "invalid prepared capability snapshot: " + "; ".join(snapshot_errors)
+            )
+        snapshot = deepcopy(prepared_capability_snapshot)
+        parent_snapshot_state = dict(snapshot["parent_checks"])
+        prepared_state = dict(snapshot["prepared_checks"])
+        effective_state = {
+            check_id: bool(
+                parent_snapshot_state.get(check_id, False)
+                or prepared_state.get(check_id, False)
+            )
+            for check_id in sorted(set(parent_snapshot_state) | set(prepared_state))
+        }
+        effective_baseline_bot = str(snapshot["prepared_bot"])
+        focus_state = effective_state
+    else:
+        effective_state = dict(state)
+        effective_baseline_bot = source_bot_dir.name
+        focus_state = _focus_check_state(capabilities)
+    focus = _select_architecture_focus_from_state(focus_state)
     source_floor_failures = [
         check_id for check_id in RUNTIME_FLOOR_CHECKS if not state.get(check_id, False)
+    ]
+    baseline_floor_failures = [
+        check_id
+        for check_id in RUNTIME_FLOOR_CHECKS
+        if not effective_state.get(check_id, False)
     ]
     policy = {
         "schema_version": RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION,
@@ -560,14 +843,24 @@ def build_architecture_policy(
         "source_bot": source_bot_dir.name,
         "source_capability_digest": _state_digest(state),
         "source_checks": state,
-        "baseline_passed_checks": sorted(check_id for check_id, passed in state.items() if passed),
+        "prepared_capability_snapshot": snapshot,
+        "prepared_capability_snapshot_digest": (
+            str(snapshot["snapshot_digest"]) if snapshot is not None else None
+        ),
+        "effective_baseline_bot": effective_baseline_bot,
+        "effective_baseline_capability_digest": _state_digest(effective_state),
+        "effective_baseline_checks": effective_state,
+        "baseline_passed_checks": sorted(
+            check_id for check_id, passed in effective_state.items() if passed
+        ),
         "runtime_floor_checks": list(RUNTIME_FLOOR_CHECKS),
         "strategy_innovation_checks": list(STATE_LEARNING_INNOVATION_CHECKS),
         "source_floor_failures": source_floor_failures,
+        "baseline_floor_failures": baseline_floor_failures,
         "native_template_provided_checks": list(NATIVE_TEMPLATE_PROVIDED_CHECKS),
         "plan_required_floor_checks": [
             check_id
-            for check_id in source_floor_failures
+            for check_id in baseline_floor_failures
             if check_id not in NATIVE_TEMPLATE_PROVIDED_CHECKS
         ],
         "selected_focus": focus,
@@ -590,12 +883,21 @@ def _policy_identity_errors(
         "detector_version",
         "source_bot",
         "source_capability_digest",
+        "prepared_capability_snapshot_digest",
+        "effective_baseline_bot",
+        "effective_baseline_capability_digest",
     ):
         if expected_policy.get(key) != current_policy.get(key):
             errors.append(
                 f"architecture_policy_{key}_mismatch: expected={expected_policy.get(key)!r} "
                 f"current={current_policy.get(key)!r}"
             )
+    for label, policy in (("expected", expected_policy), ("current", current_policy)):
+        snapshot = policy.get("prepared_capability_snapshot")
+        if snapshot is None:
+            continue
+        for error in validate_prepared_capability_snapshot(snapshot):
+            errors.append(f"architecture_policy_{label}_{error}")
     expected_stored_digest = str(expected_policy.get("policy_digest") or "")
     expected_content_digest = _policy_contract_digest(expected_policy)
     current_stored_digest = str(current_policy.get("policy_digest") or "")
@@ -623,7 +925,13 @@ def evaluate_architecture_transition(
     candidate_bot_dir: str | Path,
     *,
     expected_policy: dict[str, Any] | None = None,
+    evaluation_phase: str = ARCHITECTURE_TRANSITION_PHASE_FINAL,
 ) -> dict[str, Any]:
+    if evaluation_phase not in ARCHITECTURE_TRANSITION_PHASES:
+        raise ValueError(
+            "unknown architecture transition evaluation phase: "
+            f"{evaluation_phase!r}"
+        )
     source_capabilities = evaluate_national_capabilities(source_bot_dir)
     candidate_capabilities = evaluate_national_capabilities(candidate_bot_dir)
     infrastructure_failures = [
@@ -638,6 +946,7 @@ def evaluate_architecture_transition(
             "conclusive": False,
             "outcome": "infrastructure_failure",
             "failure_class": "infrastructure",
+            "evaluation_phase": evaluation_phase,
             "policy": expected_policy if isinstance(expected_policy, dict) else None,
             "policy_identity_errors": [],
             "infrastructure_failures": infrastructure_failures,
@@ -649,29 +958,58 @@ def evaluate_architecture_transition(
             "system_provided_deltas": [],
             "runtime_floor_checks": list(RUNTIME_FLOOR_CHECKS),
             "runtime_floor_failures": [],
+            "deferred_runtime_floor_checks": [],
+            "deferred_runtime_floor_failures": [],
             "strategy_shadow_checks": [],
             "selected_focus": None,
             "unresolved_focus_checks": [],
+            "full_unresolved_focus_checks": [],
+            "deferred_unresolved_focus_checks": [],
             "source_capabilities": source_capabilities,
             "candidate_capabilities": candidate_capabilities,
         }
+    expected_snapshot = (
+        expected_policy.get("prepared_capability_snapshot")
+        if isinstance(expected_policy, dict)
+        else None
+    )
+    snapshot_identity_errors: list[str] = []
+    if expected_snapshot is not None:
+        snapshot_identity_errors = [
+            f"architecture_policy_{error}"
+            for error in validate_prepared_capability_snapshot(
+                expected_snapshot,
+                parent_bot_dir=source_bot_dir,
+                prepared_bot_dir=candidate_bot_dir,
+                parent_capabilities=source_capabilities,
+            )
+        ]
     current_policy = build_architecture_policy(
         source_bot_dir,
         source_capabilities=source_capabilities,
+        prepared_capability_snapshot=(
+            expected_snapshot if expected_snapshot is not None and not snapshot_identity_errors else None
+        ),
     )
-    identity_errors = (
-        _policy_identity_errors(expected_policy, current_policy)
-        if isinstance(expected_policy, dict)
-        else []
-    )
+    identity_errors = snapshot_identity_errors
+    if isinstance(expected_policy, dict):
+        identity_errors.extend(_policy_identity_errors(expected_policy, current_policy))
     policy = expected_policy if isinstance(expected_policy, dict) and not identity_errors else current_policy
     source_state = _check_state(source_capabilities)
     candidate_state = _check_state(candidate_capabilities)
     regressions = []
     system_provided_deltas = []
     candidate_checks = candidate_capabilities.get("checks_by_id") or {}
-    for check_id, passed in sorted(source_state.items()):
-        if not passed or candidate_state.get(check_id, False):
+    protected_passed_checks = {
+        str(check_id)
+        for check_id in policy.get("baseline_passed_checks") or []
+        if str(check_id)
+    }
+    prepared_checks = (
+        (policy.get("prepared_capability_snapshot") or {}).get("prepared_checks") or {}
+    )
+    for check_id in sorted(protected_passed_checks):
+        if candidate_state.get(check_id, False):
             continue
         check = candidate_checks.get(check_id) or {}
         locations = [
@@ -693,17 +1031,50 @@ def evaluate_architecture_transition(
         regressions.append({
             "check_id": check_id,
             "source_passed": True,
+            "baseline_origin": (
+                "parent_and_prepared"
+                if source_state.get(check_id, False)
+                and prepared_checks.get(check_id, False)
+                else "prepared_child"
+                if prepared_checks.get(check_id, False)
+                else "parent"
+            ),
             "candidate_passed": False,
             "guidance": check.get("guidance", ""),
         })
     focus = policy.get("selected_focus") or None
-    unresolved_focus = []
+    full_unresolved_focus = []
     if focus:
-        unresolved_focus = [
+        full_unresolved_focus = [
             check_id
             for check_id in focus.get("required_checks") or []
             if not candidate_state.get(check_id, False)
         ]
+    # Crossover is a preparation operator, not the generation's implementation
+    # worker.  The system wrapper must already provide its owned correctness
+    # checks, but source debt explicitly assigned to plan_required_floor_checks
+    # is closed only after direction audit -> Master -> Workers.  Final quality
+    # evaluation keeps the historic fail-closed behavior and defers nothing.
+    deferred_floor_checks = (
+        [
+            str(check_id)
+            for check_id in policy.get("plan_required_floor_checks") or []
+            if str(check_id) in RUNTIME_FLOOR_CHECKS
+        ]
+        if evaluation_phase == ARCHITECTURE_TRANSITION_PHASE_PREPLAN
+        else []
+    )
+    deferred_floor_set = set(deferred_floor_checks)
+    unresolved_focus = [
+        check_id
+        for check_id in full_unresolved_focus
+        if check_id not in deferred_floor_set
+    ]
+    deferred_unresolved_focus = [
+        check_id
+        for check_id in full_unresolved_focus
+        if check_id in deferred_floor_set
+    ]
     required_failures = candidate_capabilities.get("required_failures") or []
     floor_failures = [
         {
@@ -713,6 +1084,19 @@ def evaluate_architecture_transition(
             ),
         }
         for check_id in RUNTIME_FLOOR_CHECKS
+        if check_id not in deferred_floor_set
+        if not candidate_state.get(check_id, False)
+    ]
+    deferred_floor_failures = [
+        {
+            "check_id": check_id,
+            "guidance": (
+                (candidate_capabilities.get("checks_by_id") or {})
+                .get(check_id, {})
+                .get("guidance", "")
+            ),
+        }
+        for check_id in deferred_floor_checks
         if not candidate_state.get(check_id, False)
     ]
     strategy_shadow_checks = [
@@ -722,6 +1106,7 @@ def evaluate_architecture_transition(
     return {
         "schema_version": 1,
         "policy_version": RUNTIME_ARCHITECTURE_POLICY_VERSION,
+        "evaluation_phase": evaluation_phase,
         "ok": (
             not identity_errors
             and not required_failures
@@ -756,9 +1141,13 @@ def evaluate_architecture_transition(
         "system_provided_deltas": system_provided_deltas,
         "runtime_floor_checks": list(RUNTIME_FLOOR_CHECKS),
         "runtime_floor_failures": floor_failures,
+        "deferred_runtime_floor_checks": deferred_floor_checks,
+        "deferred_runtime_floor_failures": deferred_floor_failures,
         "strategy_shadow_checks": strategy_shadow_checks,
         "selected_focus": focus,
         "unresolved_focus_checks": unresolved_focus,
+        "full_unresolved_focus_checks": full_unresolved_focus,
+        "deferred_unresolved_focus_checks": deferred_unresolved_focus,
         "source_capabilities": source_capabilities,
         "candidate_capabilities": candidate_capabilities,
     }
@@ -1368,6 +1757,9 @@ def architecture_policy_prompt(policy: dict[str, Any]) -> str:
             )
         ),
         f"- source_capability_digest={policy.get('source_capability_digest')}",
+        f"- effective_baseline_bot={policy.get('effective_baseline_bot')}",
+        "- prepared_capability_snapshot_digest="
+        f"{policy.get('prepared_capability_snapshot_digest') or 'none'}",
         "- preserve every check listed in baseline_passed_checks; candidate regressions are blocking",
         "- every check in plan_required_floor_checks must appear in at least one task checks_required and be closed in this generation",
         "- state_learning declares exactly one primary strategy innovation; only its mapped consumer check is newly blocking, while other strategy dimensions stay shadow/advisory",
@@ -1389,4 +1781,43 @@ def architecture_policy_prompt(policy: dict[str, Any]) -> str:
         "- the matching task worker_prompt MUST literally contain every required_worker_prompt_terms value",
         "- a label is not proof: quality gates re-run AST/dynamic evidence for correctness floors, parent regressions, and the one selected primary innovation",
     ])
+    return "\n".join(lines)
+
+
+def crossover_architecture_policy_prompt(policy: dict[str, Any]) -> str:
+    """Render the pre-Master architecture contract for crossover preparation.
+
+    Crossover deliberately has no WorkerTask schema, runtime-contract ledger, or
+    authority to close the generation's selected innovation focus.  Keeping its
+    prompt vocabulary separate prevents a weaker model from interpreting Master
+    requirements as a request to rewrite the entire strategy during recombination.
+    """
+
+    focus = policy.get("selected_focus") or None
+    lines = [
+        "System-owned crossover baseline architecture policy:",
+        f"- policy_version={policy.get('policy_version')}",
+        f"- official_policy_id={policy.get('official_policy_id')}",
+        f"- source_capability_digest={policy.get('source_capability_digest')}",
+        "- this stage prepares a recombination baseline; it is NOT Master or Worker execution",
+        "- preserve every check in baseline_passed_checks; any regression is blocking",
+        "- preserve the installed system-owned national_bot.py and precompute.py providers",
+        "- do not emit or simulate downstream planning objects at this stage",
+        "- every strategic diff must be a traceable Parent B component; crossover makes no independent strategic innovation",
+        "- direction audit, literature probe, Master, and Workers run after this baseline; Master/Workers own the generation's exactly-one innovation",
+        "- native_template_provided_checks must pass before the baseline is accepted: "
+        + (", ".join(policy.get("native_template_provided_checks") or []) or "none"),
+        "- plan_required_floor_checks are deliberately deferred to Master/Workers: "
+        + (", ".join(policy.get("plan_required_floor_checks") or []) or "none"),
+    ]
+    if focus:
+        lines.extend([
+            f"- downstream_selected_focus={focus.get('focus_id')}: {focus.get('title')}",
+            "- the downstream focus is context only; do not attempt to close it during crossover",
+        ])
+    else:
+        lines.append("- downstream_selected_focus=none")
+    lines.append(
+        "- final quality gates will re-run the full architecture transition after Workers"
+    )
     return "\n".join(lines)

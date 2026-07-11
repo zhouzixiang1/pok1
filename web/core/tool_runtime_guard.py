@@ -119,7 +119,59 @@ def _pipeline_route_guard(
         return True, {}
     checkpoint = read_pipeline_checkpoint()
     if not isinstance(checkpoint, dict) or not checkpoint.get("stage"):
-        return True, {}
+        # commit_bot deliberately clears the active checkpoint before the
+        # post-commit Archivist runs.  Preserve that one lifecycle exception,
+        # but require the content-bound, exact-source, single-use receipt that
+        # commit_bot placed in this generation's archive snapshot. Thus an
+        # outer model cannot replay an arbitrary historical bot or source.
+        if (
+            tool_name == "run_archivist"
+            and candidate_v is not None
+            and source_v is not None
+        ):
+            try:
+                from evolution_infra import validate_post_commit_archivist_receipt
+
+                receipt_ok, _reason, receipt = (
+                    validate_post_commit_archivist_receipt(
+                        int(candidate_v),
+                        int(source_v),
+                    )
+                )
+                if receipt_ok:
+                    return True, {
+                        "post_commit_archivist": True,
+                        "candidate_v": int(candidate_v),
+                        "source_v": int(source_v),
+                        "receipt_digest": str(
+                            (receipt or {}).get("receipt_digest") or ""
+                        ),
+                    }
+            except Exception:
+                pass
+        payload = {
+            "error": "pipeline_route_guard_blocked",
+            "blocked": True,
+            "reason": "no_active_checkpoint",
+            "tool": tool_name,
+            "requested_v": candidate_v,
+            "requested_source_v": source_v,
+            "checkpoint_stage": None,
+            "next_tool": "prepare_generation",
+            "allowed_tools": ["prepare_generation"],
+            "directive": (
+                "No active generation checkpoint exists. Start only through "
+                "prepare_generation so the scheduler can bind source, target, "
+                "crossover parents, and evidence before any pipeline tool runs."
+            ),
+        }
+        _log_guard_event(
+            "pipeline.route_guard_blocked",
+            "error",
+            f"Blocked {tool_name}: no active generation checkpoint",
+            payload,
+        )
+        return False, payload
 
     ckpt_next = checkpoint.get("next_v")
     ckpt_source = checkpoint.get("source_v")
@@ -647,6 +699,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
     baseline = _checkpoint_repo_baseline(candidate_v) or get_last_snapshot() or {}
     baseline_head = baseline.get("head") or ""
     current_head = snapshot.get("head") or ""
+    head_drift_allowance: dict[str, Any] = {}
     enforce_head_stability = tool_name != "prepare_generation" and candidate_v is not None
     if (
         enforce_head_stability
@@ -674,7 +727,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
                     **unrelated_payload,
                 },
             )
-            return True, {
+            head_drift_allowance = {
                 "guard": "ok",
                 "head_drift_unrelated_allowed": True,
                 "candidate_v": candidate_v,
@@ -682,40 +735,42 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
                 "current_head": current_head,
                 **unrelated_payload,
             }
-        allowed, allowed_payload = _head_change_allowed_for_checkpoint_resume(
-            tool_name=tool_name,
-            candidate_v=candidate_v,
-            baseline_head=baseline_head,
-            current_head=current_head,
-            snapshot=snapshot,
-        )
-        if allowed:
-            _log_guard_event(
-                "repo.runtime_guard_head_drift_repair_allowed",
-                "warn",
-                f"Runtime git guard allowed {tool_name} after infrastructure HEAD change",
-                allowed_payload,
+        else:
+            allowed, allowed_payload = _head_change_allowed_for_checkpoint_resume(
+                tool_name=tool_name,
+                candidate_v=candidate_v,
+                baseline_head=baseline_head,
+                current_head=current_head,
+                snapshot=snapshot,
             )
-            return True, {
-                "guard": "ok",
-                "head_drift_resume_allowed": True,
-                "head_drift_repair_allowed": allowed_payload.get("resume_kind") == "repair",
-                **allowed_payload,
-            }
-        payload = {
-            "blocked": True,
-            "reason": "head_changed_during_generation",
-            "tool": tool_name,
-            "candidate_v": candidate_v,
-            "baseline_head": baseline_head,
-            "current_head": current_head,
-            "baseline_source": "checkpoint" if baseline.get("captured_stage") else "process_snapshot",
-            "branch": snapshot.get("branch"),
-            **unrelated_payload,
-            "directive": "A git commit changed the runtime code during this generation. Abandon and restart from a fresh baseline.",
-        }
-        _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked HEAD drift", payload)
-        return False, payload
+            if allowed:
+                _log_guard_event(
+                    "repo.runtime_guard_head_drift_repair_allowed",
+                    "warn",
+                    f"Runtime git guard allowed {tool_name} after infrastructure HEAD change",
+                    allowed_payload,
+                )
+                head_drift_allowance = {
+                    "guard": "ok",
+                    "head_drift_resume_allowed": True,
+                    "head_drift_repair_allowed": allowed_payload.get("resume_kind") == "repair",
+                    **allowed_payload,
+                }
+            else:
+                payload = {
+                    "blocked": True,
+                    "reason": "head_changed_during_generation",
+                    "tool": tool_name,
+                    "candidate_v": candidate_v,
+                    "baseline_head": baseline_head,
+                    "current_head": current_head,
+                    "baseline_source": "checkpoint" if baseline.get("captured_stage") else "process_snapshot",
+                    "branch": snapshot.get("branch"),
+                    **unrelated_payload,
+                    "directive": "A git commit changed the runtime code during this generation. Abandon and restart from a fresh baseline.",
+                }
+                _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked HEAD drift", payload)
+                return False, payload
 
     unexpected = _unexpected_entries(snapshot, candidate_v)
     if unexpected:
@@ -759,6 +814,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         "branch_head_drift_unrelated_allowed": branch_head_drift_unrelated_allowed,
         "ignored_entries": ignored[:40],
         "ignored_count": len(ignored),
+        **head_drift_allowance,
     }
 
 

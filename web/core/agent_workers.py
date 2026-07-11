@@ -11,7 +11,9 @@ import os
 import re
 import shutil
 import asyncio
+import hashlib
 import logging
+import stat
 from pathlib import Path
 
 log = logging.getLogger("pok.workers")
@@ -25,8 +27,12 @@ from evolution_infra import (
     EXPERIENCE_FILE, find_current_v,
 )
 from worker_boundary import (
+    ArtifactSnapshotError,
+    allowed_files_for_task,
     audit_worker_boundary,
     diff_snapshot,
+    is_binary_artifact_path,
+    read_regular_file_bytes,
     restore_python_files,
     snapshot_python_files,
 )
@@ -191,21 +197,12 @@ def _compose_worker_task_prompt(task, reviewer_feedback):
 
 
 def _allowed_write_scope_for_task(task, next_dir, next_v):
-    files = []
-    for key in ("target_files", "files_allowed"):
-        for target in task.get(key, []) or []:
-            rel = _target_rel(target, next_v)
-            if rel:
-                files.append(next_dir / rel)
-    # Deduplicate while preserving stable order for logs.
-    seen = set()
-    deduped = []
-    for path in files:
-        key = str(path)
-        if key not in seen:
-            seen.add(key)
-            deduped.append(path)
-    return {"files": deduped}
+    return {
+        "files": [
+            next_dir / rel
+            for rel in allowed_files_for_task(task, next_v)
+        ]
+    }
 
 
 def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
@@ -346,18 +343,157 @@ def _extract_exhausted_block():
 
 
 def _target_rel_set(task, next_v):
-    """Extract the set of relative file paths from a task's target_files.
+    """Extract the task's complete normalized writable file set.
 
     Returns a set of strings (relative paths within the bot directory) that
-    the worker is expected to modify. Used for disjointness checks to decide
-    whether parallel execution is safe.
+    the worker may modify. Both ``target_files`` and ``files_allowed`` must take
+    part in parallel disjointness: a helper allowed to one worker may be a
+    required target of another, which makes concurrent execution unsafe.
     """
-    result = set()
-    for target in task.get("target_files", []):
-        rel = _target_rel(target, next_v)
-        if rel:
-            result.add(rel)
-    return result
+    return set(allowed_files_for_task(task, next_v))
+
+
+class _ExistingEmptyContent(str):
+    """Empty UTF-8 file marker that remains compatible with string consumers."""
+
+    def __new__(cls):
+        return super().__new__(cls, "")
+
+    def __bool__(self):
+        return True
+
+
+class _ExistingEmptyBytes(bytes):
+    """Empty binary file marker with the same existence semantics."""
+
+    def __new__(cls):
+        return super().__new__(cls, b"")
+
+    def __bool__(self):
+        return True
+
+
+def _target_file_content(path):
+    """Return ``(is_regular_file, content)`` without decoding binary assets.
+
+    UTF-8 source remains ``str`` for compatibility with the existing CoT and
+    tuner checks. Invalid UTF-8 is retained as raw ``bytes`` so a packed table
+    can be compared and restored without lossy decoding.
+    """
+    path = Path(path)
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False, ""
+    if not stat.S_ISREG(metadata.st_mode):
+        return False, ""
+    try:
+        data = read_regular_file_bytes(path.parent, path, metadata)
+    except OSError:
+        return False, ""
+    if is_binary_artifact_path(path):
+        return True, data
+    try:
+        return True, data.decode("utf-8")
+    except UnicodeDecodeError:
+        return True, data
+
+
+def _target_snapshot_content(path):
+    exists, content = _target_file_content(path)
+    if not exists:
+        return ""
+    if isinstance(content, bytes) and not content:
+        return _ExistingEmptyBytes()
+    if content == "":
+        return _ExistingEmptyContent()
+    return content
+
+
+def _remove_target_entry(path):
+    """Remove one target without following a worker-created symlink."""
+    path = Path(path)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _write_target_snapshot(path, content, *, root=None):
+    path = Path(path)
+    if root is not None:
+        root = Path(root)
+        try:
+            relative = path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"target snapshot path escapes root: {path}") from exc
+        cursor = root
+        for part in relative.parts[:-1]:
+            cursor = cursor / part
+            try:
+                metadata = cursor.lstat()
+            except FileNotFoundError:
+                cursor.mkdir()
+                continue
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                _remove_target_entry(cursor)
+                cursor.mkdir()
+    _remove_target_entry(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        path.write_text(str(content), encoding="utf-8")
+
+
+def _target_preview(path, limit=2000):
+    exists, content = _target_file_content(path)
+    if not exists:
+        return ""
+    if isinstance(content, bytes):
+        return (
+            f"<binary {len(content)} bytes sha256="
+            f"{hashlib.sha256(content).hexdigest()}>"
+        )
+    return content[:limit]
+
+
+def _restore_worker_changes(
+    next_dir,
+    boundary_snapshot,
+    *,
+    ignored_files=None,
+):
+    """Restore this worker's artifact delta while preserving parallel siblings.
+
+    A malformed entry (symlink, FIFO, device, or a racing file) is itself an
+    artifact delta.  Restore it first, then rescan so ordinary changed/new files
+    from the same failed attempt are also rolled back.
+    """
+    ignored = set(ignored_files or ())
+    for _ in range(2):
+        try:
+            changed = diff_snapshot(next_dir, boundary_snapshot)
+        except ArtifactSnapshotError as exc:
+            changed = exc.violation_files
+        changed_set = set(changed)
+        ignored_ancestors = set()
+        for rel in ignored & changed_set:
+            parent = Path(rel).parent
+            while parent.as_posix() not in ("", "."):
+                ignored_ancestors.add(parent.as_posix())
+                parent = parent.parent
+        changed = [
+            rel for rel in changed
+            if rel not in ignored and rel not in ignored_ancestors
+        ]
+        if not changed:
+            return
+        restore_python_files(next_dir, boundary_snapshot, changed)
 
 
 def _reset_target_files_to_source(task, source_v, next_dir, next_v,
@@ -365,7 +501,7 @@ def _reset_target_files_to_source(task, source_v, next_dir, next_v,
     """Reset only this task's target files back to a clean baseline state.
 
     Resolution order per target file:
-    1. If `baseline_snapshots` (a {(task_idx, rel) -> str} dict) and `task_idx`
+    1. If `baseline_snapshots` (a {(task_idx, rel) -> str|bytes} dict) and `task_idx`
        are provided AND a snapshot exists for that key, write the snapshot
        (empty string means the file did not exist pre-worker → unlink).
        This is REQUIRED in sequential overlap mode where multiple workers may
@@ -401,10 +537,10 @@ def _reset_target_files_to_source(task, source_v, next_dir, next_v,
         if have_baseline and (task_idx, rel) in baseline_snapshots:
             snap = baseline_snapshots[(task_idx, rel)]
             if snap:
-                dst_file.write_text(snap)
+                _write_target_snapshot(dst_file, snap, root=next_dir)
                 _reset_log.append(rel + " (baseline)")
-            elif dst_file.exists():
-                dst_file.unlink(missing_ok=True)
+            elif dst_file.exists() or dst_file.is_symlink():
+                _remove_target_entry(dst_file)
                 _reset_log.append(rel + " (baseline-unlink)")
             continue
 
@@ -412,11 +548,12 @@ def _reset_target_files_to_source(task, source_v, next_dir, next_v,
             _skip_no_source.append(rel)
             continue
         src_file = src_dir / rel
-        if src_file.exists():
-            dst_file.write_text(src_file.read_text())
+        src_exists, src_content = _target_file_content(src_file)
+        if src_exists:
+            _write_target_snapshot(dst_file, src_content, root=next_dir)
             _reset_log.append(rel + " (source)")
-        elif dst_file.exists():
-            dst_file.unlink(missing_ok=True)
+        elif dst_file.exists() or dst_file.is_symlink():
+            _remove_target_entry(dst_file)
             _reset_log.append(rel + " (source-unlink)")
 
     # Emit one structured event per reset call summarizing what was rolled back.
@@ -512,21 +649,25 @@ def _classify_target_change_for_worker(task, task_idx, rel, next_dir, next_v,
     for older callers/tests without snapshots.
     """
     dst_file = next_dir / rel
-    dst_exists = dst_file.exists()
-    dst_text = dst_file.read_text() if dst_exists else ""
+    dst_exists, dst_content = _target_file_content(dst_file)
 
     if baseline_snapshots is not None and (task_idx, rel) in baseline_snapshots:
-        before_text = baseline_snapshots[(task_idx, rel)]
-        return _classify_target_change(True, dst_exists, before_text, dst_text)
+        before_content = baseline_snapshots[(task_idx, rel)]
+        return _classify_target_change(
+            True, dst_exists, before_content, dst_content
+        )
 
     if source_v is None:
-        return _classify_target_change(True, dst_exists, dst_text, dst_text)
+        return _classify_target_change(
+            True, dst_exists, dst_content, dst_content
+        )
 
     src_dir = get_bot_dir(source_v)
     src_file = src_dir / rel
-    src_exists = src_file.exists()
-    src_text = src_file.read_text() if src_exists else ""
-    return _classify_target_change(src_exists, dst_exists, src_text, dst_text)
+    src_exists, src_content = _target_file_content(src_file)
+    return _classify_target_change(
+        src_exists, dst_exists, src_content, dst_content
+    )
 
 
 def _target_change_failures_for_worker(task, task_idx, next_dir, next_v,
@@ -836,7 +977,8 @@ def _preserve_timed_out_worker_if_blocker_cleared(
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
                               source_v=None, parallel_mode=False, worker_snapshots=None,
-                              boundary_allowed_files=None, task_skipper=None):
+                              boundary_allowed_files=None, task_skipper=None,
+                              boundary_snapshot=None):
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
@@ -879,19 +1021,21 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             rel = _target_rel(target, next_v)
             if rel:
                 fpath = next_dir / rel
-                _local_snapshots[(idx, rel)] = (
-                    fpath.read_text() if fpath.exists() else ""
-                )
+                _local_snapshots[(idx, rel)] = _target_snapshot_content(fpath)
 
-    # Snapshot the set of .py files present in next_dir BEFORE any attempt runs.
-    # On rollback this lets us unlink files the worker CREATED that were NOT in
-    # its declared target_files (an Edit-tool worker can write to an undeclared
-    # path). Declared NEW files are handled by the baseline-snapshot path in
-    # _reset_target_files_to_source; this closes the undeclared-file gap. Only
-    # files absent from the pre-run set are ever removed, so legitimate sibling
-    # edits and cross-ancestor files (present pre-run) are always preserved.
-    _pre_run_py_files = {p.name for p in next_dir.glob("*.py")} if next_dir.is_dir() else set()
-    _boundary_snapshot = snapshot_python_files(next_dir)
+    # Full artifact baseline: source, nested binary tables, and directory shape.
+    # Parallel batches pass one pre-gather snapshot to every worker so scanning
+    # cannot race a sibling that has already begun editing.
+    _boundary_snapshot = (
+        boundary_snapshot
+        if boundary_snapshot is not None
+        else snapshot_python_files(next_dir)
+    )
+    own_write_files = _target_rel_set(task, next_v)
+    sibling_files = (
+        set(boundary_allowed_files or ()) - own_write_files
+        if parallel_mode else set()
+    )
 
     for attempt in range(MAX_WORKER_RETRIES):
         if not parallel_mode:
@@ -904,12 +1048,11 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         # against the live (possibly sibling-modified) state; only retries need
         # a clean slate, and baseline-based reset preserves siblings' edits.
         if attempt > 0:
-            _reset_target_files_to_source(
-                task, source_v, next_dir, next_v,
-                baseline_snapshots=worker_snapshots or _local_snapshots, task_idx=idx,
+            _restore_worker_changes(
+                next_dir,
+                _boundary_snapshot,
+                ignored_files=sibling_files,
             )
-            # Also clear undeclared NEW files a prior failed attempt may have left.
-            _unlink_undeclared_new_files(next_dir, _pre_run_py_files)
 
         attempt_note = ""
         if attempt > 0:
@@ -991,20 +1134,11 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             # Roll back target files to the worker's pre-run baseline to avoid
             # partial-edit contamination. Baseline (not source) is used so
             # sequential-overlap siblings' edits are preserved.
-            _reset_target_files_to_source(
-                task, source_v, next_dir, next_v,
-                baseline_snapshots=worker_snapshots or _local_snapshots, task_idx=idx,
+            _restore_worker_changes(
+                next_dir,
+                _boundary_snapshot,
+                ignored_files=sibling_files,
             )
-            # Clear undeclared NEW files the timed-out worker may have created.
-            _unlink_undeclared_new_files(next_dir, _pre_run_py_files)
-            changed_after_timeout = diff_snapshot(next_dir, _boundary_snapshot)
-            if parallel_mode and boundary_allowed_files:
-                sibling_scope = set(boundary_allowed_files)
-                changed_after_timeout = [
-                    rel for rel in changed_after_timeout
-                    if rel not in sibling_scope
-                ]
-            restore_python_files(next_dir, _boundary_snapshot, changed_after_timeout)
             base_worker_prompt += (
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a more direct, bounded "
                 "implementation of the SAME assigned task. Reduce incidental complexity, "
@@ -1114,8 +1248,10 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 rel = _target_rel(target, next_v)
                 if rel:
                     dst_file = next_dir / rel
-                    if dst_file.exists():
-                        _changed_files.append(f"--- {rel} (modified) ---\n{dst_file.read_text()[:2000]}")
+                    if dst_file.exists() or dst_file.is_symlink():
+                        _changed_files.append(
+                            f"--- {rel} (modified) ---\n{_target_preview(dst_file)}"
+                        )
             _last_changed_diff = "\n".join(_changed_files) if _changed_files else "(no diff available)"
             base_worker_prompt += f"\n\nCRITICAL FIX: Fix syntax error:\n{compile_errors[0]}"
             continue
@@ -1126,12 +1262,22 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         return True
 
     if _last_failure_type == "llm_infrastructure":
+        _restore_worker_changes(
+            next_dir,
+            _boundary_snapshot,
+            ignored_files=sibling_files,
+        )
         raise WorkerInfrastructureError(
             w_id,
             role,
             _infrastructure_issues or [_last_reason],
         )
     # Worker failed all retries — record a real implementation failure.
+    _restore_worker_changes(
+        next_dir,
+        _boundary_snapshot,
+        ignored_files=sibling_files,
+    )
     _record_worker_failure(next_v, w_id, role, _last_reason, failure_type=_last_failure_type)
     return False
 
@@ -1147,7 +1293,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
     when target files overlap or any task has no target_files.
 
     Returns (success, worker_snapshots, audit_focus_areas) where worker_snapshots maps
-    (task_idx, file_rel) -> file_content_before_worker_ran, used for
+    (task_idx, file_rel) -> UTF-8 text or raw bytes before the worker ran, used for
     accurate per-worker boundary validation. audit_focus_areas contains
     focus areas from P0-2 Worker CoT checks to inject into Reviewer.
     """
@@ -1163,7 +1309,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             rel = _target_rel(target, next_v)
             if rel:
                 fpath = next_dir / rel
-                worker_snapshots[(0, rel)] = fpath.read_text() if fpath.exists() else ""
+                worker_snapshots[(0, rel)] = _target_snapshot_content(fpath)
         if task_skipper is not None:
             try:
                 skip_reason = task_skipper(tasks[0])
@@ -1221,7 +1367,8 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         return ok, worker_snapshots, audit_focus_areas
 
     # ── Disjointness check: can we safely run workers in parallel? ──
-    # Compute per-task target file sets and check for intersections.
+    # Compute complete per-task writable sets (targets + allowed helpers) and
+    # check for intersections.
     task_file_sets = [_target_rel_set(task, next_v) for task in tasks]
     all_disjoint = True
     seen = set()
@@ -1237,9 +1384,9 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         seen |= fset
 
     if all_disjoint and not force_sequential:
-        # ── Parallel path: all target_files are disjoint ──
-        # Pre-snapshot all target files at once — safe because no two workers
-        # touch the same file.
+        # ── Parallel path: all writable file sets are disjoint ──
+        # Pre-snapshot all required targets at once; helpers participate in the
+        # disjointness proof even though only required targets need snapshots.
         ui.log_history(
             f"Running {len(tasks)} workers in PARALLEL (disjoint target files)...", "info"
         )
@@ -1248,11 +1395,10 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 rel = _target_rel(target, next_v)
                 if rel:
                     fpath = next_dir / rel
-                    worker_snapshots[(i, rel)] = (
-                        fpath.read_text() if fpath.exists() else ""
-                    )
+                    worker_snapshots[(i, rel)] = _target_snapshot_content(fpath)
 
         parallel_allowed_files = sorted({rel for fset in task_file_sets for rel in fset})
+        parallel_boundary_snapshot = snapshot_python_files(next_dir)
 
         # Wrap each worker call with semaphore gating for concurrency control.
         async def _gated_worker(task, i):
@@ -1264,6 +1410,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     source_v=source_v, parallel_mode=True,
                     worker_snapshots=worker_snapshots,
                     boundary_allowed_files=parallel_allowed_files,
+                    boundary_snapshot=parallel_boundary_snapshot,
                 )
 
         results = await asyncio.gather(
@@ -1364,7 +1511,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             rel = _target_rel(target, next_v)
             if rel:
                 fpath = next_dir / rel
-                worker_snapshots[(i, rel)] = fpath.read_text() if fpath.exists() else ""
+                worker_snapshots[(i, rel)] = _target_snapshot_content(fpath)
         if task_skipper is not None:
             try:
                 skip_reason = task_skipper(task)

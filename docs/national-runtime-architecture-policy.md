@@ -57,8 +57,42 @@ Every formal native bot must preserve these boundaries:
 6. Exploit changes are multiplied by confidence/adaptation weight and capped.
    Sparse evidence therefore stays close to the baseline. Match memory is not
    a license for unconstrained opponent-specific strategy replacement.
-7. Logs, file reads, network calls, and subprocess work stay outside the live
-   decision call graph.
+7. Candidate-owned modules contain no filesystem, network, or subprocess I/O,
+   including import-time and nominally unreachable functions. The system-owned
+   native wrapper alone owns the socket, logs, deadlines, and worker process.
+
+## Local References And Space-Time Tradeoff
+
+The weak-model answer is not “give it more prose.” The repository supplies a
+versioned `strategy_reference_pack.py` with machine-checked implementation
+cards, exact live inputs, owner files, bounded-work rules, forbidden axes, and
+counterfactual proofs. Master chooses a typed primary; the plan compiler binds
+the selected card into the Worker prompt, while schema and runtime gates reject
+made-up card ids or dead consumers. Token budget may be large, but authority is
+kept in these local contracts rather than model memory.
+
+The v1 pack is deliberately small. Its two cards cover a proactive sizing
+geometry and a range-weighted bounded candidate batch, with falsifiable action
+counterfactuals. New cards should be added only after replay/H2H evidence shows
+an uncovered mechanism and the capability harness can verify its live
+consumer; a large uncurated strategy encyclopedia would recreate the same weak-
+model ambiguity under a larger token budget.
+
+Every fresh native candidate also receives compact import-time poker facts from
+`NATIVE_PRECOMPUTE_TEMPLATE`: all 1,326 hole-card combinations, all 8,192
+13-rank straight masks, and the 21 five-of-seven index combinations. This is a
+useful space-for-time foundation, but not an innovation by itself; a selected
+precompute primary must prove a state-varying lookup changes a final sanitized
+action and that its empty-table fallback remains legal.
+
+Do not check in a multi-million-entry Python dict merely because memory is
+available. Candidate file I/O is currently forbidden, so file-backed packed or
+mmap lookup is intentionally deferred. A larger equity/abstraction table is
+justified only after the official submission bundle accepts the artifact and a
+system-owned immutable loader can pin its content hash, entry/byte/build limits,
+card encoding, lookup key, and live consumer. Until then, compact generated
+facts plus bounded candidate refinement use the machine more reliably and do
+not turn startup/object expansion into a hidden timeout.
 
 ## Evolution Enforcement
 
@@ -73,6 +107,44 @@ Every formal native bot must preserve these boundaries:
 - `runtime_architecture_policy.py` preserves every capability already present
   in the parent and selects one complete unresolved architecture bundle for the
   generation. A candidate may not trade away an existing capability.
+- Every single-parent and crossover generation freezes the complete prepared
+  candidate manifest and hash before Direction Audit/Master. Crossover adds a
+  richer Parent-A/Parent-B provenance and capability receipt, but it does not
+  get a weaker baseline. Final quality compares regular-file bytes from this
+  common prepared boundary to the final candidate; source-to-child Python diff
+  is telemetry only.
+- Crossover is a preparation operator, not an alternate fast path around
+  planning. Its preplan transition must preserve parent capabilities and prove
+  the system-owned native wrapper, while source debt listed in
+  `plan_required_floor_checks` remains explicitly deferred. A successful child
+  enters `prepared`, then follows direction audit, optional literature probe,
+  Master, Workers, and the full final transition gate.
+- The accepted crossover child is frozen as a digest-bound prepared-baseline
+  contract: exact artifact/code hashes, component provenance, Python LOC,
+  frozen H2H identity, and the child capability snapshot. Master computes debt,
+  runtime feedback, and line budget from that child. Final quality preserves
+  `Parent A passed ∪ prepared child acquired`; stale identity fails closed and
+  never resets the child to Parent A while retaining crossover lineage. Final
+  quality also requires a post-Master artifact delta from this frozen baseline;
+  the Parent-A crossover diff cannot hide a no-op Worker generation.
+- Crossover provenance is also deterministic: an exact Parent-B module passes;
+  a composed Python file may add only symbol-bound glue rooted in a Parent-B
+  import/definition. The gate covers the complete artifact manifest, so a
+  non-Python table/model/config must be exact Parent-B bytes and cannot smuggle
+  an independently generated policy into crossover. A threshold-only change,
+  novel heuristic, arbitrary call, or unrelated file is rejected before
+  Master. If no component is safely portable, an unchanged Parent-A baseline
+  is valid and Master owns innovation.
+- Scheduler lineage is an execution contract, not prompt advice:
+  `run_crossover` must match the checkpoint's exact Parent-A, Parent-B, and
+  target tuple. A bounded infrastructure retry binds all three complete parent/
+  child artifact hashes and retains its ledger until the `prepared` checkpoint
+  is atomically published; artifact drift abandons the generation.
+- Dynamic decision evidence separates killability from strategy latency.
+  Runtime-version mismatch, missing socket fallback, failed worker-tree kill,
+  or failed next-decision restart can fail `killable_decision_runtime`; a
+  baseline over 250ms fails `fast_strategy_baseline` instead and cannot
+  masquerade as a worker-termination defect.
 - Master emits a structured `RuntimeContract`; worker target/owner files must
   cover it; reviewer compares it with detector evidence; quality gates rerun
   the detector against parent and candidate.
@@ -80,11 +152,37 @@ Every formal native bot must preserve these boundaries:
   digest-bound Master context.  The outer orchestrator may transport or display
   it but cannot rewrite it into planning instructions.  Persisted direction
   audit and literature-probe results likewise override caller paraphrases.
+- When canonical stagnation or repetition requires research, the state machine
+  routes only to `run_literature_probe`; `run_master` refuses to run without an
+  identity-bound receipt carrying the exact Master-context digest, Direction-Audit digest, and
+  requirement-context digest. A governed skip, timeout, or provider failure
+  counts as a receipt only for that exact context, so stale research cannot be
+  replayed while infrastructure cannot cause an unbounded orchestration loop.
 - On the initial `master_planned` worker pass, checkpoint tasks are the sole
   execution authority.  A non-empty caller task list must be structurally
   identical; `tasks=[]` loads a defensive copy.  The checkpoint and plan
   runtime ledgers must validate and rebuild to the same digest before any
   Worker LLM can edit code.
+- Rework feedback and tasks are also checkpoint-owned. Caller-supplied values
+  are transport echoes only and must exactly match the gate-derived canonical
+  repair contract; `must_change_files` is a completion assertion and never adds
+  write authority beyond `target_files/files_allowed`. Each Worker batch is an
+  all-or-nothing transaction over the complete artifact, including binary
+  tables. A partial success followed by any Worker/boundary/cleanup failure is
+  restored byte-for-byte before recovery is checkpointed.
+- Worker and publication manifests fail closed above 1,024 regular files,
+  2,048 entries, depth 64, 16 MiB per file, or 64 MiB total, and validate all
+  metadata before reading payloads. Transient `.task_context`, bytecode, and
+  test caches are removed and cannot be referenced by candidate code.
+- Quality/official repair checkpoints bind the exact pre-repair artifact hash;
+  same-file out-of-band edits cannot piggyback on an otherwise legal repair
+  scope. Publication then compares worktree bytes to staged Git blobs and the
+  immutable completion-tag tree. Ignored files, empty directories, nested Git
+  repositories/gitlinks, and tag/worktree hash drift are rejected.
+- Candidate imports and live strategy workers run under memory/file/descriptor/
+  process resource limits. Import-time external I/O and module-level allocation
+  bombs therefore cannot consume the long-running orchestrator even before the
+  static contract reports them.
 - The official EXE remains a protocol/compliance oracle only. Runtime
   architecture and poker strength are evaluated by local native harnesses and
   H2H evidence, never by EXE chip outcomes.
@@ -113,10 +211,34 @@ allowlisted deterministic evidence ID and may only explain a failure or propose
 a bounded repair. A clean deterministic pass clears all LLM repair feedback.
 No LLM field can pass, fail, revoke, certify, rate, or tune a bot.
 
+## Measured Follow-ups
+
+The current release intentionally leaves four evidence-driven improvements for
+later rather than pretending they are solved by a larger prompt:
+
+1. Local strength selection runs at roughly 2.0/1.8 seconds while the formal
+   runtime permits 55/54 seconds. Protocol/runtime probes validate long-budget
+   safety, but do not directly measure the marginal poker value after two
+   seconds. Add a sampled multi-fidelity native gate (short control plus a small
+   long-budget stratum) before rewarding expensive refinement across every
+   generation.
+2. Admit large exact equity/abstraction data only through a system-owned,
+   immutable packed loader with packaging and live-consumer proof.
+3. Move compiled Worker briefs out of the candidate tree. They are excluded
+   from identity, do not grant scope, and are hard-cleaned today, but an external
+   read-only control directory would make the ownership boundary simpler.
+4. Revisit the uncapped `1/(1+children)` parent-diversity penalty with replay/H2H
+   evidence. A capped penalty can preserve exploration without ranking a weak,
+   unused parent above a repeatedly successful source.
+
 ## Non-Goals
 
 - Do not allocate the whole 60 seconds merely because it is available.
 - Do not generate enormous tables without an explicit bound and live consumer.
+- A future large exact table must use a hash-pinned, system-owned read-only
+  loader; candidate-side packed/mmap file access is not currently admitted.
+  Python object expansion of a multi-million-entry table is not an acceptable
+  way to spend memory.
 - Do not infer a reliable opponent type from a few actions.
 - Do not run a full CFR/ReBeL solver inside a generated stdlib bot unless a
   separately benchmarked engine and submission budget make that feasible.

@@ -1,6 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 import national_runtime_probe
+import national_runtime_probe_worker
 from national_native import NATIVE_BOT_TEMPLATE
 from national_runtime_probe_scenarios import DECISION_SCENARIOS, LINE_SCENARIO_PAIRS
 
@@ -119,6 +123,97 @@ def _write_fixed_key_value_sensitive_probe_bot(root: Path) -> Path:
     )
     strategy_path.write_text(source, encoding="utf-8")
     return bot
+
+
+@pytest.mark.parametrize(
+    ("baseline_ms", "expected_issue"),
+    [
+        (251.0, "strategy_baseline_slower_than_250ms"),
+        (None, "strategy_baseline_never_published"),
+    ],
+)
+def test_baseline_latency_or_absence_does_not_poison_killable_safety(
+    monkeypatch,
+    baseline_ms,
+    expected_issue,
+):
+    class FakeBot:
+        def _ensure_strategy_worker(self):
+            return None
+
+    strategy = SimpleNamespace(
+        get_action=lambda *_args: 0,
+        get_baseline_action=lambda *_args: 0,
+        iter_refinements=lambda *_args: iter(()),
+    )
+    imports = SimpleNamespace(load=lambda name: strategy)
+    metric = {
+        "runtime_version": 7,
+        "socket_fallback_ready_ms": 1.0,
+        "baseline_published_ms": baseline_ms,
+    }
+    strategy_result = {
+        "rows": [{"baseline": {"runtime_metrics": metric}}],
+    }
+    actions = iter([
+        {
+            "wire": "fold",
+            "runtime_metrics": {
+                "trusted_refinement_steps": 8,
+                "trusted_refinement_elapsed_ms": 8.0,
+                "refinement_action_changes": 1,
+            },
+        },
+        {
+            "wire": "fold",
+            "runtime_metrics": {
+                "trusted_refinement_steps": 16,
+                "trusted_refinement_elapsed_ms": 16.0,
+                "refinement_action_changes": 1,
+            },
+        },
+        {
+            "wire": "fold",
+            "runtime_metrics": {
+                "decision_id": 3,
+                "worker_generation": 1,
+                "timed_out": True,
+                "worker_terminated": True,
+            },
+        },
+        {
+            "wire": "check",
+            "runtime_metrics": {
+                "decision_id": 4,
+                "worker_generation": 2,
+                "timed_out": False,
+            },
+        },
+    ])
+    monkeypatch.setattr(
+        national_runtime_probe_worker,
+        "_new_native_bot",
+        lambda _imports: (None, FakeBot()),
+    )
+    monkeypatch.setattr(
+        national_runtime_probe_worker,
+        "_timed_formal_action",
+        lambda *_args, **_kwargs: next(actions),
+    )
+
+    result = national_runtime_probe_worker._probe_decision_runtime(
+        imports,
+        strategy_result,
+        expected_runtime_version=7,
+    )
+
+    assert result["safety_ok"] is True
+    assert result["safety_issues"] == []
+    assert result["baseline_ok"] is False
+    assert result["baseline_issues"] == [expected_issue]
+    assert result["refinement_ok"] is True
+    assert result["issues"] == [expected_issue]
+    assert result["ok"] is False
 
 
 def test_runtime_scenario_bank_uses_coherent_national_transcripts():
@@ -337,3 +432,20 @@ def test_probe_cache_is_bound_to_code_fingerprint(monkeypatch, tmp_path):
     assert changed["cache_hit"] is False
     assert first["code_fingerprint"] != changed["code_fingerprint"]
     assert len(calls) == 4
+
+
+def test_probe_cache_fingerprint_covers_nested_binary_artifacts(tmp_path):
+    import national_runtime_probe
+
+    bot = tmp_path / "national_v1"
+    bot.mkdir()
+    (bot / "strategy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    tables = bot / "tables"
+    tables.mkdir()
+    policy = tables / "equity.bin"
+    policy.write_bytes(b"\x00\xffpolicy-one")
+
+    before = national_runtime_probe._bot_code_fingerprint(bot)
+    policy.write_bytes(b"\x00\xffpolicy-two")
+
+    assert national_runtime_probe._bot_code_fingerprint(bot) != before

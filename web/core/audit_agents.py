@@ -14,9 +14,11 @@ precommit semantic regression can block their respective stages.
 """
 
 import json
+import hashlib
 import logging
 import difflib
 import asyncio
+import stat
 from pathlib import Path
 
 from bot_namespace import bot_name, bot_tag
@@ -29,6 +31,7 @@ from evolution_infra import (
 from output_schema import validate_agent_output
 from system_log import log_system_event
 from llm_failure import is_llm_infra_error
+from worker_boundary import is_binary_artifact_path, read_regular_file_bytes
 
 log = logging.getLogger("pok.audit")
 
@@ -218,6 +221,35 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
 # P0-2: Worker CoT Reasoning Consistency Check
 # ──────────────────────────────────────────────
 
+def _cot_after_file_state(path):
+    """Return a safe text-or-bytes state for Worker CoT evidence."""
+    path = Path(path)
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False, "missing", b""
+    if not stat.S_ISREG(metadata.st_mode):
+        return False, "invalid", b""
+    try:
+        data = read_regular_file_bytes(path.parent, path, metadata)
+    except OSError:
+        return False, "invalid", b""
+    if is_binary_artifact_path(path):
+        return True, "binary", data
+    try:
+        return True, "text", data.decode("utf-8")
+    except UnicodeDecodeError:
+        return True, "binary", data
+
+
+def _cot_binary_metadata(label, present, content):
+    if not present:
+        return f"{label}: missing"
+    data = content if isinstance(content, bytes) else str(content).encode("utf-8")
+    return (
+        f"{label}: {len(data)} bytes, sha256={hashlib.sha256(data).hexdigest()}"
+    )
+
 async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, worker_snapshots, ui):
     """Check Worker output consistency: claimed changes vs actual diff.
 
@@ -254,19 +286,45 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
             if not rel:
                 continue
             snapshot_key = (worker_idx, rel)
+            before_present = snapshot_key in worker_snapshots
             before = worker_snapshots.get(snapshot_key, "")
             after_path = next_dir / rel
-            after = after_path.read_text() if after_path.exists() else ""
-            before_lines = len(before.splitlines())
-            after_lines = len(after.splitlines())
+            after_present, after_kind, after = _cot_after_file_state(after_path)
+            binary_evidence = isinstance(before, bytes) or after_kind in {
+                "binary", "invalid"
+            }
+            if binary_evidence:
+                before_meta = _cot_binary_metadata(
+                    "before", before_present, before
+                )
+                after_meta = _cot_binary_metadata(
+                    "after", after_present, after
+                )
+                changed = not before_present or not after_present or before != after
+                diff_metadata.append(
+                    f"- {rel}: binary artifact; {before_meta}; {after_meta}; "
+                    f"changed={str(changed).lower()}"
+                )
+                if changed:
+                    diff_parts.append(
+                        f"--- before/{rel} (binary metadata)\n"
+                        f"+++ after/{rel} (binary metadata)\n"
+                        f"-{before_meta}\n+{after_meta}\n"
+                    )
+                continue
+
+            before_text = str(before) if before_present else ""
+            after_text = str(after) if after_present else ""
+            before_lines = len(before_text.splitlines())
+            after_lines = len(after_text.splitlines())
             diff_metadata.append(
                 f"- {rel}: pre-worker snapshot {before_lines} lines; "
                 f"post-worker file {after_lines} lines; delta {after_lines - before_lines:+d}"
             )
-            if before != after:
+            if not before_present or not after_present or before_text != after_text:
                 diff = difflib.unified_diff(
-                    before.splitlines(keepends=True),
-                    after.splitlines(keepends=True),
+                    before_text.splitlines(keepends=True),
+                    after_text.splitlines(keepends=True),
                     fromfile=f"before/{rel}", tofile=f"after/{rel}",
                     n=3,
                 )

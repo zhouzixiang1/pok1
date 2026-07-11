@@ -391,6 +391,36 @@ Current generation stages are:
 11. commit: `commit_bot` verifies and publishes the signed certificate with the bot/tag
 12. archivist: `run_archivist`
 
+`run_crossover` is only a recombination-baseline preparation step. On success
+it checkpoints `prepared`; it never substitutes for direction audit, literature
+research, Master planning, or Worker implementation. The exact child content,
+component provenance, LOC, frozen H2H identity, and capability snapshot are
+digest-bound in the checkpoint; later planning and final regression gates use
+that prepared child as the effective baseline. A deterministic provenance gate
+rejects threshold-only/novel crossover mutations not traceable to Parent B and
+covers the complete artifact manifest: non-Python tables/models/configs must be
+exact Parent-B bytes. `run_crossover` also requires the scheduler-selected
+`(Parent A, Parent B, target)` tuple. Infrastructure resume is bound to complete
+Parent/Child artifact hashes; a paused child that drifts is abandoned rather
+than inheriting stale provenance/runtime evidence.
+
+Every preparation path, including single-parent copy, freezes a common complete
+artifact manifest/hash before Master. Workers may create declared binary assets,
+but their full batch is byte-snapshotted and atomic; any partial failure restores
+the pre-batch artifact. Gate-derived rework feedback/tasks are checkpoint-owned,
+and caller echoes cannot add files or blockers. `must_change_files` never grants
+write authority. Quality binds repair baselines, removes transient caches/context,
+forbids candidate-owned external/import-time I/O, and evaluates prepared→final
+regular-file changes. Publication cross-checks working bytes, staged Git blobs,
+and the immutable tag tree; ignored/empty/nested-Git artifacts are rejected.
+
+The checked-in strategy reference pack is intentionally a small typed registry,
+not a prose dump. Compact import-time facts (1,326 hole combinations, 8,192 rank
+masks, 21 five-of-seven selections) are allowed. Larger packed/mmap tables remain
+deferred until a system-owned read-only loader, packaging proof, hash/key/consumer
+contract, and official submission compatibility exist; candidate file I/O is
+currently forbidden.
+
 Important current thresholds:
 
 - `MAX_ACTIVE_BOTS = 30`.

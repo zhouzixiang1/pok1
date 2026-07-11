@@ -64,6 +64,16 @@ def _literature_probe_cache_path(next_v: int | str) -> Path:
     return RESULTS_DIR / "research_proposals" / f"v{int(next_v)}.json"
 
 
+def _complete_artifact_fingerprint(root) -> str:
+    """Safe complete-artifact identity for control-plane receipts/retries."""
+    try:
+        from bot_artifact import hash_path
+
+        return hash_path(Path(root))
+    except Exception:
+        return ""
+
+
 def _literature_probe_context_fingerprint(
     source_v: int | str | None,
     h2h_weakness: str = "",
@@ -78,13 +88,61 @@ def _literature_probe_context_fingerprint(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+_LITERATURE_PROBE_BINDING_FIELDS = (
+    "master_context_digest",
+    "direction_audit_digest",
+    "requirement_context",
+    "requirement_context_digest",
+)
+
+
+def _literature_probe_binding_matches(
+    payload: dict | None,
+    receipt_binding: dict | None,
+) -> bool:
+    """Require a cached/proposed receipt to match owned route evidence exactly."""
+    return bool(
+        isinstance(payload, dict)
+        and isinstance(receipt_binding, dict)
+        and isinstance(payload.get("reason"), str)
+        and bool(payload.get("reason").strip())
+        and all(
+            payload.get(field) == receipt_binding.get(field)
+            for field in _LITERATURE_PROBE_BINDING_FIELDS
+        )
+    )
+
+
+def _bind_literature_probe_payload(payload: dict, receipt_binding: dict) -> dict:
+    """Attach the current immutable route binding to every terminal outcome."""
+    result = dict(payload)
+    for field in _LITERATURE_PROBE_BINDING_FIELDS:
+        result[field] = deepcopy(receipt_binding[field])
+    return result
+
+
+def _literature_probe_stale_result(next_v: int | str, source_v: int | str | None) -> dict:
+    return {
+        "error": "LITERATURE_PROBE_STALE_RESULT",
+        "next_v": next_v,
+        "source_v": source_v,
+        "directive": (
+            "The checkpoint changed while literature research was running. "
+            "No stale receipt was written; follow the current checkpoint route."
+        ),
+    }
+
+
 def _literature_probe_cache_matches(
     data: dict,
     *,
     source_v: int | str | None = None,
     h2h_weakness: str = "",
     stagnation_info: str = "",
+    receipt_binding: dict | None = None,
 ) -> bool:
+    if receipt_binding is not None:
+        return _literature_probe_binding_matches(data, receipt_binding)
     if source_v is not None and data.get("source_v") is not None:
         try:
             if int(data.get("source_v")) != int(source_v):
@@ -154,6 +212,7 @@ def _read_literature_probe_cache(
     source_v: int | str | None = None,
     h2h_weakness: str = "",
     stagnation_info: str = "",
+    receipt_binding: dict | None = None,
 ) -> dict | None:
     path = _literature_probe_cache_path(next_v)
     if not path.exists():
@@ -169,6 +228,7 @@ def _read_literature_probe_cache(
         source_v=source_v,
         h2h_weakness=h2h_weakness,
         stagnation_info=stagnation_info,
+        receipt_binding=receipt_binding,
     ):
         return None
     result = {
@@ -184,6 +244,9 @@ def _read_literature_probe_cache(
         "reason": data.get("reason", "cached"),
         "skipped": data.get("skipped", False),
     }
+    for field in _LITERATURE_PROBE_BINDING_FIELDS:
+        if field in data:
+            result[field] = deepcopy(data[field])
     result["inject_text"] = data.get("inject_text") or _literature_probe_inject_text(result)
     return result
 
@@ -204,6 +267,9 @@ def _normalize_literature_probe_result(data: dict, next_v: int | str, *, cached:
         "reason": data.get("reason", "cached"),
         "skipped": data.get("skipped", False),
     }
+    for field in _LITERATURE_PROBE_BINDING_FIELDS:
+        if field in data:
+            result[field] = deepcopy(data[field])
     if cached:
         result["cached"] = True
         result["cache_source"] = cached
@@ -217,13 +283,14 @@ def _read_literature_probe_checkpoint(
     source_v: int | str | None = None,
     h2h_weakness: str = "",
     stagnation_info: str = "",
+    receipt_binding: dict | None = None,
 ) -> dict | None:
     """Return this generation's already-completed literature probe from checkpoint.
 
-    The checkpoint is generation-authoritative. If a resumed orchestrator rebuilds
-    slightly different weakness/stagnation text, reusing the existing probe is
-    still safer than launching a second web query and creating a second candidate
-    for the same next_v/source_v.
+    The checkpoint is generation-authoritative.  Mandatory callers pass the
+    digest-bound receipt context, so an older result is reusable only when the
+    current Master/Audit requirement is identical; a changed requirement must
+    get a fresh governed outcome instead of silently reusing stale research.
     """
     try:
         from evolution_infra import read_pipeline_checkpoint
@@ -238,9 +305,16 @@ def _read_literature_probe_checkpoint(
     except (TypeError, ValueError):
         return None
     payload = ckpt.get("literature_probe")
+    if receipt_binding is not None and not _literature_probe_binding_matches(
+        payload,
+        receipt_binding,
+    ):
+        return None
     result = _normalize_literature_probe_result(payload, next_v, cached="checkpoint")
     if not result:
         return None
+    if receipt_binding is not None:
+        return result
     current_fp = _literature_probe_context_fingerprint(source_v, h2h_weakness, stagnation_info)
     stored_fp = result.get("context_fingerprint")
     if stored_fp and stored_fp != current_fp:
@@ -249,23 +323,51 @@ def _read_literature_probe_checkpoint(
     return result
 
 
-def _persist_literature_probe_result(next_v: int | str, source_v: int | str | None, payload: dict) -> None:
+def _persist_literature_probe_result(
+    next_v: int | str,
+    source_v: int | str | None,
+    payload: dict,
+    *,
+    receipt_binding: dict | None = None,
+) -> bool:
+    """Persist only an outcome still owned by the mandatory probe route.
+
+    The web/LLM request can finish after a weak controller has moved the
+    checkpoint.  Re-read and verify the exact route before writing so a late
+    result cannot overwrite a later stage or revive an obsolete receipt.
+    """
     try:
         from evolution_infra import read_pipeline_checkpoint
         ckpt = read_pipeline_checkpoint() or {}
         if int(ckpt.get("next_v")) != int(next_v):
-            return
+            return False
         if source_v is not None and int(ckpt.get("source_v")) != int(source_v):
-            return
-        stage = ckpt.get("stage") or "direction_audited"
-        write_pipeline_checkpoint(
+            return False
+        if ckpt.get("stage") != "direction_audited":
+            return False
+        from pipeline_state import (
+            literature_probe_receipt_binding,
+            literature_probe_required,
+        )
+
+        if not literature_probe_required(ckpt):
+            return False
+        current_binding, binding_errors = literature_probe_receipt_binding(ckpt)
+        if binding_errors or current_binding is None:
+            return False
+        expected_binding = receipt_binding or current_binding
+        if current_binding != expected_binding:
+            return False
+        if not _literature_probe_binding_matches(payload, expected_binding):
+            return False
+        return bool(write_pipeline_checkpoint(
             int(next_v),
             int(ckpt.get("source_v") if source_v is None else source_v),
-            stage,
+            "direction_audited",
             literature_probe=payload,
-        )
+        ))
     except Exception:
-        pass
+        return False
 
 
 def _write_literature_probe_cache(next_v: int | str, payload: dict) -> dict:
@@ -300,17 +402,48 @@ async def run_direction_audit(args):
     if source_v is None or next_v is None:
         return _json_tool_result({"error": "Missing source_v/next_v and no active checkpoint"})
 
-    _set_pipeline_status(f"Auditing directions for v{next_v}")
-
-    # Cache guard: skip LLM call if already completed for this (next_v, source_v)
     _existing = _matching_checkpoint(next_v, source_v)
-    if _existing and _existing.get("stage") == "direction_audited" and _existing.get("direction_audit"):
+    if not isinstance(_existing, dict):
+        return _json_tool_result({
+            "error": "DIRECTION_AUDIT_CHECKPOINT_REQUIRED",
+            "next_v": next_v,
+            "source_v": source_v,
+            "directive": (
+                "Direction audit may only consume the active prepared checkpoint; "
+                "do not reconstruct or audit a stale generation."
+            ),
+        })
+
+    # A completed audit is the one narrow idempotent path.  It returns the
+    # owned result without re-running the LLM or mutating a later checkpoint.
+    if (
+        _existing.get("stage") == "direction_audited"
+        and isinstance(_existing.get("direction_audit"), dict)
+    ):
         ui = _get_ui()
         ui.log_history("Direction audit: using cached result (already completed)", "info")
         return _json_tool_result({
             "direction_audit": _existing["direction_audit"],
             "logs": ui.get_output(),
+            "idempotent_cache": True,
         })
+    if _existing.get("stage") != "prepared":
+        route = route_policy(_existing)
+        return _json_tool_result({
+            "error": "DIRECTION_AUDIT_WRONG_STAGE",
+            "next_v": next_v,
+            "source_v": source_v,
+            "checkpoint_stage": _existing.get("stage"),
+            "expected_stage": "prepared",
+            "next_tool": route.get("next_tool"),
+            "allowed_tools": route.get("allowed_tools"),
+            "directive": (
+                "Do not run or overwrite direction audit outside prepared. "
+                "Follow the checkpoint-owned next tool instead."
+            ),
+        })
+
+    _set_pipeline_status(f"Auditing directions for v{next_v}")
 
     ui = _get_ui()
     result = await _run_direction_audit(source_v, ui)
@@ -334,38 +467,27 @@ async def run_direction_audit(args):
         "llm_failed": llm_failed,
     }
 
-    # Persist to checkpoint
+    # Re-check after the LLM call.  A late response must never refresh audit
+    # data after another controller advanced the generation.
     _ckpt = _matching_checkpoint(next_v, source_v)
-    existing_plan = _ckpt.get("master_plan") if _ckpt else None
-    # Backward-guard (root-cause-audit 2026-06-17): do NOT regress the pipeline
-    # stage. If this (next_v, source_v) checkpoint has already advanced past
-    # direction_audited (e.g. a successful crossover wrote workers_done, or
-    # master already planned), keep the more-advanced stage and only refresh
-    # the direction_audit payload. Previously this unconditionally wrote
-    # "direction_audited", causing workers_done -> direction_audited regressions
-    # (logged "Illegal stage transition ... Allowing but logging") that discarded
-    # crossover worker-output metadata (parent2_v lost).
-    _current_stage = _ckpt.get("stage") if _ckpt else None
-    try:
-        from evolution_infra import STAGE_ORDER
-        _da_idx = STAGE_ORDER.index("direction_audited")
-        _cur_idx = STAGE_ORDER.index(_current_stage) if _current_stage in STAGE_ORDER else -1
-    except Exception:
-        _da_idx, _cur_idx = 1, -1
-    _target_stage = _current_stage if (_cur_idx > _da_idx) else "direction_audited"
-    if _target_stage != "direction_audited":
-        try:
-            log_system_event("pipeline.direction_audit_skip_regression", "info",
-                             f"Direction audit for v{next_v}: keeping advanced stage '{_current_stage}' "
-                             f"(would have regressed to direction_audited); refreshing audit payload only.",
-                             {"next_v": next_v, "source_v": source_v, "kept_stage": _current_stage})
-        except Exception:
-            pass
+    if not isinstance(_ckpt, dict) or _ckpt.get("stage") != "prepared":
+        route = route_policy(_ckpt) if isinstance(_ckpt, dict) else {}
+        return _json_tool_result({
+            "error": "DIRECTION_AUDIT_STALE_RESULT",
+            "next_v": next_v,
+            "source_v": source_v,
+            "checkpoint_stage": _ckpt.get("stage") if isinstance(_ckpt, dict) else None,
+            "next_tool": route.get("next_tool"),
+            "directive": (
+                "The prepared checkpoint changed while direction audit was running. "
+                "Its result was discarded and no checkpoint was overwritten."
+            ),
+        })
     write_pipeline_checkpoint(
-        next_v, source_v, _target_stage,
+        next_v, source_v, "direction_audited",
         direction_audit=direction_audit_payload,
-        master_plan=existing_plan,
-        worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
+        master_plan=_ckpt.get("master_plan"),
+        worker_failure_count=_ckpt.get("worker_failure_count", 0),
     )
 
     if llm_failed:
@@ -624,7 +746,6 @@ async def _handle_master_llm_infrastructure(
     prompt_digest,
 ):
     """Persist a neutral, identity-bound retry for Master-side LLM transport."""
-    from national_runtime_probe import _bot_code_fingerprint
     from pipeline_infrastructure import infrastructure_attempt_key
 
     checkpoint = _matching_checkpoint(next_v, source_v) or {}
@@ -639,8 +760,8 @@ async def _handle_master_llm_infrastructure(
     }
     attempt_key = infrastructure_attempt_key(
         component=component,
-        candidate_fingerprint=_bot_code_fingerprint(get_bot_dir(next_v)),
-        source_fingerprint=_bot_code_fingerprint(get_bot_dir(source_v)),
+        candidate_fingerprint=_complete_artifact_fingerprint(get_bot_dir(next_v)),
+        source_fingerprint=_complete_artifact_fingerprint(get_bot_dir(source_v)),
         harness_identity=prompt_digest,
         contract_identity=str(
             ((checkpoint.get("runtime_contract_ledger") or {}).get("ledger_digest") or "")
@@ -1270,7 +1391,11 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
     return []
 
 
-def _build_generation_architecture_policy(source_v: int) -> dict:
+def _build_generation_architecture_policy(
+    source_v: int,
+    *,
+    prepared_capability_snapshot: dict | None = None,
+) -> dict:
     """Assess and build the system-owned policy for a native source artifact."""
 
     from workflow_profiles import get_workflow_profile
@@ -1318,6 +1443,7 @@ def _build_generation_architecture_policy(source_v: int) -> dict:
         policy = build_architecture_policy(
             source_dir,
             source_capabilities=capabilities,
+            prepared_capability_snapshot=prepared_capability_snapshot,
         )
     except Exception as exc:
         return {
@@ -1403,6 +1529,46 @@ async def run_master(args):
     )
     if _master_exhausted is not None:
         return _json_tool_result(_master_exhausted)
+    if (
+        isinstance(_master_entry_ckpt, dict)
+        and _master_entry_ckpt.get("stage") == "direction_audited"
+    ):
+        from prepared_baseline_contract import validate_prepared_artifact_contract
+
+        prepared_artifact_contract = (
+            (_master_entry_ckpt.get("audit_context") or {}).get(
+                "prepared_artifact_contract"
+            )
+        )
+        prepared_artifact_errors = validate_prepared_artifact_contract(
+            prepared_artifact_contract,
+            prepared_dir=get_bot_dir(next_v),
+            source_v=source_v,
+            next_v=next_v,
+            verify_live_content=True,
+        )
+        if prepared_artifact_errors:
+            log_system_event(
+                "pipeline.master_prepared_artifact_drift",
+                "error",
+                f"Master refused drifted prepared artifact v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "errors": prepared_artifact_errors,
+                },
+            )
+            return _json_tool_result({
+                "error": "PREPARED_ARTIFACT_CONTRACT_INVALID",
+                "next_v": next_v,
+                "source_v": source_v,
+                "validation_errors": prepared_artifact_errors,
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "The candidate changed after prepare/crossover and before Master. "
+                    "Abandon and rebuild from a fresh scheduler-owned baseline."
+                ),
+            })
     # fix-4: idempotency guard — if master already planned for this (next_v, source_v),
     # return cached result instead of re-running (LLM intermittently violates
     # orchestrator.md:43, causing duplicate run_master calls in the same cycle).
@@ -1588,16 +1754,133 @@ async def run_master(args):
                 )
             research_proposals = ""
 
-    architecture_assessment = _build_generation_architecture_policy(source_v)
-    if architecture_assessment.get("outcome") == "infrastructure_failure":
-        from national_runtime_probe import (
-            RUNTIME_PROBE_IDENTITY_DIGEST,
-            _bot_code_fingerprint as _runtime_probe_bot_fingerprint,
+    # The probe stage is a deterministic control-plane requirement, not a
+    # prompt suggestion.  A successful result, governed skip, timeout, or
+    # provider failure all persist an identity-bound receipt; absence of that
+    # receipt when stagnation/repetition requires research must block Master
+    # before it spends any LLM or runtime-probe budget.
+    from pipeline_state import (
+        literature_probe_receipt_present,
+        literature_probe_required,
+    )
+
+    if (
+        literature_probe_required(_master_entry_ckpt)
+        and not literature_probe_receipt_present(_master_entry_ckpt)
+    ):
+        log_system_event(
+            "pipeline.master_blocked_missing_literature_probe",
+            "error",
+            f"Master v{next_v} blocked: mandatory literature probe has no receipt",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "stage": (_master_entry_ckpt or {}).get("stage"),
+            },
         )
+        return _json_tool_result({
+            "error": "LITERATURE_PROBE_REQUIRED",
+            "next_v": next_v,
+            "source_v": source_v,
+            "next_tool": "run_literature_probe",
+            "directive": (
+                "Canonical stagnation/repetition evidence requires the literature "
+                "probe stage. Call run_literature_probe and persist its success, "
+                "governed-skip, timeout, or failure receipt before run_master."
+            ),
+        })
+
+    prepared_baseline = None
+    prepared_capability_snapshot = None
+    if isinstance(_master_entry_ckpt, dict) and _master_entry_ckpt.get("parent2_v") is not None:
+        prepared_baseline = (
+            (_master_entry_ckpt.get("audit_context") or {}).get(
+                "prepared_baseline_contract"
+            )
+        )
+        from prepared_baseline_contract import validate_prepared_baseline_contract
+
+        baseline_errors = validate_prepared_baseline_contract(
+            prepared_baseline,
+            parent_a_dir=get_bot_dir(source_v),
+            parent_b_dir=get_bot_dir(_master_entry_ckpt.get("parent2_v")),
+            prepared_dir=get_bot_dir(next_v),
+            source_v=source_v,
+            parent2_v=_master_entry_ckpt.get("parent2_v"),
+            next_v=next_v,
+            verify_live_content=True,
+        )
+        try:
+            from evidence_snapshot import ensure_generation_h2h_snapshot
+
+            live_h2h_identity = ensure_generation_h2h_snapshot(next_v)
+            bound_h2h_identity = (
+                prepared_baseline.get("h2h_snapshot_identity")
+                if isinstance(prepared_baseline, dict)
+                else {}
+            ) or {}
+            if not live_h2h_identity.get("available"):
+                baseline_errors.append(
+                    "prepared_baseline_h2h_snapshot_unavailable:"
+                    f"{live_h2h_identity.get('reason', 'unknown')}"
+                )
+            for field in ("manifest_digest", "sha256"):
+                expected_value = str(bound_h2h_identity.get(field) or "")
+                if expected_value and expected_value != str(
+                    live_h2h_identity.get(field) or ""
+                ):
+                    baseline_errors.append(
+                        f"prepared_baseline_h2h_{field}_mismatch"
+                    )
+        except Exception as exc:
+            baseline_errors.append(
+                "prepared_baseline_h2h_snapshot_error:"
+                f"{type(exc).__name__}:{str(exc)[:200]}"
+            )
+        if baseline_errors:
+            log_system_event(
+                "pipeline.master_prepared_baseline_invalid",
+                "error",
+                f"Master v{next_v} blocked by invalid prepared crossover baseline",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "parent2_v": _master_entry_ckpt.get("parent2_v"),
+                    "errors": baseline_errors[:20],
+                },
+            )
+            return _json_tool_result({
+                "error": "CROSSOVER_PREPARED_BASELINE_INVALID",
+                "next_v": next_v,
+                "source_v": source_v,
+                "parent2_v": _master_entry_ckpt.get("parent2_v"),
+                "validation_errors": baseline_errors,
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "The digest-bound prepared crossover child no longer matches "
+                    "its checkpoint contract. Do not reconstruct it from Parent A or "
+                    "run Workers; abandon and rerun crossover from a fresh baseline."
+                ),
+            })
+        prepared_capability_snapshot = prepared_baseline.get(
+            "capability_snapshot"
+        )
+
+    if prepared_capability_snapshot is None:
+        # Preserve the legacy/single-parent call shape for test and plugin
+        # adapters that replace this helper with a one-argument provider.
+        architecture_assessment = _build_generation_architecture_policy(source_v)
+    else:
+        architecture_assessment = _build_generation_architecture_policy(
+            source_v,
+            prepared_capability_snapshot=prepared_capability_snapshot,
+        )
+    if architecture_assessment.get("outcome") == "infrastructure_failure":
+        from national_runtime_probe import RUNTIME_PROBE_IDENTITY_DIGEST
         from pipeline_infrastructure import infrastructure_attempt_key
 
         source_dir = get_bot_dir(source_v)
-        source_fingerprint = _runtime_probe_bot_fingerprint(source_dir)
+        source_fingerprint = _complete_artifact_fingerprint(source_dir)
         failures = architecture_assessment.get("infrastructure_failures") or []
         infra_component = str(
             failures[0].get("component")
@@ -1675,6 +1958,35 @@ async def run_master(args):
             ),
         )
     architecture_policy = architecture_assessment.get("policy")
+    if prepared_baseline is not None:
+        stored_prepared_policy = (
+            ((_master_entry_ckpt.get("audit_context") or {}).get("crossover") or {})
+            .get("prepared_architecture_policy")
+        )
+        if not isinstance(stored_prepared_policy, dict) or (
+            stored_prepared_policy.get("policy_digest")
+            != (architecture_policy or {}).get("policy_digest")
+        ):
+            return _json_tool_result({
+                "error": "CROSSOVER_PREPARED_POLICY_IDENTITY_MISMATCH",
+                "next_v": next_v,
+                "source_v": source_v,
+                "parent2_v": _master_entry_ckpt.get("parent2_v"),
+                "stored_policy_digest": (
+                    (stored_prepared_policy or {}).get("policy_digest")
+                    if isinstance(stored_prepared_policy, dict)
+                    else ""
+                ),
+                "current_policy_digest": (
+                    (architecture_policy or {}).get("policy_digest")
+                ),
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "The prepared child policy no longer matches the current "
+                    "system contract. Fail closed and rerun crossover; never reset "
+                    "the child to Parent A while retaining two-parent lineage."
+                ),
+            })
     if (
         _master_infra is not None
         and _master_infra.get("component")
@@ -2077,6 +2389,7 @@ async def run_master(args):
             opponent_profiles=opponent_profiles,
             research_proposals=research_proposals,
             architecture_policy=architecture_policy,
+            prepared_baseline=prepared_baseline,
         )
     except Exception as exc:
         from agent_master import MasterInfrastructureError
@@ -2415,6 +2728,7 @@ async def run_master(args):
                     opponent_profiles=opponent_profiles,
                     research_proposals=research_proposals,
                     architecture_policy=architecture_policy,
+                    prepared_baseline=prepared_baseline,
                 )
             except Exception as exc:
                 from agent_master import MasterInfrastructureError
@@ -2649,11 +2963,115 @@ async def run_literature_probe(args):
     h2h_weakness = args.get("h2h_weakness", "") or ""
     stagnation_info = args.get("stagnation_info", "") or ""
 
+    probe_checkpoint = _matching_checkpoint(next_v, source_v)
+    from pipeline_state import (
+        literature_probe_receipt_binding,
+        literature_probe_receipt_present,
+        literature_probe_required,
+    )
+
+    if not isinstance(probe_checkpoint, dict):
+        return _json_tool_result({
+            "error": "LITERATURE_PROBE_CHECKPOINT_REQUIRED",
+            "next_v": next_v,
+            "source_v": source_v,
+            "directive": (
+                "Literature research may only run from the active mandatory "
+                "direction_audited checkpoint."
+            ),
+        })
+    if probe_checkpoint.get("stage") != "direction_audited":
+        route = route_policy(probe_checkpoint)
+        return _json_tool_result({
+            "error": "LITERATURE_PROBE_WRONG_STAGE",
+            "next_v": next_v,
+            "source_v": source_v,
+            "checkpoint_stage": probe_checkpoint.get("stage"),
+            "expected_stage": "direction_audited",
+            "next_tool": route.get("next_tool"),
+            "allowed_tools": route.get("allowed_tools"),
+            "directive": (
+                "Do not run literature research outside direction_audited or "
+                "overwrite a later checkpoint."
+            ),
+        })
+    if not literature_probe_required(probe_checkpoint):
+        return _json_tool_result({
+            "error": "LITERATURE_PROBE_NOT_REQUIRED",
+            "next_v": next_v,
+            "source_v": source_v,
+            "next_tool": "run_master",
+            "directive": (
+                "The canonical stagnation/direction evidence does not require "
+                "literature research for this generation."
+            ),
+        })
+    receipt_binding, binding_errors = literature_probe_receipt_binding(
+        probe_checkpoint
+    )
+    if binding_errors or receipt_binding is None:
+        return _json_tool_result({
+            "error": "LITERATURE_PROBE_REQUIREMENT_CONTEXT_INVALID",
+            "next_v": next_v,
+            "source_v": source_v,
+            "validation_errors": binding_errors,
+            "directive": (
+                "Repair or restart the scheduler-owned Master context and "
+                "Direction Audit; do not research caller-reconstructed text."
+            ),
+        })
+    if literature_probe_receipt_present(probe_checkpoint):
+        return _json_tool_result({
+            "error": "LITERATURE_PROBE_ALREADY_SATISFIED",
+            "next_v": next_v,
+            "source_v": source_v,
+            "next_tool": "run_master",
+            "directive": (
+                "A receipt already matches the current mandatory route. Continue "
+                "to Master instead of launching or overwriting a second probe."
+            ),
+        })
+
+    # Research queries use scheduler/auditor-owned evidence, not an outer-model
+    # paraphrase.  The binding above has already verified this exact context.
+    master_context = (
+        (probe_checkpoint.get("audit_context") or {}).get("master_context")
+    )
+    canonical_stagnation = str(master_context.get("stagnation_info") or "")
+    direction_audit = probe_checkpoint.get("direction_audit") or {}
+    canonical_weakness = str(
+        direction_audit.get("suggested_direction")
+        or master_context.get("match_analysis")
+        or master_context.get("performance_verification")
+        or ""
+    )
+    mismatched_fields = []
+    if stagnation_info and stagnation_info != canonical_stagnation:
+        mismatched_fields.append("stagnation_info")
+    if h2h_weakness and canonical_weakness and h2h_weakness != canonical_weakness:
+        mismatched_fields.append("h2h_weakness")
+    stagnation_info = canonical_stagnation
+    if canonical_weakness:
+        h2h_weakness = canonical_weakness
+    if mismatched_fields:
+        log_system_event(
+            "pipeline.literature_probe_caller_context_ignored",
+            "warn",
+            f"Ignored caller-reconstructed literature context for v{next_v}",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "mismatched_fields": mismatched_fields,
+                "master_context_digest": master_context.get("context_digest"),
+            },
+        )
+
     checkpoint_probe = _read_literature_probe_checkpoint(
         next_v,
         source_v=source_v,
         h2h_weakness=h2h_weakness,
         stagnation_info=stagnation_info,
+        receipt_binding=receipt_binding,
     )
     if checkpoint_probe:
         try:
@@ -2676,6 +3094,7 @@ async def run_literature_probe(args):
         source_v=source_v,
         h2h_weakness=h2h_weakness,
         stagnation_info=stagnation_info,
+        receipt_binding=receipt_binding,
     )
     if cached_probe:
         try:
@@ -2689,8 +3108,14 @@ async def run_literature_probe(args):
             )
         except Exception:
             pass
-        _persist_literature_probe_result(next_v, source_v, cached_probe)
-        return _json_tool_result(cached_probe)
+        if _persist_literature_probe_result(
+            next_v,
+            source_v,
+            cached_probe,
+            receipt_binding=receipt_binding,
+        ):
+            return _json_tool_result(cached_probe)
+        return _json_tool_result(_literature_probe_stale_result(next_v, source_v))
 
     # ── A6 governance gate: cooldown / blacklist / kill-switch ──
     try:
@@ -2710,9 +3135,19 @@ async def run_literature_probe(args):
                 "weakness": h2h_weakness,
                 "stagnation_info": stagnation_info,
             }
+            payload = _bind_literature_probe_payload(payload, receipt_binding)
+            payload["inject_text"] = _literature_probe_inject_text(payload)
+            if not _persist_literature_probe_result(
+                next_v,
+                source_v,
+                payload,
+                receipt_binding=receipt_binding,
+            ):
+                return _json_tool_result(
+                    _literature_probe_stale_result(next_v, source_v)
+                )
             try:
                 payload = _write_literature_probe_cache(next_v, payload)
-                _persist_literature_probe_result(next_v, source_v, payload)
             except Exception:
                 pass
             return _json_tool_result(payload)
@@ -2803,9 +3238,16 @@ async def run_literature_probe(args):
             "timeout_s": LITERATURE_PROBE_TIMEOUT,
             "inject_text": inject_text,
         }
+        payload = _bind_literature_probe_payload(payload, receipt_binding)
+        if not _persist_literature_probe_result(
+            next_v,
+            source_v,
+            payload,
+            receipt_binding=receipt_binding,
+        ):
+            return _json_tool_result(_literature_probe_stale_result(next_v, source_v))
         try:
             payload = _write_literature_probe_cache(next_v, payload)
-            _persist_literature_probe_result(next_v, source_v, payload)
         except Exception:
             pass
         return _json_tool_result(payload)
@@ -2830,9 +3272,17 @@ async def run_literature_probe(args):
             "elapsed_sec": round(time.time() - _t0, 1),
             "error": str(e)[:1000],
         }
+        payload = _bind_literature_probe_payload(payload, receipt_binding)
+        payload["inject_text"] = _literature_probe_inject_text(payload)
+        if not _persist_literature_probe_result(
+            next_v,
+            source_v,
+            payload,
+            receipt_binding=receipt_binding,
+        ):
+            return _json_tool_result(_literature_probe_stale_result(next_v, source_v))
         try:
             payload = _write_literature_probe_cache(next_v, payload)
-            _persist_literature_probe_result(next_v, source_v, payload)
         except Exception:
             pass
         return _json_tool_result(payload)
@@ -2866,21 +3316,27 @@ async def run_literature_probe(args):
         pass
 
     # ── Persist the proposal + return text for master_prompt injection ──
+    _payload = _bind_literature_probe_payload({
+        "next_v": next_v,
+        "source_v": source_v,
+        "weakness": weakness,
+        "stagnation_info": stagnation_info,
+        "proposal": proposal,
+        "candidate_id": candidate_id,
+        "gated_out": gated_out,
+        "elapsed_sec": round(time.time() - _t0, 1),
+        "reason": "completed",
+    }, receipt_binding)
+    _payload["inject_text"] = _literature_probe_inject_text(_payload)
+    if not _persist_literature_probe_result(
+        next_v,
+        source_v,
+        _payload,
+        receipt_binding=receipt_binding,
+    ):
+        return _json_tool_result(_literature_probe_stale_result(next_v, source_v))
     try:
-        proposals_dir = _RESULTS_DIR / "research_proposals"
-        proposals_dir.mkdir(parents=True, exist_ok=True)
-        _payload = {
-            "next_v": next_v, "source_v": source_v,
-            "weakness": weakness,
-            "stagnation_info": stagnation_info,
-            "proposal": proposal,
-            "candidate_id": candidate_id,
-            "gated_out": gated_out,
-            "elapsed_sec": round(time.time() - _t0, 1),
-            "reason": "completed",
-        }
         _payload = _write_literature_probe_cache(next_v, _payload)
-        _persist_literature_probe_result(next_v, source_v, _payload)
     except Exception:
         pass
 
@@ -2892,20 +3348,8 @@ async def run_literature_probe(args):
     except Exception:
         pass
 
-    # Text returned to the orchestrator: the proposal (for run_master hypothesis injection)
-    result = {
-        "next_v": next_v,
-        "source_v": source_v,
-        "candidate_id": candidate_id,
-        "gated_out": gated_out,
-        "proposal": proposal,
-        "weakness": weakness,
-        "stagnation_info": stagnation_info,
-        "elapsed_sec": round(time.time() - _t0, 1),
-        "reason": "completed",
-    }
-    result["inject_text"] = _literature_probe_inject_text(result)
-    return _json_tool_result(result)
+    # Text returned to the orchestrator is the exact bound receipt.
+    return _json_tool_result(_payload)
 
 
 # ──────────────────────────────────────────────
@@ -3602,6 +4046,21 @@ def _incremental_reset_next_dir(next_dir, source_dir):
     return preserved
 
 
+def _clear_compiled_task_context(next_dir):
+    """Remove the system-owned Worker brief after a successful batch.
+
+    ``.task_context`` is control-plane input, not part of the bot artifact.
+    Keeping it through quality/official certification could hide an accidental
+    runtime dependency because publication intentionally excludes the brief.
+    """
+    from candidate_hygiene import cleanup_transient_candidate_artifacts
+
+    cleanup_transient_candidate_artifacts(
+        next_dir,
+        include_task_context=True,
+    )
+
+
 def _full_reset_next_dir(next_dir, source_dir):
     """Restore an invalid-policy candidate exactly from its authoritative source."""
     from evolution_infra import copy_bot_tree_for_candidate
@@ -3641,6 +4100,38 @@ def _recover_architecture_policy_identity(ckpt, next_dir, source_dir):
         return None
     next_v = ckpt.get("next_v")
     source_v = ckpt.get("source_v")
+    parent2_v = ckpt.get("parent2_v")
+    if parent2_v is not None:
+        # Resetting a crossover child to Parent A while retaining parent2_v and
+        # crossover metadata fabricates a two-parent lineage.  The prepared
+        # child is itself the authoritative baseline; once its policy identity
+        # is stale there is no trusted single-parent reconstruction path.
+        log_system_event(
+            "pipeline.crossover_policy_identity_fail_closed",
+            "error",
+            f"Crossover v{next_v} policy identity is stale; refusing Parent-A reset",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "parent2_v": parent2_v,
+                "source_stage": ckpt.get("stage"),
+                "identity_errors": errors,
+            },
+        )
+        return _json_tool_result({
+            "error": "CROSSOVER_ARCHITECTURE_POLICY_IDENTITY_STALE",
+            "next_v": next_v,
+            "source_v": source_v,
+            "parent2_v": parent2_v,
+            "identity_errors": errors,
+            "candidate_reset_to_source": False,
+            "next_tool": "abandon_generation",
+            "directive": (
+                "Fail closed: do not reset this two-parent child to Parent A while "
+                "claiming crossover lineage. Abandon this generation, then rerun "
+                "crossover from a fresh selected checkpoint under the current policy."
+            ),
+        })
     ledger_digest = _checkpoint_runtime_contract_ledger_digest(ckpt)
     _full_reset_next_dir(next_dir, source_dir)
     existing_audit = ckpt.get("audit_context") or {}
@@ -3723,12 +4214,35 @@ def _task_declared_scope_files(task, next_v):
     files = set()
     if not isinstance(task, dict):
         return files
-    for key in ("target_files", "files_allowed", "must_change_files"):
+    for key in ("target_files", "files_allowed"):
         for target in task.get(key, []) or []:
             rel = _target_rel(target, next_v)
             if rel:
                 files.add(rel)
     return files
+
+
+def _task_write_scope_errors(tasks, next_v):
+    """Keep completion requirements from silently becoming write authority."""
+    errors = []
+    for index, task in enumerate(tasks or []):
+        if not isinstance(task, dict):
+            errors.append(f"task[{index}]_not_object")
+            continue
+        writable = _task_declared_scope_files(task, next_v)
+        must_change = set()
+        for target in task.get("must_change_files", []) or []:
+            rel = _target_rel(target, next_v)
+            if not rel:
+                errors.append(f"task[{index}]_must_change_path_invalid:{target}")
+            else:
+                must_change.add(rel)
+        unauthorized = sorted(must_change - writable)
+        if unauthorized:
+            errors.append(
+                f"task[{index}]_must_change_outside_writable_scope:{unauthorized}"
+            )
+    return errors
 
 
 def _plan_repair_scope_files(plan, next_v):
@@ -3754,9 +4268,10 @@ def _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v):
     """Preserve final declared-scope coverage across in-place repair rounds.
 
     Rework execution may refresh ``tasks`` to only the newest blocker, but the
-    candidate diff is cumulative from the source bot. Store a separate scope
-    ledger so quality gates still recognize earlier successful repair edits
-    without re-running those old workers.
+    repair edits are cumulative. Store only files already authorized by a
+    Master/repair task or the immutable repair ledger; observed diffs are
+    evidence, never authority. In particular, a crossover's Parent-A→child
+    preparation diff must not auto-authorize a later Worker edit.
     """
     if not isinstance(plan, dict):
         return plan
@@ -3764,29 +4279,8 @@ def _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v):
     scope = set()
     scope.update(_plan_repair_scope_files(existing_plan, next_v))
     scope.update(_plan_repair_scope_files(plan, next_v))
-    scope.update(_declared_scope_ledger_files(ckpt))
     for task in tasks or []:
         scope.update(_task_declared_scope_files(task, next_v))
-    work_item = plan.get("work_item") if isinstance(plan.get("work_item"), dict) else {}
-    existing_work_item = existing_plan.get("work_item") if isinstance(existing_plan.get("work_item"), dict) else {}
-    is_crossover = (
-        bool(ckpt.get("parent2_v"))
-        or plan.get("strategy") == "crossover"
-        or existing_plan.get("strategy") == "crossover"
-        or str(work_item.get("kind", "")).startswith("crossover_")
-        or str(existing_work_item.get("kind", "")).startswith("crossover_")
-    )
-    if is_crossover and ckpt.get("source_v") is not None:
-        try:
-            source_dir = get_bot_dir(ckpt.get("source_v"))
-            next_dir = get_bot_dir(next_v)
-            if source_dir.exists() and next_dir.exists():
-                scope.update(
-                    rel for rel in _py_files_changed_between(source_dir, next_dir)
-                    if rel and "backup" not in rel
-                )
-        except Exception as exc:
-            _log.debug("Could not accumulate crossover repair scope for v%s: %s", next_v, exc)
     if not scope:
         return plan
     return {**plan, "repair_scope_files": sorted(scope)}
@@ -4262,6 +4756,12 @@ def _checkpoint_master_task_authority_errors(ckpt, authoritative_tasks):
     """Bind initial worker execution to the accepted checkpoint plan/ledger."""
     if not isinstance(authoritative_tasks, list) or not authoritative_tasks:
         return ["checkpoint_master_plan_tasks_missing_or_empty"]
+    scope_errors = _task_write_scope_errors(
+        authoritative_tasks,
+        ckpt.get("next_v") if isinstance(ckpt, dict) else None,
+    )
+    if scope_errors:
+        return scope_errors
     plan = _checkpoint_master_plan(ckpt)
     plan_ledger = plan.get("runtime_contract_ledger")
     checkpoint_ledger = ckpt.get("runtime_contract_ledger") if isinstance(ckpt, dict) else None
@@ -4807,6 +5307,13 @@ def _official_repair_tasks(ckpt, feedback):
         "worker_prompt": prompt,
         "task_kind": "official_repair",
         "repair_blocker": "official_full",
+        "repair_contract": {
+            "blocker": "official_full",
+            "files": targets,
+            "evidence": evidence[:2000],
+            "source_stage": str(ckpt.get("stage") or "")
+            if isinstance(ckpt, dict) else "",
+        },
     }]
 
 
@@ -5021,6 +5528,50 @@ def _checkpoint_rework_feedback(ckpt):
     return ""
 
 
+def _checkpoint_repair_baseline_fingerprint(ckpt) -> str:
+    """Return the content identity that authorized the current repair route."""
+    if not isinstance(ckpt, dict):
+        return ""
+    top_level = str(ckpt.get("repair_baseline_artifact_hash") or "")
+    plan = ckpt.get("master_plan") if isinstance(ckpt.get("master_plan"), dict) else {}
+    work_item = plan.get("work_item") if isinstance(plan.get("work_item"), dict) else {}
+    bound = str(work_item.get("repair_baseline_artifact_hash") or "")
+    stage = str(ckpt.get("stage") or "")
+    if stage in {"quality_failed", "precommit_failed", "official_failed"} and top_level:
+        return top_level
+    if bound:
+        return bound
+    if top_level:
+        return top_level
+
+    gates = ckpt.get("gate_results") if isinstance(ckpt.get("gate_results"), dict) else {}
+    if _is_official_rework_checkpoint(ckpt) or ckpt.get("stage") == "official_failed":
+        official = gates.get("official_full") if isinstance(gates.get("official_full"), dict) else {}
+        identities = [
+            official.get("certification_identity"),
+            (official.get("status") or {}).get("certification_identity")
+            if isinstance(official.get("status"), dict)
+            else None,
+        ]
+        for identity in identities:
+            if isinstance(identity, dict) and identity.get("candidate_hash"):
+                return str(identity["candidate_hash"])
+
+    if _is_precommit_rework_checkpoint(ckpt) or ckpt.get("stage") == "precommit_failed":
+        precommit = gates.get("precommit_eval") if isinstance(gates.get("precommit_eval"), dict) else {}
+        if precommit.get("code_fingerprint"):
+            return str(precommit["code_fingerprint"])
+
+    quality = gates.get("quality") if isinstance(gates.get("quality"), dict) else {}
+    if quality.get("code_fingerprint"):
+        return str(quality["code_fingerprint"])
+
+    # Official evidence is created only after the content-bound precommit gate;
+    # retain that safe fallback for older official payload projections.
+    precommit = gates.get("precommit_eval") if isinstance(gates.get("precommit_eval"), dict) else {}
+    return str(precommit.get("code_fingerprint") or "")
+
+
 def _quality_failure_items(ckpt):
     if not isinstance(ckpt, dict):
         return []
@@ -5204,14 +5755,8 @@ def _is_runtime_architecture_failure_text(item):
     ))
 
 
-def _declared_scope_ledger_files(ckpt, reviewer_feedback=""):
-    """Files that should be added to repair_scope_files without spawning workers.
-
-    declared_scope failures can happen after in-place crossover/repair rounds when
-    the candidate already legitimately changed a file but the accumulated scope
-    ledger did not include it yet. That is an accounting update, not a request to
-    make another code edit in that file.
-    """
+def _declared_scope_violation_files(ckpt, reviewer_feedback=""):
+    """Extract undeclared artifact paths for fail-closed integrity handling."""
     if not isinstance(ckpt, dict):
         return set()
     quality = (ckpt.get("gate_results") or {}).get("quality") or {}
@@ -5225,8 +5770,16 @@ def _declared_scope_ledger_files(ckpt, reviewer_feedback=""):
         item for item in _quality_failure_items(ckpt)
         if _is_declared_scope_failure_text(item)
     )
-    if reviewer_feedback and _is_declared_scope_failure_text(reviewer_feedback):
-        evidence.append(reviewer_feedback)
+    # Machine-owned declared_scope_errors/metrics are the primary authority.
+    # If an older checkpoint lacks them, consume only feedback lines that
+    # themselves describe a scope violation; never append the aggregate quality
+    # receipt because it also names legitimate file_size/position targets.
+    if not evidence and reviewer_feedback:
+        evidence.extend(
+            line.strip()
+            for line in str(reviewer_feedback).splitlines()
+            if _is_declared_scope_failure_text(line)
+        )
 
     files = set()
     for filename in _extract_quality_failure_files(evidence):
@@ -5252,39 +5805,6 @@ def _declared_scope_ledger_files(ckpt, reviewer_feedback=""):
         }
         files.update(changed - allowed)
     return files
-
-
-def _is_declared_scope_ledger_task(task):
-    if not isinstance(task, dict):
-        return False
-    contract = task.get("repair_contract") if isinstance(task.get("repair_contract"), dict) else {}
-    text = " ".join([
-        str(task.get("worker_id", "")),
-        str(task.get("repair_blocker", "")),
-        str(contract.get("blocker", "")),
-        str(contract.get("evidence", "")),
-        str(task.get("worker_prompt", task.get("instruction", ""))),
-    ])
-    return _is_declared_scope_failure_text(text)
-
-
-def _prune_declared_scope_ledger_tasks(tasks, ckpt, reviewer_feedback=""):
-    ledger_files = _declared_scope_ledger_files(ckpt, reviewer_feedback)
-    if not ledger_files:
-        return list(tasks or []), set()
-    kept = []
-    for task in tasks or []:
-        task_files = {
-            rel for rel in (
-                _target_rel(target, ckpt.get("next_v") if isinstance(ckpt, dict) else None)
-                for target in task.get("target_files", []) or []
-            )
-            if rel
-        }
-        if task_files and task_files <= ledger_files and _is_declared_scope_ledger_task(task):
-            continue
-        kept.append(task)
-    return kept, ledger_files
 
 
 def _task_id_suffix(filename):
@@ -6212,9 +6732,11 @@ def _quality_repair_contracts(ckpt, feedback=""):
     claimed_files = _extract_quality_failure_files(failures)
     if not claimed_files and feedback:
         claimed_files = _extract_quality_failure_files([feedback])
-    ledger_files = _declared_scope_ledger_files(ckpt, feedback)
-    if ledger_files:
-        claimed_files = [filename for filename in claimed_files if filename not in ledger_files]
+    violation_files = _declared_scope_violation_files(ckpt, feedback)
+    if violation_files:
+        claimed_files = [
+            filename for filename in claimed_files if filename not in violation_files
+        ]
     architecture_contracts = _architecture_contracts(quality, ckpt)
     contracts = []
     contracts.extend(_line_count_contracts(quality, failures))
@@ -6940,10 +7462,11 @@ def _precommit_repair_task_refresh_reason(tasks, ckpt, feedback=""):
 def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     """Build bounded repair tasks when a checkpoint has gate feedback but no plan.
 
-    Crossover output checkpoints intentionally store a synthetic plan with no
-    worker tasks because the code was produced by run_crossover. If quality gates
-    fail at that point, the next action is still a repair worker pass; leaving task
-    creation to the Orchestrator LLM made recovery nondeterministic.
+    Legacy crossover checkpoints and the defensive hard-position repair route
+    may store a synthetic plan with no worker tasks. New crossover generations
+    stop at ``prepared`` and pass through direction audit, Master, and Workers
+    before quality; deterministic task synthesis remains necessary for older or
+    explicit repair checkpoints.
     """
     if not isinstance(ckpt, dict):
         return []
@@ -7064,6 +7587,13 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
         f"Exact gate feedback:\n{feedback}\n\n"
         f"Required method:\n{method}"
     )
+    repair_blocker = (
+        "review_rejection"
+        if is_review_rework
+        else "critic_rejection"
+        if is_critic_rework
+        else "quality_gate"
+    )
     return [{
         "worker_id": worker_id,
         "role": role,
@@ -7071,7 +7601,100 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
         "must_change_files": targets,
         "worker_prompt": prompt,
         "task_kind": task_kind,
+        "repair_blocker": repair_blocker,
+        "repair_contract": {
+            "blocker": repair_blocker,
+            "files": targets,
+            "evidence": feedback[:2000],
+            "source_stage": str(stage or ""),
+        },
     }]
+
+
+def _transport_equivalent_feedback(left, right):
+    """Compare an MCP-carried feedback string without granting rewrite power.
+
+    JSON/TCP transports may normalize line endings or omit one surrounding
+    newline.  Those representations are equivalent; changing any non-boundary
+    content is not.  In particular, whitespace inside paths/evidence remains
+    significant so a caller cannot smuggle a second repair directive.
+    """
+
+    def normalize(value):
+        if not isinstance(value, str):
+            return None
+        return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    normalized_left = normalize(left)
+    normalized_right = normalize(right)
+    return (
+        normalized_left is not None
+        and normalized_right is not None
+        and normalized_left == normalized_right
+    )
+
+
+def _repair_contract_signature(task, next_v):
+    """Return a content signature for one system-owned repair contract.
+
+    This is an integrity receipt, not caller authority.  It binds the gate
+    contract to the writable task scope; execute_workers still compares the
+    complete canonical task list before accepting a non-empty caller echo.
+    """
+    if not isinstance(task, dict):
+        return ""
+    contract = task.get("repair_contract")
+    if not isinstance(contract, dict) or not str(contract.get("blocker") or "").strip():
+        return ""
+
+    raw_contract_files = contract.get("files")
+    if raw_contract_files is None:
+        raw_contract_files = [contract.get("file")]
+    if not isinstance(raw_contract_files, (list, tuple)):
+        return ""
+    contract_files = set()
+    for target in raw_contract_files:
+        rel = _target_rel(target, next_v)
+        if not rel:
+            return ""
+        contract_files.add(rel)
+
+    writable_files = _task_declared_scope_files(task, next_v)
+    # The contract's primary file(s) must be writable.  A system runtime
+    # contract may derive additional files_allowed from typed owner_file fields;
+    # those are bound by writable_files in the signature payload even when the
+    # human-facing repair_contract keeps only its primary targets.
+    if not contract_files or not writable_files or not contract_files.issubset(writable_files):
+        return ""
+    payload = {
+        "repair_contract": contract,
+        "writable_files": sorted(writable_files),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _authoritative_rework_tasks(ckpt, feedback):
+    """Rebuild the only tasks authorized by immutable checkpoint/gate evidence."""
+    tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, feedback)
+    errors = []
+    if not tasks:
+        errors.append("system_repair_task_synthesis_empty")
+        return [], errors
+    for index, task in enumerate(tasks):
+        if not _repair_contract_signature(task, ckpt.get("next_v")):
+            worker_id = task.get("worker_id") if isinstance(task, dict) else None
+            errors.append(
+                f"task[{index}]_repair_contract_signature_invalid:{worker_id or 'unknown'}"
+            )
+    return tasks, errors
 
 
 def _should_reset_before_rework(ckpt, tasks):
@@ -7228,7 +7851,196 @@ async def execute_workers(args):
             })
         if recovery is not None:
             return recovery
+    if ckpt.get("stage") == "master_planned":
+        from prepared_baseline_contract import validate_prepared_artifact_contract
+
+        prepared_artifact_contract = (
+            (ckpt.get("audit_context") or {}).get("prepared_artifact_contract")
+        )
+        prepared_artifact_errors = validate_prepared_artifact_contract(
+            prepared_artifact_contract,
+            prepared_dir=next_dir,
+            source_v=source_v,
+            next_v=next_v,
+            verify_live_content=True,
+        )
+        if prepared_artifact_errors:
+            return _json_tool_result({
+                "error": "PREPARED_ARTIFACT_DRIFT_BEFORE_WORKERS",
+                "next_v": next_v,
+                "source_v": source_v,
+                "validation_errors": prepared_artifact_errors,
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "The candidate changed after Master accepted the frozen prepared "
+                    "baseline but before Workers. Abandon and restart; do not grant "
+                    "the drift a repair scope."
+                ),
+            })
     rework_stages = {"quality_failed", "precommit_failed", "official_failed", "repair_planned", "rework_running"}
+    if ckpt.get("stage") in rework_stages:
+        expected_repair_baseline = _checkpoint_repair_baseline_fingerprint(ckpt)
+        current_repair_baseline = _complete_artifact_fingerprint(next_dir)
+        if not expected_repair_baseline:
+            return _json_tool_result({
+                "error": "REPAIR_BASELINE_RECEIPT_MISSING",
+                "next_v": next_v,
+                "source_v": source_v,
+                "checkpoint_stage": ckpt.get("stage"),
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "The failed gate/repair plan does not bind the exact complete "
+                    "candidate artifact. Abandon; do not infer repair authority "
+                    "from file paths or the live diff."
+                ),
+            })
+        if (
+            not current_repair_baseline
+            or current_repair_baseline != expected_repair_baseline
+        ):
+            return _json_tool_result({
+                "error": "REPAIR_BASELINE_ARTIFACT_DRIFT",
+                "next_v": next_v,
+                "source_v": source_v,
+                "checkpoint_stage": ckpt.get("stage"),
+                "expected_artifact_hash": expected_repair_baseline,
+                "current_artifact_hash": current_repair_baseline,
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "The candidate changed after the gate evidence or repair plan "
+                    "was frozen. Abandon; the drift cannot piggyback on a declared "
+                    "repair file."
+                ),
+            })
+        canonical_feedback = _checkpoint_rework_feedback(ckpt)
+        if not canonical_feedback:
+            return _json_tool_result({
+                "error": "REWORK_FEEDBACK_AUTHORITY_MISSING",
+                "next_v": next_v,
+                "source_v": source_v,
+                "checkpoint_stage": ckpt.get("stage"),
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "The checkpoint/gate receipt contains no canonical repair "
+                    "feedback. Caller feedback cannot create repair authority."
+                ),
+            })
+        if reviewer_feedback and not _transport_equivalent_feedback(
+            reviewer_feedback,
+            canonical_feedback,
+        ):
+            log_system_event(
+                "pipeline.worker_rework_feedback_mismatch",
+                "error",
+                f"Rejected caller-rewritten rework feedback for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "stage": ckpt.get("stage"),
+                    "canonical_feedback_digest": hashlib.sha256(
+                        canonical_feedback.encode("utf-8")
+                    ).hexdigest(),
+                    "supplied_feedback_digest": hashlib.sha256(
+                        str(reviewer_feedback).encode("utf-8")
+                    ).hexdigest(),
+                },
+            )
+            return _json_tool_result({
+                "error": "REWORK_FEEDBACK_AUTHORITY_MISMATCH",
+                "next_v": next_v,
+                "source_v": source_v,
+                "checkpoint_stage": ckpt.get("stage"),
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "Pass empty reviewer_feedback to load the checkpoint receipt, "
+                    "or echo that receipt exactly. Caller-authored feedback cannot "
+                    "add files, blockers, or repair instructions."
+                ),
+            })
+        reviewer_feedback = canonical_feedback
+
+        authoritative_rework_tasks, authority_errors = _authoritative_rework_tasks(
+            ckpt,
+            canonical_feedback,
+        )
+        if authority_errors:
+            return _json_tool_result({
+                "error": "REWORK_TASK_AUTHORITY_INVALID",
+                "next_v": next_v,
+                "source_v": source_v,
+                "checkpoint_stage": ckpt.get("stage"),
+                "validation_errors": authority_errors,
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "The system could not derive signed, file-scoped repair tasks "
+                    "from the checkpoint/gate receipt. Do not execute caller tasks."
+                ),
+            })
+        if tasks_provided and _canonical_tasks_digest(tasks) != _canonical_tasks_digest(
+            authoritative_rework_tasks
+        ):
+            unsigned_workers = [
+                str(task.get("worker_id") or f"task_{index}")
+                for index, task in enumerate(tasks)
+                if not _repair_contract_signature(task, next_v)
+            ]
+            log_system_event(
+                "pipeline.worker_rework_task_authority_mismatch",
+                "error",
+                f"Rejected caller-rewritten rework tasks for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "stage": ckpt.get("stage"),
+                    "expected_digest": _canonical_tasks_digest(authoritative_rework_tasks),
+                    "supplied_digest": _canonical_tasks_digest(tasks),
+                    "unsigned_worker_ids": unsigned_workers,
+                },
+            )
+            return _json_tool_result({
+                "error": "REWORK_TASK_AUTHORITY_MISMATCH",
+                "next_v": next_v,
+                "source_v": source_v,
+                "checkpoint_stage": ckpt.get("stage"),
+                "expected_digest": _canonical_tasks_digest(authoritative_rework_tasks),
+                "supplied_digest": _canonical_tasks_digest(tasks),
+                "unsigned_worker_ids": unsigned_workers,
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "Pass tasks=[] to load system-synthesized repair tasks, or echo "
+                    "the exact canonical list. Extra, shortened, or unsigned tasks "
+                    "cannot expand repair authority."
+                ),
+            })
+        tasks = deepcopy(authoritative_rework_tasks)
+    declared_scope_violations = _declared_scope_violation_files(
+        ckpt,
+        reviewer_feedback,
+    )
+    if declared_scope_violations:
+        log_system_event(
+            "pipeline.declared_scope_integrity_violation",
+            "error",
+            f"Refusing repair workers for v{next_v}: undeclared artifact edits",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "stage": ckpt.get("stage"),
+                "violation_files": sorted(declared_scope_violations),
+            },
+        )
+        return _json_tool_result({
+            "error": "DECLARED_SCOPE_INTEGRITY_VIOLATION",
+            "next_v": next_v,
+            "source_v": source_v,
+            "violation_files": sorted(declared_scope_violations),
+            "next_tool": "abandon_generation",
+            "directive": (
+                "A failed diff cannot authorize itself through a repair ledger. "
+                "Abandon this candidate and restart from a frozen prepared/source "
+                "baseline with explicit Master task scope."
+            ),
+        })
     if not ckpt.get("master_plan") and ckpt.get("stage") not in rework_stages:
         return _json_tool_result({
             "error": "execute_workers requires a master plan. Call run_master first to produce a task plan.",
@@ -7319,59 +8131,10 @@ async def execute_workers(args):
             })
         tasks = deepcopy(_authoritative_tasks)
 
-    if not reviewer_feedback and ckpt.get("stage") in rework_stages:
-        reviewer_feedback = _checkpoint_rework_feedback(ckpt)
-
     review_rework_checkpoint = _is_review_rework_checkpoint(ckpt)
     critic_rework_checkpoint = _is_critic_rework_checkpoint(ckpt)
     official_rework_checkpoint = _is_official_rework_checkpoint(ckpt)
-    replace_checkpoint_tasks = False
-
-    def _finish_declared_scope_ledger_only(ledger_files):
-        base_kind = "quality_repair" if ckpt.get("stage") == "quality_failed" else "gate_rework"
-        if ckpt.get("stage") == "precommit_failed":
-            base_kind = "precommit_repair"
-        elif ckpt.get("parent2_v") is not None:
-            base_kind = f"crossover_{base_kind}"
-        plan = _checkpoint_plan_with_tasks(ckpt, [], replace_existing_tasks=True)
-        plan = {
-            **plan,
-            "work_item": {
-                "kind": base_kind,
-                "source_stage": ckpt.get("stage"),
-                "reset_performed": False,
-                "route": route_policy(ckpt),
-                "scope_ledger_only": True,
-            },
-        }
-        plan = _plan_with_accumulated_repair_scope(ckpt, plan, [], next_v)
-        write_pipeline_checkpoint(
-            next_v,
-            source_v,
-            "workers_done",
-            master_plan=plan,
-            reviewer_feedback=reviewer_feedback,
-            worker_failure_count=ckpt.get("worker_failure_count", 0),
-        )
-        log_system_event(
-            "pipeline.declared_scope_ledger_repaired",
-            "warn",
-            f"Updated declared-scope ledger for v{next_v}; no bot code worker needed",
-            {
-                "next_v": next_v,
-                "source_v": source_v,
-                "files": sorted(ledger_files),
-                "stage": ckpt.get("stage"),
-            },
-        )
-        return _json_tool_result({
-            "success": True,
-            "scope_ledger_only": True,
-            "repair_scope_files": sorted(ledger_files),
-            "logs": _get_ui().get_output() if _get_ui() else "",
-            "costs": getattr(_get_ui(), "costs", {}) if _get_ui() else {},
-            "audit_focus_areas": [],
-        })
+    replace_checkpoint_tasks = ckpt.get("stage") in rework_stages
 
     if official_rework_checkpoint:
         checkpoint_tasks = _checkpoint_master_plan(ckpt).get("tasks", [])
@@ -7472,50 +8235,18 @@ async def execute_workers(args):
                              f"Tasks loaded from checkpoint for v{next_v} (LLM omitted tasks arg)",
                              {"next_v": next_v, "num_tasks": len(tasks)})
         else:
-            ledger_files = _declared_scope_ledger_files(ckpt, reviewer_feedback)
-            if ledger_files and ckpt.get("stage") in rework_stages:
-                return _finish_declared_scope_ledger_only(ledger_files)
             return _json_tool_result({
                 "error": "No tasks provided and checkpoint has no task plan. Call run_master first.",
                 "next_v": next_v,
                 "source_v": source_v,
                 })
         if not tasks:
-            ledger_files = _declared_scope_ledger_files(ckpt, reviewer_feedback)
-            if ledger_files and ckpt.get("stage") in rework_stages:
-                return _finish_declared_scope_ledger_only(ledger_files)
             return _json_tool_result({
                 "error": "No tasks provided and checkpoint has no task plan. Call run_master first.",
                 "next_v": next_v,
                 "source_v": source_v,
                 "stage": ckpt.get("stage"),
             })
-
-    if tasks and ckpt.get("stage") in rework_stages:
-        pruned_tasks, ledger_files = _prune_declared_scope_ledger_tasks(
-            tasks,
-            ckpt,
-            reviewer_feedback,
-        )
-        if len(pruned_tasks) != len(tasks):
-            old_files = sorted(_task_target_filenames(tasks))
-            tasks = pruned_tasks
-            replace_checkpoint_tasks = True
-            log_system_event(
-                "pipeline.declared_scope_ledger_tasks_pruned",
-                "warn",
-                f"Pruned declared-scope ledger-only repair task(s) for v{next_v}",
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "old_target_files": old_files,
-                    "new_target_files": sorted(_task_target_filenames(tasks)),
-                    "ledger_files": sorted(ledger_files),
-                    "num_tasks": len(tasks),
-                },
-            )
-            if not tasks:
-                return _finish_declared_scope_ledger_only(ledger_files)
 
     if (
         tasks
@@ -7627,6 +8358,21 @@ async def execute_workers(args):
                     "new_order": new_order,
                 },
             )
+
+    task_write_scope_errors = _task_write_scope_errors(tasks, next_v)
+    if task_write_scope_errors:
+        return _json_tool_result({
+            "error": "WORKER_TASK_WRITE_SCOPE_INVALID",
+            "next_v": next_v,
+            "source_v": source_v,
+            "validation_errors": task_write_scope_errors,
+            "next_tool": "abandon_generation",
+            "directive": (
+                "must_change_files is a completion requirement, not write "
+                "authority. Every required file must already be in "
+                "target_files/files_allowed."
+            ),
+        })
 
     # B6 (2026-06-30): redundant-call guard. execute_workers is NOT idempotent —
     # a redundant call (no reviewer_feedback) when workers already ran resets code
@@ -8008,12 +8754,6 @@ async def execute_workers(args):
             if isinstance(task, dict):
                 task.setdefault("task_kind", rework_kind)
         retry_plan = _plan_with_accumulated_repair_scope(ckpt, retry_plan, tasks, next_v)
-        write_pipeline_checkpoint(next_v, source_v, "repair_planned",
-                                  master_plan=retry_plan,
-                                  reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=ckpt.get("worker_failure_count", 0),
-                                  precommit_rework_count=precommit_rework_count_for_write,
-                                  official_rework_count=official_rework_count_for_write)
         task_kinds = {
             str(task.get("task_kind") or "")
             for task in tasks or []
@@ -8107,6 +8847,55 @@ async def execute_workers(args):
                 "non-behavioral Python text (comments/docstrings/blank lines) from "
                 f"large file_size targets: {trim_summary}. Continue only if a blocker remains."
             )
+
+        repair_baseline_artifact_hash = _complete_artifact_fingerprint(next_dir)
+        if not repair_baseline_artifact_hash:
+            return _json_tool_result({
+                "error": "REPAIR_BASELINE_ARTIFACT_UNAVAILABLE",
+                "next_v": next_v,
+                "source_v": source_v,
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "Could not freeze the complete post-reset/post-hygiene repair "
+                    "baseline. Do not execute Workers without a content receipt."
+                ),
+            })
+        rework_plan_metadata = {
+            **rework_plan_metadata,
+            "repair_baseline_artifact_hash": repair_baseline_artifact_hash,
+        }
+        retry_plan = {
+            **retry_plan,
+            "work_item": rework_plan_metadata,
+        }
+        retry_plan = _plan_with_accumulated_repair_scope(
+            ckpt,
+            retry_plan,
+            tasks,
+            next_v,
+        )
+        repair_checkpoint_written = write_pipeline_checkpoint(
+            next_v,
+            source_v,
+            "repair_planned",
+            master_plan=retry_plan,
+            reviewer_feedback=reviewer_feedback,
+            worker_failure_count=ckpt.get("worker_failure_count", 0),
+            precommit_rework_count=precommit_rework_count_for_write,
+            official_rework_count=official_rework_count_for_write,
+            repair_baseline_artifact_hash=repair_baseline_artifact_hash,
+        )
+        if not repair_checkpoint_written:
+            return _json_tool_result({
+                "error": "REPAIR_BASELINE_CHECKPOINT_FAILED",
+                "next_v": next_v,
+                "source_v": source_v,
+                "expected_artifact_hash": repair_baseline_artifact_hash,
+                "directive": (
+                    "The system prepared a repair baseline but could not persist its "
+                    "content receipt. Do not execute Workers or claim repair authority."
+                ),
+            })
 
     # P2: Validate positive worker intent against EXHAUSTED directions from the
     # experience pool. Negative guardrail prose is ignored to prevent warnings
@@ -8213,6 +9002,27 @@ async def execute_workers(args):
                 break  # One warning per task is sufficient
 
     if reviewer_feedback and rework_plan_metadata:
+        expected_rework_hash = str(
+            rework_plan_metadata.get("repair_baseline_artifact_hash") or ""
+        )
+        current_rework_hash = _complete_artifact_fingerprint(next_dir)
+        if (
+            not expected_rework_hash
+            or not current_rework_hash
+            or current_rework_hash != expected_rework_hash
+        ):
+            return _json_tool_result({
+                "error": "REPAIR_BASELINE_ARTIFACT_DRIFT",
+                "next_v": next_v,
+                "source_v": source_v,
+                "expected_artifact_hash": expected_rework_hash,
+                "current_artifact_hash": current_rework_hash,
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "The candidate changed after the repair baseline receipt was "
+                    "written and before Workers. Abandon this generation."
+                ),
+            })
         running_plan = (
             _checkpoint_plan_with_tasks(
                 ckpt, tasks, replace_existing_tasks=replace_checkpoint_tasks
@@ -8221,15 +9031,49 @@ async def execute_workers(args):
         )
         running_plan = {**running_plan, "work_item": rework_plan_metadata}
         running_plan = _plan_with_accumulated_repair_scope(ckpt, running_plan, tasks, next_v)
-        write_pipeline_checkpoint(next_v, source_v, "rework_running",
-                                  master_plan=running_plan,
-                                  reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=ckpt.get("worker_failure_count", 0) if ckpt else 0,
-                                  precommit_rework_count=precommit_rework_count_for_write,
-                                  official_rework_count=official_rework_count_for_write)
+        rework_checkpoint_written = write_pipeline_checkpoint(
+            next_v,
+            source_v,
+            "rework_running",
+            master_plan=running_plan,
+            reviewer_feedback=reviewer_feedback,
+            worker_failure_count=ckpt.get("worker_failure_count", 0) if ckpt else 0,
+            precommit_rework_count=precommit_rework_count_for_write,
+            official_rework_count=official_rework_count_for_write,
+            repair_baseline_artifact_hash=expected_rework_hash,
+        )
+        if not rework_checkpoint_written:
+            return _json_tool_result({
+                "error": "REWORK_RUNNING_CHECKPOINT_FAILED",
+                "next_v": next_v,
+                "source_v": source_v,
+                "expected_artifact_hash": expected_rework_hash,
+                "directive": (
+                    "The repair baseline was frozen but the rework-running "
+                    "transition could not be persisted. Do not execute Workers."
+                ),
+            })
+
+        # Recheck immediately before the Worker batch.  This closes the gap in
+        # which a self-modifying test or external process edits an otherwise
+        # declared repair file after checkpoint publication.
+        current_rework_hash = _complete_artifact_fingerprint(next_dir)
+        if current_rework_hash != expected_rework_hash:
+            return _json_tool_result({
+                "error": "REPAIR_BASELINE_ARTIFACT_DRIFT",
+                "next_v": next_v,
+                "source_v": source_v,
+                "expected_artifact_hash": expected_rework_hash,
+                "current_artifact_hash": current_rework_hash,
+                "next_tool": "abandon_generation",
+            })
 
     ui = _get_ui()
-    from worker_boundary import diff_snapshot, restore_python_files, snapshot_python_files
+    from worker_boundary import (
+        diff_file_snapshot,
+        restore_complete_artifact_snapshot,
+        snapshot_python_files,
+    )
 
     worker_batch_snapshot = snapshot_python_files(next_dir)
     try:
@@ -8240,17 +9084,58 @@ async def execute_workers(args):
             force_sequential=force_sequential_rework,
             task_skipper=task_skipper,
         )
-    except Exception as exc:
+    except BaseException as exc:
         from agent_workers import WorkerInfrastructureError
 
+        # _execute_workers may have committed earlier task writes before a
+        # later task raises.  RuntimeError, cancellation, KeyboardInterrupt,
+        # and WorkerInfrastructureError all cross this transaction boundary;
+        # restore first, then preserve their original handling semantics.
+        try:
+            restore_complete_artifact_snapshot(next_dir, worker_batch_snapshot)
+        except BaseException as rollback_exc:
+            try:
+                log_system_event(
+                    "pipeline.worker_batch_exception_rollback_failed",
+                    "error",
+                    f"Worker exception rollback failed for v{next_v}",
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "worker_exception": (
+                            f"{type(exc).__name__}: {str(exc)[:300]}"
+                        ),
+                        "rollback_exception": (
+                            f"{type(rollback_exc).__name__}: {str(rollback_exc)[:300]}"
+                        ),
+                    },
+                )
+            except Exception:
+                pass
+            rollback_failure = RuntimeError(
+                "WORKER_BATCH_EXCEPTION_ROLLBACK_FAILED: "
+                f"{type(rollback_exc).__name__}: {str(rollback_exc)[:300]}"
+            )
+            rollback_failure.add_note(
+                "Original Worker exception: "
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            )
+            raise rollback_failure from exc
+        try:
+            log_system_event(
+                "pipeline.worker_batch_exception_rolled_back",
+                "warn",
+                f"Rolled back Worker batch after {type(exc).__name__} for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:
+            pass
         if not isinstance(exc, WorkerInfrastructureError):
             raise
-        restore_python_files(
-            next_dir,
-            worker_batch_snapshot,
-            diff_snapshot(next_dir, worker_batch_snapshot),
-        )
-        from national_runtime_probe import _bot_code_fingerprint
         from pipeline_infrastructure import infrastructure_attempt_key
 
         current = _matching_checkpoint(next_v, source_v) or ckpt
@@ -8271,8 +9156,8 @@ async def execute_workers(args):
         }
         attempt_key = infrastructure_attempt_key(
             component="worker_llm",
-            candidate_fingerprint=_bot_code_fingerprint(next_dir),
-            source_fingerprint=_bot_code_fingerprint(get_bot_dir(source_v)),
+            candidate_fingerprint=_complete_artifact_fingerprint(next_dir),
+            source_fingerprint=_complete_artifact_fingerprint(get_bot_dir(source_v)),
             harness_identity=task_digest,
             contract_identity=str(
                 ((current.get("runtime_contract_ledger") or {}).get("ledger_digest") or "")
@@ -8316,17 +9201,54 @@ async def execute_workers(args):
         })
 
     boundary_errors = []
+    transient_cleanup_failed = False
     if success:
-        # Pre-gate: check that code actually changed before proceeding to quality gates.
-        # This catches zero-change workers early, saving Reviewer + Critic LLM calls.
+        # Pre-gate: require a regular artifact file delta from this Worker batch.
+        # Source->candidate Python diff is only telemetry: crossover preparation
+        # may already differ from source, and a valid worker may update only a
+        # declared packed table/model asset.
+        try:
+            worker_batch_changed_files = diff_file_snapshot(
+                next_dir,
+                worker_batch_snapshot,
+            )
+        except Exception as exc:
+            worker_batch_changed_files = []
+            success = False
+            boundary_errors.append({
+                "type": "worker_artifact_snapshot_invalid",
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            })
+            log_system_event(
+                "pipeline.worker_artifact_snapshot_invalid",
+                "error",
+                f"Worker batch left an invalid artifact for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "error": boundary_errors[-1]["error"],
+                },
+            )
         src_dir = get_bot_dir(source_v)
+        source_python_changed = []
         if src_dir.exists() and next_dir.exists():
-            changed = [p for p in _py_files_changed_between(src_dir, next_dir) if 'backup' not in p]
-            if not changed:
-                success = False
-                log_system_event("pipeline.workers_zero_changes", "error",
-                                 f"Workers reported success but zero .py files changed for v{next_v}",
-                                 {"next_v": next_v, "source_v": source_v})
+            source_python_changed = [
+                p for p in _py_files_changed_between(src_dir, next_dir)
+                if "backup" not in p
+            ]
+        if success and not worker_batch_changed_files:
+            success = False
+            log_system_event(
+                "pipeline.workers_zero_changes",
+                "error",
+                f"Workers reported success but changed no artifact files for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "worker_batch_changed_files": [],
+                    "source_python_changed": source_python_changed[:50],
+                },
+            )
 
     if success:
         boundary_errors = _validate_worker_boundaries(tasks, source_v, next_v,
@@ -8363,6 +9285,74 @@ async def execute_workers(args):
                     log_system_event("pipeline.workers_all_reset", "warn",
                                      f"All worker changes reset for v{next_v} — code identical to v{source_v}",
                                      {"next_v": next_v, "source_v": source_v})
+
+    if success:
+        try:
+            _clear_compiled_task_context(next_dir)
+        except Exception as exc:
+            success = False
+            transient_cleanup_failed = True
+            boundary_errors.append({
+                "type": "transient_control_artifact_cleanup_failed",
+                "file": ".task_context",
+                "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+            })
+            log_system_event(
+                "pipeline.task_context_cleanup_failed",
+                "error",
+                f"Could not remove compiled Worker context for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "error": boundary_errors[-1]["error"],
+                },
+            )
+
+    # A worker batch is one transaction.  This must run after every operation
+    # that can turn a nominally successful batch into a failure, including
+    # system-owned .task_context cleanup.  Complete replacement also removes
+    # symlink/special poison that a diff-based scanner cannot safely traverse.
+    if not success:
+        try:
+            restore_complete_artifact_snapshot(next_dir, worker_batch_snapshot)
+        except Exception as exc:
+            log_system_event(
+                "pipeline.worker_batch_rollback_failed",
+                "error",
+                f"Could not atomically roll back failed Worker batch for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                },
+            )
+            return _json_tool_result({
+                "error": "WORKER_BATCH_ROLLBACK_FAILED",
+                "success": False,
+                "next_v": next_v,
+                "source_v": source_v,
+                "next_tool": "abandon_generation",
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "directive": (
+                    "A failed multi-worker batch could not be restored to its "
+                    "pre-batch content receipt. Abandon; do not resume from the "
+                    "possibly poisoned candidate."
+                ),
+            })
+        if transient_cleanup_failed:
+            return _json_tool_result({
+                "error": "TRANSIENT_CONTROL_ARTIFACT_CLEANUP_FAILED",
+                "success": False,
+                "next_v": next_v,
+                "source_v": source_v,
+                "next_tool": "abandon_generation",
+                "candidate_restored": True,
+                "directive": (
+                    "The regular bot artifact was restored and transient poison "
+                    "was removed, but the control-artifact cleanup failure is not "
+                    "a resumable Worker error. Abandon this generation."
+                ),
+            })
 
     if success:
         # Preserve the master plan structure (with analysis) from checkpoint,
