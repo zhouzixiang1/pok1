@@ -1456,6 +1456,7 @@ def build_candidate(
                 "ablation_env": [
                     "POK_V4_DISABLE",
                     "POK_V4_DISABLE_CROSS_HAND",
+                    "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH",
                 ],
             },
             "deployment_policy_value": False,

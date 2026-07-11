@@ -34,6 +34,14 @@ GATE_RESULT_SCHEMA = "policy_gate_result_v3_win_first_v4"
 GATE_EVALUATION_SCHEMA = "opponent_multitask_v4_policy_gate_evaluation_v1"
 GATE_REPORT_SCHEMA = "opponent_multitask_v4_policy_gate_report_v1"
 GATE_ARTIFACT_SCHEMA = "opponent_multitask_v4_policy_gate_artifacts_v1"
+OUTCOME_UNCERTAINTY_MATCH_ABLATION_ENV = (
+    "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH"
+)
+ABLATION_MODE_FULL = "full"
+ABLATION_MODE_CROSS_HAND_OFF = "cross_hand_off"
+ABLATION_MODE_OUTCOME_UNCERTAINTY_MATCH_OFF = (
+    "outcome_uncertainty_match_off"
+)
 EXPECTED_STRATEGY_DONOR_SHA256 = (
     "a8dadfefca945832df00a4bc438551834361f5464a8463dda20d146d02aa045d"
 )
@@ -333,7 +341,32 @@ class NativeV4Policy(NativeV3Policy):
             raise ValueError("v4 native policy requires a selected policy")
         self.runtime = runtime
         self.disable_cross_hand = _env_bool("POK_V4_DISABLE_CROSS_HAND")
+        self.disable_outcome_uncertainty_match = _env_bool(
+            OUTCOME_UNCERTAINTY_MATCH_ABLATION_ENV
+        )
+        if self.disable_cross_hand and self.disable_outcome_uncertainty_match:
+            raise ValueError("v4 diagnostic ablation modes cannot be combined")
+        if self.disable_cross_hand:
+            self.ablation_mode = ABLATION_MODE_CROSS_HAND_OFF
+        elif self.disable_outcome_uncertainty_match:
+            self.ablation_mode = ABLATION_MODE_OUTCOME_UNCERTAINTY_MATCH_OFF
+        else:
+            self.ablation_mode = ABLATION_MODE_FULL
         self.last_decision: dict[str, Any] | None = None
+
+    @staticmethod
+    def _outcome_uncertainty_match_ablation_values(
+        values: dict[str, dict[str, list[float]]],
+    ) -> dict[str, dict[str, list[float]]]:
+        projected = {
+            field: dict(payload) for field, payload in values.items()
+        }
+        projected["delta_vs_rule"]["lower"] = list(
+            projected["delta_vs_rule"]["mean"]
+        )
+        for field in ("tail_delta_vs_rule", "match_delta_vs_rule"):
+            projected[field]["lower"] = [0.0] * len(LABELS)
+        return projected
 
     @classmethod
     def load(
@@ -370,7 +403,11 @@ class NativeV4Policy(NativeV3Policy):
         # only legacy sanitize_action call.  Never reinterpret that raise-to
         # total here: doing so would diverge from the collector.
         safe_rule = int(safe_rule_action)
-        self.last_decision = {"used": False, "rule_action": safe_rule}
+        self.last_decision = {
+            "used": False,
+            "rule_action": safe_rule,
+            "ablation_mode": self.ablation_mode,
+        }
         try:
             alternatives = candidate_actions(request, state, safe_rule)
             if not alternatives:
@@ -400,7 +437,11 @@ class NativeV4Policy(NativeV3Policy):
                 "strategy_context": _strategy_features(None),
             }
             values = self.runtime.predict_values(**value_inputs)
-            outcomes = self.runtime.predict_match_outcomes(**value_inputs)
+            outcomes = (
+                None
+                if self.disable_outcome_uncertainty_match
+                else self.runtime.predict_match_outcomes(**value_inputs)
+            )
 
             if float(self.runtime.policy["response_weight"]) > 0.0:
                 for candidate in alternatives:
@@ -411,12 +452,20 @@ class NativeV4Policy(NativeV3Policy):
                 for candidate in alternatives:
                     candidate["response_signal"] = 0.0
 
-            selected = self.runtime.select_candidate(
-                values,
-                outcomes,
-                alternatives,
-                rule_label_id=rule_label,
-            )
+            if self.disable_outcome_uncertainty_match:
+                values = self._outcome_uncertainty_match_ablation_values(
+                    values
+                )
+                selected = self.runtime.value_response.select_candidate(
+                    values, alternatives
+                )
+            else:
+                selected = self.runtime.select_candidate(
+                    values,
+                    outcomes,
+                    alternatives,
+                    rule_label_id=rule_label,
+                )
             if selected is None:
                 return safe_rule
             selected_action = int(selected["action"])
@@ -441,6 +490,7 @@ class NativeV4Policy(NativeV3Policy):
                 self.last_decision = {
                     "used": False,
                     "rule_action": safe_rule,
+                    "ablation_mode": self.ablation_mode,
                     "error": "selected action changed during final sanitization",
                 }
                 return safe_rule
@@ -453,12 +503,14 @@ class NativeV4Policy(NativeV3Policy):
                 "prediction": selected.get("prediction"),
                 "response_signal": selected.get("response_signal", 0.0),
                 "disable_cross_hand": self.disable_cross_hand,
+                "ablation_mode": self.ablation_mode,
             }
             return final
         except Exception as exc:
             self.last_decision = {
                 "used": False,
                 "rule_action": safe_rule,
+                "ablation_mode": self.ablation_mode,
                 "error": f"{type(exc).__name__}: {exc}",
             }
             return safe_rule

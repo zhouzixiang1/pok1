@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -39,6 +44,8 @@ def _args(**overrides):
         "force_decision": None,
         "force_action": None,
         "opponent_seed_stride": 10_000_000,
+        "candidate_ablation": "full",
+        "strength_evidence": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -61,6 +68,258 @@ def test_default_seed_plan_uses_nonoverlapping_match_blocks() -> None:
     ) == []
 
 
+@pytest.mark.parametrize(
+    ("mode", "enabled_env", "diagnostic_only"),
+    (
+        ("full", None, False),
+        ("neural_off", "POK_V4_DISABLE", True),
+        ("cross_hand_off", "POK_V4_DISABLE_CROSS_HAND", True),
+        (
+            "outcome_uncertainty_match_off",
+            "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH",
+            True,
+        ),
+    ),
+)
+def test_candidate_ablation_contract_is_exact(
+    mode: str, enabled_env: str | None, diagnostic_only: bool
+) -> None:
+    tool = _load_tool()
+    candidate_env = {
+        "POK_V4_DISABLE": None,
+        "POK_V4_DISABLE_CROSS_HAND": None,
+        "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH": None,
+    }
+    if enabled_env is not None:
+        candidate_env[enabled_env] = "1"
+    expected = {
+        "schema": "opponent_multitask_v4_native_ablation_v1",
+        "mode": mode,
+        "candidate_env_overrides": candidate_env,
+        "opponent_env_overrides": {
+            "POK_V4_DISABLE": None,
+            "POK_V4_DISABLE_CROSS_HAND": None,
+            "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH": None,
+        },
+        "diagnostic_only": diagnostic_only,
+        "eligible_as_strength_evidence": not diagnostic_only,
+        "protected_data_read": False,
+        "policy_roles_opened": [],
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+    }
+
+    contract = tool._candidate_ablation_contract(mode)
+
+    assert contract == expected
+    assert tool._candidate_ablation_contract_errors(contract) == []
+
+
+def test_candidate_ablation_overrides_clear_parent_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = _load_tool()
+    for name in tool.CANDIDATE_ABLATION_ENV_NAMES:
+        monkeypatch.setenv(name, "parent-value")
+    contract = tool._candidate_ablation_contract("cross_hand_off")
+
+    candidate_environment = os.environ.copy()
+    for name, value in contract["candidate_env_overrides"].items():
+        if value is None:
+            candidate_environment.pop(name, None)
+        else:
+            candidate_environment[name] = value
+    opponent_environment = os.environ.copy()
+    for name, value in contract["opponent_env_overrides"].items():
+        if value is None:
+            opponent_environment.pop(name, None)
+        else:
+            opponent_environment[name] = value
+
+    assert candidate_environment.get("POK_V4_DISABLE_CROSS_HAND") == "1"
+    assert "POK_V4_DISABLE" not in candidate_environment
+    assert (
+        "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH"
+        not in candidate_environment
+    )
+    assert all(
+        name not in opponent_environment
+        for name in tool.CANDIDATE_ABLATION_ENV_NAMES
+    )
+    assert all(
+        os.environ[name] == "parent-value"
+        for name in tool.CANDIDATE_ABLATION_ENV_NAMES
+    )
+
+
+def test_process_overrides_clear_parent_force_trace_and_legacy_ablations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = _load_tool()
+    inherited = (
+        *tool.EVALUATION_CONTROL_ENV_NAMES,
+        *tool.LEGACY_NEURAL_ABLATION_ENV_NAMES,
+        *tool.CANDIDATE_ABLATION_ENV_NAMES,
+    )
+    for name in inherited:
+        monkeypatch.setenv(name, "parent-value")
+    args = _args(trace_decisions=False)
+    contract = tool._candidate_ablation_contract("cross_hand_off")
+
+    candidate = tool._native_process_env_overrides(
+        args, contract, candidate=True
+    )
+    opponent = tool._native_process_env_overrides(
+        args, contract, candidate=False
+    )
+
+    assert candidate["POK_V4_DISABLE_CROSS_HAND"] == "1"
+    assert all(
+        candidate[name] is None
+        for name in inherited
+        if name != "POK_V4_DISABLE_CROSS_HAND"
+    )
+    assert all(opponent[name] is None for name in inherited)
+    assert all(os.environ[name] == "parent-value" for name in inherited)
+
+
+def test_process_overrides_bind_explicit_force_and_trace() -> None:
+    tool = _load_tool()
+    args = _args(
+        trace_decisions=True,
+        force_hand=3,
+        force_decision=4,
+        force_action=-1,
+    )
+    contract = tool._candidate_ablation_contract("full")
+
+    for candidate in (True, False):
+        overrides = tool._native_process_env_overrides(
+            args, contract, candidate=candidate
+        )
+        assert overrides["POK_TRACE_DECISIONS"] == "1"
+        assert overrides["POK_FORCE_HAND"] == "3"
+        assert overrides["POK_FORCE_DECISION"] == "4"
+        assert overrides["POK_FORCE_ACTION"] == "-1"
+
+
+def test_candidate_ablation_is_applied_only_to_candidate_in_both_seats(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = _load_tool()
+    candidate = tmp_path / "candidate"
+    opponent = tmp_path / "opponent"
+    candidate.mkdir()
+    opponent.mkdir()
+    calls: list[dict] = []
+
+    async def fake_pair(bot_a, bot_b, hands, **kwargs):
+        label_a = Path(bot_a).name
+        label_b = Path(bot_b).name
+        calls.append({"bot_a": label_a, "bot_b": label_b, **kwargs})
+
+        def player() -> dict:
+            return {
+                "illegal_actions": 0,
+                "timeouts": 0,
+                "adapter": {"actions_sent": 0},
+                "native": {},
+                "runtime_telemetry": {},
+            }
+
+        return {
+            "bot_a": label_a,
+            "bot_b": label_b,
+            "bot_seed_base": kwargs.get("bot_seed_base"),
+            "hands_played": hands,
+            "net_chips_a": 10,
+            "net_chips_b": -10,
+            "settlements": [{"earnings": [10, -10]} for _ in range(hands)],
+            "passed_compliance": True,
+            "wrapper_used": False,
+            "issues": [],
+            "per_player": {label_a: player(), label_b: player()},
+        }
+
+    monkeypatch.setattr(tool, "run_native_tcp_pair", fake_pair)
+    args = _args(
+        candidate=str(candidate),
+        opponent=[str(opponent)],
+        candidate_ablation="outcome_uncertainty_match_off",
+        hands=1,
+        matches=1,
+        seed_base=100,
+        workers=1,
+        timeout_sec=1.0,
+        print_rows=False,
+        trace_decisions=False,
+        outcome_bootstrap_samples=10,
+        outcome_bootstrap_seed=7,
+    )
+
+    payload = asyncio.run(tool._run(args))
+
+    candidate_env = tool._native_process_env_overrides(
+        args, payload["candidate_ablation"], candidate=True
+    )
+    opponent_env = tool._native_process_env_overrides(
+        args, payload["candidate_ablation"], candidate=False
+    )
+    assert [(call["bot_a"], call["bot_b"]) for call in calls] == [
+        ("candidate", "opponent"),
+        ("opponent", "candidate"),
+    ]
+    assert calls[0]["bot_a_env_overrides"] == candidate_env
+    assert calls[0]["bot_b_env_overrides"] == opponent_env
+    assert calls[1]["bot_a_env_overrides"] == opponent_env
+    assert calls[1]["bot_b_env_overrides"] == candidate_env
+
+
+def test_unknown_candidate_ablation_is_rejected_by_contract_and_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = _load_tool()
+    with pytest.raises(ValueError, match="unknown candidate ablation mode"):
+        tool._candidate_ablation_contract("unknown")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(TOOL),
+            "--candidate",
+            "candidate",
+            "--opponent",
+            "opponent",
+            "--candidate-ablation",
+            "unknown",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        tool.main()
+    assert exc_info.value.code == 2
+
+
+def test_non_full_candidate_ablation_rejects_strength_and_legacy_wrapper() -> None:
+    tool = _load_tool()
+    strength_args = _args(
+        candidate_ablation="neural_off", strength_evidence=True
+    )
+    strength_errors = tool._strength_request_errors(
+        strength_args, tool._seeds(strength_args), opponent_count=1
+    )
+    assert "candidate_ablation_is_diagnostic_only" in strength_errors
+
+    wrapper_errors = tool._candidate_ablation_request_errors(
+        _args(
+            candidate_ablation="cross_hand_off",
+            allow_generated_opponent_entry=True,
+        )
+    )
+    assert wrapper_errors == ["candidate_ablation_requires_native_opponents"]
+
+
 def test_strength_request_rejects_overlapping_explicit_seeds() -> None:
     tool = _load_tool()
     args = _args(seeds="7000,7001,7002")
@@ -71,11 +330,23 @@ def test_strength_request_rejects_overlapping_explicit_seeds() -> None:
     assert any(error.startswith("overlapping_deck_windows:") for error in errors)
 
 
+def test_strength_request_rejects_bot_seed_window_overlap() -> None:
+    tool = _load_tool()
+    args = _args(bot_seed_stride=1)
+
+    errors = tool._strength_request_errors(
+        args, tool._seeds(args), opponent_count=1
+    )
+
+    assert "per_player_bot_seed_window_overlap" in errors
+
+
 def test_strength_result_rejects_short_or_noncompliant_rows() -> None:
     tool = _load_tool()
     payload = {
         "format": "native_tcp_evaluation_v2",
         "execution_mode": "native_tcp",
+        "candidate_ablation": tool._candidate_ablation_contract("full"),
         "paired": True,
         "requires_native_opponents": True,
         "legacy_debug_wrapper_enabled": False,

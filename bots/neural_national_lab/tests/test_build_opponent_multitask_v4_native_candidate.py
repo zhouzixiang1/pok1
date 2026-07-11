@@ -777,7 +777,9 @@ def test_passing_v4_gate_builds_native_candidate_with_false_claims(
     assert manifest["deployment_policy_value"] is False
     assert manifest["strength_evidence"] is False
     assert manifest["runtime_contract"]["ablation_env"] == [
-        "POK_V4_DISABLE", "POK_V4_DISABLE_CROSS_HAND",
+        "POK_V4_DISABLE",
+        "POK_V4_DISABLE_CROSS_HAND",
+        "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH",
     ]
     assert (output / "v4_ensemble_bundle.json").is_file()
     assert (output / "V4_BUILD_MANIFEST.json").is_file()
