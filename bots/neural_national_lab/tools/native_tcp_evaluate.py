@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import random
 import statistics
 import sys
 import time
@@ -26,6 +27,9 @@ from national_native import (  # noqa: E402
 
 DEFAULT_DECK_SEED_GUARD = 10
 DEFAULT_OPPONENT_SEED_STRIDE = 10_000_000
+DEFAULT_OUTCOME_BOOTSTRAP_SAMPLES = 20_000
+DEFAULT_OUTCOME_BOOTSTRAP_SEED = 20_260_711
+PRIMARY_OUTCOME_CRITERION = "net_chips_after_70_hands_gt_zero"
 
 
 def _resolve(path: str) -> Path:
@@ -222,7 +226,195 @@ def _bot_seed(args: argparse.Namespace, match_idx: int, opponent_idx: int) -> in
     return int(args.bot_seed_base) + match_idx * int(args.bot_seed_stride) + opponent_idx * 100_000
 
 
-def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _percentile(values: list[float], probability: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = max(0.0, min(1.0, probability)) * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(len(ordered) - 1, lower + 1)
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def _seventy_hand_legs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    legs: list[dict[str, Any]] = []
+    for row in rows:
+        nested = row.get("legs")
+        if row.get("leg") == "paired" and isinstance(nested, list):
+            legs.extend(dict(leg) for leg in nested if isinstance(leg, dict))
+        else:
+            legs.append(row)
+    return legs
+
+
+def _outcome_stats(legs: list[dict[str, Any]]) -> dict[str, Any]:
+    values = [int(leg["net_chips"]) for leg in legs]
+    wins = [value for value in values if value > 0]
+    losses = [value for value in values if value < 0]
+    count = len(values)
+    return {
+        "criterion": PRIMARY_OUTCOME_CRITERION,
+        "matches_70_hand": count,
+        "wins": len(wins),
+        "losses": len(losses),
+        "draws": count - len(wins) - len(losses),
+        "positive_rate": round(len(wins) / count, 6) if count else 0.0,
+        "total_net_chips": sum(values),
+        "mean_net_chips_per_match": (
+            round(statistics.mean(values), 3) if values else 0.0
+        ),
+        "median_net_chips_per_match": statistics.median(values) if values else 0.0,
+        "mean_chips_when_positive": (
+            round(statistics.mean(wins), 3) if wins else 0.0
+        ),
+        "mean_chips_when_negative": (
+            round(statistics.mean(losses), 3) if losses else 0.0
+        ),
+        "samples": values,
+    }
+
+
+def _row_outcomes(row: dict[str, Any]) -> list[int]:
+    return [
+        1 if int(leg["net_chips"]) > 0 else 0
+        for leg in _seventy_hand_legs([row])
+    ]
+
+
+def _cluster_bootstrap_positive_rate_ci(
+    rows: list[dict[str, Any]], *, samples: int, seed: int
+) -> dict[str, Any]:
+    clusters = [_row_outcomes(row) for row in rows]
+    clusters = [cluster for cluster in clusters if cluster]
+    resamples = max(1, int(samples))
+    if not clusters:
+        return {
+            "clusters": 0,
+            "matches_70_hand": 0,
+            "resamples": resamples,
+            "seed": int(seed),
+            "confidence": 0.95,
+            "low": 0.0,
+            "high": 0.0,
+        }
+    rng = random.Random(seed)
+    rates = []
+    for _ in range(resamples):
+        selected = [clusters[rng.randrange(len(clusters))] for _ in clusters]
+        outcomes = [outcome for cluster in selected for outcome in cluster]
+        rates.append(sum(outcomes) / len(outcomes))
+    return {
+        "clusters": len(clusters),
+        "matches_70_hand": sum(len(cluster) for cluster in clusters),
+        "resamples": resamples,
+        "seed": int(seed),
+        "confidence": 0.95,
+        "low": round(_percentile(rates, 0.025), 6),
+        "high": round(_percentile(rates, 0.975), 6),
+    }
+
+
+def _stratified_cluster_bootstrap_positive_rate_ci(
+    groups: dict[str, list[dict[str, Any]]], *, samples: int, seed: int
+) -> dict[str, Any]:
+    clusters = {
+        opponent: [_row_outcomes(row) for row in rows]
+        for opponent, rows in groups.items()
+    }
+    clusters = {
+        opponent: [cluster for cluster in group if cluster]
+        for opponent, group in clusters.items()
+    }
+    clusters = {opponent: group for opponent, group in clusters.items() if group}
+    resamples = max(1, int(samples))
+    if not clusters:
+        return {
+            "opponents": 0,
+            "clusters": 0,
+            "matches_70_hand": 0,
+            "resamples": resamples,
+            "seed": int(seed),
+            "confidence": 0.95,
+            "low": 0.0,
+            "high": 0.0,
+        }
+    rng = random.Random(seed)
+    rates = []
+    for _ in range(resamples):
+        opponent_rates = []
+        for group in clusters.values():
+            selected = [group[rng.randrange(len(group))] for _ in group]
+            outcomes = [outcome for cluster in selected for outcome in cluster]
+            opponent_rates.append(sum(outcomes) / len(outcomes))
+        rates.append(sum(opponent_rates) / len(opponent_rates))
+    return {
+        "opponents": len(clusters),
+        "clusters": sum(len(group) for group in clusters.values()),
+        "matches_70_hand": sum(
+            len(cluster) for group in clusters.values() for cluster in group
+        ),
+        "resamples": resamples,
+        "seed": int(seed),
+        "confidence": 0.95,
+        "low": round(_percentile(rates, 0.025), 6),
+        "high": round(_percentile(rates, 0.975), 6),
+    }
+
+
+def _seventy_hand_outcome_summary(
+    rows: list[dict[str, Any]], *, bootstrap_samples: int, bootstrap_seed: int
+) -> dict[str, Any]:
+    grouped = {
+        opponent: [row for row in rows if row["opponent"] == opponent]
+        for opponent in sorted({str(row["opponent"]) for row in rows})
+    }
+    by_opponent = {}
+    for index, (opponent, subset) in enumerate(grouped.items()):
+        stats = _outcome_stats(_seventy_hand_legs(subset))
+        stats["cluster_bootstrap_positive_rate_ci"] = (
+            _cluster_bootstrap_positive_rate_ci(
+                subset,
+                samples=bootstrap_samples,
+                seed=bootstrap_seed + 100 + index,
+            )
+        )
+        by_opponent[opponent] = stats
+    combined = _outcome_stats(_seventy_hand_legs(rows))
+    ordinary = _cluster_bootstrap_positive_rate_ci(
+        rows, samples=bootstrap_samples, seed=bootstrap_seed
+    )
+    stratified = _stratified_cluster_bootstrap_positive_rate_ci(
+        grouped, samples=bootstrap_samples, seed=bootstrap_seed + 1
+    )
+    combined.update({
+        "cluster_bootstrap_positive_rate_ci": ordinary,
+        "opponent_stratified_cluster_bootstrap_positive_rate_ci": stratified,
+        "opponents_below_half": [
+            opponent
+            for opponent, stats in by_opponent.items()
+            if stats["positive_rate"] < 0.5
+        ],
+        "win_rate_evidence_passed": bool(
+            ordinary["low"] > 0.5
+            and stratified["low"] > 0.5
+            and all(stats["positive_rate"] >= 0.5 for stats in by_opponent.values())
+        ),
+    })
+    return {
+        "priority": 1,
+        "criterion": PRIMARY_OUTCOME_CRITERION,
+        "combined": combined,
+        "opponents": by_opponent,
+    }
+
+
+def _summary(
+    rows: list[dict[str, Any]],
+    *,
+    outcome_bootstrap_samples: int = DEFAULT_OUTCOME_BOOTSTRAP_SAMPLES,
+    outcome_bootstrap_seed: int = DEFAULT_OUTCOME_BOOTSTRAP_SEED,
+) -> dict[str, Any]:
     by_opponent: dict[str, dict[str, Any]] = {}
     for row in rows:
         by_opponent.setdefault(row["opponent"], {"rows": []})["rows"].append(row)
@@ -253,7 +445,13 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     combined = [int(row["net_chips"]) for row in rows]
     combined_hands = sum(int(row["hands_played"]) for row in rows)
     return {
+        "seventy_hand_outcomes": _seventy_hand_outcome_summary(
+            rows,
+            bootstrap_samples=outcome_bootstrap_samples,
+            bootstrap_seed=outcome_bootstrap_seed,
+        ),
         "combined": {
+            "unit": "paired_seed_block" if any(row.get("leg") == "paired" for row in rows) else "single_match",
             "matches": len(rows),
             "hands": combined_hands,
             "compliant_matches": sum(1 for row in rows if row["passed_compliance"]),
@@ -482,7 +680,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         artifact["stable"] = (
             artifact["sha256_before"] == artifact["sha256_after"]
         )
-    payload.update(_summary(payload["rows"]))
+    payload.update(_summary(
+        payload["rows"],
+        outcome_bootstrap_samples=int(args.outcome_bootstrap_samples),
+        outcome_bootstrap_seed=int(args.outcome_bootstrap_seed),
+    ))
     return payload
 
 
@@ -522,6 +724,17 @@ def main() -> int:
     )
     parser.add_argument("--print-rows", action="store_true")
     parser.add_argument("--output", default="", help="Optional JSON output path.")
+    parser.add_argument(
+        "--outcome-bootstrap-samples",
+        type=int,
+        default=DEFAULT_OUTCOME_BOOTSTRAP_SAMPLES,
+        help="Cluster bootstrap resamples for the primary 70-hand positive-rate metric.",
+    )
+    parser.add_argument(
+        "--outcome-bootstrap-seed",
+        type=int,
+        default=DEFAULT_OUTCOME_BOOTSTRAP_SEED,
+    )
     parser.add_argument(
         "--strength-evidence",
         action="store_true",

@@ -121,3 +121,70 @@ def test_strength_result_rejects_short_or_noncompliant_rows() -> None:
     assert "row[0]:compliance_failed" in errors
     assert "row[0]:wrapper_used" in errors
     assert "row[0]:candidate_illegal" in errors
+
+
+def _paired_outcome_row(
+    opponent: str, match_idx: int, forward: int, swapped: int
+) -> dict:
+    def leg(name: str, value: int) -> dict:
+        return {
+            "opponent": opponent,
+            "match_idx": match_idx,
+            "leg": name,
+            "hands_played": 70,
+            "net_chips": value,
+            "passed_compliance": True,
+            "issues": [],
+        }
+
+    return {
+        "opponent": opponent,
+        "match_idx": match_idx,
+        "leg": "paired",
+        "hands_played": 140,
+        "net_chips": forward + swapped,
+        "passed_compliance": True,
+        "issues": [],
+        "candidate_illegal": 0,
+        "candidate_timeouts": 0,
+        "opponent_illegal": 0,
+        "opponent_timeouts": 0,
+        "adapter_actions_candidate": 0,
+        "adapter_actions_opponent": 0,
+        "legs": [leg("forward", forward), leg("swapped", swapped)],
+    }
+
+
+def test_summary_prioritizes_complete_70_hand_match_outcomes() -> None:
+    tool = _load_tool()
+    rows = [
+        _paired_outcome_row("a", 0, 100, -50),
+        _paired_outcome_row("a", 1, 200, 10),
+        _paired_outcome_row("b", 0, -10, -20),
+        _paired_outcome_row("b", 1, 30, 40),
+    ]
+
+    first = tool._summary(
+        rows, outcome_bootstrap_samples=500, outcome_bootstrap_seed=7
+    )
+    second = tool._summary(
+        rows, outcome_bootstrap_samples=500, outcome_bootstrap_seed=7
+    )
+    primary = first["seventy_hand_outcomes"]
+
+    assert primary["priority"] == 1
+    assert primary["criterion"] == "net_chips_after_70_hands_gt_zero"
+    assert primary["combined"]["matches_70_hand"] == 8
+    assert primary["combined"]["wins"] == 5
+    assert primary["combined"]["losses"] == 3
+    assert primary["combined"]["positive_rate"] == 0.625
+    assert primary["combined"]["mean_net_chips_per_match"] == 37.5
+    assert primary["opponents"]["a"]["positive_rate"] == 0.75
+    assert primary["opponents"]["b"]["positive_rate"] == 0.5
+    assert first["combined"]["unit"] == "paired_seed_block"
+    assert (
+        primary["combined"]["cluster_bootstrap_positive_rate_ci"]
+        == second["seventy_hand_outcomes"]["combined"][
+            "cluster_bootstrap_positive_rate_ci"
+        ]
+    )
