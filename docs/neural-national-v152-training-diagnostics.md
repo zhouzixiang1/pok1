@@ -1054,6 +1054,40 @@ collection is incomplete. The exposure ledger remained unchanged with no
 lab regression suite now passes 287 tests. This proves fail-closed gate wiring,
 not that any current policy has passed the gate.
 
+The native evaluator now treats the sign of each complete 70-hand leg as the
+primary strength outcome. `seventy_hand_outcomes` reports wins, losses, draws,
+positive rate, ordinary paired-block cluster bootstrap CI, opponent-stratified
+cluster bootstrap CI, and opponents below 50 percent before reporting chip
+magnitude. Recomputing the historical v146 live-pool rows gives 67 positive and
+59 negative 70-hand legs (53.17 percent), with ordinary and stratified 95
+percent intervals of [44.44, 61.90] and [45.24, 61.11] percent. v119, v141, and
+v142 are below 50 percent. These old rows also use overlapping deck windows, so
+the numbers are descriptive and fail the new win-rate evidence gate.
+
+`v3_native_policy.py` and
+`build_opponent_multitask_v3_native_candidate.py` now close the gap between a
+passing offline gate and a development bot. The wrapper reproduces the
+collector's one-action-per-label support, consumes the exact 81-dimensional
+state, 24-dimensional current-hand history, 12-dimensional opponent profile,
+16-dimensional cross-hand summaries, and captured 66-dimensional strategy
+context, and optionally evaluates the calibrated opponent-response head. It
+keeps raise-to-total actions distinct from legacy raise deltas and returns the
+already-sanitized rule action on every model, context, or policy exception.
+Environment switches disable the full v3 policy, cross-hand encoder, or
+risk/match contribution for later ablations.
+
+The builder refuses to create or overwrite a version unless the policy gate,
+role manifest, selected policy, selection result, evaluation, and exported
+ensemble all agree by SHA-256 and carry no deployment or strength claim. An
+authorized build copies the v152 strategy context, v151/v147 stream-safe TCP
+transport and cross-hand lifecycle, local national validator, stdlib ensemble,
+and policy bundle into a new version directory. It rejects Torch, NumPy,
+adapter, and repository-relative server imports. The real incomplete pass-9
+bundle was rejected without creating the requested version. Focused build and
+fallback tests, the full neural-lab suite (296 tests), and all 30 national
+protocol tests pass. No formal new bot exists yet; construction still waits for
+a complete collection and a genuinely passing policy gate.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
