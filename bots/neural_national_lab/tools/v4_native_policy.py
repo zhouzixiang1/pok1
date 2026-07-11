@@ -19,12 +19,21 @@ from v3_native_policy import (
     candidate_actions,
     sanitize_stage_total,
 )
+from v4_runtime_budget import (
+    MAX_BUNDLE_BYTES,
+    bundle_runtime_identity_sha256,
+    validate_runtime_budget_artifact,
+)
 
 
 BUNDLE_FILENAME = "v4_ensemble_bundle.json"
 BUILD_MANIFEST_FILENAME = "V4_BUILD_MANIFEST.json"
+RUNTIME_BUDGET_FILENAME = "V4_RUNTIME_BUDGET.json"
 BUILD_SCHEMA = "opponent_multitask_v4_native_candidate_build_v1"
 GATE_RESULT_SCHEMA = "policy_gate_result_v3_win_first_v4"
+GATE_EVALUATION_SCHEMA = "opponent_multitask_v4_policy_gate_evaluation_v1"
+GATE_REPORT_SCHEMA = "opponent_multitask_v4_policy_gate_report_v1"
+GATE_ARTIFACT_SCHEMA = "opponent_multitask_v4_policy_gate_artifacts_v1"
 EXPECTED_STRATEGY_DONOR_SHA256 = (
     "a8dadfefca945832df00a4bc438551834361f5464a8463dda20d146d02aa045d"
 )
@@ -39,19 +48,15 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _valid_bound_file(
-    root: Path, name: Any, contract: Any, *, top_level: bool = False
-) -> bool:
+def _file_snapshot(
+    root: Path, name: Any, *, top_level: bool = False
+) -> bytes | None:
+    """Read one contained regular file exactly once after rejecting symlinks."""
     if (
         not isinstance(name, str)
         or not name
-        or not isinstance(contract, dict)
-        or set(contract) != {"bytes", "sha256"}
-        or isinstance(contract["bytes"], bool)
-        or not isinstance(contract["bytes"], int)
-        or contract["bytes"] < 0
     ):
-        return False
+        return None
     relative = Path(name)
     if (
         relative.is_absolute()
@@ -59,37 +64,84 @@ def _valid_bound_file(
         or ".." in relative.parts
         or relative.as_posix() != name
     ):
-        return False
-    path = root
-    for part in relative.parts:
-        path /= part
-        if path.is_symlink():
-            return False
-    resolved = path.resolve()
+        return None
     try:
-        resolved.relative_to(root)
-    except ValueError:
-        return False
-    return bool(
-        (not top_level or resolved.parent == root)
-        and resolved.is_file()
-        and resolved.stat().st_size == contract["bytes"]
-        and _sha256(resolved) == contract["sha256"]
-    )
+        trusted_root = root.resolve(strict=True)
+        path = trusted_root
+        for part in relative.parts:
+            path /= part
+            if path.is_symlink():
+                return None
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(trusted_root)
+        if (
+            (top_level and resolved.parent != trusted_root)
+            or not resolved.is_file()
+        ):
+            return None
+        return resolved.read_bytes()
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
-def _authorized_bundle_path(bot_dir: Path) -> Path | None:
+def _bound_file_snapshot(
+    root: Path, name: Any, contract: Any, *, top_level: bool = False
+) -> bytes | None:
+    if (
+        not isinstance(contract, dict)
+        or set(contract) != {"bytes", "sha256"}
+        or isinstance(contract.get("bytes"), bool)
+        or not isinstance(contract.get("bytes"), int)
+        or contract["bytes"] < 0
+        or not isinstance(contract.get("sha256"), str)
+    ):
+        return None
+    raw = _file_snapshot(root, name, top_level=top_level)
+    if (
+        raw is None
+        or len(raw) != contract["bytes"]
+        or hashlib.sha256(raw).hexdigest() != contract["sha256"]
+    ):
+        return None
+    return raw
+
+
+def _valid_bound_file(
+    root: Path, name: Any, contract: Any, *, top_level: bool = False
+) -> bool:
+    """Compatibility wrapper for callers that need only a boolean result."""
+    return _bound_file_snapshot(
+        root, name, contract, top_level=top_level
+    ) is not None
+
+
+def _authorized_bundle_payload(bot_dir: Path) -> dict[str, Any] | None:
     try:
         root = bot_dir.resolve()
-        manifest = json.loads(
-            (root / BUILD_MANIFEST_FILENAME).read_text(encoding="utf-8")
+        manifest_raw = _file_snapshot(
+            root, BUILD_MANIFEST_FILENAME, top_level=True
         )
-        authorization = manifest["authorization"]
-        artifacts = manifest["candidate_artifacts"]
-        donor_files = manifest["strategy_donor_derived_files"]
-        strategy_donor = manifest["strategy_donor"]
-        critical = strategy_donor["critical_files"]
-        bundle_contract = artifacts[BUNDLE_FILENAME]
+        if manifest_raw is None:
+            return None
+        manifest = json.loads(manifest_raw)
+        if not isinstance(manifest, dict):
+            return None
+        authorization = manifest.get("authorization")
+        artifacts = manifest.get("candidate_artifacts")
+        donor_files = manifest.get("strategy_donor_derived_files")
+        strategy_donor = manifest.get("strategy_donor")
+        if (
+            not isinstance(authorization, dict)
+            or not isinstance(artifacts, dict)
+            or not artifacts
+            or not isinstance(donor_files, dict)
+            or not donor_files
+            or not isinstance(strategy_donor, dict)
+        ):
+            return None
+        critical = strategy_donor.get("critical_files")
+        bundle_contract = artifacts.get(BUNDLE_FILENAME)
+        runtime_budget_contract = artifacts.get(RUNTIME_BUDGET_FILENAME)
         false_claims = (
             "deployment_policy_value",
             "strength_evidence",
@@ -104,10 +156,6 @@ def _authorized_bundle_path(bot_dir: Path) -> Path | None:
             or authorization.get("strength_evidence") is not False
             or manifest.get("native_build_contract")
             != authorization.get("native_build_contract")
-            or not isinstance(artifacts, dict)
-            or not artifacts
-            or not isinstance(donor_files, dict)
-            or not donor_files
             or strategy_donor.get("sha256")
             != EXPECTED_STRATEGY_DONOR_SHA256
             or not isinstance(critical, dict)
@@ -125,32 +173,79 @@ def _authorized_bundle_path(bot_dir: Path) -> Path | None:
                 donor_files.get(name) != critical.get(name)
                 for name in ("strategy.py", "neural_policy.py")
             )
+            or not isinstance(bundle_contract, dict)
             or bundle_contract
             != {
                 "bytes": authorization.get("bundle_bytes"),
                 "sha256": authorization.get("bundle_sha256"),
             }
+            or bundle_contract["bytes"] > MAX_BUNDLE_BYTES
+            or not isinstance(runtime_budget_contract, dict)
+            or set(runtime_budget_contract) != {"bytes", "sha256"}
+            or runtime_budget_contract.get("sha256")
+            != authorization.get("final_runtime_budget_file_sha256")
         ):
             return None
+        artifact_snapshots: dict[str, bytes] = {}
         for name, contract in artifacts.items():
-            if not _valid_bound_file(root, name, contract, top_level=True):
+            raw = _bound_file_snapshot(
+                root, name, contract, top_level=True
+            )
+            if raw is None:
                 return None
+            artifact_snapshots[name] = raw
         for name, contract in donor_files.items():
-            if not _valid_bound_file(root, name, contract):
+            if _bound_file_snapshot(root, name, contract) is None:
                 return None
-        evidence = root / "evidence" / "offline_policy_gate"
         evidence_contracts = {
             "artifact_manifest.json": "gate_artifact_manifest_sha256",
             "policy_gate_evaluation.json": "gate_evaluation_sha256",
             "policy_gate_result.json": "gate_result_sha256",
             "policy_gate_report.json": "gate_report_sha256",
         }
+        evidence_snapshots: dict[str, bytes] = {}
         for name, field in evidence_contracts.items():
-            if _sha256(evidence / name) != authorization.get(field):
+            raw = _file_snapshot(
+                root, f"evidence/offline_policy_gate/{name}"
+            )
+            if (
+                raw is None
+                or hashlib.sha256(raw).hexdigest()
+                != authorization.get(field)
+            ):
                 return None
-        result = json.loads(
-            (evidence / "policy_gate_result.json").read_text(encoding="utf-8")
-        )
+            evidence_snapshots[name] = raw
+        gate_documents = {
+            name: json.loads(raw)
+            for name, raw in evidence_snapshots.items()
+        }
+        if any(not isinstance(document, dict) for document in gate_documents.values()):
+            return None
+        artifact = gate_documents["artifact_manifest.json"]
+        evaluation = gate_documents["policy_gate_evaluation.json"]
+        result = gate_documents["policy_gate_result.json"]
+        report = gate_documents["policy_gate_report.json"]
+        gate_files = artifact.get("files")
+        if (
+            artifact.get("schema") != GATE_ARTIFACT_SCHEMA
+            or not isinstance(gate_files, dict)
+            or set(gate_files) != {
+                "policy_gate_evaluation.json",
+                "policy_gate_result.json",
+                "policy_gate_report.json",
+            }
+        ):
+            return None
+        for name, contract in gate_files.items():
+            raw = evidence_snapshots[name]
+            if (
+                not isinstance(contract, dict)
+                or set(contract) != {"bytes", "sha256"}
+                or contract.get("bytes") != len(raw)
+                or contract.get("sha256")
+                != hashlib.sha256(raw).hexdigest()
+            ):
+                return None
         if (
             result.get("schema") != GATE_RESULT_SCHEMA
             or result.get("passed") is not True
@@ -164,8 +259,69 @@ def _authorized_bundle_path(bot_dir: Path) -> Path | None:
             or result.get("strength_evidence") is not False
         ):
             return None
-        return root / BUNDLE_FILENAME
-    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        bundle = json.loads(artifact_snapshots[BUNDLE_FILENAME])
+        budget = json.loads(artifact_snapshots[RUNTIME_BUDGET_FILENAME])
+        if not isinstance(bundle, dict) or not isinstance(budget, dict):
+            return None
+        preselection_sha256 = authorization.get(
+            "preselection_runtime_budget_payload_sha256"
+        )
+        identity_sha256 = bundle_runtime_identity_sha256(bundle)
+        common_gate_binding = {
+            "bundle_bytes": authorization.get("bundle_bytes"),
+            "bundle_sha256": authorization.get("bundle_sha256"),
+            "preselection_runtime_budget_payload_sha256": preselection_sha256,
+            "runtime_identity_sha256": identity_sha256,
+            "native_build_contract": authorization.get("native_build_contract"),
+        }
+        if any(
+            document.get(field) != expected
+            for document in gate_documents.values()
+            for field, expected in common_gate_binding.items()
+        ):
+            return None
+        if (
+            evaluation.get("schema") != GATE_EVALUATION_SCHEMA
+            or evaluation.get("source_collection_complete") is not True
+            or evaluation.get("policy_search_performed") is not False
+            or report.get("schema") != GATE_REPORT_SCHEMA
+            or report.get("gate_passed") is not True
+            or report.get("gate_errors") != []
+            or report.get("native_candidate_build_authorized") is not True
+            or report.get("source_collection_complete") is not True
+            or artifact.get("native_candidate_build_authorized") is not True
+            or any(
+                document.get("deployment_policy_value") is not False
+                or document.get("strength_evidence") is not False
+                for document in gate_documents.values()
+            )
+        ):
+            return None
+        validated_budget = validate_runtime_budget_artifact(
+            budget,
+            bundle_bytes=bundle_contract["bytes"],
+            bundle_sha256=bundle_contract["sha256"],
+            runtime_identity_sha256=identity_sha256,
+            preselection_runtime_budget_payload_sha256=preselection_sha256,
+            require_formal=True,
+        )
+        source = bundle.get("source")
+        if (
+            not isinstance(source, dict)
+            or source.get("preselection_runtime_budget_payload_sha256")
+            != preselection_sha256
+            or source.get("runtime_identity_sha256") != identity_sha256
+            or result.get("preselection_runtime_budget_payload_sha256")
+            != preselection_sha256
+            or result.get("runtime_identity_sha256") != identity_sha256
+            or authorization.get("runtime_identity_sha256")
+            != identity_sha256
+            or validated_budget["payload_sha256"]
+            != authorization.get("final_runtime_budget_payload_sha256")
+        ):
+            return None
+        return bundle
+    except Exception:
         return None
 
 
@@ -180,13 +336,19 @@ class NativeV4Policy(NativeV3Policy):
         self.last_decision: dict[str, Any] | None = None
 
     @classmethod
-    def load(cls, path: str | Path) -> "NativeV4Policy | None":
+    def load(
+        cls, source: str | Path | dict[str, Any]
+    ) -> "NativeV4Policy | None":
         if _env_bool("POK_V4_DISABLE"):
             return None
-        runtime = OpponentMultiTaskEnsembleRuntimeV4.load(path)
-        if runtime is None or runtime.policy is None:
-            return None
         try:
+            runtime = (
+                OpponentMultiTaskEnsembleRuntimeV4(source)
+                if isinstance(source, dict)
+                else OpponentMultiTaskEnsembleRuntimeV4.load(source)
+            )
+            if runtime is None or runtime.policy is None:
+                return None
             return cls(runtime)
         except Exception:
             return None
@@ -303,5 +465,8 @@ class NativeV4Policy(NativeV3Policy):
 
 
 def load_native_v4_policy(bot_dir: str | Path) -> NativeV4Policy | None:
-    bundle = _authorized_bundle_path(Path(bot_dir))
-    return NativeV4Policy.load(bundle) if bundle is not None else None
+    try:
+        bundle = _authorized_bundle_payload(Path(bot_dir))
+        return NativeV4Policy.load(bundle) if bundle is not None else None
+    except Exception:
+        return None

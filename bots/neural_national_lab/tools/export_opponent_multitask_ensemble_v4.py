@@ -11,7 +11,10 @@ import sys
 from typing import Any
 
 from calibrate_opponent_multitask_v4_ensemble import load_calibrated_ensemble
-from export_opponent_multitask_v4 import build_export_payload, write_export
+from export_opponent_multitask_v4 import (
+    build_export_payload,
+    write_export as _write_export,
+)
 from match_outcome_calibration import validate_calibration_artifact
 from opponent_multitask_ensemble_runtime_v3 import _canonical_sha256, _digest
 from opponent_multitask_ensemble_runtime_v4 import (
@@ -27,13 +30,19 @@ from opponent_multitask_ensemble_runtime_v4 import (
 )
 from opponent_multitask_model_v4 import MODEL_FORMAT
 from role_dataset_access import RoleDatasetAccess
-from select_opponent_multitask_v4_policy import verify_policy_artifacts
 from train_opponent_multitask_v3 import _sha256
 from train_opponent_multitask_v4 import load_checkpoint
+from v4_runtime_budget import (
+    MAX_BUNDLE_BYTES,
+    bundle_runtime_identity_sha256,
+)
 from win_first_policy_v4 import (
     OUTCOME_AGGREGATION_METHOD,
     normalize_policy,
 )
+
+
+MAX_CANONICAL_BUNDLE_BYTES = MAX_BUNDLE_BYTES
 
 
 def _finite(value: Any, *, field: str) -> float:
@@ -363,12 +372,35 @@ def canonical_bundle_bytes(payload: dict[str, Any]) -> bytes:
     )
 
 
+def checked_canonical_bundle_bytes(payload: dict[str, Any]) -> bytes:
+    """Serialize and enforce the immutable national-runtime bundle ceiling."""
+    raw = canonical_bundle_bytes(payload)
+    if len(raw) > MAX_CANONICAL_BUNDLE_BYTES:
+        raise ValueError(
+            "v4 canonical ensemble bundle exceeds fixed "
+            f"{MAX_CANONICAL_BUNDLE_BYTES:,}-byte limit: {len(raw):,} bytes"
+        )
+    return raw
+
+
+def write_export(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed on bundle size before creating any output path."""
+    checked_canonical_bundle_bytes(payload)
+    return _write_export(path, payload)
+
+
 def bundle_artifact_binding(
     payload: dict[str, Any], *, raw: bytes | None = None
 ) -> dict[str, Any]:
     calibration = payload.get("calibration")
     source = payload.get("source")
     member_hashes = payload.get("member_payload_sha256")
+    budget_sha256 = source.get(
+        "preselection_runtime_budget_payload_sha256"
+    ) if isinstance(source, dict) else None
+    runtime_identity_sha256 = source.get(
+        "runtime_identity_sha256"
+    ) if isinstance(source, dict) else None
     if (
         payload.get("schema") != BUNDLE_SCHEMA
         or payload.get("format") != ENSEMBLE_FORMAT
@@ -387,7 +419,20 @@ def bundle_artifact_binding(
         != len(member_hashes)
     ):
         raise ValueError("v4 bundle binding is incomplete")
-    canonical = canonical_bundle_bytes(payload)
+    if payload.get("selected_policy") is not None or any(
+        value is not None for value in (budget_sha256, runtime_identity_sha256)
+    ):
+        budget_sha256 = _digest(
+            budget_sha256,
+            field="preselection runtime budget payload sha256",
+        )
+        runtime_identity_sha256 = _digest(
+            runtime_identity_sha256,
+            field="runtime identity sha256",
+        )
+        if bundle_runtime_identity_sha256(payload) != runtime_identity_sha256:
+            raise ValueError("v4 bundle runtime identity changed")
+    canonical = checked_canonical_bundle_bytes(payload)
     if raw is not None and raw != canonical:
         raise ValueError("v4 bundle bytes are not canonical exporter output")
     serialized = canonical if raw is None else raw
@@ -412,20 +457,15 @@ def bundle_artifact_binding(
                 "outcome_calibration_payload_sha256"
             ) or []
         ],
+        "preselection_runtime_budget_payload_sha256": budget_sha256,
+        "runtime_identity_sha256": runtime_identity_sha256,
     }
 
 
-def build_verified_bundle_payload(
-    *,
-    calibrated: dict[str, Any],
-    policy: dict[str, Any],
-    dataset: RoleDatasetAccess,
-    run_id: str,
-    formal: bool,
-) -> dict[str, Any]:
-    """Rebuild the only accepted bundle directly from verified artifacts."""
+def _export_verified_member_payloads(
+    calibrated: dict[str, Any], *, formal: bool
+) -> list[dict[str, Any]]:
     members = verify_calibrated_members(calibrated, formal=formal)
-    frozen_policy = policy_for_export(policy, formal=formal)
     member_payloads = []
     for member in members:
         checkpoint_path = Path(member["checkpoint_path"]).resolve()
@@ -445,54 +485,112 @@ def build_verified_bundle_payload(
         ))
         if _sha256(checkpoint_path) != checkpoint_sha256:
             raise ValueError("v4 member checkpoint file changed during export")
+    return member_payloads
+
+
+def _bundle_source(
+    *,
+    calibrated: dict[str, Any],
+    dataset: RoleDatasetAccess,
+    run_id: str,
+) -> dict[str, Any]:
     runtime_context = dataset.runtime_context_contract()
+    return {
+        "run_id": run_id,
+        "role_manifest_sha256": dataset.manifest_sha256,
+        "ensemble_manifest_sha256": calibrated["ensemble_manifest_sha256"],
+        "calibration_artifact_manifest_sha256": calibrated[
+            "artifact_manifest_sha256"
+        ],
+        "calibration_file_sha256": calibrated["calibration_file_sha256"],
+        "calibration_report_sha256": calibrated["calibration_report_sha256"],
+        "calibration_payload_sha256": calibrated["calibration_payload_sha256"],
+        "source_collection_complete": dataset.manifest.get(
+            "source_collection_complete"
+        ),
+        "source_completed_passes": dataset.manifest.get(
+            "source_completed_passes"
+        ),
+        "source_requested_passes": dataset.manifest.get(
+            "source_requested_passes"
+        ),
+        **runtime_context,
+    }
+
+
+def build_preselection_bundle_payload(
+    *,
+    calibrated: dict[str, Any],
+    dataset: RoleDatasetAccess,
+    run_id: str,
+    formal: bool,
+) -> dict[str, Any]:
+    """Build a policy-free runtime image before selection can be opened."""
     return build_bundle_payload(
-        member_payloads,
+        _export_verified_member_payloads(calibrated, formal=formal),
+        calibrated=calibrated,
+        policy={
+            "selected_policy": None,
+            "selected_policy_sha256": None,
+            "selection_passed": False,
+        },
+        source={
+            **_bundle_source(
+                calibrated=calibrated, dataset=dataset, run_id=run_id
+            ),
+            "policy_candidate_sha256": None,
+            "policy_evaluation_sha256": None,
+            "policy_result_sha256": None,
+            "policy_artifact_manifest_sha256": None,
+        },
+    )
+
+
+def build_verified_bundle_payload(
+    *,
+    calibrated: dict[str, Any],
+    policy: dict[str, Any],
+    dataset: RoleDatasetAccess,
+    run_id: str,
+    formal: bool,
+) -> dict[str, Any]:
+    """Rebuild the only accepted bundle directly from verified artifacts."""
+    frozen_policy = policy_for_export(policy, formal=formal)
+    payload = build_bundle_payload(
+        _export_verified_member_payloads(calibrated, formal=formal),
         calibrated=calibrated,
         policy=frozen_policy,
         source={
-            "run_id": run_id,
-            "role_manifest_sha256": dataset.manifest_sha256,
-            "ensemble_manifest_sha256": calibrated[
-                "ensemble_manifest_sha256"
-            ],
-            "calibration_artifact_manifest_sha256": calibrated[
-                "artifact_manifest_sha256"
-            ],
-            "calibration_file_sha256": calibrated[
-                "calibration_file_sha256"
-            ],
-            "calibration_report_sha256": calibrated[
-                "calibration_report_sha256"
-            ],
-            "calibration_payload_sha256": calibrated[
-                "calibration_payload_sha256"
-            ],
+            **_bundle_source(
+                calibrated=calibrated, dataset=dataset, run_id=run_id
+            ),
             "policy_candidate_sha256": frozen_policy["candidate_sha256"],
             "policy_evaluation_sha256": frozen_policy["evaluation_sha256"],
             "policy_result_sha256": frozen_policy["result_sha256"],
             "policy_artifact_manifest_sha256": frozen_policy[
                 "artifact_manifest_sha256"
             ],
-            "source_collection_complete": dataset.manifest.get(
-                "source_collection_complete"
-            ),
-            "source_completed_passes": dataset.manifest.get(
-                "source_completed_passes"
-            ),
-            "source_requested_passes": dataset.manifest.get(
-                "source_requested_passes"
-            ),
-            **runtime_context,
+            "preselection_runtime_budget_payload_sha256": frozen_policy[
+                "runtime_budget_payload_sha256"
+            ],
+            "runtime_identity_sha256": frozen_policy[
+                "runtime_identity_sha256"
+            ],
         },
     )
+    if (
+        bundle_runtime_identity_sha256(payload)
+        != frozen_policy["runtime_identity_sha256"]
+    ):
+        raise ValueError("v4 final bundle runtime identity changed after selection")
+    return payload
 
 
 def verify_exact_bundle(
     path: Path, expected: dict[str, Any]
 ) -> tuple[dict[str, Any], bytes, dict[str, Any]]:
     raw = path.resolve().read_bytes()
-    expected_raw = canonical_bundle_bytes(expected)
+    expected_raw = checked_canonical_bundle_bytes(expected)
     if raw != expected_raw:
         raise ValueError("v4 bundle does not match deterministic exporter output")
     try:
@@ -506,6 +604,11 @@ def verify_exact_bundle(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Lazy import avoids selector -> policy-free exporter -> selector cycles.
+    from select_opponent_multitask_v4_policy import (  # noqa: PLC0415
+        verify_policy_artifacts,
+    )
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--calibration-dir", required=True, type=Path)
     parser.add_argument("--policy-dir", required=True, type=Path)

@@ -40,6 +40,7 @@ RUNTIME_MODULE_FILENAMES = (
     "opponent_multitask_ensemble_runtime_v3.py",
     "opponent_multitask_ensemble_runtime_v4.py",
     "win_first_policy_v4.py",
+    "v4_runtime_budget.py",
     "v3_native_policy.py",
     "v4_native_policy.py",
 )
