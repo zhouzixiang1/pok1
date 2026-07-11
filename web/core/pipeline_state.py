@@ -5,6 +5,9 @@ stage order, route policy, and generic-abandon guard prevents the orchestrator
 prompt, MCP tools, and recovery code from drifting into contradictory rules.
 """
 
+import hashlib
+import json
+
 from failure_classification import classify_precommit_gate
 
 
@@ -90,6 +93,24 @@ NEXT_TOOL_BY_STAGE = {
 }
 
 _STAGE_RANK = {stage: idx for idx, stage in enumerate(STAGE_ORDER)}
+
+
+# The prepare/crossover branch has two materializers that converge at
+# ``prepared``.  STAGE_ORDER is deliberately retained for compatibility with
+# historical checkpoints, but it is not a license to enter the crossover
+# materializer after a single-parent baseline has already been prepared.
+_EARLY_GENERATION_STAGES = frozenset(
+    {"selected", "preparing", "crossover_running", "prepared"}
+)
+_EARLY_GENERATION_EDGES = {
+    ("selected", "preparing"): "prepare_started",
+    ("selected", "crossover_running"): "crossover_started",
+    ("preparing", "prepared"): "prepare_baseline_completed",
+    ("crossover_running", "prepared"): "prepare_baseline_completed",
+    ("prepared", "direction_audited"): "direction_audit_ready",
+}
+
+LITERATURE_PROBE_REQUIREMENT_SCHEMA_VERSION = "literature-probe-requirement-v1"
 
 
 def session_recoverable_stages() -> frozenset[str]:
@@ -256,6 +277,163 @@ def stage_requires_target_for_head_resume(stage: str | None) -> bool:
     return True if not policy else bool(policy.get("requires_target", True))
 
 
+def _canonical_digest(payload: object) -> str:
+    """Return a deterministic digest or raise when an owned record is malformed."""
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _literature_probe_requirement_reasons(checkpoint: dict | None) -> tuple[str, ...]:
+    """Return the scheduler-owned facts that make literature mandatory."""
+    if not isinstance(checkpoint, dict):
+        return ()
+    audit_context = checkpoint.get("audit_context") or {}
+    master_context = (
+        audit_context.get("master_context")
+        if isinstance(audit_context, dict)
+        else None
+    )
+    stagnation_info = str(
+        (master_context or {}).get("stagnation_info")
+        if isinstance(master_context, dict)
+        else ""
+    )
+    normalized = stagnation_info.lower().replace(" ", "")
+    reasons: list[str] = []
+    if (
+        "stagnation_detected" in normalized
+        or '"is_stagnant":true' in normalized
+        or "'is_stagnant':true" in normalized
+    ):
+        reasons.append("stagnation")
+    direction_audit = checkpoint.get("direction_audit") or {}
+    if isinstance(direction_audit, dict) and direction_audit.get("repetition_detected"):
+        reasons.append("direction_repetition")
+    return tuple(reasons)
+
+
+def literature_probe_required(checkpoint: dict | None) -> bool:
+    """Return whether canonical scheduler/auditor evidence mandates research."""
+    return bool(_literature_probe_requirement_reasons(checkpoint))
+
+
+def literature_probe_receipt_binding(
+    checkpoint: dict | None,
+) -> tuple[dict | None, list[str]]:
+    """Build the immutable context that a mandatory probe receipt must bind.
+
+    A next/source pair alone is too weak: the weak outer model could reuse an
+    old ``governed_skip`` after the scheduler refreshed its Master evidence or
+    the Direction Auditor changed the mandatory constraint.  Bind both owned
+    digests and the exact route-requirement context instead.
+    """
+    errors: list[str] = []
+    if not isinstance(checkpoint, dict):
+        return None, ["literature_probe_checkpoint_missing_or_not_object"]
+
+    try:
+        next_v = int(checkpoint.get("next_v"))
+        source_v = int(checkpoint.get("source_v"))
+    except (TypeError, ValueError):
+        return None, ["literature_probe_checkpoint_identity_invalid"]
+
+    reasons = _literature_probe_requirement_reasons(checkpoint)
+    if not reasons:
+        errors.append("literature_probe_not_required")
+
+    audit_context = checkpoint.get("audit_context") or {}
+    master_context = (
+        audit_context.get("master_context")
+        if isinstance(audit_context, dict)
+        else None
+    )
+    try:
+        from master_context_contract import validate_master_context
+
+        master_errors = validate_master_context(
+            master_context,
+            next_v=next_v,
+            source_v=source_v,
+        )
+    except Exception as exc:
+        master_errors = [
+            "literature_probe_master_context_validation_error:"
+            f"{type(exc).__name__}"
+        ]
+    if master_errors:
+        errors.extend(f"literature_probe_{error}" for error in master_errors)
+
+    direction_audit = checkpoint.get("direction_audit")
+    if not isinstance(direction_audit, dict):
+        errors.append("literature_probe_direction_audit_missing_or_not_object")
+
+    if errors:
+        return None, errors
+
+    try:
+        requirement_context = {
+            "schema_version": LITERATURE_PROBE_REQUIREMENT_SCHEMA_VERSION,
+            "next_v": next_v,
+            "source_v": source_v,
+            "master_context_digest": str(master_context["context_digest"]),
+            "direction_audit_digest": _canonical_digest(direction_audit),
+            "requirement_reasons": list(reasons),
+        }
+        return {
+            "master_context_digest": requirement_context["master_context_digest"],
+            "direction_audit_digest": requirement_context["direction_audit_digest"],
+            "requirement_context": requirement_context,
+            "requirement_context_digest": _canonical_digest(requirement_context),
+        }, []
+    except Exception as exc:
+        return None, [
+            "literature_probe_requirement_context_digest_error:"
+            f"{type(exc).__name__}"
+        ]
+
+
+def literature_probe_receipt_present(checkpoint: dict | None) -> bool:
+    """Return whether a mandatory probe attempt is bound to current evidence.
+
+    A governed skip, timeout, or provider failure counts as an attempt, but
+    only for the exact Master context and Direction Auditor requirement that
+    requested it.  Legacy/mismatched receipts deliberately fail closed.
+    """
+    if not isinstance(checkpoint, dict):
+        return False
+    receipt = checkpoint.get("literature_probe")
+    if not isinstance(receipt, dict):
+        return False
+    try:
+        if int(receipt.get("next_v")) != int(checkpoint.get("next_v")):
+            return False
+        if int(receipt.get("source_v")) != int(checkpoint.get("source_v")):
+            return False
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(receipt.get("reason"), str) or not receipt.get("reason").strip():
+        return False
+
+    binding, _errors = literature_probe_receipt_binding(checkpoint)
+    if binding is None:
+        return False
+    return all(
+        receipt.get(field) == binding[field]
+        for field in (
+            "master_context_digest",
+            "direction_audit_digest",
+            "requirement_context",
+            "requirement_context_digest",
+        )
+    )
+
+
 def _active_workflow_profile_info() -> tuple[str, str]:
     try:
         from workflow_profiles import get_workflow_profile
@@ -335,8 +513,30 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "timeout_override"
     if proposed_stage == "infra_timed_out":
         return True, "infra_timeout_override"
-    if proposed_stage in {"selected", "preparing", "prepared"}:
-        return True, "fresh_prepare_restart"
+    if proposed_stage == "selected" and current_stage in {
+        "timed_out",
+        "archived",
+    }:
+        return True, "fresh_generation_selection"
+    if current_stage == "timed_out":
+        if proposed_stage == "preparing":
+            return True, "prepare_started"
+        return False, f"timed_out_restart_requires_preparing: {proposed_stage}"
+    if current_stage == "infra_timed_out":
+        if proposed_stage == "critic_checked":
+            return True, "infra_precommit_retry_recovery"
+        return False, f"infra_timed_out_recovery_requires_critic_checked: {proposed_stage}"
+    if (
+        current_stage in _EARLY_GENERATION_STAGES
+        or proposed_stage in _EARLY_GENERATION_STAGES
+    ):
+        reason = _EARLY_GENERATION_EDGES.get((current_stage, proposed_stage))
+        if reason:
+            return True, reason
+        return False, (
+            "early_generation_transition_not_allowed: "
+            f"{current_stage} -> {proposed_stage}"
+        )
     if current_stage == "official_certifying" and proposed_stage == "verified":
         return True, "official_profile_refresh"
     if current_stage == "official_certifying" and proposed_stage in {
@@ -513,6 +713,13 @@ def route_policy(checkpoint: dict | None) -> dict:
         next_tool = "run_crossover" if parent2_v is not None else "prepare_next_gen"
         intent = "crossover_prepare" if parent2_v is not None else "prepare"
     elif (
+        stage == "direction_audited"
+        and literature_probe_required(checkpoint)
+        and not literature_probe_receipt_present(checkpoint)
+    ):
+        next_tool = "run_literature_probe"
+        intent = "mandatory_literature_probe"
+    elif (
         stage in {"reviewed", "critic_checked"}
         and "critic" in gate_results
         and not _critic_gate_passed(gate_results)
@@ -553,6 +760,7 @@ def route_policy(checkpoint: dict | None) -> dict:
         "prepare_next_gen": "Call prepare_next_gen with the checkpoint source/target.",
         "run_crossover": "Call run_crossover with the checkpoint parents/target.",
         "run_direction_audit": "Call run_direction_audit before planning workers.",
+        "run_literature_probe": "Call run_literature_probe and persist its receipt before Master planning.",
         "run_master": "Call run_master to produce worker tasks.",
         "execute_workers": "Call execute_workers with the checkpoint task plan and exact failure feedback when present.",
         "run_quality_gates": "Call run_quality_gates; it owns compile, national, decision, size, and scope validation.",
@@ -610,6 +818,12 @@ def route_policy(checkpoint: dict | None) -> dict:
         )
     elif stage == "selected" and parent2_v is not None:
         directive = "Crossover selected. Call run_crossover; do not call prepare_next_gen."
+    elif intent == "mandatory_literature_probe":
+        directive = (
+            "Canonical stagnation/repetition evidence requires run_literature_probe. "
+            "Persist a success, governed-skip, timeout, or failure receipt before run_master; "
+            "the outer model cannot waive this stage."
+        )
     elif stage == "master_planned":
         directive = "Master plan is saved. Call execute_workers with the saved tasks."
     elif profile_refresh_needed and next_tool == "run_quality_gates":
@@ -633,9 +847,10 @@ def route_policy(checkpoint: dict | None) -> dict:
         # guard additionally requires a fully content-validated existing
         # certificate before it lets commit_bot enter its body.
         allowed_tools.append("commit_bot")
-    for tool_name in sorted(head_drift_allowed_tools(stage)):
-        if tool_name not in allowed_tools:
-            allowed_tools.append(tool_name)
+    if intent != "mandatory_literature_probe":
+        for tool_name in sorted(head_drift_allowed_tools(stage)):
+            if tool_name not in allowed_tools:
+                allowed_tools.append(tool_name)
 
     return {
         "stage": stage,

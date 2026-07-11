@@ -6,8 +6,25 @@ import tool_planning
 
 
 def test_master_source_probe_retries_same_tool_then_abandons(tmp_path, monkeypatch):
+    from prepared_baseline_contract import build_prepared_artifact_contract
+
     state_file = tmp_path / "pipeline_state.json"
     monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", state_file)
+    bots = tmp_path / "bots"
+    source = bots / "national_v1"
+    candidate = bots / "national_v2"
+    source.mkdir(parents=True)
+    candidate.mkdir(parents=True)
+    (source / "national_bot.py").write_text("SOURCE = True\n", encoding="utf-8")
+    (candidate / "national_bot.py").write_text(
+        "SOURCE = True\n",
+        encoding="utf-8",
+    )
+    prepared_contract = build_prepared_artifact_contract(
+        candidate,
+        source_v=1,
+        next_v=2,
+    )
     state_file.write_text(json.dumps({
         "next_v": 2,
         "source_v": 1,
@@ -17,13 +34,10 @@ def test_master_source_probe_retries_same_tool_then_abandons(tmp_path, monkeypat
         "generation_attempt": 0,
         "audit_attempt": 0,
         "gate_results": {},
+        "audit_context": {
+            "prepared_artifact_contract": prepared_contract,
+        },
     }))
-    bots = tmp_path / "bots"
-    source = bots / "national_v1"
-    candidate = bots / "national_v2"
-    source.mkdir(parents=True)
-    candidate.mkdir(parents=True)
-    (source / "national_bot.py").write_text("SOURCE = True\n")
     monkeypatch.setattr(
         tool_planning,
         "get_bot_dir",

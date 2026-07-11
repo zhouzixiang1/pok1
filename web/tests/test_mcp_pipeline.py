@@ -248,8 +248,40 @@ class TestRunMasterIdempotent:
     already has a master_plan at a stage >= master_planned."""
 
     @pytest.fixture(autouse=True)
-    def _architecture_source_fixture(self, monkeypatch):
+    def _architecture_source_fixture(self, monkeypatch, tmp_path):
+        from prepared_baseline_contract import build_prepared_artifact_contract
         import tool_planning
+
+        def bind_prepared_artifact(checkpoint):
+            source_v = int(checkpoint["source_v"])
+            next_v = int(checkpoint["next_v"])
+            versions = {source_v, next_v}
+            if checkpoint.get("parent2_v") is not None:
+                versions.add(int(checkpoint["parent2_v"]))
+            bot_dirs = {
+                version: tmp_path / f"national_v{version}"
+                for version in versions
+            }
+            for version, bot_dir in bot_dirs.items():
+                bot_dir.mkdir(exist_ok=True)
+                strategy = bot_dir / "strategy.py"
+                if not strategy.exists():
+                    strategy.write_text(f"VERSION = {version}\n")
+            monkeypatch.setattr(
+                tool_planning,
+                "get_bot_dir",
+                lambda version: bot_dirs[int(version)],
+            )
+            checkpoint.setdefault("audit_context", {})[
+                "prepared_artifact_contract"
+            ] = build_prepared_artifact_contract(
+                bot_dirs[next_v],
+                source_v=source_v,
+                next_v=next_v,
+            )
+            return checkpoint
+
+        self._bind_prepared_artifact = bind_prepared_artifact
 
         monkeypatch.setattr(
             tool_planning,
@@ -347,6 +379,7 @@ class TestRunMasterIdempotent:
             "master_plan": None,
             "direction_audit": {"repetition_detected": False},
         }
+        self._bind_prepared_artifact(fake_checkpoint)
         monkeypatch.setattr(tool_planning, "_matching_checkpoint",
                             lambda nv, sv: fake_checkpoint)
 
@@ -398,6 +431,7 @@ class TestRunMasterIdempotent:
             "audit_context": {"master_context": canonical},
             "literature_probe": None,
         }
+        self._bind_prepared_artifact(fake_checkpoint)
         captured = []
 
         async def _fake_master(source_v, next_v, stagnation_info, ui, **kwargs):
@@ -445,6 +479,69 @@ class TestRunMasterIdempotent:
             "research_proposals": "",
         }
 
+    def test_run_master_passes_validated_prepared_child_contract_to_policy_and_agent(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import audit_agents
+        import prepared_baseline_contract
+        import tool_planning
+
+        contract = {
+            "contract_digest": "b" * 64,
+            "capability_snapshot": {"snapshot_digest": "c" * 64},
+        }
+        policy = {"policy_digest": "p" * 64}
+        checkpoint = {
+            "next_v": 200,
+            "source_v": 199,
+            "parent2_v": 150,
+            "stage": "direction_audited",
+            "master_plan": None,
+            "direction_audit": {"repetition_detected": False},
+            "audit_context": {
+                "prepared_baseline_contract": contract,
+                "crossover": {"prepared_architecture_policy": policy},
+            },
+        }
+        self._bind_prepared_artifact(checkpoint)
+        captured = {}
+
+        def fake_policy(source_v, **kwargs):
+            captured["source_v"] = source_v
+            captured["snapshot"] = kwargs.get("prepared_capability_snapshot")
+            return {"outcome": "passed", "policy": policy, "capabilities": {}}
+
+        async def fake_master(*_args, **kwargs):
+            captured["prepared_baseline"] = kwargs.get("prepared_baseline")
+            captured["architecture_policy"] = kwargs.get("architecture_policy")
+            return {"tasks": [], "analysis": "prepared child plan"}
+
+        async def fake_audit(*_args, **_kwargs):
+            return {"overall_pass": True, "feedback": "", "contradictions": []}
+
+        monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_a: checkpoint)
+        monkeypatch.setattr(tool_planning, "_build_generation_architecture_policy", fake_policy)
+        monkeypatch.setattr(tool_planning, "_run_master_analysis", fake_master)
+        monkeypatch.setattr(tool_planning, "_build_cross_gen_constraint_block", lambda _v: "")
+        monkeypatch.setattr(
+            prepared_baseline_contract,
+            "validate_prepared_baseline_contract",
+            lambda *_a, **_k: [],
+        )
+        monkeypatch.setattr(audit_agents, "_run_master_plan_audit", fake_audit)
+
+        response = client.post(
+            "/api/control/tool/run_master",
+            json={"args": {"source_v": 199, "next_v": 200}},
+        )
+
+        assert response.status_code == 200, response.text
+        assert captured["snapshot"] == contract["capability_snapshot"]
+        assert captured["prepared_baseline"] == contract
+        assert captured["architecture_policy"] == policy
+
     def test_run_master_fails_closed_on_tampered_scheduler_context(
         self,
         client,
@@ -467,6 +564,7 @@ class TestRunMasterIdempotent:
             "direction_audit": {"repetition_detected": False},
             "audit_context": {"master_context": canonical},
         }
+        self._bind_prepared_artifact(fake_checkpoint)
         called = []
 
         async def _must_not_run(*_args, **_kwargs):
@@ -484,6 +582,49 @@ class TestRunMasterIdempotent:
 
         assert result["error"] == "MASTER_CONTEXT_CONTRACT_INVALID"
         assert "master_context_digest_mismatch" in result["validation_errors"]
+        assert called == []
+
+    def test_run_master_blocks_missing_mandatory_literature_receipt(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import tool_planning
+        from master_context_contract import build_master_context
+
+        checkpoint = {
+            "next_v": 200,
+            "source_v": 199,
+            "stage": "direction_audited",
+            "master_plan": None,
+            "direction_audit": {"repetition_detected": False},
+            "audit_context": {
+                "master_context": build_master_context(
+                    next_v=200,
+                    source_v=199,
+                    stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+                ),
+            },
+            "literature_probe": None,
+        }
+        self._bind_prepared_artifact(checkpoint)
+        called = []
+
+        async def _must_not_run(*_args, **_kwargs):
+            called.append(True)
+            raise AssertionError("Master ran before mandatory research receipt")
+
+        monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_args: checkpoint)
+        monkeypatch.setattr(tool_planning, "_run_master_analysis", _must_not_run)
+
+        response = client.post(
+            "/api/control/tool/run_master",
+            json={"args": {"source_v": 199, "next_v": 200}},
+        )
+        result = json.loads(response.json()["result"])
+
+        assert result["error"] == "LITERATURE_PROBE_REQUIRED"
+        assert result["next_tool"] == "run_literature_probe"
         assert called == []
 
     def test_master_context_rejects_valid_cross_generation_transplant(self):
@@ -520,6 +661,7 @@ class TestRunMasterIdempotent:
             "direction_audit": {"repetition_detected": False},
             # No master_context/literature_probe: release-upgrade legacy form.
         }
+        self._bind_prepared_artifact(legacy_checkpoint)
         captured = []
 
         async def _fake_master(*_args, **kwargs):
@@ -563,6 +705,7 @@ class TestRunMasterIdempotent:
             "audit_attempt": 0,
             "direction_audit": {"repetition_detected": False, "llm_failed": False},
         }
+        self._bind_prepared_artifact(checkpoint)
         plan = {
             "analysis": "plan analysis",
             "targeted_failure": "bad citation",
@@ -661,6 +804,7 @@ class TestRunMasterIdempotent:
             "audit_attempt": 1,
             "direction_audit": {"repetition_detected": False, "llm_failed": False},
         }
+        self._bind_prepared_artifact(checkpoint)
         plan = {
             "analysis": "plan analysis",
             "targeted_failure": "bad citation",
@@ -744,6 +888,7 @@ class TestRunMasterIdempotent:
             "audit_attempt": 1,
             "direction_audit": {"repetition_detected": False, "llm_failed": False},
         }
+        self._bind_prepared_artifact(checkpoint)
         abandon_reasons = []
         cleared = []
 
@@ -803,7 +948,9 @@ class TestRunMasterIdempotent:
     def test_run_master_cross_gen_pivot_exhausts_budget_and_abandons(self, client, monkeypatch):
         import audit_agents
         import evolution_infra
+        from master_context_contract import build_master_context
         import orchestrator_session
+        from pipeline_state import literature_probe_receipt_binding
         import tool_bot_management
         import tool_planning
 
@@ -819,6 +966,22 @@ class TestRunMasterIdempotent:
                 "confidence": "high",
                 "exhausted_directions": ["postflop stack-off threshold tuning"],
             },
+            "audit_context": {
+                "master_context": build_master_context(
+                    next_v=250,
+                    source_v=249,
+                    stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+                ),
+            },
+        }
+        self._bind_prepared_artifact(checkpoint)
+        binding, errors = literature_probe_receipt_binding(checkpoint)
+        assert not errors
+        checkpoint["literature_probe"] = {
+            "next_v": 250,
+            "source_v": 249,
+            "reason": "governed_skip",
+            **binding,
         }
         abandon_reasons = []
         cleared = []

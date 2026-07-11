@@ -791,8 +791,24 @@ def run_import_contract_test(directory, modules=None, timeout=20):
 import importlib
 import json
 import os
+import resource
 import sys
 import traceback
+
+limits = [
+    (resource.RLIMIT_CPU, (20, 20)),
+    (resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024)),
+    (resource.RLIMIT_FSIZE, (1024 * 1024, 1024 * 1024)),
+    (resource.RLIMIT_NOFILE, (64, 64)),
+    (resource.RLIMIT_CORE, (0, 0)),
+]
+for resource_id, value in limits:
+    resource.setrlimit(resource_id, value)
+if hasattr(resource, "RLIMIT_NPROC"):
+    try:
+        resource.setrlimit(resource.RLIMIT_NPROC, (32, 32))
+    except (ValueError, OSError):
+        pass
 
 bot_dir = os.path.abspath(sys.argv[1])
 modules = sys.argv[2:]

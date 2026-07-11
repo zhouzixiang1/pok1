@@ -49,6 +49,10 @@ Crossover path:
 | Stage | Tool |
 |---|---|
 | crossover | `run_crossover` |
+| direction audit | `run_direction_audit` |
+| research (if stagnant/repetitive) | `run_literature_probe` |
+| planning | `run_master` |
+| implementation | `execute_workers` |
 | quality | `run_quality_gates` |
 | review | `run_review` |
 | critic | `run_critic` |
@@ -56,9 +60,12 @@ Crossover path:
 | commit | `commit_bot` |
 | archivist | `run_archivist` |
 
-After `run_crossover` returns success, the bot code already exists and the checkpoint is at `workers_done`.
-Do NOT call `run_direction_audit`, `run_master`, or `execute_workers` to plan the crossover child.
-If that crossover child later fails quality/precommit gates, follow the checkpoint route policy exactly; a repair checkpoint may legitimately call `execute_workers` with exact gate feedback.
+After `run_crossover` returns success, it has created only a recombination
+baseline and the checkpoint is at `prepared`. Follow the same governed path as
+every other generation: direction audit, the mandatory literature probe when
+stagnant/repetitive, Master, Workers, then quality gates. Never treat the small
+recombination diff as the generation's reviewed innovation; crossover performs
+no independent strategy mutation.
 </state_machine>
 <literature_probe_guidance>
 **When to call `run_literature_probe`** (MANDATORY when stagnant — DeepEvolve + Ratchet):
@@ -115,12 +122,11 @@ This keeps code-change verification inside the MCP gate rather than in ad hoc Ba
 
 <gate_requirements>
 Do NOT call `commit_bot()` unless ALL of these are satisfied:
-1. Normal generation: `run_direction_audit` was called before `run_master`.
-   Crossover generation: `run_crossover` succeeded and placed the checkpoint at
-   `workers_done`; do NOT call `run_direction_audit`, `run_master`, or
-   `execute_workers` for initial planning of that crossover child. Later
-   `repair_planned` / `rework_running` checkpoints may call `execute_workers`
-   only with exact quality/precommit feedback.
+1. Every generation, including a crossover generation, called
+   `run_direction_audit` before `run_master`. A successful `run_crossover`
+   supplies only the `prepared` baseline; it never substitutes for Master or
+   Worker execution. Later `repair_planned` / `rework_running` checkpoints may
+   call `execute_workers` only with exact quality/precommit feedback.
 2. `run_quality_gates` returned `all_passed: true` AND `critical_scenarios_passed: true`
 3. `run_review` returned `approved: true`
 4. `run_critic` completed successfully (`score` is advisory)

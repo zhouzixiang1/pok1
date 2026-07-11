@@ -61,13 +61,13 @@ def _render_analysis_section(text: str, default_msg: str) -> str:
     return text
 
 
-def _line_budget_summary(source_v: int) -> str:
-    """Summarize core-file LOC pressure for the Master prompt."""
+def _line_budget_summary(bot_v: int, *, baseline_label: str = "source") -> str:
+    """Summarize LOC pressure for the exact baseline Workers will edit."""
     try:
-        bot_dir = get_bot_dir(source_v)
+        bot_dir = get_bot_dir(bot_v)
     except Exception:
         return "Line budget: unavailable."
-    lines = ["Line budget / file-size pressure:"]
+    lines = [f"Line budget / file-size pressure ({baseline_label}={bot_dir.name}):"]
     for filename in sorted(CORE_STRATEGY_FILES):
         path = bot_dir / filename
         if not path.exists():
@@ -100,7 +100,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                                replay_spotlight="", bot_action_stats="",
                                battle_experience="", exploitability_weaknesses="",
                                opponent_profiles="", research_proposals="",
-                               architecture_policy=None):
+                               architecture_policy=None,
+                               prepared_baseline=None):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
     # Apply section budgets to avoid experience_pool crowding out match_analysis.
@@ -142,10 +143,23 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         official_feedback = _trim_to_budget(official_feedback_summary(), 6_000)
     except Exception as exc:
         official_feedback = f"Official EXE compliance feedback unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+    planning_baseline_v = next_v if isinstance(prepared_baseline, dict) else source_v
+    planning_baseline_label = (
+        "prepared_crossover_child"
+        if isinstance(prepared_baseline, dict)
+        else "source_parent"
+    )
     try:
         from national_capability_contract import national_runtime_feedback_summary
         runtime_feedback = _trim_to_budget(
-            national_runtime_feedback_summary(get_bot_dir(source_v), source_label=bot_name(source_v)),
+            national_runtime_feedback_summary(
+                get_bot_dir(planning_baseline_v),
+                source_label=(
+                    f"{bot_name(planning_baseline_v)} prepared crossover baseline"
+                    if isinstance(prepared_baseline, dict)
+                    else bot_name(source_v)
+                ),
+            ),
             4_000,
         )
     except Exception as exc:
@@ -175,7 +189,27 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     except Exception:
         workflow_profile = None
         workflow_profile_text = "Workflow profile: default"
-    line_budget_text = _line_budget_summary(source_v)
+    line_budget_text = _line_budget_summary(
+        planning_baseline_v,
+        baseline_label=planning_baseline_label,
+    )
+    if isinstance(prepared_baseline, dict):
+        try:
+            from prepared_baseline_contract import prepared_baseline_prompt
+
+            prepared_baseline_text = _trim_to_budget(
+                prepared_baseline_prompt(prepared_baseline),
+                18_000,
+            )
+        except Exception as exc:
+            prepared_baseline_text = (
+                "Prepared crossover baseline rendering failed closed before this "
+                f"prompt should run: {type(exc).__name__}: {str(exc)[:240]}"
+            )
+    else:
+        prepared_baseline_text = (
+            "No two-parent prepared baseline: Workers start from the copied source parent."
+        )
     try:
         from evidence_snapshot import ensure_generation_h2h_snapshot, h2h_snapshot_contract_text
         h2h_snapshot = ensure_generation_h2h_snapshot(next_v)
@@ -184,8 +218,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     except Exception:
         h2h_data_file = "web/core/results/head_to_head.json"
         h2h_snapshot_contract = (
-            "Stable H2H snapshot unavailable. Use live H2H only as fallback and "
-            "avoid brittle verbatim-count claims if the daemon is still writing."
+            "Stable H2H snapshot unavailable. Do not read live H2H or make "
+            "matchup-count claims for this generation."
         )
 
     # Build eval round summary BEFORE substitute_template so it's included in one pass
@@ -223,6 +257,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"Current evolution: v{source_v} → v{next_v}\n"
         f"Source bot directory (read-only parent): {bot_relpath(source_v)}/\n"
         f"Target bot directory (workers edit/verify): {bot_relpath(next_v)}/\n"
+        f"Planning baseline: {bot_relpath(planning_baseline_v)}/ ({planning_baseline_label})\n"
         f"Ratings file: web/core/results/glicko_ratings.json\n"
         f"Rating history: web/core/results/rating_history.jsonl\n"
         f"Head-to-Head data snapshot: {h2h_data_file}\n"
@@ -234,6 +269,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"\n{frontier_trimmed}\n"
         f"\nOfficial EXE Compliance Feedback:\n{official_feedback}\n"
         f"\nNational Runtime Architecture Feedback:\n{runtime_feedback}\n"
+        f"\nPrepared Baseline Contract:\n{prepared_baseline_text}\n"
         f"\n{architecture_policy_text}\n"
         f"\n{line_budget_text}\n"
     )

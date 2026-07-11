@@ -11,6 +11,18 @@ def _native_bot(path: Path) -> Path:
     return path
 
 
+def _allow_tmp_candidate_publication_shape(monkeypatch) -> None:
+    """Keep commit-flow tests focused past the repository-shape precondition.
+
+    These candidates intentionally live under pytest's temporary directory,
+    outside the Git checkout. Publication-shape behavior has dedicated tests;
+    commit-flow cases below exercise official parking/jobs and push handling.
+    """
+    import bot_artifact
+
+    monkeypatch.setattr(bot_artifact, "publication_shape_errors", lambda _path: [])
+
+
 def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
     import official_certification
     import official_certification_job
@@ -561,6 +573,7 @@ def test_commit_bot_parks_no_opponent_without_git(monkeypatch, tmp_path):
     import tool_commit
 
     candidate = _native_bot(tmp_path / "bots" / "national_v146")
+    _allow_tmp_candidate_publication_shape(monkeypatch)
     checkpoint = {"next_v": 146, "source_v": 142, "stage": "verified"}
     gate = {
         "passed": False,
@@ -625,6 +638,7 @@ def test_commit_bot_never_invokes_git_when_official_gate_fails(monkeypatch, tmp_
     import tool_commit
 
     candidate = _native_bot(tmp_path / "bots" / "national_v143")
+    _allow_tmp_candidate_publication_shape(monkeypatch)
     checkpoint = {"next_v": 143, "source_v": 142, "stage": "verified"}
     monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _version: candidate)
     monkeypatch.setattr(tool_commit, "_matching_checkpoint", lambda *_args: checkpoint)
@@ -685,6 +699,7 @@ def test_commit_bot_attaches_pending_official_job_without_git(monkeypatch, tmp_p
     import tool_commit
 
     candidate = _native_bot(tmp_path / "bots" / "national_v143")
+    _allow_tmp_candidate_publication_shape(monkeypatch)
     checkpoint = {"next_v": 143, "source_v": 142, "stage": "verified"}
     monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _version: candidate)
     monkeypatch.setattr(tool_commit, "_matching_checkpoint", lambda *_args: checkpoint)
@@ -753,6 +768,7 @@ def test_required_push_failure_keeps_checkpoint_and_candidate_incomplete(monkeyp
     import tool_commit
 
     candidate = _native_bot(tmp_path / "bots" / "national_v143")
+    _allow_tmp_candidate_publication_shape(monkeypatch)
     checkpoint = {
         "next_v": 143,
         "source_v": 142,

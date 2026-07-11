@@ -28,6 +28,14 @@ from tool_helpers import _quality_gate_ok
 from workflow_profiles import get_workflow_profile, profile_summary
 
 
+@pytest.fixture(autouse=True)
+def _publication_shape_is_not_under_test(monkeypatch):
+    """Most fixtures live outside the repository; publication has its own suite."""
+    import bot_artifact
+
+    monkeypatch.setattr(bot_artifact, "publication_shape_errors", lambda *_a, **_k: [])
+
+
 def _write_minimal_strategy_bot(bot_dir: Path) -> None:
     bot_dir.mkdir(parents=True, exist_ok=True)
     (bot_dir / "main.py").write_text(
@@ -71,6 +79,40 @@ def _passing_architecture_transition(*_args, **_kwargs):
         "source_capabilities": capabilities,
         "candidate_capabilities": capabilities,
     }
+
+
+def _write_prepared_workers_checkpoint(
+    child: Path,
+    *,
+    source_v: int = 1,
+    next_v: int = 2,
+) -> None:
+    """Freeze the pre-Worker child; callers mutate strategy.py afterwards."""
+    from prepared_baseline_contract import build_prepared_artifact_contract
+
+    contract = build_prepared_artifact_contract(
+        child,
+        source_v=source_v,
+        next_v=next_v,
+    )
+    assert evolution_infra.write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "workers_done",
+        master_plan={
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "files_allowed": ["strategy.py"],
+                "must_change_files": ["strategy.py"],
+                "worker_prompt": "Change the declared strategy behavior.",
+            }],
+        },
+        audit_context={"prepared_artifact_contract": contract},
+    )
+
+
 def _load_native_entry_module(bot_dir: Path, monkeypatch):
     for module_name in ("main", "state", "strategy", "native_entry_probe"):
         monkeypatch.delitem(sys.modules, module_name, raising=False)
@@ -151,7 +193,9 @@ def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_pat
     assert ".readline(" not in text
     assert "msg + \"\\n\"" not in text
     assert "NATIONAL_STREAM_DECODER_VERSION = 2" in text
-    assert "NATIONAL_DECISION_RUNTIME_VERSION = 7" in text
+    assert "NATIONAL_DECISION_RUNTIME_VERSION = 8" in text
+    assert "_resource.RLIMIT_AS" in text
+    assert "def _apply_strategy_worker_resource_limits" in text
     assert 'os.environ["POK_NATIVE_BOT_SEED"]' in text
     assert "random.seed(int(random_seed))" in text
     assert "def _reap_retired_strategy_workers" in text
@@ -377,6 +421,9 @@ def test_decision_deadline_force_kills_sigterm_ignoring_worker_and_child(
     monkeypatch.setenv("POK_DECISION_REFINEMENT_BUDGET_SEC", "0.20")
     monkeypatch.setenv("POK_DECISION_BASELINE_TARGET_SEC", "0.02")
     module = _load_native_entry_module(bot_dir, monkeypatch)
+    # The static external-I/O contract rejects candidate subprocesses. Disable
+    # worker rlimits here solely to reach the downstream process-group fallback.
+    monkeypatch.setattr(module, "_apply_strategy_worker_resource_limits", lambda: None)
     bot = module.NativeNationalBot("BotA")
     child_pid = None
 
@@ -400,11 +447,13 @@ def test_decision_deadline_force_kills_sigterm_ignoring_worker_and_child(
         action = bot._strategy_action()
         metrics = dict(bot._last_decision_metrics)
         worker_pid = int(metrics["worker_pid"])
+        assert child_pid_path.exists()
         child_pid = int(child_pid_path.read_text(encoding="utf-8"))
 
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline and (
-            process_is_running(worker_pid) or process_is_running(child_pid)
+            process_is_running(worker_pid)
+            or process_is_running(child_pid)
         ):
             time.sleep(0.01)
 
@@ -1790,7 +1839,7 @@ def test_current_runtime_strength_overlay_is_bilateral_and_leaves_sources_immuta
         entry = bot_dir / "national_bot.py"
         entry.write_text(
             entry.read_text(encoding="utf-8").replace(
-                "NATIONAL_DECISION_RUNTIME_VERSION = 7",
+                "NATIONAL_DECISION_RUNTIME_VERSION = 8",
                 "NATIONAL_DECISION_RUNTIME_VERSION = 1",
             ),
             encoding="utf-8",
@@ -2096,8 +2145,8 @@ def test_quality_gate_treats_official_port_busy_as_inconclusive(monkeypatch, tmp
     _write_minimal_strategy_bot(source)
     _write_minimal_strategy_bot(child)
     ensure_native_entry(child)
+    _write_prepared_workers_checkpoint(child)
     (child / "strategy.py").write_text("def get_action(req, requests):\n    return 1\n", encoding="utf-8")
-    evolution_infra.write_pipeline_checkpoint(2, 1, "workers_done")
 
     class FakeAcceptance:
         passed = True
@@ -2194,8 +2243,8 @@ def test_quality_gate_blocks_official_protocol_violation(monkeypatch, tmp_path):
     _write_minimal_strategy_bot(source)
     _write_minimal_strategy_bot(child)
     ensure_native_entry(child)
+    _write_prepared_workers_checkpoint(child)
     (child / "strategy.py").write_text("def get_action(req, requests):\n    return 1\n", encoding="utf-8")
-    evolution_infra.write_pipeline_checkpoint(2, 1, "workers_done")
 
     class FakeAcceptance:
         passed = True
@@ -2347,11 +2396,11 @@ def test_quality_gate_probe_infra_retries_then_stops_without_bot_repair(monkeypa
     _write_minimal_strategy_bot(source)
     _write_minimal_strategy_bot(child)
     ensure_native_entry(child)
+    _write_prepared_workers_checkpoint(child)
     (child / "strategy.py").write_text(
         "def get_action(req, current_request_view):\n    return 1\n",
         encoding="utf-8",
     )
-    evolution_infra.write_pipeline_checkpoint(2, 1, "workers_done")
 
     capabilities = {
         "schema_version": 2,

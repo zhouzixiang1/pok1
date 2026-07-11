@@ -11,6 +11,47 @@ def _legacy_default_workflow(monkeypatch):
     monkeypatch.setenv("POK_WORKFLOW_PROFILE", "default")
 
 
+def _prepared_artifact_contract(candidate_dir, source_v, next_v):
+    from prepared_baseline_contract import build_prepared_artifact_contract
+
+    return build_prepared_artifact_contract(
+        candidate_dir,
+        source_v=source_v,
+        next_v=next_v,
+    )
+
+
+def _write_workers_done_checkpoint(
+    evolution_infra,
+    candidate_dir,
+    source_v,
+    next_v,
+    *allowed_files,
+):
+    contract = _prepared_artifact_contract(candidate_dir, source_v, next_v)
+    assert evolution_infra.write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "workers_done",
+        audit_context={"prepared_artifact_contract": contract},
+        master_plan={
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": list(allowed_files),
+                "files_allowed": list(allowed_files),
+            }],
+        },
+    ) is True
+    return contract
+
+
+def _stub_publication_shape_for_nonpublication_test(monkeypatch):
+    import bot_artifact
+
+    monkeypatch.setattr(bot_artifact, "publication_shape_errors", lambda _path: [])
+
+
 def test_import_contract_catches_missing_symbol_that_py_compile_misses(tmp_path):
     from code_verification import run_import_contract_test, verify_code
 
@@ -25,6 +66,27 @@ def test_import_contract_catches_missing_symbol_that_py_compile_misses(tmp_path)
     assert errors
     assert errors[0]["module"] in {"main", "strategy"}
     assert "missing_symbol" in errors[0]["traceback"]
+
+
+def test_import_contract_memory_bomb_is_contained_in_child(tmp_path):
+    from code_verification import run_import_contract_test
+
+    bot = tmp_path / "bot"
+    bot.mkdir()
+    (bot / "strategy.py").write_text(
+        "TABLE = [0] * (10 ** 9)\n",
+        encoding="utf-8",
+    )
+
+    errors = run_import_contract_test(
+        str(bot),
+        modules=["strategy"],
+        timeout=5,
+    )
+
+    assert errors
+    assert errors[0]["exception"] in {"MemoryError", "ProcessExit1", "ProcessExit-9"}
+    assert 1 + 1 == 2  # the pytest/orchestrator process remains alive
 
 
 def test_smoke_test_fails_before_battle_on_import_contract_error(tmp_path):
@@ -97,13 +159,24 @@ def test_smoke_test_keeps_real_traceback_after_cleanup_filter(monkeypatch, tmp_p
     assert "NameError: boom" in errors[0]
 
 
-def test_quality_gate_records_runtime_import_failure_as_quality_failed(monkeypatch):
+def test_quality_gate_records_runtime_import_failure_as_quality_failed(
+    monkeypatch,
+    tmp_path,
+):
     import evolution_infra
     import tool_gates
 
-    evolution_infra.write_pipeline_checkpoint(2, 1, "workers_done")
+    source = tmp_path / "claude_v1"
+    child = tmp_path / "claude_v2"
+    source.mkdir()
+    child.mkdir()
+    (source / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (child / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _write_workers_done_checkpoint(evolution_infra, child, 1, 2, "main.py")
+    (child / "main.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _stub_publication_shape_for_nonpublication_test(monkeypatch)
 
-    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: evolution_infra.BOTS_DIR / f"claude_v{v}")
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
     monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["main.py"])
     monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [{
@@ -145,13 +218,21 @@ def test_quality_gate_records_runtime_import_failure_as_quality_failed(monkeypat
     assert "runtime_import" in " ".join(ckpt["gate_results"]["quality"]["failed_gates"])
 
 
-def test_quality_gate_records_smoke_failure_details(monkeypatch):
+def test_quality_gate_records_smoke_failure_details(monkeypatch, tmp_path):
     import evolution_infra
     import tool_gates
 
-    evolution_infra.write_pipeline_checkpoint(3, 2, "workers_done")
+    source = tmp_path / "claude_v2"
+    child = tmp_path / "claude_v3"
+    source.mkdir()
+    child.mkdir()
+    (source / "main.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (child / "main.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _write_workers_done_checkpoint(evolution_infra, child, 2, 3, "main.py")
+    (child / "main.py").write_text("VALUE = 3\n", encoding="utf-8")
+    _stub_publication_shape_for_nonpublication_test(monkeypatch)
 
-    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: evolution_infra.BOTS_DIR / f"claude_v{v}")
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
     monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["main.py"])
     monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
     monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
@@ -199,12 +280,19 @@ def test_quality_gate_blocks_unreachable_new_function(monkeypatch, tmp_path):
     source.mkdir()
     child.mkdir()
     (source / "postflop.py").write_text("def existing():\n    return 1\n")
+    (child / "postflop.py").write_text("def existing():\n    return 1\n")
+    _write_workers_done_checkpoint(
+        evolution_infra,
+        child,
+        3,
+        4,
+        "postflop.py",
+    )
     (child / "postflop.py").write_text(
         "def existing():\n    return 1\n\n"
         "def _new_helper():\n    return 2\n"
     )
-
-    evolution_infra.write_pipeline_checkpoint(4, 3, "workers_done")
+    _stub_publication_shape_for_nonpublication_test(monkeypatch)
 
     monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
     monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["postflop.py"])
@@ -251,13 +339,14 @@ def test_quality_gate_allows_unreachable_verify_helper(monkeypatch, tmp_path):
     source.mkdir()
     child.mkdir()
     (source / "state.py").write_text("def existing():\n    return 1\n")
+    (child / "state.py").write_text("def existing():\n    return 1\n")
+    _write_workers_done_checkpoint(evolution_infra, child, 6, 7, "state.py")
     (child / "state.py").write_text(
         "def existing():\n    return 1\n\n"
         "def _verify_preflop_shove_defense():\n"
         "    assert existing() == 1\n"
     )
-
-    evolution_infra.write_pipeline_checkpoint(7, 6, "workers_done")
+    _stub_publication_shape_for_nonpublication_test(monkeypatch)
 
     monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
     monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["state.py"])
@@ -306,9 +395,10 @@ def test_quality_gate_reruns_when_cached_code_fingerprint_is_stale(monkeypatch, 
     source.mkdir()
     child.mkdir()
     (source / "main.py").write_text("def act():\n    return 0\n")
+    (child / "main.py").write_text("def act():\n    return 0\n")
+    _write_workers_done_checkpoint(evolution_infra, child, 4, 5, "main.py")
     (child / "main.py").write_text("def act():\n    return 1\n")
-
-    evolution_infra.write_pipeline_checkpoint(5, 4, "workers_done")
+    _stub_publication_shape_for_nonpublication_test(monkeypatch)
     tool_helpers._record_gate(
         5,
         4,
@@ -368,9 +458,10 @@ def test_quality_gate_skips_dynamic_llm_when_heuristics_sufficient(monkeypatch, 
     source.mkdir()
     child.mkdir()
     (source / "strategy.py").write_text("def act():\n    return 0\n")
+    (child / "strategy.py").write_text("def act():\n    return 0\n")
+    _write_workers_done_checkpoint(evolution_infra, child, 8, 9, "strategy.py")
     (child / "strategy.py").write_text("def act():\n    if True:\n        return 1\n    return 0\n")
-
-    evolution_infra.write_pipeline_checkpoint(9, 8, "workers_done")
+    _stub_publication_shape_for_nonpublication_test(monkeypatch)
 
     monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
     monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["strategy.py"])
@@ -451,9 +542,10 @@ def test_quality_gate_skips_dynamic_llm_when_disabled(monkeypatch, tmp_path):
     source.mkdir()
     child.mkdir()
     (source / "strategy.py").write_text("def act():\n    return 0\n")
+    (child / "strategy.py").write_text("def act():\n    return 0\n")
+    _write_workers_done_checkpoint(evolution_infra, child, 18, 19, "strategy.py")
     (child / "strategy.py").write_text("def act():\n    return 1\n")
-
-    evolution_infra.write_pipeline_checkpoint(19, 18, "workers_done")
+    _stub_publication_shape_for_nonpublication_test(monkeypatch)
 
     monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
     monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["strategy.py"])
@@ -523,9 +615,10 @@ def test_quality_gate_records_placement_shadow_review_scorecard(monkeypatch, tmp
     source.mkdir()
     child.mkdir()
     (source / "main.py").write_text("def act():\n    return 0\n")
+    (child / "main.py").write_text("def act():\n    return 0\n")
+    _write_workers_done_checkpoint(evolution_infra, child, 10, 11, "main.py")
     (child / "main.py").write_text("def act():\n    return 1\n")
-
-    evolution_infra.write_pipeline_checkpoint(11, 10, "workers_done")
+    _stub_publication_shape_for_nonpublication_test(monkeypatch)
 
     monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
     monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["main.py"])
@@ -685,7 +778,7 @@ def test_normalize_master_plan_paths_rewrites_only_task_path_refs():
     assert meta["replacements"] >= 3
 
 
-def test_run_master_normalizes_parent_paths_before_audit(monkeypatch):
+def test_run_master_normalizes_parent_paths_before_audit(monkeypatch, tmp_path):
     import audit_agents
     import evolution_infra
     import replay_spotlight
@@ -716,12 +809,25 @@ def test_run_master_normalizes_parent_paths_before_audit(monkeypatch):
         captured_audit["next_v"] = next_v
         return {"overall_pass": True}
 
+    source = tmp_path / "national_v224"
+    candidate = tmp_path / "national_v232"
+    source.mkdir()
+    candidate.mkdir()
+    (source / "strategy.py").write_text("def decide():\n    return 0\n")
+    (candidate / "strategy.py").write_text("def decide():\n    return 0\n")
     checkpoint = {
         "next_v": 232,
         "source_v": 224,
         "stage": "direction_audited",
         "audit_attempt": 0,
         "direction_audit": {"repetition_detected": False, "llm_failed": False},
+        "audit_context": {
+            "prepared_artifact_contract": _prepared_artifact_contract(
+                candidate,
+                224,
+                232,
+            ),
+        },
     }
     writes = []
 
@@ -737,6 +843,11 @@ def test_run_master_normalizes_parent_paths_before_audit(monkeypatch):
 
     monkeypatch.setattr(tool_planning, "_run_master_analysis", _fake_master)
     monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_a, **_k: checkpoint)
+    monkeypatch.setattr(
+        tool_planning,
+        "get_bot_dir",
+        lambda version: source if version == 224 else candidate,
+    )
     monkeypatch.setattr(tool_planning, "_get_ui", lambda: _UI())
     monkeypatch.setattr(tool_planning, "_build_cross_gen_constraint_block", lambda _v: "")
     monkeypatch.setattr(tool_planning, "_extract_exhausted_keywords", lambda: [])
@@ -764,7 +875,7 @@ def test_run_master_normalizes_parent_paths_before_audit(monkeypatch):
     assert captured_audit["next_v"] == 232
 
 
-def test_run_master_hard_validates_before_master_audit(monkeypatch):
+def test_run_master_hard_validates_before_master_audit(monkeypatch, tmp_path):
     import audit_agents
     import evolution_infra
     import replay_spotlight
@@ -789,12 +900,25 @@ def test_run_master_hard_validates_before_master_audit(monkeypatch):
     async def _audit_should_not_run(*_args, **_kwargs):
         raise AssertionError("LLM master plan audit should not run after hard validation failure")
 
+    source = tmp_path / "national_v224"
+    candidate = tmp_path / "national_v233"
+    source.mkdir()
+    candidate.mkdir()
+    (source / "strategy.py").write_text("def decide():\n    return 0\n")
+    (candidate / "strategy.py").write_text("def decide():\n    return 0\n")
     checkpoint = {
         "next_v": 233,
         "source_v": 224,
         "stage": "direction_audited",
         "audit_attempt": 0,
         "direction_audit": {"repetition_detected": False, "llm_failed": False},
+        "audit_context": {
+            "prepared_artifact_contract": _prepared_artifact_contract(
+                candidate,
+                224,
+                233,
+            ),
+        },
     }
 
     class _UI:
@@ -809,6 +933,11 @@ def test_run_master_hard_validates_before_master_audit(monkeypatch):
 
     monkeypatch.setattr(tool_planning, "_run_master_analysis", _fake_master)
     monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_a, **_k: checkpoint)
+    monkeypatch.setattr(
+        tool_planning,
+        "get_bot_dir",
+        lambda version: source if version == 224 else candidate,
+    )
     monkeypatch.setattr(tool_planning, "_get_ui", lambda: _UI())
     monkeypatch.setattr(tool_planning, "_build_cross_gen_constraint_block", lambda _v: "")
     monkeypatch.setattr(tool_planning, "_extract_exhausted_keywords", lambda: [])
@@ -1515,6 +1644,7 @@ def test_subagent_write_guard_uses_structured_scope_for_decisions():
 
 
 def test_commit_bot_blocks_missing_code_fingerprints(tmp_path, monkeypatch):
+    import bot_artifact
     import tool_commit
 
     bot_dir = tmp_path / "bots" / "claude_v444"
@@ -1534,6 +1664,7 @@ def test_commit_bot_blocks_missing_code_fingerprints(tmp_path, monkeypatch):
     monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _v: bot_dir)
     monkeypatch.setattr(tool_commit, "_matching_checkpoint", lambda _v, _source_v: ckpt)
     monkeypatch.setattr(tool_commit, "log_system_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(bot_artifact, "publication_shape_errors", lambda _path: [])
     monkeypatch.setattr(
         tool_commit,
         "git_commit_bot",
@@ -1936,6 +2067,17 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
     monkeypatch.setattr(
         bot_artifact,
+        "validate_staged_artifact",
+        lambda *_a, **_k: {
+            "valid": True,
+            "working_hash": "candidate-hash",
+            "staged_hash": "candidate-hash",
+            "working_manifest": {"entries": []},
+            "staged_manifest": {"entries": []},
+        },
+    )
+    monkeypatch.setattr(
+        bot_artifact,
         "validate_completion_tag",
         lambda *_a, **_k: {"valid": True, "issues": []},
     )
@@ -2014,6 +2156,17 @@ def test_git_commit_bot_binds_official_certificate_to_commit_and_tag(monkeypatch
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
+    monkeypatch.setattr(
+        bot_artifact,
+        "validate_staged_artifact",
+        lambda *_a, **_k: {
+            "valid": True,
+            "working_hash": "candidate-hash",
+            "staged_hash": "candidate-hash",
+            "working_manifest": {"entries": []},
+            "staged_manifest": {"entries": []},
+        },
+    )
     monkeypatch.setattr(
         bot_artifact,
         "validate_completion_tag",

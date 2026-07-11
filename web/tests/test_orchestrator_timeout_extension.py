@@ -417,7 +417,14 @@ def test_main_loop_preserves_info_log_level_across_deterministic_route_chain(tmp
     async def _fake_route(recovery, ui=None, **kwargs):
         route_calls.append((recovery, kwargs))
         if len(route_calls) == 1:
-            _write_checkpoint(tmp_path, "workers_done", timeout_extensions=0)
+            # This test exercises orchestrator log-level propagation, not the
+            # stage machine. Simulate a completed deterministic route without
+            # asking the now-explicit early-edge validator to accept the
+            # intentionally compressed selected -> workers_done jump.
+            checkpoint_path = tmp_path / "pipeline_state.json"
+            checkpoint = json.loads(checkpoint_path.read_text())
+            checkpoint["stage"] = "workers_done"
+            checkpoint_path.write_text(json.dumps(checkpoint, indent=2))
         return True
 
     monkeypatch.setattr(orchestrator, "_run_one_cycle", _fake_run_one_cycle)
@@ -803,7 +810,7 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     import orchestrator
     import evolution_core
 
-    _write_checkpoint(tmp_path, "prepared", timeout_extensions=0)
+    _write_checkpoint(tmp_path, "workers_done", timeout_extensions=0)
     pipe_file = evolution_core.PIPELINE_STATE_FILE
     events = []
 
@@ -828,6 +835,13 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _stalls_after_first_message())
     monkeypatch.setattr(orchestrator, "ORCH_STREAM_POLL_INTERVAL", 0.01)
     monkeypatch.setattr(orchestrator, "ORCH_ACTIONABLE_STAGE_TIMEOUT", 0.01)
+    # Immediate handoff has its own coverage below. Disable it here so this
+    # case isolates the idle-timeout fallback after a legal gate transition.
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_handoff",
+        lambda: None,
+    )
     monkeypatch.setattr(
         orchestrator,
         "log_system_event",

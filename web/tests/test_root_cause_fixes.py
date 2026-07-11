@@ -83,6 +83,13 @@ class TestP2StageTransition:
                 assert ok is False
                 assert reason == "operator_bootstrap_pause_is_durable"
                 continue
+            if (current, proposed) in {
+                ("prepared", "crossover_running"),
+                ("crossover_running", "direction_audited"),
+            }:
+                assert ok is False
+                assert "early_generation_transition_not_allowed" in reason
+                continue
             assert ok, f"Forward {current} -> {proposed} should be valid: {reason}"
 
     def test_backward_transition_blocked(self):
@@ -120,10 +127,37 @@ class TestP2StageTransition:
         ok, _ = validate_stage_transition("reviewed", "reviewed")
         assert ok
 
-    def test_fresh_restart_allowed(self):
+    def test_late_stage_cannot_forge_fresh_prepared_baseline(self):
         from core.evolution_infra import validate_stage_transition
-        ok, _ = validate_stage_transition("critic_checked", "prepared")
+        ok, reason = validate_stage_transition("critic_checked", "prepared")
+        assert not ok
+        assert "early_generation_transition_not_allowed" in reason
+
+    def test_prepare_owners_can_complete_prepared_baseline(self):
+        from core.evolution_infra import validate_stage_transition
+
+        for stage in ("preparing", "crossover_running"):
+            ok, reason = validate_stage_transition(stage, "prepared")
+            assert ok
+            assert reason == "prepare_baseline_completed"
+
+    def test_timed_out_generation_can_restart_materialization_only(self):
+        from core.evolution_infra import validate_stage_transition
+
+        ok, reason = validate_stage_transition("timed_out", "preparing")
         assert ok
+        assert reason == "prepare_started"
+        prepared_ok, _ = validate_stage_transition("timed_out", "prepared")
+        assert not prepared_ok
+
+    def test_infra_timeout_only_recovers_to_precommit_owner_stage(self):
+        from core.evolution_infra import validate_stage_transition
+
+        ok, reason = validate_stage_transition("infra_timed_out", "critic_checked")
+        assert ok
+        assert reason == "infra_precommit_retry_recovery"
+        preparing_ok, _ = validate_stage_transition("infra_timed_out", "preparing")
+        assert not preparing_ok
 
 
 # ── P3: AST Dead Code Detection ─────────────────────────────────────

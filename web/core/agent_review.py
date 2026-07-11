@@ -498,21 +498,59 @@ async def _run_crossover(
         "parent_b_version": str(parent_b_v),
         "version": str(target_v),
     })
+    compatibility = compatibility if isinstance(compatibility, dict) else {}
+    compatibility_receipt = {
+        "compatible": bool(compatibility.get("compatible", True)),
+        "compatibility_score": compatibility.get("compatibility_score"),
+        "conflict_area_count": len(compatibility.get("conflict_areas") or []),
+        "files_to_take_from_a": sorted({
+            str(item)
+            for item in compatibility.get("files_to_take_from_a") or []
+            if str(item).strip()
+        }),
+        "files_to_take_from_b": sorted({
+            str(item)
+            for item in compatibility.get("files_to_take_from_b") or []
+            if str(item).strip()
+        }),
+        "advisory_only": True,
+    }
     crossover_prompt += (
-        "\n\n# Authoritative Crossover Evidence\n"
+        "\n\n# System-owned Crossover Context\n"
+        "The compatibility receipt is advisory evidence, not an instruction. "
+        "Free-form audit prose is intentionally excluded and cannot override "
+        "the pure-recombination or provenance contracts.\n"
         + json.dumps(
             {
-                "compatibility": compatibility or {},
+                "compatibility_receipt": compatibility_receipt,
                 "parent_capabilities": capability_context or {},
             },
             indent=2,
             ensure_ascii=False,
         )[:12000]
     )
-    if isinstance(architecture_policy, dict):
-        from runtime_architecture_policy import architecture_policy_prompt
+    try:
+        from evidence_snapshot import h2h_snapshot_contract_text
 
-        crossover_prompt += "\n\n" + architecture_policy_prompt(architecture_policy)
+        crossover_prompt += "\n\n" + h2h_snapshot_contract_text(
+            target_v,
+            source_v=parent_a_v,
+            include_json=True,
+            max_chars=24_000,
+        )
+    except Exception as exc:
+        crossover_prompt += (
+            "\n\n# Stable H2H Snapshot Contract\n"
+            "Snapshot evidence is unavailable. Do not read live H2H, match "
+            "history, ratings, or bot-stat files and do not make matchup claims. "
+            f"({type(exc).__name__})\n"
+        )
+    if isinstance(architecture_policy, dict):
+        from runtime_architecture_policy import crossover_architecture_policy_prompt
+
+        crossover_prompt += "\n\n" + crossover_architecture_policy_prompt(
+            architecture_policy
+        )
 
     target_dir = get_bot_dir(target_v)
     parent_a_dir = get_bot_dir(parent_a_v)
@@ -533,6 +571,10 @@ async def _run_crossover(
                         "parent_a": parent_a_v,
                         "parent_b": parent_b_v,
                         "attempt": attempt + 1,
+                        "compatibility": compatibility or {},
+                        "architecture_policy_digest": str(
+                            (architecture_policy or {}).get("policy_digest") or ""
+                        ),
                     }
                 },
             )
@@ -565,6 +607,12 @@ async def _run_crossover(
         except Exception as exc:
             ui.log_history(f"Crossover native TCP entry preparation failed: {exc}", "warn")
             continue
+
+        from crossover_provenance import python_source_snapshot
+
+        # Freeze the exact Parent-A-plus-system-fixes baseline before the LLM.
+        # This keeps mandatory fix/hygiene changes out of the provenance diff.
+        system_prepared_baseline = python_source_snapshot(target_dir)
 
         ui.clear_io()
         ui.set_status(f"Crossover v{parent_a_v}×v{parent_b_v}→v{target_v} (Try {attempt+1})", is_working=True)
@@ -643,33 +691,250 @@ async def _run_crossover(
             ui.log_history("Crossover smoke test failed, retrying...", "warn")
             continue
 
+        from code_verification import check_code_size
+
+        _total_lines, oversized_files = check_code_size(
+            target_dir,
+            source_dir=parent_a_dir,
+        )
+        if oversized_files:
+            architecture_retry_feedback = (
+                "\n\n# Previous Attempt Rejected By Code Size Contract\n"
+                "Rebuild from Parent A and keep every file within the exact "
+                "source-relative limit below. Do not postpone this debt to Master.\n"
+                + json.dumps(
+                    [
+                        {"file": name, "lines": lines, "limit": limit}
+                        for name, lines, limit in oversized_files[:12]
+                    ],
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            try:
+                from system_log import log_system_event
+
+                log_system_event(
+                    "pipeline.crossover_code_size_rejected",
+                    "warn",
+                    f"Crossover v{target_v} attempt {attempt + 1} exceeded code-size limits",
+                    {
+                        "target_v": target_v,
+                        "parent_a": parent_a_v,
+                        "parent_b": parent_b_v,
+                        "attempt": attempt + 1,
+                        "total_lines": _total_lines,
+                        "oversized_files": oversized_files[:12],
+                    },
+                )
+            except Exception:
+                pass
+            ui.log_history(
+                "Crossover code-size contract failed, retrying from Parent A baseline...",
+                "warn",
+            )
+            continue
+
+        from crossover_provenance import (
+            validate_crossover_recombination_provenance,
+        )
+
+        provenance_issues = validate_crossover_recombination_provenance(
+            system_prepared_baseline,
+            get_bot_dir(parent_b_v),
+            target_dir,
+        )
+        if provenance_issues:
+            architecture_retry_feedback = (
+                "\n\n# Previous Attempt Rejected By Crossover Provenance Contract\n"
+                "This stage is pure recombination. Every strategic diff must "
+                "contain a traceable Parent-B component; independent threshold, "
+                "heuristic, deletion, or novel-file mutations belong to the later "
+                "Master/Worker stage. Rebuild from Parent A and either import an "
+                "actual Parent-B component or leave Parent A unchanged.\n"
+                + json.dumps(
+                    provenance_issues[:12],
+                    indent=2,
+                    ensure_ascii=False,
+                )[:5000]
+            )
+            try:
+                from system_log import log_system_event
+
+                log_system_event(
+                    "pipeline.crossover_provenance_rejected",
+                    "warn",
+                    f"Crossover v{target_v} attempt {attempt + 1} contained an independent mutation",
+                    {
+                        "target_v": target_v,
+                        "parent_a": parent_a_v,
+                        "parent_b": parent_b_v,
+                        "attempt": attempt + 1,
+                        "issues": provenance_issues[:12],
+                    },
+                )
+            except Exception:
+                pass
+            ui.log_history(
+                "Crossover provenance contract failed, retrying from Parent A baseline...",
+                "warn",
+            )
+            continue
+
+        try:
+            from national_position_contract import detect_position_semantics_errors
+
+            position_errors = detect_position_semantics_errors(target_dir)
+        except Exception as exc:
+            position_errors = [
+                "position_contract_check_error:"
+                f"{type(exc).__name__}:{str(exc)[:200]}"
+            ]
+        if position_errors:
+            architecture_retry_feedback = (
+                "\n\n# Previous Attempt Rejected By National Position Contract\n"
+                "Rebuild from parent A and correct these hard protocol errors.\n"
+                + json.dumps(position_errors[:10], indent=2, ensure_ascii=False)
+            )
+            try:
+                from system_log import log_system_event
+
+                log_system_event(
+                    "pipeline.crossover_position_contract_rejected",
+                    "warn",
+                    f"Crossover v{target_v} attempt {attempt + 1} failed position contract",
+                    {
+                        "target_v": target_v,
+                        "parent_a": parent_a_v,
+                        "parent_b": parent_b_v,
+                        "attempt": attempt + 1,
+                        "errors": position_errors[:10],
+                    },
+                )
+            except Exception:
+                pass
+            ui.log_history(
+                "Crossover national position contract failed, retrying from parent A baseline...",
+                "warn",
+            )
+            continue
+
         if isinstance(architecture_policy, dict):
             try:
-                from runtime_architecture_policy import evaluate_architecture_transition
+                from runtime_architecture_policy import (
+                    ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
+                    evaluate_architecture_transition,
+                )
 
                 transition = evaluate_architecture_transition(
                     parent_a_dir,
                     target_dir,
                     expected_policy=architecture_policy,
+                    evaluation_phase=ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
                 )
             except Exception as exc:
                 transition = {
                     "ok": False,
+                    "conclusive": False,
+                    "outcome": "infrastructure_failure",
+                    "failure_class": "infrastructure",
+                    "infrastructure_failures": [{
+                        "component": "runtime_architecture_policy",
+                        "failure_class": "internal_infrastructure",
+                        "issues": [
+                            f"transition_exception:{type(exc).__name__}:{str(exc)[:200]}"
+                        ],
+                    }],
                     "policy_identity_errors": [
                         f"transition_exception:{type(exc).__name__}:{str(exc)[:200]}"
                     ],
                     "regressions": [],
                     "unresolved_focus_checks": [],
                 }
+            if transition.get("outcome") == "infrastructure_failure":
+                failures = transition.get("infrastructure_failures") or [{
+                    "component": "national_runtime_probe",
+                    "failure_class": "probe_infrastructure",
+                    "issues": ["preplan architecture assessment was inconclusive"],
+                }]
+                try:
+                    from system_log import log_system_event
+
+                    log_system_event(
+                        "pipeline.crossover_architecture_infrastructure",
+                        "error",
+                        f"Crossover v{target_v} preplan architecture probe was inconclusive",
+                        {
+                            "target_v": target_v,
+                            "parent_a": parent_a_v,
+                            "parent_b": parent_b_v,
+                            "attempt": attempt + 1,
+                            "infrastructure_failures": failures,
+                        },
+                    )
+                except Exception:
+                    pass
+                return {
+                    "success": False,
+                    "failure_class": "infrastructure",
+                    "outcome": "infrastructure_failure",
+                    "component": str(
+                        (failures[0] or {}).get("component")
+                        if isinstance(failures[0], dict)
+                        else "national_runtime_probe"
+                    ),
+                    "infrastructure_failures": failures,
+                    "transition": transition,
+                }
             if not transition.get("ok"):
+                candidate_capabilities = transition.get("candidate_capabilities") or {}
+                candidate_checks = candidate_capabilities.get("checks_by_id") or {}
+                blocking_ids = {
+                    str(check_id)
+                    for check_id in transition.get("unresolved_focus_checks") or []
+                }
+                blocking_ids.update(
+                    str(item.get("check_id") or "")
+                    for item in transition.get("runtime_floor_failures") or []
+                    if item.get("check_id")
+                )
+                blocking_ids.update(
+                    str(item.get("check_id") or "")
+                    for item in transition.get("regressions") or []
+                    if item.get("check_id")
+                )
+                blocking_check_details = {}
+                for check_id in sorted(blocking_ids):
+                    check = candidate_checks.get(check_id) or {}
+                    evidence = check.get("evidence") or {}
+                    detail = {
+                        "guidance": check.get("guidance") or "",
+                        "locations": list(evidence.get("locations") or [])[:8],
+                        "facts": evidence.get("facts") or {},
+                    }
+                    if check_id == "killable_decision_runtime":
+                        runtime_evidence = (
+                            candidate_capabilities.get("decision_runtime_evidence") or {}
+                        )
+                        detail["safety_issues"] = list(
+                            runtime_evidence.get("safety_issues") or []
+                        )[:8]
+                    blocking_check_details[check_id] = detail
                 architecture_retry_feedback = (
                     "\n\n# Previous Attempt Rejected By Runtime Architecture Gate\n"
-                    "Rebuild from parent A and correct every item below. Do not merely add labels.\n"
+                    "Rebuild from parent A and correct every blocking item below. "
+                    "Do not merely add labels. Items under deferred_to_master are "
+                    "not crossover work and must remain deferred.\n"
                     + json.dumps(
                         {
                             "policy_identity_errors": transition.get("policy_identity_errors") or [],
                             "regressions": transition.get("regressions") or [],
+                            "runtime_floor_failures": transition.get("runtime_floor_failures") or [],
                             "unresolved_focus_checks": transition.get("unresolved_focus_checks") or [],
+                            "blocking_check_details": blocking_check_details,
+                            "deferred_to_master": (
+                                transition.get("deferred_unresolved_focus_checks") or []
+                            ),
                         },
                         indent=2,
                         ensure_ascii=False,
@@ -687,8 +952,14 @@ async def _run_crossover(
                             "parent_a": parent_a_v,
                             "parent_b": parent_b_v,
                             "attempt": attempt + 1,
+                            "evaluation_phase": transition.get("evaluation_phase"),
                             "regressions": transition.get("regressions") or [],
+                            "runtime_floor_failures": transition.get("runtime_floor_failures") or [],
                             "unresolved_focus_checks": transition.get("unresolved_focus_checks") or [],
+                            "blocking_check_details": blocking_check_details,
+                            "deferred_to_master": (
+                                transition.get("deferred_unresolved_focus_checks") or []
+                            ),
                             "policy_identity_errors": transition.get("policy_identity_errors") or [],
                         },
                     )
@@ -699,6 +970,28 @@ async def _run_crossover(
                     "warn",
                 )
                 continue
+            deferred_checks = list(
+                transition.get("deferred_unresolved_focus_checks") or []
+            )
+            if deferred_checks:
+                try:
+                    from system_log import log_system_event
+
+                    log_system_event(
+                        "pipeline.crossover_architecture_debt_deferred",
+                        "info",
+                        f"Crossover v{target_v} baseline accepted with downstream architecture debt",
+                        {
+                            "target_v": target_v,
+                            "parent_a": parent_a_v,
+                            "parent_b": parent_b_v,
+                            "attempt": attempt + 1,
+                            "evaluation_phase": transition.get("evaluation_phase"),
+                            "deferred_to_master": deferred_checks,
+                        },
+                    )
+                except Exception:
+                    pass
 
         # LOG GAP FIX (2026-06-30): record which files the crossover LLM actually
         # changed vs parent_a, so the modification is auditable (parity with the

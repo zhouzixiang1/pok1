@@ -14,10 +14,152 @@ def _eligible_test_parents(monkeypatch):
         "get_active_bots",
         lambda: ["national_v1", "national_v7"],
     )
+    monkeypatch.setattr(
+        tool_commit,
+        "read_pipeline_checkpoint",
+        lambda: {
+            "next_v": 25,
+            "source_v": 7,
+            "parent2_v": 1,
+            "stage": "selected",
+        },
+    )
 
 
 def _tool_json(result):
     return json.loads(result["content"][0]["text"])
+
+
+def test_run_crossover_rejects_parent_b_not_selected_by_checkpoint(monkeypatch):
+    import tool_commit
+
+    called = []
+
+    async def must_not_synthesize(*_args, **_kwargs):
+        called.append(True)
+        raise AssertionError("identity mismatch reached crossover synthesis")
+
+    monkeypatch.setattr(tool_commit, "_run_crossover", must_not_synthesize)
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 7,
+        "parent_b": 2,
+        "target_v": 25,
+    }))
+    data = _tool_json(result)
+
+    assert data["error"] == "CROSSOVER_CHECKPOINT_IDENTITY_MISMATCH"
+    assert data["requested"]["parent2_v"] == 2
+    assert data["checkpoint"]["parent2_v"] == 1
+    assert called == []
+
+
+def test_run_crossover_requires_scheduler_checkpoint(monkeypatch):
+    import tool_commit
+
+    monkeypatch.setattr(tool_commit, "read_pipeline_checkpoint", lambda: None)
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 7,
+        "parent_b": 1,
+        "target_v": 25,
+    }))
+    data = _tool_json(result)
+
+    assert data["error"] == "CROSSOVER_CHECKPOINT_MISSING"
+    assert data["success"] is False
+
+
+def test_run_crossover_cannot_rerun_after_prepared(monkeypatch):
+    import tool_commit
+
+    monkeypatch.setattr(
+        tool_commit,
+        "read_pipeline_checkpoint",
+        lambda: {
+            "next_v": 25,
+            "source_v": 7,
+            "parent2_v": 1,
+            "stage": "prepared",
+        },
+    )
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 7,
+        "parent_b": 1,
+        "target_v": 25,
+    }))
+    data = _tool_json(result)
+
+    assert data["error"] == "CROSSOVER_STAGE_BLOCKED"
+    assert data["stage"] == "prepared"
+
+
+def test_run_crossover_parent_capability_exception_uses_bounded_infrastructure(
+    tmp_path,
+    monkeypatch,
+):
+    import national_capability_contract
+    import national_position_contract
+    import tool_commit
+    import workflow_profiles
+
+    parent_a = tmp_path / "national_v7"
+    parent_b = tmp_path / "national_v1"
+    target = tmp_path / "national_v25"
+    for root in (parent_a, parent_b):
+        root.mkdir()
+        (root / "main.py").write_text("# parent\n", encoding="utf-8")
+        (root / "national_bot.py").write_text("# native\n", encoding="utf-8")
+        (root / ".completed").touch()
+
+    def bot_dir(version):
+        return {7: parent_a, 1: parent_b, 25: target}[int(version)]
+
+    async def must_not_synthesize(*_args, **_kwargs):
+        raise AssertionError("inconclusive parent capability reached synthesis")
+
+    captured = {}
+
+    async def record(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return tool_commit._json_tool_result({
+            "error": "CROSSOVER_INFRASTRUCTURE_INCONCLUSIVE",
+            "failure_class": "infrastructure",
+            "success": False,
+        })
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", bot_dir)
+    monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(tool_commit, "_run_crossover", must_not_synthesize)
+    monkeypatch.setattr(tool_commit, "_record_crossover_infrastructure", record)
+    monkeypatch.setattr(
+        workflow_profiles,
+        "get_workflow_profile",
+        lambda: SimpleNamespace(national_execution_mode="native_tcp"),
+    )
+    monkeypatch.setattr(
+        national_position_contract,
+        "detect_position_semantics_errors",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(
+        national_capability_contract,
+        "evaluate_national_capabilities",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("probe unavailable")),
+    )
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 7,
+        "parent_b": 1,
+        "target_v": 25,
+    }))
+    data = _tool_json(result)
+
+    assert data["error"] == "CROSSOVER_INFRASTRUCTURE_INCONCLUSIVE"
+    assert captured["kwargs"]["component"] == "crossover_parent_capability_policy"
+    assert captured["kwargs"]["metadata"]["pre_synthesis"] is True
 
 
 def test_crossover_compatibility_uses_glicko_r_stable_h2h_and_architecture_context(
@@ -361,12 +503,20 @@ def test_run_crossover_records_prepare_scope_files(tmp_path, monkeypatch):
     data = _tool_json(result)
 
     assert data["success"] is True
-    assert captured["args"][:3] == (25, 7, "workers_done")
+    assert data["stage"] == "prepared"
+    assert data["next_tool"] == "run_direction_audit"
+    assert "only the recombination baseline" in data["directive"]
+    assert captured["args"][:3] == (25, 7, "prepared")
     assert captured["kwargs"]["parent2_v"] == 1
     assert captured["kwargs"]["prepare_scope_files"] == ["card_utils.py", "state.py"]
+    assert "master_plan" not in captured["kwargs"]
+    assert captured["kwargs"]["audit_context"]["crossover"]["baseline_prepared"] is True
 
 
-def test_run_crossover_routes_position_semantics_failure_to_repair(tmp_path, monkeypatch):
+def test_run_crossover_position_postcheck_fails_closed_without_synthetic_repair(
+    tmp_path,
+    monkeypatch,
+):
     import audit_agents
     import tool_commit
 
@@ -408,12 +558,23 @@ def test_run_crossover_routes_position_semantics_failure_to_repair(tmp_path, mon
         captured["kwargs"] = kwargs
         return True
 
+    infra_calls = []
+
+    async def _record_infra(*args, **kwargs):
+        infra_calls.append((args, kwargs))
+        return tool_commit._json_tool_result({
+            "error": "CROSSOVER_INFRASTRUCTURE_INCONCLUSIVE",
+            "failure_class": "infrastructure",
+            "success": False,
+        })
+
     monkeypatch.setattr(tool_commit, "get_bot_dir", _bot_dir)
     monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
     monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
     monkeypatch.setattr(tool_commit, "_run_crossover", _crossover_ok)
     monkeypatch.setattr(tool_commit, "_py_files_changed_between", lambda *_a: ["state.py"])
     monkeypatch.setattr(tool_commit, "write_pipeline_checkpoint", _write_checkpoint)
+    monkeypatch.setattr(tool_commit, "_record_crossover_infrastructure", _record_infra)
     monkeypatch.setattr(audit_agents, "_run_crossover_compatibility_audit", _compat)
 
     result = asyncio.run(tool_commit.run_crossover.handler({
@@ -423,12 +584,397 @@ def test_run_crossover_routes_position_semantics_failure_to_repair(tmp_path, mon
     }))
     data = _tool_json(result)
 
+    assert data["success"] is False
+    assert data["failure_class"] == "infrastructure"
+    assert data["error"] == "CROSSOVER_INFRASTRUCTURE_INCONCLUSIVE"
+    assert captured == {}
+    assert infra_calls
+    assert infra_calls[0][1]["component"] == "national_position_contract"
+    assert infra_calls[0][1]["code"] == "crossover_position_postcheck_divergence"
+    assert any("SB must be dealer_id" in issue for issue in infra_calls[0][1]["issues"])
+
+
+def test_run_crossover_infrastructure_resume_reuses_preserved_child_without_llm(
+    tmp_path,
+    monkeypatch,
+):
+    import audit_agents
+    import evidence_snapshot
+    import national_capability_contract
+    import national_position_contract
+    import prepared_baseline_contract
+    import runtime_architecture_policy
+    import tool_commit
+    import workflow_profiles
+    from bot_artifact import hash_path
+    from pipeline_infrastructure import build_infrastructure_failure
+
+    parent_a_dir = tmp_path / "national_v7"
+    parent_b_dir = tmp_path / "national_v1"
+    target_dir = tmp_path / "national_v25"
+    for path in (parent_a_dir, parent_b_dir):
+        path.mkdir()
+        (path / "main.py").write_text("# parent\n", encoding="utf-8")
+        (path / "national_bot.py").write_text("# native\n", encoding="utf-8")
+        (path / ".completed").touch()
+    target_dir.mkdir()
+    (target_dir / "main.py").write_text("# preserved crossover child\n", encoding="utf-8")
+    (target_dir / "national_bot.py").write_text("# native\n", encoding="utf-8")
+
+    def bot_dir(version):
+        return {7: parent_a_dir, 1: parent_b_dir, 25: target_dir}[int(version)]
+
+    capabilities = {
+        "detector_version": "test",
+        "checks": [],
+        "checks_by_id": {},
+        "required_failures": [],
+        "infrastructure_failures": [],
+        "outcome": "passed",
+    }
+    source_policy = {"policy_digest": "s" * 64, "selected_focus": None}
+    prepared_policy = {"policy_digest": "p" * 64, "selected_focus": None}
+    transition = {
+        "ok": True,
+        "outcome": "passed",
+        "evaluation_phase": "preplan",
+        "source_capabilities": capabilities,
+        "candidate_capabilities": capabilities,
+        "runtime_floor_failures": [],
+        "regressions": [],
+    }
+    overlay = build_infrastructure_failure(
+        None,
+        component="national_runtime_probe",
+        code="crossover_preplan_probe_inconclusive",
+        owner_tool="run_crossover",
+        resume_stage="crossover_running",
+        attempt_key="same-candidate",
+        issues=["probe unavailable"],
+        metadata={
+            "parent2_v": 1,
+            "candidate_fingerprint": hash_path(target_dir),
+            "source_fingerprint": hash_path(parent_a_dir),
+            "parent2_fingerprint": hash_path(parent_b_dir),
+        },
+    )
+    checkpoint = {
+        "next_v": 25,
+        "source_v": 7,
+        "parent2_v": 1,
+        "stage": "crossover_running",
+        "infra_failure": overlay,
+        "audit_context": {
+            "crossover": {
+                "compatibility": {"compatible": True, "compatibility_score": 8},
+            },
+        },
+    }
+    writes = []
+
+    async def no_exhausted(*_args, **_kwargs):
+        return None
+
+    async def must_not_synthesize(*_args, **_kwargs):
+        raise AssertionError("preserved child was sent through crossover LLM again")
+
+    async def must_not_reaudit(*_args, **_kwargs):
+        raise AssertionError("preserved compatibility receipt was ignored")
+
+    def fake_policy(_source, **kwargs):
+        return prepared_policy if kwargs.get("prepared_capability_snapshot") else source_policy
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", bot_dir)
+    monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(tool_commit, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(tool_commit, "_execute_exhausted_infrastructure_failure", no_exhausted)
+    monkeypatch.setattr(tool_commit, "_run_crossover", must_not_synthesize)
+    monkeypatch.setattr(tool_commit, "_py_files_changed_between", lambda *_a: ["main.py"])
+    monkeypatch.setattr(
+        tool_commit,
+        "write_pipeline_checkpoint",
+        lambda *args, **kwargs: writes.append((args, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        workflow_profiles,
+        "get_workflow_profile",
+        lambda: SimpleNamespace(national_execution_mode="native_tcp"),
+    )
+    monkeypatch.setattr(
+        national_position_contract,
+        "detect_position_semantics_errors",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(
+        national_capability_contract,
+        "evaluate_national_capabilities",
+        lambda _path: capabilities,
+    )
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "build_architecture_policy",
+        fake_policy,
+    )
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "evaluate_architecture_transition",
+        lambda *_a, **_k: transition,
+    )
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "build_prepared_capability_snapshot",
+        lambda *_a, **_k: {"snapshot_digest": "c" * 64},
+    )
+    monkeypatch.setattr(
+        prepared_baseline_contract,
+        "build_prepared_baseline_contract",
+        lambda *_a, **_k: {"contract_digest": "b" * 64},
+    )
+    monkeypatch.setattr(
+        evidence_snapshot,
+        "ensure_generation_h2h_snapshot",
+        lambda _v: {"available": True, "manifest_digest": "m" * 64},
+    )
+    monkeypatch.setattr(
+        audit_agents,
+        "_run_crossover_compatibility_audit",
+        must_not_reaudit,
+    )
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 7,
+        "parent_b": 1,
+        "target_v": 25,
+    }))
+    data = _tool_json(result)
+
     assert data["success"] is True
-    assert data["contract_failed"] is True
-    assert data["stage"] == "quality_failed"
-    assert captured["args"][:3] == (25, 7, "quality_failed")
-    assert captured["kwargs"]["parent2_v"] == 1
-    quality = captured["kwargs"]["gate_results"]["quality"]
-    assert quality["all_passed"] is False
-    assert quality["position_semantics_ok"] is False
-    assert any("SB must be dealer_id" in err for err in quality["position_semantics_errors"])
+    assert data["stage"] == "prepared"
+    assert [call[0][2] for call in writes] == ["prepared"]
+    assert writes[0][1]["clear_infra_failure"] is True
+    assert writes[0][1]["infra_failure_owner"] == "run_crossover"
+    assert writes[0][1]["audit_context"]["prepared_baseline_contract"] == {
+        "contract_digest": "b" * 64,
+    }
+    assert (
+        writes[0][1]["audit_context"]["crossover"]["prepared_architecture_policy"]
+        == prepared_policy
+    )
+
+
+def test_run_crossover_infrastructure_resume_abandons_drifted_child_without_llm(
+    tmp_path,
+    monkeypatch,
+):
+    import national_position_contract
+    import tool_bot_management
+    import tool_commit
+    from bot_artifact import hash_path
+    from pipeline_infrastructure import build_infrastructure_failure
+
+    parent_a_dir = tmp_path / "national_v7"
+    parent_b_dir = tmp_path / "national_v1"
+    target_dir = tmp_path / "national_v25"
+    for path in (parent_a_dir, parent_b_dir):
+        path.mkdir()
+        (path / "main.py").write_text("# parent\n", encoding="utf-8")
+        (path / ".completed").touch()
+    target_dir.mkdir()
+    (target_dir / "main.py").write_text("# preserved child\n", encoding="utf-8")
+
+    captured_candidate = hash_path(target_dir)
+    captured_source = hash_path(parent_a_dir)
+    overlay = build_infrastructure_failure(
+        None,
+        component="national_runtime_probe",
+        code="crossover_preplan_probe_inconclusive",
+        owner_tool="run_crossover",
+        resume_stage="crossover_running",
+        attempt_key="preserved-child",
+        issues=["probe unavailable"],
+        metadata={
+            "parent2_v": 1,
+            "candidate_fingerprint": captured_candidate,
+            "source_fingerprint": captured_source,
+            "parent2_fingerprint": hash_path(parent_b_dir),
+        },
+    )
+    checkpoint = {
+        "next_v": 25,
+        "source_v": 7,
+        "parent2_v": 1,
+        "stage": "crossover_running",
+        "infra_failure": overlay,
+    }
+    # Simulate an edit while the infrastructure retry is paused.  The retry
+    # must not treat the earlier provenance/runtime evidence as applying.
+    (target_dir / "main.py").write_text("# drifted child\n", encoding="utf-8")
+
+    def bot_dir(version):
+        return {7: parent_a_dir, 1: parent_b_dir, 25: target_dir}[int(version)]
+
+    async def no_exhausted(*_args, **_kwargs):
+        return None
+
+    async def must_not_synthesize(*_args, **_kwargs):
+        raise AssertionError("drifted preserved child reached crossover synthesis")
+
+    async def abandon(*, reason):
+        return {"abandoned": True, "reason": reason, "abandoned_v": 25}
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", bot_dir)
+    monkeypatch.setattr(tool_commit, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(
+        tool_commit,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhausted,
+    )
+    monkeypatch.setattr(tool_commit, "_run_crossover", must_not_synthesize)
+    monkeypatch.setattr(
+        national_position_contract,
+        "detect_position_semantics_errors",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", abandon)
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 7,
+        "parent_b": 1,
+        "target_v": 25,
+    }))
+    data = _tool_json(result)
+
+    assert data["error"] == "CROSSOVER_PRESERVED_CHILD_DRIFT"
+    assert data["success"] is False
+    assert data["abandoned"] is True
+    assert data["failure_class"] == "integrity"
+
+
+def test_crossover_infrastructure_helper_persists_owned_retry_overlay(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_infra
+    import tool_commit
+
+    checkpoint_path = tmp_path / "pipeline_state.json"
+    source = tmp_path / "national_v7"
+    child = tmp_path / "national_v25"
+    source.mkdir()
+    child.mkdir()
+    (source / "strategy.py").write_text("SOURCE = True\n", encoding="utf-8")
+    (child / "strategy.py").write_text("CHILD = True\n", encoding="utf-8")
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", checkpoint_path)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+    assert evolution_infra.write_pipeline_checkpoint(
+        25,
+        7,
+        "selected",
+        parent2_v=1,
+    )
+    assert evolution_infra.write_pipeline_checkpoint(
+        25,
+        7,
+        "crossover_running",
+        parent2_v=1,
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "get_bot_dir",
+        lambda version: source if int(version) == 7 else child,
+    )
+
+    result = asyncio.run(tool_commit._record_crossover_infrastructure(
+        25,
+        7,
+        1,
+        component="national_runtime_probe",
+        code="crossover_preplan_probe_inconclusive",
+        issues=["probe unavailable"],
+        architecture_policy={"policy_digest": "p" * 64},
+    ))
+    data = _tool_json(result)
+    checkpoint = evolution_infra.read_pipeline_checkpoint()
+
+    assert data["failure_class"] == "infrastructure"
+    assert data["action"] == "retry_same_tool"
+    assert data["success"] is False
+    assert checkpoint["stage"] == "crossover_running"
+    assert checkpoint["infra_failure"]["owner_tool"] == "run_crossover"
+    assert checkpoint["infra_failure"]["resume_stage"] == "crossover_running"
+
+
+def test_crossover_infrastructure_budget_is_monotonic_across_components(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_infra
+    import tool_bot_management
+    import tool_commit
+
+    checkpoint_path = tmp_path / "pipeline_state.json"
+    source = tmp_path / "national_v7"
+    parent_b = tmp_path / "national_v1"
+    child = tmp_path / "national_v25"
+    for root, text in (
+        (source, "SOURCE = True\n"),
+        (parent_b, "PARENT_B = True\n"),
+        (child, "CHILD = True\n"),
+    ):
+        root.mkdir()
+        (root / "strategy.py").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", checkpoint_path)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+    assert evolution_infra.write_pipeline_checkpoint(
+        25,
+        7,
+        "selected",
+        parent2_v=1,
+    )
+    assert evolution_infra.write_pipeline_checkpoint(
+        25,
+        7,
+        "crossover_running",
+        parent2_v=1,
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "get_bot_dir",
+        lambda version: {7: source, 1: parent_b, 25: child}[int(version)],
+    )
+    abandon_calls = []
+
+    async def abandon(*, reason):
+        abandon_calls.append(reason)
+        return {"abandoned": True, "reason": reason, "abandoned_v": 25}
+
+    monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", abandon)
+
+    attempts = []
+    for component in (
+        "national_runtime_probe",
+        "prepared_baseline_contract",
+        "national_runtime_probe",
+    ):
+        result = asyncio.run(tool_commit._record_crossover_infrastructure(
+            25,
+            7,
+            1,
+            component=component,
+            code=f"{component}_failed",
+            issues=["temporarily unavailable"],
+            architecture_policy={"policy_digest": "a" * 64},
+        ))
+        data = _tool_json(result)
+        attempts.append(data["infra_failure"]["attempt"])
+
+    assert attempts == [1, 2, 3]
+    assert data["infra_failure"]["exhausted"] is True
+    assert data["infra_failure"]["metadata"]["crossover_generation_attempt"] == 3
+    assert data["abandoned"] is True
+    assert abandon_calls == [
+        "infrastructure_exhausted:national_runtime_probe",
+    ]

@@ -231,6 +231,13 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
     # Use provided generation_attempt or preserve existing
     if generation_attempt is None:
         generation_attempt = ckpt.get("generation_attempt", 0)
+    gate_artifact_hash = ""
+    if isinstance(gate_data, dict):
+        gate_artifact_hash = str(gate_data.get("code_fingerprint") or "")
+        if not gate_artifact_hash:
+            identity = gate_data.get("certification_identity")
+            if isinstance(identity, dict):
+                gate_artifact_hash = str(identity.get("candidate_hash") or "")
     recorded = write_pipeline_checkpoint(
         version,
         source_v,
@@ -248,6 +255,7 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
         clear_infra_failure=clear_infra_failure,
         infra_failure_owner=infra_failure_owner,
         expected_infra_failure_digest=expected_infra_failure_digest,
+        repair_baseline_artifact_hash=(gate_artifact_hash or None),
     )
     if not recorded:
         log.warning(
@@ -379,6 +387,7 @@ async def _record_infrastructure_failure(
     issues,
     max_attempts=3,
     metadata=None,
+    cumulative_attempt_field=None,
     master_plan=None,
     reviewer_feedback=None,
 ):
@@ -404,6 +413,23 @@ async def _record_infrastructure_failure(
                 "error": error,
                 "infra_failure": existing,
             }
+        overlay_metadata = dict(metadata or {})
+        cumulative_attempt = None
+        if cumulative_attempt_field:
+            previous_metadata = (
+                existing.get("metadata")
+                if isinstance(existing, dict)
+                and isinstance(existing.get("metadata"), dict)
+                else {}
+            )
+            try:
+                previous_cumulative = int(
+                    previous_metadata.get(cumulative_attempt_field) or 0
+                )
+            except (TypeError, ValueError):
+                previous_cumulative = 0
+            cumulative_attempt = min(max_attempts, previous_cumulative + 1)
+            overlay_metadata[cumulative_attempt_field] = cumulative_attempt
         overlay = build_infrastructure_failure(
             existing,
             component=component,
@@ -413,8 +439,24 @@ async def _record_infrastructure_failure(
             attempt_key=attempt_key,
             issues=list(issues or []),
             max_attempts=max_attempts,
-            metadata=metadata,
+            metadata=overlay_metadata,
         )
+        if cumulative_attempt is not None:
+            # Some owners intentionally share one retry budget across several
+            # probe components. Generic identity attempts reset when component,
+            # code, or attempt_key changes; overwrite only the attempt ledger
+            # with this owner-scoped monotonic counter while preserving the
+            # component as diagnostic detail.
+            overlay["attempt"] = cumulative_attempt
+            overlay["max_attempts"] = max_attempts
+            overlay["exhausted"] = cumulative_attempt >= max_attempts
+            overlay["retryable"] = not overlay["exhausted"]
+            overlay["action"] = (
+                "abandon_generation" if overlay["exhausted"] else "retry_same_tool"
+            )
+            if isinstance(existing, dict) and existing.get("first_seen_at"):
+                overlay["first_seen_at"] = existing["first_seen_at"]
+            overlay["identity_digest"] = infrastructure_failure_digest(overlay)
         recorded = _record_gate(
             version,
             source_v,

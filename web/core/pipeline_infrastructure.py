@@ -11,6 +11,7 @@ from typing import Any
 INFRA_FAILURE_SCHEMA_VERSION = 1
 DEFAULT_INFRA_MAX_ATTEMPTS = 3
 INFRA_OWNER_STAGES = {
+    "run_crossover": ("crossover_running",),
     "run_master": ("direction_audited",),
     "execute_workers": ("master_planned", "repair_planned", "rework_running"),
     "run_quality_gates": ("workers_done",),

@@ -18,6 +18,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "web" / "core"))
 
 
+def _mock_worker_batch_delta(*files):
+    """Legacy orchestration tests mock Workers; also mock their file delta."""
+    return patch(
+        "worker_boundary.diff_file_snapshot",
+        return_value=list(files or ("strategy.py",)),
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Stage 1: Stagnation Analyzer — prev_critic_info injection
 # ══════════════════════════════════════════════════════════════════════
@@ -1013,8 +1021,8 @@ class TestPipelineStateTransitions:
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "direction_audited"
 
-    def test_crossover_running_can_advance_to_workers_done(self, tmp_path, monkeypatch):
-        """Crossover has a recoverable running stage before workers_done."""
+    def test_crossover_running_advances_to_prepared_baseline(self, tmp_path, monkeypatch):
+        """Crossover baseline re-enters the governed pre-Master pipeline."""
         import evolution_infra
 
         ckpt_file = tmp_path / "pipeline_state.json"
@@ -1022,22 +1030,40 @@ class TestPipelineStateTransitions:
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
 
         assert evolution_infra.write_pipeline_checkpoint(
-            next_v=12, source_v=10, stage="selected", parent2_v=9,
+            next_v=12,
+            source_v=10,
+            stage="selected",
+            parent2_v=9,
+            audit_context={"master_context": {"context_digest": "bound-context"}},
         )
         assert evolution_infra.write_pipeline_checkpoint(
-            next_v=12, source_v=10, stage="crossover_running", parent2_v=9,
+            next_v=12,
+            source_v=10,
+            stage="crossover_running",
+            parent2_v=9,
+            audit_context={"crossover": {"attempt": 1}},
         )
         assert evolution_infra.write_pipeline_checkpoint(
-            next_v=12, source_v=10, stage="workers_done", parent2_v=9,
-            master_plan={"strategy": "crossover", "tasks": []},
+            next_v=12,
+            source_v=10,
+            stage="prepared",
+            parent2_v=9,
+            prepare_scope_files=["strategy.py"],
+            audit_context={"crossover": {"baseline_prepared": True}},
         )
 
         ckpt = json.loads(ckpt_file.read_text())
-        assert ckpt["stage"] == "workers_done"
+        assert ckpt["stage"] == "prepared"
         assert ckpt["parent2_v"] == 9
+        assert ckpt["master_plan"] is None
+        assert ckpt["prepare_scope_files"] == ["strategy.py"]
+        assert ckpt["audit_context"]["master_context"]["context_digest"] == "bound-context"
+        assert ckpt["audit_context"]["crossover"] == {
+            "baseline_prepared": True,
+        }
 
-    def test_prepared_to_master_planned(self, tmp_path, monkeypatch):
-        """Stage transitions: prepared → master_planned."""
+    def test_prepared_requires_direction_audit_before_master_planned(self, tmp_path, monkeypatch):
+        """Stage transitions: prepared → direction_audited → master_planned."""
         import evolution_infra
 
         ckpt_file = tmp_path / "pipeline_state.json"
@@ -1050,7 +1076,14 @@ class TestPipelineStateTransitions:
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "prepared"
 
-        evolution_infra.write_pipeline_checkpoint(
+        assert not evolution_infra.write_pipeline_checkpoint(
+            next_v=11, source_v=10, stage="master_planned",
+            master_plan={"analysis": "test", "tasks": [{"worker_id": 1}]},
+        )
+        assert evolution_infra.write_pipeline_checkpoint(
+            next_v=11, source_v=10, stage="direction_audited",
+        )
+        assert evolution_infra.write_pipeline_checkpoint(
             next_v=11, source_v=10, stage="master_planned",
             master_plan={"analysis": "test", "tasks": [{"worker_id": 1}]},
         )
@@ -1090,10 +1123,31 @@ class TestWorkerFailureCircuitBreaker:
                           invocation_count=None, stage="master_planned"):
         """Helper: create a checkpoint file with the given state."""
         import evolution_infra
+        import tool_planning
+        from prepared_baseline_contract import build_prepared_artifact_contract
 
         ckpt_file = tmp_path / "pipeline_state.json"
         monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", ckpt_file)
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir(exist_ok=True)
+        next_dir.mkdir(exist_ok=True)
+        if not any(source_dir.iterdir()):
+            (source_dir / "strategy.py").write_text("value = 0\n")
+        if not any(next_dir.iterdir()):
+            (next_dir / "strategy.py").write_text("value = 0\n")
+        monkeypatch.setattr(
+            tool_planning,
+            "get_bot_dir",
+            lambda version: source_dir if int(version) == 10 else next_dir,
+        )
+        prepared_artifact_contract = build_prepared_artifact_contract(
+            next_dir,
+            source_v=10,
+            next_v=11,
+        )
 
         state = {
             "next_v": 11,
@@ -1109,6 +1163,12 @@ class TestWorkerFailureCircuitBreaker:
             },
             "worker_failure_count": failure_count,
             "gate_results": {},
+            "audit_context": {
+                "prepared_artifact_contract": prepared_artifact_contract,
+            },
+            "repair_baseline_artifact_hash": prepared_artifact_contract[
+                "prepared_artifact_hash"
+            ],
         }
         # Support old-format checkpoints with worker_invocation_count only
         if invocation_count is not None:
@@ -1117,6 +1177,328 @@ class TestWorkerFailureCircuitBreaker:
 
         ckpt_file.write_text(json.dumps(state))
         return ckpt_file
+
+    def test_rework_rejects_caller_feedback_that_differs_from_gate_receipt(
+        self, tmp_path, monkeypatch
+    ):
+        """Caller prose cannot name a second writable file on a failed-gate route."""
+        import asyncio
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy.py:2492L/2474L)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        async def _run():
+            with patch.object(
+                tool_planning, "_execute_workers", new_callable=AsyncMock
+            ) as mock_exec:
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": (
+                        "Quality gates failed:\n"
+                        "- file_size(strategy.py:2492L/2474L)\n"
+                        "- also rewrite national_bot.py"
+                    ),
+                })
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["error"] == "REWORK_FEEDBACK_AUTHORITY_MISMATCH"
+        assert data["next_tool"] == "abandon_generation"
+        mock_exec.assert_not_called()
+
+    def test_rework_rejects_valid_task_plus_unsigned_extra(
+        self, tmp_path, monkeypatch
+    ):
+        """An exact system task does not make an appended unsigned task authoritative."""
+        import asyncio
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy.py:2492L/2474L)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+        canonical_feedback = tool_planning._checkpoint_rework_feedback(state)
+        canonical_tasks, errors = tool_planning._authoritative_rework_tasks(
+            state,
+            canonical_feedback,
+        )
+        assert not errors
+        supplied_tasks = [
+            *canonical_tasks,
+            {
+                "worker_id": "unsigned_extra",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["national_bot.py"],
+                "must_change_files": ["national_bot.py"],
+                "worker_prompt": "rewrite the entrypoint",
+                "task_kind": "quality_repair",
+            },
+        ]
+
+        async def _run():
+            with patch.object(
+                tool_planning, "_execute_workers", new_callable=AsyncMock
+            ) as mock_exec:
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": supplied_tasks,
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": canonical_feedback,
+                })
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["error"] == "REWORK_TASK_AUTHORITY_MISMATCH"
+        assert data["unsigned_worker_ids"] == ["unsigned_extra"]
+        assert data["next_tool"] == "abandon_generation"
+        mock_exec.assert_not_called()
+
+    def test_failed_initial_multiworker_batch_restores_prepared_artifact(
+        self, tmp_path, monkeypatch
+    ):
+        """A later Worker failure rolls back files written by an earlier Worker."""
+        import asyncio
+        import tool_planning
+
+        self._setup_checkpoint(tmp_path, monkeypatch, stage="master_planned")
+        next_dir = tmp_path / "claude_v11"
+        before = (next_dir / "strategy.py").read_bytes()
+
+        async def fail_after_first_worker(*_args, **_kwargs):
+            (next_dir / "strategy.py").write_text("value = 999\n")
+            (next_dir / "partial_table.bin").write_bytes(b"partial")
+            return False, {}, []
+
+        async def _run():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=fail_after_first_worker,
+            ):
+                return await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": "",
+                })
+
+        result = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is False
+        assert (next_dir / "strategy.py").read_bytes() == before
+        assert not (next_dir / "partial_table.bin").exists()
+
+    def test_failed_repair_multiworker_batch_restores_repair_baseline(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed repair batch cannot poison its content-bound resume baseline."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy.py:2492L/2474L)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+        next_dir = tmp_path / "claude_v11"
+        before = (next_dir / "strategy.py").read_bytes()
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def fail_after_first_worker(*_args, **_kwargs):
+            (next_dir / "strategy.py").write_text("value = 999\n")
+            (next_dir / "partial_table.bin").write_bytes(b"partial")
+            return False, {}, []
+
+        async def _run():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=fail_after_first_worker,
+            ):
+                return await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": "",
+                })
+
+        result = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is False
+        assert (next_dir / "strategy.py").read_bytes() == before
+        assert not (next_dir / "partial_table.bin").exists()
+        persisted = json.loads(ckpt_file.read_text())
+        assert persisted["stage"] == "repair_planned"
+        assert persisted["repair_baseline_artifact_hash"] == tool_planning._complete_artifact_fingerprint(
+            next_dir
+        )
+
+    def test_task_context_cleanup_failure_restores_then_abandons(
+        self, tmp_path, monkeypatch
+    ):
+        """A poisoned excluded control tree is removed but never made resumable."""
+        import asyncio
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="master_planned",
+        )
+        next_dir = tmp_path / "claude_v11"
+        before = (next_dir / "strategy.py").read_bytes()
+
+        async def successful_worker(*_args, **_kwargs):
+            (next_dir / "strategy.py").write_text("value = 999\n")
+            return True, {}, []
+
+        def poisoned_cleanup(_next_dir):
+            (next_dir / ".task_context").symlink_to(tmp_path / "outside")
+            raise RuntimeError("transient candidate artifact is a symlink")
+
+        async def _run():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=successful_worker,
+            ), patch.object(
+                tool_planning,
+                "_validate_worker_boundaries",
+                return_value=[],
+            ), patch.object(
+                tool_planning,
+                "_clear_compiled_task_context",
+                side_effect=poisoned_cleanup,
+            ):
+                return await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": "",
+                })
+
+        result = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["error"] == "TRANSIENT_CONTROL_ARTIFACT_CLEANUP_FAILED"
+        assert data["next_tool"] == "abandon_generation"
+        assert data["candidate_restored"] is True
+        assert (next_dir / "strategy.py").read_bytes() == before
+        assert not (next_dir / ".task_context").exists()
+        assert not (next_dir / ".task_context").is_symlink()
+        assert json.loads(ckpt_file.read_text())["stage"] == "master_planned"
+
+    def test_runtime_error_after_worker_write_restores_then_reraises(
+        self, tmp_path, monkeypatch
+    ):
+        """Unexpected exceptions retain their type after transactional rollback."""
+        import asyncio
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="master_planned",
+        )
+        next_dir = tmp_path / "claude_v11"
+        before = (next_dir / "strategy.py").read_bytes()
+
+        async def write_then_raise(*_args, **_kwargs):
+            (next_dir / "strategy.py").write_text("value = 999\n")
+            (next_dir / "partial_table.bin").write_bytes(b"partial")
+            raise RuntimeError("later worker exploded")
+
+        async def _run():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=write_then_raise,
+            ):
+                return await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": "",
+                })
+
+        with pytest.raises(RuntimeError, match="later worker exploded"):
+            asyncio.run(_run())
+        assert (next_dir / "strategy.py").read_bytes() == before
+        assert not (next_dir / "partial_table.bin").exists()
+        assert json.loads(ckpt_file.read_text())["stage"] == "master_planned"
+
+    def test_cancelled_error_after_worker_write_restores_then_reraises(
+        self, tmp_path, monkeypatch
+    ):
+        """Cancellation cannot leave partial writes behind or become a retry result."""
+        import asyncio
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="master_planned",
+        )
+        next_dir = tmp_path / "claude_v11"
+        before = (next_dir / "strategy.py").read_bytes()
+
+        async def write_then_cancel(*_args, **_kwargs):
+            (next_dir / "strategy.py").write_text("value = 999\n")
+            (next_dir / "partial_table.bin").write_bytes(b"partial")
+            raise asyncio.CancelledError("controller cancelled")
+
+        async def _run():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=write_then_cancel,
+            ):
+                return await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": "",
+                })
+
+        with pytest.raises(asyncio.CancelledError, match="controller cancelled"):
+            asyncio.run(_run())
+        assert (next_dir / "strategy.py").read_bytes() == before
+        assert not (next_dir / "partial_table.bin").exists()
+        assert json.loads(ckpt_file.read_text())["stage"] == "master_planned"
 
     def test_successful_workers_do_not_increment_count(self, tmp_path, monkeypatch):
         """Successful worker batches should NOT increase the failure counter."""
@@ -1127,11 +1509,16 @@ class TestWorkerFailureCircuitBreaker:
         ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=2)
         _handler = tool_planning.execute_workers.handler
 
+        next_dir = tmp_path / "claude_v11"
+
+        async def successful_worker(*_args, **_kwargs):
+            (next_dir / "strategy.py").write_text("value = 1\n")
+            return (True, {}, [])
+
         async def _run():
-            with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec, \
+            with patch.object(tool_planning, '_execute_workers', side_effect=successful_worker), \
                  patch.object(tool_planning, '_validate_worker_boundaries', return_value=[]), \
                  patch.object(tool_planning, '_py_files_changed_between', return_value=['strategy.py']):
-                mock_exec.return_value = (True, {}, [])
                 await _handler({"tasks": [], "next_v": 11, "source_v": 10})
 
         asyncio.run(_run())
@@ -1139,6 +1526,60 @@ class TestWorkerFailureCircuitBreaker:
         # Verify checkpoint still has failure_count=2 (unchanged)
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["worker_failure_count"] == 2
+
+    def test_table_only_worker_batch_passes_nonempty_artifact_pregate(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+        import tool_planning
+        from prepared_baseline_contract import build_prepared_artifact_contract
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
+        candidate = tmp_path / "claude_v11"
+        table = candidate / "tables" / "equity.bin"
+        table.parent.mkdir(parents=True)
+        table.write_bytes(b"before\xff")
+        state = json.loads(ckpt_file.read_text())
+        state["master_plan"]["tasks"] = [{
+            "worker_id": 1,
+            "role": "Precompute Artifact Engineer",
+            "target_files": ["tables/equity.bin"],
+            "worker_prompt": "update the declared packed equity table",
+        }]
+        state["audit_context"]["prepared_artifact_contract"] = (
+            build_prepared_artifact_contract(candidate, source_v=10, next_v=11)
+        )
+        ckpt_file.write_text(json.dumps(state))
+
+        async def successful_table_worker(*_args, **_kwargs):
+            table.write_bytes(b"after\xfe")
+            return (True, {(0, "tables/equity.bin"): b"before\xff"}, [])
+
+        async def _run():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=successful_table_worker,
+            ), patch.object(
+                tool_planning,
+                "_validate_worker_boundaries",
+                return_value=[],
+            ), patch.object(
+                tool_planning,
+                "_py_files_changed_between",
+                return_value=[],
+            ):
+                return await tool_planning.execute_workers.handler({
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+
+        result = json.loads(asyncio.run(_run())["content"][0]["text"])
+        checkpoint = json.loads(ckpt_file.read_text())
+
+        assert result["success"] is True
+        assert checkpoint["stage"] == "workers_done"
+        assert table.read_bytes() == b"after\xfe"
 
     def test_worker_llm_failure_uses_infrastructure_overlay_and_clean_retry(
         self, tmp_path, monkeypatch
@@ -1188,15 +1629,16 @@ class TestWorkerFailureCircuitBreaker:
         assert checkpoint["worker_failure_count"] == 0
         assert checkpoint["infra_failure"]["owner_tool"] == "execute_workers"
 
-        (next_dir / "strategy.py").write_text("value = 1\n")
-
         async def run_success():
+            async def successful_worker(*_args, **_kwargs):
+                (next_dir / "strategy.py").write_text("value = 1\n")
+                return (True, {}, [])
+
             with patch.object(
                 tool_planning,
                 "_execute_workers",
-                new_callable=AsyncMock,
+                side_effect=successful_worker,
             ) as execute:
-                execute.return_value = (True, {}, [])
                 with patch.object(
                     tool_planning,
                     "_validate_worker_boundaries",
@@ -1252,12 +1694,11 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]), \
+                 _mock_worker_batch_delta("strategy.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({
-                    "tasks": [
-                        {"worker_id": 1, "role": "arch", "target_files": ["strategy.py"], "worker_prompt": "recover file_size"},
-                    ],
+                    "tasks": [],
                     "next_v": 11,
                     "source_v": 10,
                 })
@@ -1327,7 +1768,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]), \
+                 _mock_worker_batch_delta("strategy.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec
@@ -1402,7 +1844,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["national_bot.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["national_bot.py"]), \
+                 _mock_worker_batch_delta("national_bot.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec
@@ -1474,7 +1917,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy_helpers.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy_helpers.py"]), \
+                 _mock_worker_batch_delta("strategy_helpers.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec
@@ -1584,7 +2028,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["national_bot.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["national_bot.py"]), \
+                 _mock_worker_batch_delta("national_bot.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec
@@ -1661,7 +2106,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy_helpers.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy_helpers.py"]), \
+                 _mock_worker_batch_delta("strategy_helpers.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec
@@ -1741,7 +2187,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["postflop.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["postflop.py"]), \
+                 _mock_worker_batch_delta("postflop.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec
@@ -1839,6 +2286,8 @@ class TestWorkerFailureCircuitBreaker:
                      tool_planning,
                      "_py_files_changed_between",
                      return_value=["opponent.py", "state.py", "strategy_helpers.py"],
+                 ), _mock_worker_batch_delta(
+                     "opponent.py", "state.py", "strategy_helpers.py"
                  ):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
@@ -1918,24 +2367,9 @@ class TestWorkerFailureCircuitBreaker:
             "strategy.py",
         ]
 
-    def test_crossover_repair_scope_includes_existing_candidate_diff(self, tmp_path, monkeypatch):
-        """Crossover rework scope must include pre-existing fused candidate files."""
+    def test_crossover_repair_scope_does_not_self_authorize_observed_diff(self):
+        """Observed crossover diffs are evidence and never expand repair scope."""
         import tool_planning
-
-        source_dir = tmp_path / "claude_v10"
-        next_dir = tmp_path / "claude_v11"
-        source_dir.mkdir()
-        next_dir.mkdir()
-        monkeypatch.setattr(
-            tool_planning,
-            "get_bot_dir",
-            lambda v: source_dir if int(v) == 10 else next_dir,
-        )
-        monkeypatch.setattr(
-            tool_planning,
-            "_py_files_changed_between",
-            lambda *_a, **_k: ["constants.py", "state.py", "strategy_helpers.py"],
-        )
 
         ckpt = {
             "next_v": 11,
@@ -1953,13 +2387,39 @@ class TestWorkerFailureCircuitBreaker:
 
         updated = tool_planning._plan_with_accumulated_repair_scope(ckpt, plan, plan["tasks"], 11)
 
-        assert updated["repair_scope_files"] == [
-            "constants.py",
-            "state.py",
-            "strategy_helpers.py",
-        ]
+        assert updated["repair_scope_files"] == ["strategy_helpers.py"]
 
-    def test_quality_gate_declared_scope_expands_crossover_diff(self):
+    def test_quality_gate_postmaster_scope_does_not_reauthorize_prepare_files(self):
+        import tool_gates
+        from worker_boundary import audit_changed_files_against_plan
+
+        plan = {
+            "strategy": "crossover",
+            "tasks": [{"target_files": ["strategy_helpers.py"]}],
+            "repair_scope_files": ["strategy_helpers.py"],
+        }
+        ckpt = {
+            "parent2_v": 9,
+            "master_plan": plan,
+            "prepare_scope_files": ["constants.py", "state.py"],
+        }
+        changed_files = ["state.py", "strategy_helpers.py"]
+
+        expanded = tool_gates._master_plan_with_crossover_scope(plan, ckpt, changed_files)
+        tasks = tool_gates._declared_scope_tasks_from_plan(
+            expanded,
+            ckpt,
+            include_prepare_scope=False,
+        )
+        result = audit_changed_files_against_plan(changed_files, tasks, next_v=11)
+
+        assert result.passed is False
+        assert result.violations == [
+            "state.py: changed outside master plan target_files/files_allowed"
+        ]
+        assert expanded["repair_scope_files"] == ["strategy_helpers.py"]
+
+    def test_quality_gate_crossover_diff_cannot_authorize_itself(self):
         import tool_gates
         from worker_boundary import audit_changed_files_against_plan
 
@@ -1969,21 +2429,63 @@ class TestWorkerFailureCircuitBreaker:
             "repair_scope_files": ["strategy_helpers.py"],
         }
         ckpt = {"parent2_v": 9, "master_plan": plan}
-        changed_files = ["constants.py", "state.py", "strategy_helpers.py"]
+        changed_files = ["constants.py", "strategy_helpers.py"]
 
-        expanded = tool_gates._master_plan_with_crossover_scope(plan, ckpt, changed_files)
-        tasks = tool_gates._declared_scope_tasks_from_plan(expanded)
+        unchanged = tool_gates._master_plan_with_crossover_scope(
+            plan,
+            ckpt,
+            changed_files,
+        )
+        tasks = tool_gates._declared_scope_tasks_from_plan(unchanged, ckpt)
         result = audit_changed_files_against_plan(changed_files, tasks, next_v=11)
 
-        assert result.passed is True
-        assert expanded["repair_scope_files"] == [
-            "constants.py",
-            "state.py",
-            "strategy_helpers.py",
-        ]
+        assert result.passed is False
+        assert any("constants.py" in issue for issue in result.violations)
 
-    def test_declared_scope_failure_is_ledger_not_worker_contract(self):
-        """Declared-scope misses should update scope accounting, not spawn edit tasks."""
+    def test_quality_gate_requires_delta_from_frozen_crossover_baseline(self):
+        import tool_gates
+
+        checkpoint = {
+            "next_v": 11,
+            "source_v": 10,
+            "parent2_v": 9,
+            "audit_context": {
+                "prepared_artifact_contract": {
+                    "prepared_artifact_hash": "prepared-hash",
+                },
+            },
+        }
+
+        required, unchanged_ok, prepared_hash = (
+            tool_gates._crossover_post_master_delta(
+                checkpoint,
+                "prepared-hash",
+            )
+        )
+        _, changed_ok, _ = tool_gates._crossover_post_master_delta(
+            checkpoint,
+            "final-hash",
+        )
+
+        assert required is True
+        assert prepared_hash == "prepared-hash"
+        assert unchanged_ok is False
+        assert changed_ok is True
+
+    def test_quality_gate_normal_generation_does_not_require_prepared_delta(self):
+        import tool_gates
+
+        required, ok, prepared_hash = tool_gates._crossover_post_master_delta(
+            {"source_v": 10},
+            "candidate-hash",
+        )
+
+        assert required is False
+        assert ok is True
+        assert prepared_hash == ""
+
+    def test_declared_scope_failure_is_integrity_evidence_not_authority(self):
+        """Declared-scope misses stay diagnostic and never extend repair scope."""
         import tool_planning
 
         ckpt = {
@@ -2044,13 +2546,13 @@ class TestWorkerFailureCircuitBreaker:
             ("position_semantics", ["strategy_helpers.py"]),
             ("file_size", ["strategy_helpers.py"]),
         ]
-        assert tool_planning._declared_scope_ledger_files(ckpt) == {
+        assert tool_planning._declared_scope_violation_files(ckpt) == {
             "reachability_test.py",
             "strategy.py",
         }
 
-    def test_execute_workers_prunes_declared_scope_ledger_tasks(self, tmp_path, monkeypatch):
-        """Old checkpoints with declared-scope pseudo tasks should resume without them."""
+    def test_execute_workers_blocks_declared_scope_integrity_violation(self, tmp_path, monkeypatch):
+        """An undeclared edit cannot be legalized by a no-op repair round."""
         import asyncio
         import fix_injection
         import tool_planning
@@ -2192,31 +2694,15 @@ class TestWorkerFailureCircuitBreaker:
 
         result, mock_exec = asyncio.run(_run())
         data = json.loads(result["content"][0]["text"])
-        assert data["success"] is True
-        tasks = mock_exec.call_args.args[0]
-        assert [
-            (task["repair_blocker"], task["target_files"])
-            for task in tasks
-        ] == [
-            ("position_semantics", ["strategy_helpers.py"]),
-            ("file_size", ["strategy_helpers.py"]),
-        ]
+        assert data["error"] == "DECLARED_SCOPE_INTEGRITY_VIOLATION"
+        assert data["next_tool"] == "abandon_generation"
+        assert data["violation_files"] == ["reachability_test.py", "strategy.py"]
+        mock_exec.assert_not_called()
 
         ckpt = json.loads(ckpt_file.read_text())
-        assert ckpt["stage"] == "workers_done"
-        assert ckpt["master_plan"]["repair_scope_files"] == [
-            "opponent.py",
-            "reachability_test.py",
-            "state.py",
-            "strategy.py",
-            "strategy_helpers.py",
-        ]
-        assert [
-            task["target_files"] for task in ckpt["master_plan"]["tasks"]
-        ] == [["strategy_helpers.py"], ["strategy_helpers.py"]]
-        assert [
-            task["repair_blocker"] for task in ckpt["master_plan"]["tasks"]
-        ] == ["position_semantics", "file_size"]
+        assert ckpt["stage"] == "quality_failed"
+        assert "reachability_test.py" not in ckpt["master_plan"]["repair_scope_files"]
+        assert "strategy.py" not in ckpt["master_plan"]["repair_scope_files"]
 
     def test_quality_rework_skipper_keeps_mixed_task_when_one_blocker_remains(self, tmp_path, monkeypatch):
         """A position task mentioning size feedback must still run while position blockers remain."""
@@ -2814,6 +3300,12 @@ class TestWorkerFailureCircuitBreaker:
         state = json.loads(ckpt_file.read_text())
         state["parent2_v"] = 9
         state["reviewer_feedback"] = "Quality gates failed:\n- file_size(strategy_helpers.py:2501L/2500L)"
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy_helpers.py:2501L/2500L)"],
+            }
+        }
         state["master_plan"] = {
             "strategy": "crossover",
             "tasks": [{
@@ -2842,7 +3334,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy_helpers.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy_helpers.py"]), \
+                 _mock_worker_batch_delta("strategy_helpers.py"):
                 mock_exec.return_value = (True, {(0, "strategy_helpers.py"): "# already fixed\n"}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec.call_args.kwargs
@@ -2852,6 +3345,51 @@ class TestWorkerFailureCircuitBreaker:
         assert data["success"] is True
         assert kwargs["force_sequential"] is True
         assert kwargs["task_skipper"] is not None
+
+    def test_rework_rejects_same_file_drift_after_gate_receipt(self, tmp_path, monkeypatch):
+        """A declared repair file cannot authorize edits made before the repair batch."""
+        import asyncio
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["reviewer_feedback"] = "Quality gates failed:\n- strategy.py compile error"
+        state["master_plan"]["tasks"] = [{
+            "worker_id": "repair_strategy",
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy.py"],
+            "files_allowed": ["strategy.py"],
+            "must_change_files": ["strategy.py"],
+            "worker_prompt": "Repair the accepted strategy.py blocker.",
+        }]
+        ckpt_file.write_text(json.dumps(state))
+
+        # This is the exact file the later repair would be allowed to touch, but
+        # it changed after the gate-bound full-artifact receipt was frozen.
+        (tmp_path / "claude_v11" / "strategy.py").write_text("value = 999\n")
+
+        async def _run():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                new_callable=AsyncMock,
+            ) as worker:
+                result = await tool_planning.execute_workers.handler({
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": state["reviewer_feedback"],
+                })
+                return result, worker
+
+        result, worker = asyncio.run(_run())
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error"] == "REPAIR_BASELINE_ARTIFACT_DRIFT"
+        assert payload["expected_artifact_hash"] != payload["current_artifact_hash"]
+        worker.assert_not_awaited()
 
     def test_quality_repair_contract_tasks_are_file_scoped_and_deduped(self):
         import tool_planning
@@ -3198,6 +3736,9 @@ class TestWorkerFailureCircuitBreaker:
         )
         state = json.loads(ckpt_file.read_text())
         state.update({"next_v": 125, "source_v": 123, "parent2_v": 120})
+        state["repair_baseline_artifact_hash"] = (
+            tool_planning._complete_artifact_fingerprint(next_dir)
+        )
         state["reviewer_feedback"] = feedback
         state["master_plan"] = {
             "strategy": "crossover",
@@ -3232,7 +3773,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]), \
+                 _mock_worker_batch_delta("strategy.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 125, "source_v": 123})
                 return result, mock_exec
@@ -3457,6 +3999,15 @@ class TestWorkerFailureCircuitBreaker:
         state = json.loads(ckpt_file.read_text())
         state["parent2_v"] = 9
         state["reviewer_feedback"] = "Quality gates failed: position_semantics(strategy_helpers.py:1188)"
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["position_semantics(strategy_helpers.py:1188)"],
+                "position_semantics_errors": [
+                    "strategy_helpers.py:1188: postflop OOP helper must key on BB"
+                ],
+            }
+        }
         state["master_plan"] = {
             "strategy": "crossover",
             "tasks": [{
@@ -3674,7 +4225,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]), \
+                 _mock_worker_batch_delta("strategy.py"):
                 mock_exec.return_value = (True, {}, [])
                 return await tool_planning.execute_workers.handler({
                     "tasks": [
@@ -3725,15 +4277,11 @@ class TestWorkerFailureCircuitBreaker:
         monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
         monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
 
-        retry_tasks = [
-            {"worker_id": 1, "role": "arch", "target_files": ["strategy.py"], "worker_prompt": "fix stackoff"},
-        ]
-
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec:
                 mock_exec.return_value = (False, {}, [])
                 return await tool_planning.execute_workers.handler({
-                    "tasks": retry_tasks,
+                    "tasks": [],
                     "next_v": 11,
                     "source_v": 10,
                 })
@@ -3836,7 +4384,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]), \
+                 _mock_worker_batch_delta("strategy.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({
                     "next_v": 11,
@@ -4005,7 +4554,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]), \
+                 _mock_worker_batch_delta("strategy.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec
@@ -4079,7 +4629,8 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
-                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]), \
+                 _mock_worker_batch_delta("strategy.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec
@@ -4182,7 +4733,8 @@ class TestWorkerFailureCircuitBreaker:
 
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
-                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]):
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 _mock_worker_batch_delta("opponent.py"):
                 mock_exec.return_value = (True, {}, [])
                 result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
                 return result, mock_exec
@@ -4230,7 +4782,8 @@ class TestWorkerFailureCircuitBreaker:
 
         async def _run():
             nonlocal mock_exec
-            with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec_inner:
+            with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec_inner, \
+                 _mock_worker_batch_delta("strategy.py"):
                 mock_exec = mock_exec_inner
                 mock_exec_inner.return_value = (True, {}, [])
                 await _handler({"tasks": [], "next_v": 11, "source_v": 10})
@@ -4365,7 +4918,8 @@ class TestWorkerFailureCircuitBreaker:
             nonlocal mock_exec
             with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec_inner, \
                  patch.object(tool_planning, '_validate_worker_boundaries', return_value=[]), \
-                 patch.object(tool_planning, '_py_files_changed_between', return_value=['strategy.py']):
+                 patch.object(tool_planning, '_py_files_changed_between', return_value=['strategy.py']), \
+                 _mock_worker_batch_delta("strategy.py"):
                 mock_exec = mock_exec_inner
                 mock_exec.return_value = (True, {}, [])
                 return await _handler({"tasks": [], "next_v": 11, "source_v": 10})

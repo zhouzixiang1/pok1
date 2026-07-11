@@ -1,5 +1,8 @@
+import pytest
+
 from core.pipeline_state import (
     generic_abandon_block,
+    literature_probe_receipt_binding,
     next_tool_for_checkpoint,
     route_policy,
     session_recoverable_stages,
@@ -295,6 +298,171 @@ def test_route_policy_exposes_literature_probe_as_allowed_pre_master_tool():
     assert route["next_tool"] == "run_master"
     assert "run_master" in route["allowed_tools"]
     assert "run_literature_probe" in route["allowed_tools"]
+
+
+def test_route_policy_requires_literature_probe_receipt_when_stagnant():
+    from core.master_context_contract import build_master_context
+
+    checkpoint = {
+        "stage": "direction_audited",
+        "next_v": 300,
+        "source_v": 299,
+        "audit_context": {
+            "master_context": build_master_context(
+                next_v=300,
+                source_v=299,
+                stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+            ),
+        },
+        "direction_audit": {"repetition_detected": False},
+    }
+
+    route = route_policy(checkpoint)
+
+    assert route["next_tool"] == "run_literature_probe"
+    assert route["intent"] == "mandatory_literature_probe"
+    assert route["allowed_tools"] == ["run_literature_probe"]
+
+
+def test_crossover_infrastructure_overlay_routes_same_tool_without_replanning():
+    failure = build_infrastructure_failure(
+        None,
+        component="national_runtime_probe",
+        code="crossover_preplan_probe_inconclusive",
+        owner_tool="run_crossover",
+        resume_stage="crossover_running",
+        attempt_key="preserved-child",
+        issues=["probe unavailable"],
+    )
+
+    route = route_policy({
+        "stage": "crossover_running",
+        "next_v": 300,
+        "source_v": 299,
+        "parent2_v": 250,
+        "infra_failure": failure,
+    })
+
+    assert route["next_tool"] == "run_crossover"
+    assert route["allowed_tools"] == ["run_crossover"]
+    assert route["failure_class"] == "infrastructure"
+
+
+@pytest.mark.parametrize("reason", ["governed_skip", "literature_probe_timeout", "literature_probe_failed"])
+def test_route_policy_accepts_identity_bound_literature_attempt_receipts(reason):
+    from core.master_context_contract import build_master_context
+
+    checkpoint = {
+        "stage": "direction_audited",
+        "next_v": 300,
+        "source_v": 299,
+        "direction_audit": {"repetition_detected": True},
+        "audit_context": {
+            "master_context": build_master_context(
+                next_v=300,
+                source_v=299,
+                stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+            ),
+        },
+    }
+    binding, errors = literature_probe_receipt_binding(checkpoint)
+    assert not errors
+    checkpoint["literature_probe"] = {
+        "next_v": 300,
+        "source_v": 299,
+        "reason": reason,
+        **binding,
+    }
+
+    route = route_policy(checkpoint)
+
+    assert route["next_tool"] == "run_master"
+    assert "run_master" in route["allowed_tools"]
+
+
+def test_route_policy_rejects_old_literature_receipt_after_context_change():
+    from core.master_context_contract import build_master_context
+
+    checkpoint = {
+        "stage": "direction_audited",
+        "next_v": 300,
+        "source_v": 299,
+        "direction_audit": {
+            "repetition_detected": True,
+            "mandatory_constraints": "avoid static threshold tuning",
+        },
+        "audit_context": {
+            "master_context": build_master_context(
+                next_v=300,
+                source_v=299,
+                stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+                match_analysis="old H2H weakness",
+            ),
+        },
+    }
+    binding, errors = literature_probe_receipt_binding(checkpoint)
+    assert not errors
+    checkpoint["literature_probe"] = {
+        "next_v": 300,
+        "source_v": 299,
+        "reason": "governed_skip",
+        **binding,
+    }
+    assert route_policy(checkpoint)["next_tool"] == "run_master"
+
+    checkpoint["audit_context"]["master_context"] = build_master_context(
+        next_v=300,
+        source_v=299,
+        stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+        match_analysis="new H2H weakness",
+    )
+    assert route_policy(checkpoint)["next_tool"] == "run_literature_probe"
+
+    replacement_binding, errors = literature_probe_receipt_binding(checkpoint)
+    assert not errors
+    checkpoint["literature_probe"] = {
+        "next_v": 300,
+        "source_v": 299,
+        "reason": "literature_probe_timeout",
+        **replacement_binding,
+    }
+    assert route_policy(checkpoint)["next_tool"] == "run_master"
+
+    checkpoint["direction_audit"]["mandatory_constraints"] = "use a range posterior"
+    assert route_policy(checkpoint)["next_tool"] == "run_literature_probe"
+
+
+@pytest.mark.parametrize(
+    ("current_stage", "proposed_stage"),
+    [
+        ("selected", "preparing"),
+        ("selected", "crossover_running"),
+        ("preparing", "prepared"),
+        ("crossover_running", "prepared"),
+        ("prepared", "direction_audited"),
+    ],
+)
+def test_early_generation_stage_edges_are_explicit(current_stage, proposed_stage):
+    ok, reason = validate_stage_transition(current_stage, proposed_stage)
+    assert ok, reason
+
+
+@pytest.mark.parametrize(
+    ("current_stage", "proposed_stage"),
+    [
+        ("selected", "prepared"),
+        ("preparing", "direction_audited"),
+        ("prepared", "crossover_running"),
+        ("prepared", "master_planned"),
+    ],
+)
+def test_early_generation_stage_edges_reject_weak_model_reordering(
+    current_stage,
+    proposed_stage,
+):
+    ok, reason = validate_stage_transition(current_stage, proposed_stage)
+    assert not ok
+    assert "early_generation_transition_not_allowed" in reason
 
 
 def test_verified_native_precommit_routes_to_commit_without_quality_contract_flag(monkeypatch):

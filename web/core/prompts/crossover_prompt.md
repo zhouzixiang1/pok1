@@ -1,5 +1,5 @@
 <instructions>
-You are the Crossover & Mutation Engine for an evolving Texas Hold'em AI population.
+You are the Pure Crossover Recombination Engine for an evolving Texas Hold'em AI population.
 Generate a new poker bot (Child) from TWO elite parent bots. Use Read, Bash, and Edit tools. Do not use webReader, web-search, file:// URLs, or GitHub URLs.
 Bash starts in the repository root, but the Bash tool working directory may
 persist across calls after a `cd`. Never use a bare `cd` that changes later
@@ -17,7 +17,12 @@ file in the same command before finishing.
 </instructions>
 
 <data_context>
-Read `web/core/results/head_to_head.json` and `web/core/results/match_history.jsonl` to understand each parent's strengths/weaknesses against specific opponents and to verify coverage. Find matchups where one parent loses (WR < 40%) and the other wins (WR > 55%) only when sample size is meaningful. If Parent B beats opponents that Parent A loses to, strongly consider importing Parent B's approach for those matchups. Read `web/core/results/glicko_ratings.json` for RD/conservative-rating reliability and `web/core/results/bot_stats.json` for overall win rates.
+Use only the generation-scoped, digest-bound H2H snapshot injected below. Never
+read live `head_to_head.json`, `match_history.jsonl`, ratings, or bot statistics:
+those files keep changing while this generation runs. Treat missing snapshot
+coverage as unknown rather than inventing a matchup claim. Parent selection is
+already system-owned; your job is structural recombination, not re-ranking the
+parents.
 </data_context>
 
 <crossover_strategy>
@@ -32,12 +37,15 @@ Read `web/core/results/head_to_head.json` and `web/core/results/match_history.js
      - Parent A's position awareness + Parent B's bluff detection
 </crossover_strategy>
 
-<mutation>
-Introduce exactly ONE mutation — choose one:
-(a) Adjust a threshold by 10-20% in the dominant module
-(b) Add one heuristic rule from the experience pool (`web/core/experience_pool.md`)
-(c) Remove one redundant or underperforming feature
-</mutation>
+<recombination_boundary>
+This stage creates a pure recombination baseline. Do not tune a threshold, add
+a new heuristic, remove a feature for novelty, or invent an independent
+strategy mutation. Every strategic code difference from Parent A must identify
+a concrete component already present in Parent B. If no Parent-B component can
+be ported safely and coherently, leave Parent A unchanged. The later
+direction-audit -> literature-probe (when required) -> Master -> Worker stages
+own the generation's exactly-one attributable innovation.
+</recombination_boundary>
 
 <example>
 Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has aggressive river overbets. Crossover: use Parent A's preflop module + Parent B's river module, with Parent A's overall structure.
@@ -50,13 +58,18 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
 
 <action>
 1. Read both parent bots' source code
-2. Design crossover + mutation strategy based on H2H data and code analysis
+2. Design a pure crossover strategy from frozen H2H evidence and code analysis;
+   keep a component-level provenance note for every Parent-B import
 3. Write the full Python code into `bots/national_v{version}/`
 4. Run quality checks:
    - `python -m py_compile bots/national_v{version}/*.py`
    - `(cd bots/national_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]")`
    - `python web/core/smoke_tester.py bots/national_v{version}/main.py`
-5. These checks are crossover-local sanity checks only. After this tool succeeds, the orchestrator MUST still run `run_quality_gates`; it must NOT return to Master planning.
+5. These checks certify only the crossover baseline. After this tool succeeds,
+   the orchestrator MUST run `run_direction_audit`, the mandatory
+   `run_literature_probe` when stagnant/repetitive, `run_master`, and
+   `execute_workers` before `run_quality_gates`. Crossover itself performs no
+   independent mutation; Master/Worker owns the generation's innovation.
 6. In legacy/local JSON internals, `main.py` may still output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 7. For `national_native` / `national_execution_mode=native_tcp`, the child must preserve or create `national_bot.py` as the formal submission entry. It must connect to the national TCP server directly, must not depend on `sever/bot_adapter.py`, must not output JSON `response` objects as national communication, must never output `bet`, must send `allin` rather than a positive raise consuming all remaining chips, must preserve raise-to-total semantics, and must preserve the official EXE send throttle (`POK_OFFICIAL_ACTION_DELAY` default near `0.30s`, `_send_wire_action`) in the TCP wire layer.
 8. Do not add timeout-rescue loops that send unsolicited `call` or `check`; generated bots may only send one legal action while the platform is waiting for the current decision.

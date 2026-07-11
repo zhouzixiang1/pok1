@@ -863,6 +863,54 @@ async def commit_bot(args):
     _set_pipeline_status(f"Committing v{v}")
 
     bot_dir = get_bot_dir(v)
+    from candidate_hygiene import (
+        cleanup_transient_candidate_artifacts,
+        forbidden_runtime_dependency_errors,
+        transient_control_artifact_errors,
+    )
+
+    transient_artifact_errors = transient_control_artifact_errors(bot_dir)
+    if transient_artifact_errors:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: transient control artifacts remain in candidate.",
+            "version": v,
+            "source_v": source_v,
+            "validation_errors": transient_artifact_errors[:20],
+            "directive": (
+                "Do not certify or publish .task_context. Re-run the successful "
+                "Worker cleanup path or abandon the drifted generation."
+            ),
+        })
+    try:
+        cleanup_transient_candidate_artifacts(
+            bot_dir,
+            include_task_context=False,
+        )
+    except Exception as exc:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: transient artifact cleanup failed.",
+            "version": v,
+            "source_v": source_v,
+            "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+        })
+    runtime_dependency_errors = forbidden_runtime_dependency_errors(bot_dir)
+    if runtime_dependency_errors:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: bot references unpublished cache/control artifacts.",
+            "version": v,
+            "source_v": source_v,
+            "validation_errors": runtime_dependency_errors[:20],
+        })
+    from bot_artifact import publication_shape_errors
+
+    publication_errors = publication_shape_errors(bot_dir)
+    if publication_errors:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: candidate artifact cannot be reproduced by Git.",
+            "version": v,
+            "source_v": source_v,
+            "validation_errors": publication_errors[:20],
+        })
     ckpt = _matching_checkpoint(v, source_v)
     ledger = validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=bot_dir)
     missing_gates = ledger["missing_gates"]
@@ -1570,6 +1618,24 @@ async def run_archivist(args):
     v = int(v)
     source_v = int(source_v)
 
+    from evolution_infra import consume_post_commit_archivist_receipt
+
+    receipt_ok, receipt_error, receipt = consume_post_commit_archivist_receipt(
+        v,
+        source_v,
+    )
+    if not receipt_ok:
+        return _json_tool_result({
+            "error": "POST_COMMIT_ARCHIVIST_RECEIPT_REQUIRED",
+            "version": v,
+            "source_v": source_v,
+            "detail": receipt_error,
+            "directive": (
+                "run_archivist is a one-shot post-commit handoff. It cannot be "
+                "replayed for a historical bot or a different source version."
+            ),
+        })
+
     _set_pipeline_status(f"Archiving v{v}")
 
     ui = _get_ui()
@@ -1682,6 +1748,9 @@ async def run_archivist(args):
     result = {
         "version": v,
         "source_v": source_v,
+        "post_commit_archivist_receipt_digest": str(
+            (receipt or {}).get("receipt_digest") or ""
+        ),
         "consistency_ok": len(consistency_issues) == 0,
         "consistency_issues": consistency_issues if consistency_issues else None,
         "reap_result": reap_result,
@@ -1721,6 +1790,84 @@ class RunCrossoverInput(TypedDict):
     target_v: Annotated[int, "Target child version"]
 
 
+async def _record_crossover_infrastructure(
+    target_v,
+    parent_a,
+    parent_b,
+    *,
+    component,
+    code,
+    issues,
+    architecture_policy=None,
+    metadata=None,
+):
+    """Persist a neutral crossover retry without consuming an LLM retry."""
+    from bot_artifact import hash_path
+    from national_runtime_probe import RUNTIME_PROBE_IDENTITY_DIGEST
+    from pipeline_infrastructure import infrastructure_attempt_key
+
+    target_dir = get_bot_dir(target_v)
+    parent_dir = get_bot_dir(parent_a)
+    parent2_dir = get_bot_dir(parent_b)
+    candidate_fingerprint = (
+        hash_path(target_dir) if target_dir.is_dir() else "missing"
+    )
+    source_fingerprint = hash_path(parent_dir)
+    parent2_fingerprint = hash_path(parent2_dir)
+    attempt_key = infrastructure_attempt_key(
+        component=str(component or "crossover_preplan"),
+        candidate_fingerprint=candidate_fingerprint,
+        source_fingerprint=source_fingerprint,
+        harness_identity=RUNTIME_PROBE_IDENTITY_DIGEST,
+        contract_identity=str(
+            (architecture_policy or {}).get("policy_digest") or ""
+        ),
+        extra={
+            "target_v": int(target_v),
+            "parent_a": int(parent_a),
+            "parent_b": int(parent_b),
+            "parent2_fingerprint": parent2_fingerprint,
+            "phase": "crossover_preplan",
+        },
+    )
+    result = await _record_infrastructure_failure(
+        target_v,
+        parent_a,
+        owner_tool="run_crossover",
+        resume_stage="crossover_running",
+        component=str(component or "crossover_preplan"),
+        code=str(code),
+        attempt_key=attempt_key,
+        issues=[str(item)[:500] for item in issues or []],
+        max_attempts=3,
+        cumulative_attempt_field="crossover_generation_attempt",
+        metadata={
+            "parent2_v": int(parent_b),
+            "candidate_fingerprint": candidate_fingerprint,
+            "source_fingerprint": source_fingerprint,
+            "parent2_fingerprint": parent2_fingerprint,
+            "architecture_policy_digest": str(
+                (architecture_policy or {}).get("policy_digest") or ""
+            ),
+            **(metadata or {}),
+        },
+    )
+    return _json_tool_result({
+        **result,
+        "error": "CROSSOVER_INFRASTRUCTURE_INCONCLUSIVE",
+        "success": False,
+        "target_v": target_v,
+        "parent_a": parent_a,
+        "parent_b": parent_b,
+        "directive": (
+            "Crossover infrastructure exhausted and the generation was abandoned."
+            if result.get("abandoned")
+            else "Retry run_crossover for the same checkpoint. The prepared child is "
+                 "preserved and only the inconclusive deterministic probe will rerun."
+        ),
+    })
+
+
 @tool("run_crossover", "Run crossover between two elite bots to create a child bot.", {"parent_a": int, "parent_b": int, "target_v": int})
 async def run_crossover(args):
     parent_a = args.get("parent_a")
@@ -1731,6 +1878,71 @@ async def run_crossover(args):
         target_v = target_v or _v
     if parent_a is None or parent_b is None or target_v is None:
         return _json_tool_result({"error": "Missing parent_a/parent_b/target_v"})
+
+    try:
+        parent_a = int(parent_a)
+        parent_b = int(parent_b)
+        target_v = int(target_v)
+    except (TypeError, ValueError):
+        return _json_tool_result({
+            "error": "CROSSOVER_CHECKPOINT_IDENTITY_MISMATCH",
+            "success": False,
+            "detail": "parent_a, parent_b, and target_v must be integer versions",
+        })
+
+    # The scheduler-owned checkpoint is the lineage authority.  The generic
+    # MCP route guard controls which tool may run, but it does not interpret
+    # crossover-specific parent roles.  Enforce the complete tuple again at
+    # this mutating boundary so a weak caller cannot substitute Parent B or
+    # start an unscheduled generation.
+    authoritative_ckpt = read_pipeline_checkpoint()
+    if not isinstance(authoritative_ckpt, dict):
+        return _json_tool_result({
+            "error": "CROSSOVER_CHECKPOINT_MISSING",
+            "success": False,
+            "directive": (
+                "Crossover requires the scheduler-owned selected checkpoint; "
+                "do not choose parents or a target directly."
+            ),
+        })
+    try:
+        checkpoint_identity = (
+            int(authoritative_ckpt.get("source_v")),
+            int(authoritative_ckpt.get("parent2_v")),
+            int(authoritative_ckpt.get("next_v")),
+        )
+    except (TypeError, ValueError):
+        checkpoint_identity = None
+    requested_identity = (parent_a, parent_b, target_v)
+    if checkpoint_identity != requested_identity:
+        return _json_tool_result({
+            "error": "CROSSOVER_CHECKPOINT_IDENTITY_MISMATCH",
+            "success": False,
+            "requested": {
+                "source_v": parent_a,
+                "parent2_v": parent_b,
+                "next_v": target_v,
+            },
+            "checkpoint": {
+                "source_v": authoritative_ckpt.get("source_v"),
+                "parent2_v": authoritative_ckpt.get("parent2_v"),
+                "next_v": authoritative_ckpt.get("next_v"),
+                "stage": authoritative_ckpt.get("stage"),
+            },
+            "directive": "Use exactly the scheduler-selected crossover lineage.",
+        })
+    authoritative_stage = str(authoritative_ckpt.get("stage") or "")
+    if authoritative_stage not in {"selected", "crossover_running"}:
+        return _json_tool_result({
+            "error": "CROSSOVER_STAGE_BLOCKED",
+            "success": False,
+            "stage": authoritative_stage,
+            "allowed_stages": ["selected", "crossover_running"],
+            "directive": (
+                "A prepared or later generation may not rerun crossover. Follow "
+                "the checkpoint route or abandon and select a fresh generation."
+            ),
+        })
 
     _set_pipeline_status(f"Crossover for v{target_v}")
 
@@ -1873,12 +2085,244 @@ async def run_crossover(args):
             f"Crossover architecture policy failed for v{parent_a}×v{parent_b}: {type(exc).__name__}: {str(exc)[:240]}",
             {"parent_a": parent_a, "parent_b": parent_b, "target_v": target_v, "error": str(exc)[:500]},
         )
+        # Capability/policy assessment is a control-plane prerequisite.  A
+        # deterministic parent violation is returned by the evaluator as data;
+        # exceptions here mean the assessment itself was inconclusive.  Put it
+        # on the same bounded infrastructure ledger so a weak orchestrator
+        # cannot call forever, while recording that no child exists yet.
+        return await _record_crossover_infrastructure(
+            target_v,
+            parent_a,
+            parent_b,
+            component="crossover_parent_capability_policy",
+            code="crossover_parent_capability_policy_inconclusive",
+            issues=[f"{type(exc).__name__}: {str(exc)[:500]}"],
+            architecture_policy=None,
+            metadata={"pre_synthesis": True},
+        )
+
+    # If a previous invocation already synthesized the child but its preplan
+    # runtime probe was inconclusive, retry only that deterministic probe.  Do
+    # not reset the directory or spend another crossover LLM attempt.
+    resume_prepared_transition = None
+    active_crossover_ckpt = authoritative_ckpt
+    crossover_infra, crossover_infra_error = _owned_infrastructure_failure(
+        active_crossover_ckpt,
+        "run_crossover",
+    )
+    if crossover_infra_error:
         return _json_tool_result({
-            "error": "CROSSOVER_ARCHITECTURE_POLICY_FAILED",
-            "success": False,
-            "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
-            "directive": "Do not synthesize a crossover child without a stable parent capability contract.",
+            "error": "CROSSOVER_INFRASTRUCTURE_STATE_BLOCKED",
+            "failure_class": "infrastructure",
+            "detail": crossover_infra_error,
+            "infra_failure": crossover_infra,
         })
+    exhausted = await _execute_exhausted_infrastructure_failure(
+        target_v,
+        parent_a,
+        owner_tool="run_crossover",
+    )
+    if exhausted is not None:
+        return _json_tool_result(exhausted)
+    if crossover_infra is not None and bool(
+        (crossover_infra.get("metadata") or {}).get("pre_synthesis")
+    ):
+        # The parent capability probe has now succeeded.  Its overlay was
+        # created before a child existed, so clear it before entering the
+        # synthesis loop.  An unexpected artifact at this point is not a
+        # resumable child and must never inherit the pre-synthesis receipt.
+        if target_dir.exists():
+            try:
+                from tool_bot_management import _do_abandon_generation
+
+                abandon_result = await _do_abandon_generation(
+                    reason=f"crossover_pre_synthesis_artifact_unexpected:v{target_v}"
+                )
+            except Exception as exc:
+                abandon_result = {
+                    "abandoned": False,
+                    "reason": f"{type(exc).__name__}: {str(exc)[:300]}",
+                }
+            return _json_tool_result({
+                "error": "CROSSOVER_PRE_SYNTHESIS_ARTIFACT_UNEXPECTED",
+                "success": False,
+                "failure_class": "integrity",
+                "abandoned": bool(abandon_result.get("abandoned")),
+                "abandon_result": abandon_result,
+            })
+        cleared = write_pipeline_checkpoint(
+            target_v,
+            parent_a,
+            "crossover_running",
+            parent2_v=parent_b,
+            clear_infra_failure=True,
+            infra_failure_owner="run_crossover",
+            expected_infra_failure_digest=infrastructure_failure_digest(
+                crossover_infra
+            ),
+            touch_stage_timestamp=True,
+        )
+        if not cleared:
+            return _json_tool_result({
+                "error": "CROSSOVER_INFRASTRUCTURE_CLEAR_REFUSED",
+                "failure_class": "infrastructure",
+                "target_v": target_v,
+            })
+        crossover_infra = None
+    if crossover_infra is not None:
+        if (
+            not target_dir.is_dir()
+            or (active_crossover_ckpt or {}).get("stage") != "crossover_running"
+        ):
+            return _json_tool_result({
+                "error": "CROSSOVER_INFRASTRUCTURE_RESUME_TARGET_MISSING",
+                "failure_class": "infrastructure",
+                "target_v": target_v,
+                "directive": (
+                    "The infrastructure overlay is bound to a preserved crossover "
+                    "candidate, but that candidate/stage is unavailable. Fail closed "
+                    "and inspect the checkpoint before any regeneration."
+                ),
+            })
+
+        # This retry skips synthesis and reuses the earlier deterministic
+        # compile/import/smoke/provenance evidence.  Bind that shortcut to the
+        # exact complete artifacts captured when the overlay was written;
+        # otherwise an edit during the pause would bypass every preplan gate.
+        from bot_artifact import hash_path
+
+        infra_metadata = crossover_infra.get("metadata") or {}
+        current_candidate_fingerprint = hash_path(target_dir)
+        current_source_fingerprint = hash_path(parent_a_dir)
+        current_parent2_fingerprint = hash_path(parent_b_dir)
+        preserved_child_drift = bool(
+            str(infra_metadata.get("candidate_fingerprint") or "")
+            != current_candidate_fingerprint
+            or str(infra_metadata.get("source_fingerprint") or "")
+            != current_source_fingerprint
+            or str(infra_metadata.get("parent2_fingerprint") or "")
+            != current_parent2_fingerprint
+            or str(infra_metadata.get("parent2_v") or "") != str(parent_b)
+        )
+        if preserved_child_drift:
+            try:
+                from tool_bot_management import _do_abandon_generation
+
+                abandon_result = await _do_abandon_generation(
+                    reason=f"crossover_preserved_child_drift:v{target_v}"
+                )
+            except Exception as exc:
+                abandon_result = {
+                    "abandoned": False,
+                    "reason": f"{type(exc).__name__}: {str(exc)[:300]}",
+                }
+            log_system_event(
+                "pipeline.crossover_preserved_child_drift",
+                "error",
+                f"Preserved crossover v{target_v} drifted during infrastructure pause",
+                {
+                    "target_v": target_v,
+                    "parent_a": parent_a,
+                    "parent_b": parent_b,
+                    "expected_candidate_fingerprint": infra_metadata.get(
+                        "candidate_fingerprint"
+                    ),
+                    "current_candidate_fingerprint": current_candidate_fingerprint,
+                    "expected_source_fingerprint": infra_metadata.get(
+                        "source_fingerprint"
+                    ),
+                    "current_source_fingerprint": current_source_fingerprint,
+                    "expected_parent2_fingerprint": infra_metadata.get(
+                        "parent2_fingerprint"
+                    ),
+                    "current_parent2_fingerprint": current_parent2_fingerprint,
+                    "expected_parent2_v": infra_metadata.get("parent2_v"),
+                    "abandon_result": abandon_result,
+                },
+            )
+            return _json_tool_result({
+                "error": "CROSSOVER_PRESERVED_CHILD_DRIFT",
+                "success": False,
+                "abandoned": bool(abandon_result.get("abandoned")),
+                "failure_class": "integrity",
+                "target_v": target_v,
+                "abandon_result": abandon_result,
+                "directive": (
+                    "The preserved artifact no longer matches its retry receipt; "
+                    "it was not re-synthesized or revalidated. Start a fresh "
+                    "scheduler-selected generation."
+                ),
+            })
+        from runtime_architecture_policy import (
+            ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
+            evaluate_architecture_transition,
+        )
+
+        try:
+            resume_prepared_transition = evaluate_architecture_transition(
+                parent_a_dir,
+                target_dir,
+                expected_policy=architecture_policy,
+                evaluation_phase=ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
+            )
+        except Exception as exc:
+            resume_prepared_transition = {
+                "ok": False,
+                "outcome": "infrastructure_failure",
+                "infrastructure_failures": [{
+                    "component": "runtime_architecture_policy",
+                    "failure_class": "internal_infrastructure",
+                    "issues": [f"{type(exc).__name__}: {str(exc)[:300]}"],
+                }],
+            }
+        if resume_prepared_transition.get("outcome") == "infrastructure_failure":
+            failures = resume_prepared_transition.get("infrastructure_failures") or []
+            return await _record_crossover_infrastructure(
+                target_v,
+                parent_a,
+                parent_b,
+                component=(
+                    (failures[0] or {}).get("component")
+                    if failures and isinstance(failures[0], dict)
+                    else "national_runtime_probe"
+                ),
+                code="crossover_preplan_probe_inconclusive",
+                issues=[
+                    f"{item.get('component', 'probe')}: "
+                    + ", ".join(str(issue) for issue in item.get("issues") or [])
+                    for item in failures
+                    if isinstance(item, dict)
+                ] or ["crossover preplan runtime probe was inconclusive"],
+                architecture_policy=architecture_policy,
+                metadata={"resumed_preserved_candidate": True},
+            )
+        if not resume_prepared_transition.get("ok"):
+            # The probe recovered and reached a conclusive bot-side rejection.
+            # Regeneration is now legitimate, but it starts from Parent A under
+            # the normal bounded crossover loop rather than a repair bypass.
+            # Clear only in this branch: a successful preserved-child retry
+            # keeps the overlay until the final prepared checkpoint so later
+            # H2H/position/contract infrastructure failures share one bounded
+            # retry budget instead of resetting to attempt 1 forever.
+            cleared = write_pipeline_checkpoint(
+                target_v,
+                parent_a,
+                "crossover_running",
+                parent2_v=parent_b,
+                clear_infra_failure=True,
+                infra_failure_owner="run_crossover",
+                expected_infra_failure_digest=infrastructure_failure_digest(
+                    crossover_infra
+                ),
+                touch_stage_timestamp=True,
+            )
+            if not cleared:
+                return _json_tool_result({
+                    "error": "CROSSOVER_INFRASTRUCTURE_CLEAR_REFUSED",
+                    "failure_class": "infrastructure",
+                    "target_v": target_v,
+                })
+            resume_prepared_transition = None
 
     # --- P1-3: Crossover Parent Compatibility Audit ---
     compat = {
@@ -1888,18 +2332,26 @@ async def run_crossover(args):
         "suggested_merge_approach": "",
         "audit_unavailable": True,
     }
+    if resume_prepared_transition is not None and isinstance(active_crossover_ckpt, dict):
+        stored_compat = (
+            ((active_crossover_ckpt.get("audit_context") or {}).get("crossover") or {})
+            .get("compatibility")
+        )
+        if isinstance(stored_compat, dict):
+            compat = stored_compat
     try:
         from audit_agents import _run_crossover_compatibility_audit
-        compat = await _run_crossover_compatibility_audit(
-            parent_a,
-            parent_b,
-            ui,
-            target_v=target_v,
-            architecture_context={
-                "architecture_policy": architecture_policy,
-                "parent_capabilities": capability_context,
-            },
-        )
+        if resume_prepared_transition is None:
+            compat = await _run_crossover_compatibility_audit(
+                parent_a,
+                parent_b,
+                ui,
+                target_v=target_v,
+                architecture_context={
+                    "architecture_policy": architecture_policy,
+                    "parent_capabilities": capability_context,
+                },
+            )
         if not compat.get("compatible", True):
             log_system_event("pipeline.crossover_incompatible", "warn",
                              f"Parents v{parent_a}×v{parent_b} may be incompatible: {compat.get('conflict_areas', [])[:3]}",
@@ -1962,17 +2414,40 @@ async def run_crossover(args):
     except Exception as e:
         _log.warning("Crossover compat audit error (skipping): %s", e)
 
-    success = await _run_crossover(
-        parent_a,
-        parent_b,
-        target_v,
-        ui,
-        compatibility=compat,
-        architecture_policy=architecture_policy,
-        capability_context=capability_context,
-    )
+    success = True
+    if resume_prepared_transition is None:
+        success = await _run_crossover(
+            parent_a,
+            parent_b,
+            target_v,
+            ui,
+            compatibility=compat,
+            architecture_policy=architecture_policy,
+            capability_context=capability_context,
+        )
 
-    # Write checkpoint so quality gates → review → critic → commit can proceed
+    if isinstance(success, dict) and success.get("outcome") == "infrastructure_failure":
+        failures = success.get("infrastructure_failures") or []
+        return await _record_crossover_infrastructure(
+            target_v,
+            parent_a,
+            parent_b,
+            component=str(success.get("component") or "national_runtime_probe"),
+            code="crossover_preplan_probe_inconclusive",
+            issues=[
+                f"{item.get('component', 'probe')}: "
+                + ", ".join(str(issue) for issue in item.get("issues") or [])
+                for item in failures
+                if isinstance(item, dict)
+            ] or ["crossover preplan runtime probe was inconclusive"],
+            architecture_policy=architecture_policy,
+            metadata={"resumed_preserved_candidate": False},
+        )
+
+    # Crossover is a preparation operator.  Its child is a recombination
+    # baseline, not a completed generation plan: direction audit, optional
+    # literature probe, Master, and Workers must still produce the generation's
+    # reviewed innovation before quality gates can run.
     if success:
         prepare_scope_files = []
         try:
@@ -1997,111 +2472,267 @@ async def run_crossover(args):
                 )
         except Exception as exc:
             _log.warning("Failed to capture crossover prepare scope for v%s: %s", target_v, exc)
-        crossover_plan = {
-            "strategy": "crossover",
-            "tasks": [],
-            "parents": [parent_a, parent_b],
-            "source_v": parent_a,
-            "next_v": target_v,
-            "architecture_policy": architecture_policy,
-            "crossover_compatibility": compat,
-            "parent_capabilities": capability_context,
-            "note": "Crossover already generated bot code. Skip run_master and execute_workers; proceed to run_quality_gates.",
-        }
-        from runtime_architecture_policy import build_runtime_contract_ledger
-        from tool_planning import _architecture_default_runtime_contract
 
-        crossover_focus = (architecture_policy or {}).get("selected_focus") or {}
-        crossover_floor_checks = list(
-            (architecture_policy or {}).get("runtime_floor_checks") or []
-        )
-        crossover_contract_task = {
-            "worker_id": "system_crossover_runtime_floor",
-            "skill_layer": "runtime_architecture",
-            "architecture_focus_id": str(crossover_focus.get("focus_id") or ""),
-            "runtime_contract": _architecture_default_runtime_contract(
-                str(crossover_focus.get("focus_id") or ""),
-                "runtime_architecture",
-                "strategy.py",
-                required_checks=crossover_floor_checks,
-            ),
-        }
-        crossover_plan["runtime_contract_ledger"] = build_runtime_contract_ledger({
-            "tasks": [crossover_contract_task],
-        })
+        prepared_transition = resume_prepared_transition
+        if isinstance(architecture_policy, dict) and prepared_transition is None:
+            try:
+                from runtime_architecture_policy import (
+                    ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
+                    evaluate_architecture_transition,
+                )
+
+                prepared_transition = evaluate_architecture_transition(
+                    parent_a_dir,
+                    target_dir,
+                    expected_policy=architecture_policy,
+                    evaluation_phase=ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
+                )
+            except Exception as exc:
+                prepared_transition = {
+                    "ok": False,
+                    "outcome": "infrastructure_failure",
+                    "infrastructure_failures": [{
+                        "component": "runtime_architecture_policy",
+                        "failure_class": "internal_infrastructure",
+                        "issues": [f"{type(exc).__name__}: {str(exc)[:300]}"],
+                    }],
+                }
+        if isinstance(prepared_transition, dict):
+            if prepared_transition.get("outcome") == "infrastructure_failure":
+                failures = prepared_transition.get("infrastructure_failures") or []
+                return await _record_crossover_infrastructure(
+                    target_v,
+                    parent_a,
+                    parent_b,
+                    component=(
+                        (failures[0] or {}).get("component")
+                        if failures and isinstance(failures[0], dict)
+                        else "national_runtime_probe"
+                    ),
+                    code="crossover_prepared_snapshot_probe_inconclusive",
+                    issues=[
+                        f"{item.get('component', 'probe')}: "
+                        + ", ".join(str(issue) for issue in item.get("issues") or [])
+                        for item in failures
+                        if isinstance(item, dict)
+                    ] or ["prepared baseline probe was inconclusive"],
+                    architecture_policy=architecture_policy,
+                )
+            if not prepared_transition.get("ok"):
+                log_system_event(
+                    "pipeline.crossover_preplan_postcheck_divergence",
+                    "error",
+                    f"Crossover v{target_v} failed the final preplan contract recheck",
+                    {
+                        "target_v": target_v,
+                        "parent_a": parent_a,
+                        "parent_b": parent_b,
+                        "policy_identity_errors": prepared_transition.get(
+                            "policy_identity_errors"
+                        ) or [],
+                        "regressions": prepared_transition.get("regressions") or [],
+                        "runtime_floor_failures": prepared_transition.get(
+                            "runtime_floor_failures"
+                        ) or [],
+                    },
+                )
+                return _json_tool_result({
+                    "error": "CROSSOVER_PREPLAN_POSTCHECK_DIVERGENCE",
+                    "success": False,
+                    "failure_class": "candidate_contract",
+                    "target_v": target_v,
+                    "transition": prepared_transition,
+                    "directive": (
+                        "Fail closed: the crossover agent's accepted preplan result "
+                        "did not reproduce. Do not route this candidate directly to "
+                        "quality or synthetic repair; abandon/re-run crossover."
+                    ),
+                })
         try:
             from national_position_contract import detect_position_semantics_errors
             target_position_errors = detect_position_semantics_errors(get_bot_dir(target_v))
         except Exception as exc:
             target_position_errors = [f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}"]
         if target_position_errors:
-            quality_result = _position_semantics_failed_gate(target_position_errors)
-            feedback = _position_semantics_feedback(target_position_errors)
-            write_pipeline_checkpoint(
-                target_v,
-                parent_a,
-                "quality_failed",
-                master_plan=crossover_plan,
-                gate_results={"quality": quality_result},
-                reviewer_feedback=feedback,
-                parent2_v=parent_b,
-                prepare_scope_files=prepare_scope_files,
-                audit_context={
-                    "crossover": {
-                        "parent_a": parent_a,
-                        "parent_b": parent_b,
-                        "compatibility": compat,
-                        "architecture_policy": architecture_policy,
-                    }
+            # _run_crossover already checked this exact deterministic contract.
+            # Disagreement is an infrastructure/control-plane fault, never a
+            # license to synthesize a quality_failed repair plan that skips
+            # direction audit and Master.
+            log_system_event(
+                "pipeline.crossover_position_postcheck_divergence",
+                "error",
+                f"Crossover v{parent_a}×v{parent_b} position postcheck diverged",
+                {
+                    "target_v": target_v,
+                    "parent_a": parent_a,
+                    "parent_b": parent_b,
+                    "errors": target_position_errors[:10],
                 },
             )
+            return await _record_crossover_infrastructure(
+                target_v,
+                parent_a,
+                parent_b,
+                component="national_position_contract",
+                code="crossover_position_postcheck_divergence",
+                issues=target_position_errors[:10],
+                architecture_policy=architecture_policy,
+            )
+
+        prepared_baseline_contract = None
+        prepared_architecture_policy = architecture_policy
+        if isinstance(architecture_policy, dict):
             try:
-                log_system_event(
-                    "pipeline.crossover_position_contract_failed",
-                    "error",
-                    f"Crossover v{parent_a}×v{parent_b} → v{target_v} produced position semantics violations",
-                    {
-                        "target_v": target_v,
-                        "parent_a": parent_a,
-                        "parent_b": parent_b,
-                        "errors": target_position_errors[:10],
-                    },
+                from evidence_snapshot import ensure_generation_h2h_snapshot
+                from prepared_baseline_contract import (
+                    build_prepared_baseline_contract,
                 )
-            except Exception:
-                pass
-            return _json_tool_result({
-                "success": True,
-                "contract_failed": True,
-                "stage": "quality_failed",
-                "failed_gates": quality_result["failed_gates"],
-                "position_semantics_errors": target_position_errors[:10],
-                "directive": (
-                    "Crossover generated code, but the national position contract failed. "
-                    "The checkpoint is quality_failed; next action is execute_workers for the recorded repair contract."
+                from runtime_architecture_policy import (
+                    build_architecture_policy,
+                    build_prepared_capability_snapshot,
+                )
+
+                h2h_identity = ensure_generation_h2h_snapshot(target_v)
+                if not h2h_identity.get("available"):
+                    raise RuntimeError(
+                        "generation H2H snapshot unavailable: "
+                        f"{h2h_identity.get('reason', 'unknown')}"
+                    )
+                selection_identity = (
+                    ((active_crossover_ckpt or {}).get("audit_context") or {})
+                    .get("selection") or {}
+                )
+                expected_manifest_digest = str(
+                    selection_identity.get("h2h_snapshot_manifest_digest") or ""
+                )
+                expected_h2h_sha = str(
+                    selection_identity.get("h2h_snapshot_sha256") or ""
+                )
+                if (
+                    expected_manifest_digest
+                    and expected_manifest_digest
+                    != str(h2h_identity.get("manifest_digest") or "")
+                ):
+                    raise RuntimeError("generation H2H snapshot manifest identity drift")
+                if (
+                    expected_h2h_sha
+                    and expected_h2h_sha != str(h2h_identity.get("sha256") or "")
+                ):
+                    raise RuntimeError("generation H2H snapshot payload identity drift")
+                capability_snapshot = build_prepared_capability_snapshot(
+                    parent_a_dir,
+                    target_dir,
+                    parent_capabilities=prepared_transition.get(
+                        "source_capabilities"
+                    ),
+                    prepared_capabilities=prepared_transition.get(
+                        "candidate_capabilities"
+                    ),
+                )
+                prepared_baseline_contract = build_prepared_baseline_contract(
+                    parent_a_dir,
+                    parent_b_dir,
+                    target_dir,
+                    source_v=parent_a,
+                    parent2_v=parent_b,
+                    next_v=target_v,
+                    capability_snapshot=capability_snapshot,
+                    preplan_transition=prepared_transition,
+                    expected_policy_digest=str(
+                        (architecture_policy or {}).get("policy_digest") or ""
+                    ),
+                    prepare_scope_files=prepare_scope_files,
+                    compatibility=compat,
+                    h2h_snapshot_identity=h2h_identity,
+                )
+                prepared_architecture_policy = build_architecture_policy(
+                    parent_a_dir,
+                    source_capabilities=prepared_transition.get(
+                        "source_capabilities"
+                    ),
+                    prepared_capability_snapshot=capability_snapshot,
+                )
+            except Exception as exc:
+                return await _record_crossover_infrastructure(
+                    target_v,
+                    parent_a,
+                    parent_b,
+                    component="prepared_baseline_contract",
+                    code="prepared_baseline_contract_build_failed",
+                    issues=[f"{type(exc).__name__}: {str(exc)[:500]}"],
+                    architecture_policy=architecture_policy,
+                )
+        prepared_clear_kwargs = {}
+        if crossover_infra is not None:
+            prepared_clear_kwargs = {
+                "clear_infra_failure": True,
+                "infra_failure_owner": "run_crossover",
+                "expected_infra_failure_digest": infrastructure_failure_digest(
+                    crossover_infra
                 ),
-                "logs": ui.get_output(),
+            }
+        prepared_checkpoint_ok = write_pipeline_checkpoint(
+            target_v,
+            parent_a,
+            "prepared",
+            parent2_v=parent_b,
+            prepare_scope_files=prepare_scope_files,
+            audit_context={
+                "crossover": {
+                    "parent_a": parent_a,
+                    "parent_b": parent_b,
+                    "compatibility": compat,
+                    "source_architecture_policy": architecture_policy,
+                    "prepared_architecture_policy": prepared_architecture_policy,
+                    "prepared_baseline_contract_digest": str(
+                        (prepared_baseline_contract or {}).get("contract_digest") or ""
+                    ),
+                    "baseline_prepared": True,
+                },
+                "prepared_baseline_contract": prepared_baseline_contract,
+                "prepared_artifact_contract": (
+                    (prepared_baseline_contract or {}).get(
+                        "prepared_artifact_contract"
+                    )
+                ),
+            },
+            touch_stage_timestamp=True,
+            **prepared_clear_kwargs,
+        )
+        if not prepared_checkpoint_ok:
+            log_system_event(
+                "pipeline.crossover_prepared_checkpoint_refused",
+                "error",
+                f"Crossover v{target_v} baseline could not enter prepared stage",
+                {
+                    "target_v": target_v,
+                    "parent_a": parent_a,
+                    "parent_b": parent_b,
+                },
+            )
+            return _json_tool_result({
+                "error": "CROSSOVER_PREPARED_CHECKPOINT_REFUSED",
+                "success": False,
+                "target_v": target_v,
+                "directive": (
+                    "Do not run quality gates or regenerate the child. Inspect the "
+                    "checkpoint CAS/ledger refusal and resume only from durable state."
+                ),
             })
-        write_pipeline_checkpoint(target_v, parent_a, "workers_done",
-                                  master_plan=crossover_plan,
-                                  parent2_v=parent_b,
-                                  prepare_scope_files=prepare_scope_files,
-                                  audit_context={
-                                      "crossover": {
-                                          "parent_a": parent_a,
-                                          "parent_b": parent_b,
-                                          "compatibility": compat,
-                                          "architecture_policy": architecture_policy,
-                                      }
-                                  })
         try:
             log_system_event('pipeline.crossover_done', 'info',
                 f'Crossover v{parent_a}×v{parent_b} → v{target_v} succeeded',
-                {'target_v': target_v, 'parent_a': parent_a, 'parent_b': parent_b})
+                {
+                    'target_v': target_v,
+                    'parent_a': parent_a,
+                    'parent_b': parent_b,
+                    'checkpoint_stage': 'prepared',
+                })
             log_system_event(
-                "pipeline.crossover_resume_quality", "info",
-                f"Crossover v{target_v} checkpoint ready; next step is run_quality_gates",
+                "pipeline.crossover_resume_direction_audit", "info",
+                f"Crossover v{target_v} baseline ready; next step is run_direction_audit",
                 {"target_v": target_v, "parent_a": parent_a,
-                 "parent_b": parent_b, "next_step": "run_quality_gates"},
+                 "parent_b": parent_b, "next_step": "run_direction_audit"},
             )
         except Exception:
             pass
@@ -2162,5 +2793,17 @@ async def run_crossover(args):
             "logs": ui.get_output(),
         })
 
-    result = {"success": success, "logs": ui.get_output()}
+    result = {
+        "success": success,
+        "stage": "prepared" if success else None,
+        "next_tool": "run_direction_audit" if success else None,
+        "directive": (
+            "Crossover produced only the recombination baseline. Continue with "
+            "run_direction_audit, the governance-required literature probe when "
+            "stagnant, run_master, and execute_workers before quality gates."
+            if success
+            else None
+        ),
+        "logs": ui.get_output(),
+    }
     return _json_tool_result(result)

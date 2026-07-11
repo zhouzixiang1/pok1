@@ -228,7 +228,12 @@ async def _run_workflow_smoke_gate(
     return errors, report
 
 
-def _declared_scope_tasks_from_plan(master_plan, checkpoint=None):
+def _declared_scope_tasks_from_plan(
+    master_plan,
+    checkpoint=None,
+    *,
+    include_prepare_scope=True,
+):
     tasks = []
     if isinstance(master_plan, dict):
         raw_tasks = master_plan.get("tasks", []) or []
@@ -249,7 +254,7 @@ def _declared_scope_tasks_from_plan(master_plan, checkpoint=None):
                 "target_files": [],
                 "files_allowed": sorted(set(repair_scope_files)),
             })
-    if isinstance(checkpoint, dict):
+    if include_prepare_scope and isinstance(checkpoint, dict):
         raw_prepare_scope = checkpoint.get("prepare_scope_files", []) or []
         if not isinstance(raw_prepare_scope, list):
             raw_prepare_scope = []
@@ -282,19 +287,154 @@ def _is_crossover_scope_checkpoint(ckpt, master_plan):
 
 
 def _master_plan_with_crossover_scope(master_plan, ckpt, changed_files):
-    if not _is_crossover_scope_checkpoint(ckpt, master_plan) or not changed_files:
-        return master_plan
-    existing = []
-    if isinstance(master_plan, dict):
-        raw = master_plan.get("repair_scope_files", []) or []
-        if isinstance(raw, list):
-            existing = [str(item).strip() for item in raw if str(item).strip()]
-    scope = sorted({*existing, *(str(item).strip() for item in changed_files if str(item).strip())})
-    if not scope:
-        return master_plan
-    plan = dict(master_plan or {})
-    plan["repair_scope_files"] = scope
-    return plan
+    """Return the declared plan without deriving authority from the diff.
+
+    Crossover preparation files are already frozen in the checkpoint's
+    ``prepare_scope_files`` ledger and appended by
+    :func:`_declared_scope_tasks_from_plan`.  Promoting every observed changed
+    file into ``repair_scope_files`` made the final scope audit tautological:
+    an out-of-band or recovery-time edit authorized itself merely by appearing
+    in the diff.  Keep this compatibility helper side-effect free; authority is
+    the prepared ledger plus explicit Master/repair task scope only.
+    """
+    return master_plan
+
+
+def _crossover_post_master_delta(checkpoint, candidate_artifact_hash):
+    """Verify Workers changed the common frozen prepared artifact."""
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    audit_context = checkpoint.get("audit_context") or {}
+    prepared = (
+        audit_context.get("prepared_artifact_contract")
+        if isinstance(audit_context, dict)
+        else None
+    )
+    if not isinstance(prepared, dict):
+        crossover_baseline = (
+            audit_context.get("prepared_baseline_contract")
+            if isinstance(audit_context, dict)
+            else None
+        )
+        if isinstance(crossover_baseline, dict):
+            prepared = crossover_baseline.get("prepared_artifact_contract")
+    required = bool(
+        checkpoint.get("next_v") is not None
+        and checkpoint.get("source_v") is not None
+    )
+    prepared = prepared if isinstance(prepared, dict) else {}
+    prepared_hash = str(
+        prepared.get("prepared_artifact_hash") or ""
+        if isinstance(prepared, dict)
+        else ""
+    )
+    candidate_hash = str(candidate_artifact_hash or "")
+    ok = bool(
+        not required
+        or (prepared_hash and candidate_hash and candidate_hash != prepared_hash)
+    )
+    return required, ok, prepared_hash
+
+
+def _prepared_artifact_delta_files(checkpoint, candidate_dir):
+    """Diff the frozen prepared manifest against the final complete artifact."""
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    audit_context = checkpoint.get("audit_context") or {}
+    contract = (
+        audit_context.get("prepared_artifact_contract")
+        if isinstance(audit_context, dict)
+        else None
+    )
+    if not isinstance(contract, dict):
+        crossover_baseline = (
+            audit_context.get("prepared_baseline_contract")
+            if isinstance(audit_context, dict)
+            else None
+        )
+        if isinstance(crossover_baseline, dict):
+            contract = crossover_baseline.get("prepared_artifact_contract")
+    if not isinstance(contract, dict):
+        return [], ["prepared_artifact_contract_missing_for_scope"]
+    try:
+        from prepared_baseline_contract import validate_prepared_artifact_contract
+
+        contract_errors = validate_prepared_artifact_contract(
+            contract,
+            source_v=checkpoint.get("source_v"),
+            next_v=checkpoint.get("next_v"),
+            verify_live_content=False,
+        )
+    except Exception as exc:
+        return [], [
+            "prepared_baseline_contract_scope_validation_error:"
+            f"{type(exc).__name__}: {str(exc)[:200]}"
+        ]
+    if contract_errors:
+        return [], [f"prepared_scope:{error}" for error in contract_errors]
+    prepared_manifest = contract.get("prepared_artifact_manifest")
+    if not isinstance(prepared_manifest, dict):
+        return [], ["prepared_artifact_manifest_missing_for_scope"]
+    try:
+        from bot_artifact import artifact_manifest
+
+        current_manifest = artifact_manifest(candidate_dir)
+    except Exception as exc:
+        return [], [
+            f"candidate_artifact_manifest_error:{type(exc).__name__}: {str(exc)[:200]}"
+        ]
+
+    def _entries(manifest):
+        entries = {}
+        for item in manifest.get("entries") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "file":
+                continue
+            path = str(item.get("path") or "")
+            if not path or path == ".":
+                continue
+            entries[path] = {
+                key: item.get(key)
+                for key in ("type", "size", "sha256")
+                if key in item
+            }
+        return entries
+
+    prepared_entries = _entries(prepared_manifest)
+    current_entries = _entries(current_manifest)
+    changed = sorted(
+        path
+        for path in set(prepared_entries) | set(current_entries)
+        if prepared_entries.get(path) != current_entries.get(path)
+    )
+    return changed, []
+
+
+def _prepared_artifact_change_status(checkpoint, candidate_dir, candidate_artifact_hash):
+    """Return the blocking post-prepare file-delta verdict and evidence."""
+    required, hash_delta_ok, prepared_hash = _crossover_post_master_delta(
+        checkpoint,
+        candidate_artifact_hash,
+    )
+    changed_files, scope_errors = _prepared_artifact_delta_files(
+        checkpoint,
+        candidate_dir,
+    )
+    # Full hashes include directory entries, but empty directory churn is not
+    # a decision innovation.  For a real generation, regular-file delta is the
+    # only authoritative verdict.  The fallback preserves legacy no-source
+    # diagnostic callers where no prepared contract is required.
+    changed_ok = (
+        bool(changed_files) and not scope_errors
+        if required
+        else bool(hash_delta_ok)
+    )
+    return {
+        "required": required,
+        "changed_ok": changed_ok,
+        "prepared_artifact_hash": prepared_hash,
+        "changed_files": changed_files,
+        "scope_errors": scope_errors,
+    }
 
 def _record_quality_failure(gen, worker_id, role, error, **extra):
     """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl.
@@ -362,6 +502,13 @@ def _bot_code_fingerprint(bot_dir):
         # fails closed.  Do not bless a partial manifest after an I/O race or an
         # unsafe artifact entry.
         return ""
+
+
+def _transient_task_context_errors(bot_dir):
+    """Reject unpublished compiler briefs before quality/certification."""
+    from candidate_hygiene import transient_control_artifact_errors
+
+    return transient_control_artifact_errors(bot_dir)
 
 
 def _llm_gate_infrastructure_identity(
@@ -468,6 +615,21 @@ async def run_quality_gates(args):
         )
         return _state_blocked(message, v, source_v, checkpoint=active_ckpt)
     bot_dir = get_bot_dir(v)
+    try:
+        from candidate_hygiene import cleanup_transient_candidate_artifacts
+
+        cleanup_transient_candidate_artifacts(
+            bot_dir,
+            include_task_context=False,
+        )
+    except Exception as exc:
+        return _json_tool_result({
+            "error": "CANDIDATE_TRANSIENT_ARTIFACT_CLEANUP_FAILED",
+            "version": v,
+            "source_v": source_v,
+            "failure_class": "candidate_integrity",
+            "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+        })
     workflow_profile = get_workflow_profile()
     native_tcp_mode = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
     if native_tcp_mode and not (bot_dir / "national_bot.py").exists():
@@ -519,23 +681,18 @@ async def run_quality_gates(args):
 
     _set_pipeline_status(f"Running quality gates for v{v}")
 
-    # CRITICAL: Check that code actually changed vs source before considering
-    # quality-gate cache reuse. A reviewer/precommit rejection may re-run workers
-    # while the checkpoint is still at quality_passed; stale quality results must
-    # not be reused for different code.
-    code_changed = True
+    # Keep the source-to-candidate Python diff for AST reachability and dynamic
+    # scenario generation.  It is telemetry/coverage input, not authority for
+    # the blocking innovation gate: crossover preparation may already differ
+    # from the source, and decision assets may be non-Python.
+    source_python_changed = True
     changed_files_list = []
     source_dir = None
     if source_v is not None:
         source_dir = get_bot_dir(source_v)
         changed_files_list = [p for p in _py_files_changed_between(source_dir, bot_dir) if 'backup' not in p]
-        code_changed = len(changed_files_list) > 0
-        if not code_changed:
-            log_system_event("pipeline.quality_no_changes", "error",
-                             f"Quality gates: v{v} is byte-for-byte identical to v{source_v} -- workers made zero changes",
-                             {"version": v, "source_v": source_v})
+        source_python_changed = len(changed_files_list) > 0
     code_fingerprint = _bot_code_fingerprint(bot_dir)
-    diff_hash = hash_changed_files(bot_dir, changed_files_list) if changed_files_list else ""
 
     declared_scope_ok = True
     declared_scope_errors = []
@@ -548,6 +705,46 @@ async def run_quality_gates(args):
         _quality_ckpt_for_scope,
         changed_files_list,
     )
+    _artifact_change = _prepared_artifact_change_status(
+        _quality_ckpt_for_scope,
+        bot_dir,
+        code_fingerprint,
+    )
+    post_master_delta_required = _artifact_change["required"]
+    post_master_delta_ok = _artifact_change["changed_ok"]
+    prepared_artifact_hash = _artifact_change["prepared_artifact_hash"]
+    post_master_changed_files = _artifact_change["changed_files"]
+    post_master_scope_errors = _artifact_change["scope_errors"]
+    # A directory-only hash change is not a strategy innovation.  Require at
+    # least one changed regular artifact file after the frozen prepared state;
+    # this also makes declared binary/model/table assets first-class changes.
+    code_changed = (
+        post_master_delta_ok
+        if post_master_delta_required
+        else source_python_changed
+    )
+    diff_hash = (
+        hash_changed_files(bot_dir, post_master_changed_files)
+        if post_master_changed_files
+        else ""
+    )
+    if not code_changed:
+        log_system_event(
+            "pipeline.quality_no_changes",
+            "error",
+            f"Quality gates: v{v} has no changed decision artifact file after the frozen prepared baseline",
+            {
+                "version": v,
+                "source_v": source_v,
+                "prepared_artifact_hash": prepared_artifact_hash,
+                "candidate_artifact_hash": code_fingerprint,
+                "scope_errors": post_master_scope_errors[:6],
+            },
+        )
+    scope_changed_files = post_master_changed_files
+    if post_master_scope_errors:
+        declared_scope_ok = False
+        declared_scope_errors.extend(post_master_scope_errors)
     runtime_contract_identity_errors = []
     runtime_contract_ledger_digest = ""
     if native_tcp_mode:
@@ -587,14 +784,12 @@ async def run_quality_gates(args):
                 f"{type(exc).__name__}: {str(exc)[:300]}",
             )
     runtime_contract_identity_ok = not runtime_contract_identity_errors
-    _plan_tasks = _declared_scope_tasks_from_plan(_master_plan_for_scope, _quality_ckpt_for_scope)
-    if native_tcp_mode and _plan_tasks:
-        _plan_tasks = list(_plan_tasks) + [{
-            "worker_id": "platform_native_entry",
-            "target_files": ["national_bot.py", "precompute.py"],
-            "skill_layer": "native_tcp",
-        }]
-    if _plan_tasks and changed_files_list:
+    _plan_tasks = _declared_scope_tasks_from_plan(
+        _master_plan_for_scope,
+        _quality_ckpt_for_scope,
+        include_prepare_scope=False,
+    )
+    if _plan_tasks and scope_changed_files and not post_master_scope_errors:
         try:
             declared_skill_layers = sorted({
                 str(task.get("skill_layer", "")).strip()
@@ -602,7 +797,7 @@ async def run_quality_gates(args):
                 if str(task.get("skill_layer", "")).strip()
             })
             _scope_audit = audit_changed_files_against_plan(
-                changed_files_list,
+                scope_changed_files,
                 _plan_tasks,
                 next_v=v,
             )
@@ -617,7 +812,7 @@ async def run_quality_gates(args):
                     {
                         "version": v,
                         "source_v": source_v,
-                        "changed_files": changed_files_list[:20],
+                        "changed_files": scope_changed_files[:20],
                         "allowed_files": _scope_audit.allowed_files[:30],
                         "violations": declared_scope_errors[:10],
                     },
@@ -630,14 +825,27 @@ async def run_quality_gates(args):
                 "declared_scope",
                 declared_scope_errors[0],
             )
-    elif changed_files_list:
+    elif scope_changed_files:
+        declared_scope_ok = False
+        declared_scope_errors = [
+            "master_plan_tasks_unavailable_for_changed_artifacts"
+        ]
         declared_scope_metrics = {
-            "skipped": True,
+            "skipped": False,
             "reason": "master_plan_tasks_unavailable",
-            "changed_files": changed_files_list[:20],
+            "changed_files": scope_changed_files[:20],
         }
 
     def _quality_cache_current(gate):
+        if _transient_task_context_errors(bot_dir):
+            return False
+        try:
+            from candidate_hygiene import forbidden_runtime_dependency_errors
+
+            if forbidden_runtime_dependency_errors(bot_dir):
+                return False
+        except Exception:
+            return False
         cached_profile_id = str(gate.get("workflow_profile_id") or gate.get("profile_id") or "")
         cached_execution_mode = str(gate.get("national_execution_mode") or "")
         expected_execution_mode = "native_tcp" if native_tcp_mode else "adapter"
@@ -768,6 +976,7 @@ async def run_quality_gates(args):
     except Exception as exc:
         compile_errors = [f"compile_runner_exception: {type(exc).__name__}: {str(exc)[:200]}"]
         mark_quality_infrastructure("compile_runner", "compile", compile_errors[0])
+    compile_errors.extend(_transient_task_context_errors(bot_dir))
     try:
         import_errors = run_import_contract_test(bot_dir)
     except Exception as exc:
@@ -790,6 +999,26 @@ async def run_quality_gates(args):
             "protected_contract_validator",
             "protected_contract",
             protected_contract_errors[0],
+        )
+    try:
+        from bot_artifact import publication_shape_errors
+
+        protected_contract_errors.extend(publication_shape_errors(bot_dir))
+    except Exception as exc:
+        protected_contract_errors.append(
+            "publication_shape_check_error:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
+        )
+    try:
+        from candidate_hygiene import forbidden_runtime_dependency_errors
+
+        protected_contract_errors.extend(
+            forbidden_runtime_dependency_errors(bot_dir)
+        )
+    except Exception as exc:
+        protected_contract_errors.append(
+            "transient_runtime_dependency_check_error:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
         )
     native_contract_errors = []
     if native_tcp_mode:
@@ -1564,6 +1793,7 @@ async def run_quality_gates(args):
         and decision_ok
         and len(oversized) == 0
         and code_changed
+        and post_master_delta_ok
         and declared_scope_ok
         and fix_ok
         and telemetry_fidelity_ok
@@ -1644,7 +1874,14 @@ async def run_quality_gates(args):
     result = {
         "version": v,
         "code_changed": code_changed,
-        "changed_files": changed_files_list,
+        "post_master_delta_ok": post_master_delta_ok,
+        "post_master_delta_required": post_master_delta_required,
+        "prepared_artifact_hash": prepared_artifact_hash,
+        "post_master_changed_files": post_master_changed_files,
+        "post_master_scope_errors": post_master_scope_errors,
+        "changed_files": post_master_changed_files,
+        "source_python_changed": source_python_changed,
+        "source_python_changed_files": changed_files_list,
         "compile_ok": len(compile_errors) == 0,
         "compile_errors": compile_errors[:3] if compile_errors else [],
         "import_ok": len(import_errors) == 0,
@@ -1808,7 +2045,13 @@ async def run_quality_gates(args):
     if not decision_ok:
         failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
     if not code_changed:
-        failed_gates_detail.append(f"no_code_changes(v{v} identical to v{source_v})")
+        failed_gates_detail.append(
+            f"no_code_changes(v{v} has no decision-artifact file delta after prepared baseline)"
+        )
+    if not post_master_delta_ok:
+        failed_gates_detail.append(
+            "no_post_master_delta(candidate has no file delta after frozen prepared baseline)"
+        )
     if not declared_scope_ok:
         failed_gates_detail.append(f"declared_scope({'; '.join(declared_scope_errors[:3])})")
     if oversized:
@@ -1919,7 +2162,14 @@ async def run_quality_gates(args):
         "size_ok": result["size_ok"],
         "oversized_files": result["oversized_files"],
         "code_changed": code_changed,
-        "changed_files": changed_files_list[:20],
+        "post_master_delta_ok": post_master_delta_ok,
+        "post_master_delta_required": post_master_delta_required,
+        "prepared_artifact_hash": prepared_artifact_hash,
+        "post_master_changed_files": post_master_changed_files[:20],
+        "post_master_scope_errors": post_master_scope_errors[:6],
+        "changed_files": post_master_changed_files[:20],
+        "source_python_changed": source_python_changed,
+        "source_python_changed_files": changed_files_list[:20],
         "declared_scope_ok": declared_scope_ok,
         "declared_scope_errors": declared_scope_errors[:6],
         "declared_scope": declared_scope_metrics,
@@ -1938,7 +2188,37 @@ async def run_quality_gates(args):
         "decision_skill_layers": decision_skill_layers,
     }
     scorecard = ScoreCard(name="quality")
-    scorecard.add(GateResult.from_bool("code_changed", code_changed, failures=[] if code_changed else ["bot code is byte-for-byte identical to source"]))
+    scorecard.add(GateResult.from_bool(
+        "code_changed",
+        code_changed,
+        failures=(
+            []
+            if code_changed
+            else ["no decision-artifact file changed after the frozen prepared baseline"]
+        ),
+        metrics={
+            "prepared_artifact_hash": prepared_artifact_hash,
+            "candidate_artifact_hash": code_fingerprint,
+            "changed_files": post_master_changed_files[:20],
+            "source_python_changed": source_python_changed,
+        },
+    ))
+    scorecard.add(GateResult.from_bool(
+        "post_master_delta",
+        post_master_delta_ok,
+        blocking=post_master_delta_required,
+        hidden=not post_master_delta_required,
+        failures=(
+            []
+            if post_master_delta_ok
+            else ["candidate has no file delta after the frozen prepared baseline"]
+        ),
+        metrics={
+            "required": post_master_delta_required,
+            "prepared_artifact_hash": prepared_artifact_hash,
+            "candidate_artifact_hash": code_fingerprint,
+        },
+    ))
     scorecard.add(GateResult.from_bool(
         "declared_scope",
         declared_scope_ok,
@@ -2190,7 +2470,7 @@ async def run_quality_gates(args):
                 run_id=f"{v}#0",
                 stage=quality_stage,
                 parent_ids=[bot_name(source_v)] if source_v is not None else [],
-                changed_files=changed_files_list,
+                changed_files=post_master_changed_files,
                 skill_layers=declared_skill_layers,
                 diff_hash=diff_hash,
                 gate="quality",
@@ -2448,6 +2728,23 @@ async def prepare_next_gen(args):
             {"next_v": next_v, "source_v": source_v, "entry": hygiene.get("native_entry")},
         )
 
+    try:
+        from prepared_baseline_contract import build_prepared_artifact_contract
+
+        prepared_artifact_contract = build_prepared_artifact_contract(
+            next_dir,
+            source_v=source_v,
+            next_v=next_v,
+        )
+    except Exception as exc:
+        return _json_tool_result({
+            "error": "PREPARED_ARTIFACT_CONTRACT_BUILD_FAILED",
+            "next_v": next_v,
+            "source_v": source_v,
+            "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
+            "directive": "Do not run Direction Audit or Master without a frozen prepared artifact.",
+        })
+
     # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call run_direction_audit"
     if not write_pipeline_checkpoint(
         next_v,
@@ -2455,6 +2752,9 @@ async def prepare_next_gen(args):
         "prepared",
         worker_failure_count=0,
         prepare_scope_files=prepare_scope_files,
+        audit_context={
+            "prepared_artifact_contract": prepared_artifact_contract,
+        },
     ):
         return _json_tool_result({
             "error": f"Failed to persist prepared checkpoint for v{next_v}; generation recovery remains at preparing."

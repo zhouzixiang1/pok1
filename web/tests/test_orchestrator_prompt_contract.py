@@ -38,10 +38,11 @@ def test_orchestrator_prompt_treats_master_error_as_blocking():
 def test_orchestrator_prompt_crossover_commit_contract_is_consistent():
     prompt = (PROMPTS / "orchestrator.md").read_text(encoding="utf-8")
 
-    assert "Crossover generation: `run_crossover` succeeded" in prompt
-    assert "checkpoint at\n   `workers_done`" in prompt
-    assert "do NOT call `run_direction_audit`, `run_master`, or\n   `execute_workers`" in prompt
-    assert "1. `run_direction_audit` was called" not in prompt
+    assert "including a crossover generation" in prompt
+    assert "supplies only the `prepared` baseline" in prompt
+    assert "it never substitutes for Master or\n   Worker execution" in prompt
+    assert "crossover performs\nno independent strategy mutation" in prompt
+    assert "checkpoint is at `workers_done`" not in prompt
 
 
 def test_llm_stages_documents_current_mcp_tool_contract():

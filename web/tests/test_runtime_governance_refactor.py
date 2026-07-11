@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 CORE = Path(__file__).resolve().parents[1] / "core"
 if str(CORE) not in sys.path:
@@ -128,12 +130,33 @@ def test_literature_probe_cache_rejects_context_mismatch(tmp_path, monkeypatch):
     ) is None
 
 
-def test_literature_probe_checkpoint_reused_on_resume(tmp_path, monkeypatch):
+def test_literature_probe_rejects_old_checkpoint_receipt_after_context_refresh(tmp_path, monkeypatch):
     import asyncio
     import evolution_infra
+    from master_context_contract import build_master_context
+    from pipeline_state import literature_probe_receipt_binding
     import tool_planning
 
     monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", tmp_path / "pipeline_state.json")
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path / "results")
+    original_context = build_master_context(
+        next_v=300,
+        source_v=299,
+        stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+        match_analysis="original weakness",
+    )
+    checkpoint = {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "direction_audit": {
+            "repetition_detected": True,
+            "suggested_direction": "original weakness",
+        },
+        "audit_context": {"master_context": original_context},
+    }
+    binding, errors = literature_probe_receipt_binding(checkpoint)
+    assert not errors
     payload = {
         "next_v": 300,
         "source_v": 299,
@@ -145,10 +168,36 @@ def test_literature_probe_checkpoint_reused_on_resume(tmp_path, monkeypatch):
         "context_fingerprint": tool_planning._literature_probe_context_fingerprint(
             299, "original weakness", "original stagnation"
         ),
+        **binding,
     }
     assert evolution_infra.write_pipeline_checkpoint(
-        300, 299, "direction_audited", literature_probe=payload
+        300,
+        299,
+        "prepared",
+        audit_context={"master_context": original_context},
     )
+    assert evolution_infra.write_pipeline_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        direction_audit=checkpoint["direction_audit"],
+        literature_probe=payload,
+    )
+    refreshed_context = build_master_context(
+        next_v=300,
+        source_v=299,
+        stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+        match_analysis="refreshed weakness",
+    )
+    assert evolution_infra.write_pipeline_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        audit_context={"master_context": refreshed_context},
+    )
+
+    import research_governance
+    monkeypatch.setattr(research_governance, "should_trigger_web_retrieval", lambda _v: False)
 
     result = asyncio.run(tool_planning.run_literature_probe.handler({
         "next_v": 300,
@@ -158,10 +207,12 @@ def test_literature_probe_checkpoint_reused_on_resume(tmp_path, monkeypatch):
     }))
     data = json.loads(result["content"][0]["text"])
 
-    assert data["cached"] is True
-    assert data["cache_source"] == "checkpoint"
-    assert data["candidate_id"] == "research-1"
-    assert data["context_mismatch_reused"] is True
+    assert data.get("cached") is not True
+    assert data["reason"] == "web retrieval in cooldown or disabled by governance"
+    assert data["master_context_digest"] == refreshed_context["context_digest"]
+    assert data["master_context_digest"] != payload["master_context_digest"]
+    persisted = evolution_infra.read_pipeline_checkpoint()["literature_probe"]
+    assert persisted["requirement_context_digest"] == data["requirement_context_digest"]
 
 
 def test_aggregate_negative_ev_blocks_small_wl_edge():
@@ -358,6 +409,90 @@ def test_incremental_reset_removes_stale_task_context(tmp_path):
     assert (next_dir / "main.py").read_text(encoding="utf-8") == "source\n"
     assert (next_dir / "new_helper.py").exists()
     assert not (next_dir / ".task_context").exists()
+
+
+def test_successful_worker_cleanup_removes_compiler_context_before_quality(tmp_path):
+    import tool_gates
+    import tool_planning
+
+    target = tmp_path / "national_v303"
+    context = target / ".task_context"
+    context.mkdir(parents=True)
+    (context / "w1.md").write_text("system-owned brief", encoding="utf-8")
+    nested = target / "tables" / ".task_context"
+    nested.mkdir(parents=True)
+    (nested / "w2.md").write_text("nested brief", encoding="utf-8")
+    pytest_cache = target / ".pytest_cache"
+    pytest_cache.mkdir()
+    (pytest_cache / "action").write_bytes(b"fold")
+    bytecode = target / "__pycache__"
+    bytecode.mkdir()
+    (bytecode / "strategy.pyc").write_bytes(b"bytecode")
+
+    assert tool_gates._transient_task_context_errors(target)
+    tool_planning._clear_compiled_task_context(target)
+
+    assert not context.exists()
+    assert not nested.exists()
+    assert not pytest_cache.exists()
+    assert not bytecode.exists()
+    assert tool_gates._transient_task_context_errors(target) == []
+
+
+def test_quality_hygiene_finds_nested_task_context(tmp_path):
+    import tool_gates
+
+    target = tmp_path / "national_v304"
+    nested = target / "tables" / ".task_context"
+    nested.mkdir(parents=True)
+    (nested / "hidden.md").write_text("not publishable", encoding="utf-8")
+
+    assert tool_gates._transient_task_context_errors(target) == [
+        "transient_control_artifact_present:tables/.task_context"
+    ]
+
+
+def test_excluded_cache_cannot_be_hidden_policy_dependency(tmp_path):
+    from bot_artifact import hash_path
+    from candidate_hygiene import (
+        cleanup_transient_candidate_artifacts,
+        forbidden_runtime_dependency_errors,
+    )
+
+    target = tmp_path / "national_v305"
+    target.mkdir()
+    (target / "strategy.py").write_text(
+        "from pathlib import Path\nACTION = Path('.pytest_cache/action').read_text()\n",
+        encoding="utf-8",
+    )
+    cache = target / ".pytest_cache"
+    cache.mkdir()
+    action = cache / "action"
+    action.write_text("0", encoding="utf-8")
+    before = hash_path(target)
+    action.write_text("-1", encoding="utf-8")
+
+    assert hash_path(target) == before
+    assert forbidden_runtime_dependency_errors(target) == [
+        "forbidden_transient_runtime_dependency:strategy.py:2:.pytest_cache"
+    ]
+    cleanup_transient_candidate_artifacts(target, include_task_context=False)
+    assert not cache.exists()
+
+
+def test_transient_cleanup_rejects_symlink_in_cache(tmp_path):
+    from candidate_hygiene import cleanup_transient_candidate_artifacts
+
+    target = tmp_path / "national_v306"
+    cache = target / ".pytest_cache"
+    cache.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.write_text("keep", encoding="utf-8")
+    (cache / "action").symlink_to(outside)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        cleanup_transient_candidate_artifacts(target)
+    assert outside.read_text(encoding="utf-8") == "keep"
 
 
 def test_master_prompt_disallows_manual_task_context_files():
@@ -762,6 +897,16 @@ def test_runtime_guard_allows_current_candidate_dir(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "repo_baseline": {
+            "head": "abc123",
+            "branch": "main...origin/main",
+            "captured_stage": "direction_audited",
+        },
+    })
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_master",
@@ -814,6 +959,171 @@ def test_runtime_guard_blocks_master_before_direction_audit(monkeypatch):
     assert payload["checkpoint_stage"] == "prepared"
     assert payload["next_tool"] == "run_direction_audit"
     assert payload["allowed_tools"] == ["run_direction_audit"]
+
+
+def test_pipeline_route_guard_blocks_mutating_tools_without_checkpoint(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "_log_guard_event", lambda *_args: None)
+
+    for tool_name in sorted(tool_runtime_guard._PIPELINE_ROUTE_TOOLS):
+        ok, payload = tool_runtime_guard._pipeline_route_guard(
+            tool_name=tool_name,
+            args={},
+            candidate_v=300,
+            source_v=299,
+        )
+
+        assert ok is False
+        assert payload["error"] == "pipeline_route_guard_blocked"
+        assert payload["reason"] == "no_active_checkpoint"
+        assert payload["next_tool"] == "prepare_generation"
+        assert payload["allowed_tools"] == ["prepare_generation"]
+
+
+def test_pipeline_route_guard_no_checkpoint_keeps_scheduler_and_read_only_exceptions(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+
+    for tool_name in ("prepare_generation", "get_status"):
+        ok, payload = tool_runtime_guard._pipeline_route_guard(
+            tool_name=tool_name,
+            args={},
+            candidate_v=None,
+            source_v=None,
+        )
+
+        assert ok is True
+        assert payload == {}
+
+
+def test_pipeline_route_guard_allows_only_tagged_post_commit_archivist(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_infra
+    import tool_runtime_guard
+
+    monkeypatch.setattr(tool_runtime_guard, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+    pending = {"value": True}
+    monkeypatch.setattr(
+        evolution_infra,
+        "validate_post_commit_archivist_receipt",
+        lambda version, source_v: (
+            pending["value"] and int(version) == 300 and int(source_v) == 299,
+            "",
+            {"receipt_digest": "r" * 64},
+        ),
+    )
+
+    ok, payload = tool_runtime_guard._pipeline_route_guard(
+        tool_name="run_archivist",
+        args={"version": 300, "source_v": 299},
+        candidate_v=300,
+        source_v=299,
+    )
+
+    assert ok is True
+    assert payload == {
+        "post_commit_archivist": True,
+        "candidate_v": 300,
+        "source_v": 299,
+        "receipt_digest": "r" * 64,
+    }
+
+    pending["value"] = False
+    ok, payload = tool_runtime_guard._pipeline_route_guard(
+        tool_name="run_archivist",
+        args={"version": 300, "source_v": 299},
+        candidate_v=300,
+        source_v=299,
+    )
+    assert ok is False
+    assert payload["reason"] == "no_active_checkpoint"
+
+
+def test_post_commit_archivist_receipt_is_content_bound_and_single_use(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_infra
+
+    bot_dir = tmp_path / "bots" / "national_v300"
+    bot_dir.mkdir(parents=True)
+    (bot_dir / "strategy.py").write_text("READY = True\n", encoding="utf-8")
+    archive_dir = tmp_path / "archive"
+    monkeypatch.setattr(evolution_infra, "ARCHIVE_DIR", archive_dir)
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: bot_dir)
+    monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: ["national_v300"])
+    monkeypatch.setattr(evolution_infra, "load_ratings", lambda: {})
+    monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(
+        evolution_infra,
+        "_git",
+        lambda *args, **_kwargs: "commit-300" if args[0] == "rev-parse" else "",
+    )
+
+    snapshot = evolution_infra.archive_generation(300, 299, {})
+    receipt = snapshot["post_commit_archivist_receipt"]
+    assert receipt["status"] == "pending"
+
+    ok, reason, _ = evolution_infra.validate_post_commit_archivist_receipt(300, 299)
+    assert ok is True
+    assert reason == ""
+    wrong_source_ok, wrong_source_reason, _ = (
+        evolution_infra.validate_post_commit_archivist_receipt(300, 298)
+    )
+    assert wrong_source_ok is False
+    assert wrong_source_reason == "post_commit_archivist_source_mismatch"
+
+    consumed, consume_reason, _ = evolution_infra.consume_post_commit_archivist_receipt(
+        300,
+        299,
+    )
+    assert consumed is True
+    assert consume_reason == ""
+    replay_ok, replay_reason, _ = evolution_infra.validate_post_commit_archivist_receipt(
+        300,
+        299,
+    )
+    assert replay_ok is False
+    assert replay_reason == "post_commit_archivist_receipt_consumed"
+
+    (bot_dir / "strategy.py").write_text("DRIFTED = True\n", encoding="utf-8")
+    second, second_reason, _ = evolution_infra.consume_post_commit_archivist_receipt(
+        300,
+        299,
+    )
+    assert second is False
+    assert second_reason == "post_commit_archivist_receipt_consumed"
+
+
+def test_runtime_guard_blocks_random_pipeline_tool_without_checkpoint(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "abc123",
+        "entries": ["?? bots/national_v300/"],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_review",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "no_active_checkpoint"
+    assert payload["next_tool"] == "prepare_generation"
+    assert payload["allowed_tools"] == ["prepare_generation"]
 
 
 def test_operator_bootstrap_stage_blocks_commit_without_valid_certificate(monkeypatch):
@@ -1005,6 +1315,16 @@ def test_runtime_guard_allows_unrelated_inplace_dirty_entries(monkeypatch):
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "master_planned",
+        "repo_baseline": {
+            "head": "abc123",
+            "branch": "main...origin/main",
+            "captured_stage": "master_planned",
+        },
+    })
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "execute_workers",
@@ -1032,6 +1352,16 @@ def test_runtime_guard_allows_noncritical_web_core_dirty_entries(monkeypatch):
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "master_planned",
+        "repo_baseline": {
+            "head": "abc123",
+            "branch": "main...origin/main",
+            "captured_stage": "master_planned",
+        },
+    })
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "execute_workers",
@@ -1125,6 +1455,16 @@ def test_runtime_guard_allows_unrelated_head_drift(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "workers_done",
+        "repo_baseline": {
+            "head": "old123",
+            "branch": "main...origin/main",
+            "captured_stage": "workers_done",
+        },
+    })
     monkeypatch.setattr(
         evaluation_contract,
         "changed_paths_between_heads",
@@ -1139,6 +1479,106 @@ def test_runtime_guard_allows_unrelated_head_drift(monkeypatch):
     assert ok is True
     assert payload["head_drift_unrelated_allowed"] is True
     assert "docs/experiment-notes.md" in "\n".join(payload["head_changed_paths"])
+
+
+def test_unrelated_head_drift_cannot_bypass_mandatory_literature_route(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "new456",
+        "entries": ["?? bots/national_v300/"],
+    }
+    checkpoint = {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "audit_context": {
+            "master_context": {
+                "stagnation_info": "STAGNATION_DETECTED (is_stagnant=true)",
+            },
+        },
+        "repo_baseline": {
+            "head": "old123",
+            "branch": "main...origin/main",
+            "captured_stage": "direction_audited",
+        },
+    }
+    events = []
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "_unrelated_head_drift_allowed",
+        lambda **_kwargs: (True, {"head_changed_paths": ["docs/notes.md"]}),
+    )
+    monkeypatch.setattr(tool_runtime_guard, "_log_guard_event", lambda *args: events.append(args))
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_master",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["error"] == "pipeline_route_guard_blocked"
+    assert payload["reason"] == "wrong_pipeline_stage"
+    assert payload["next_tool"] == "run_literature_probe"
+    assert payload["allowed_tools"] == ["run_literature_probe"]
+    assert any(event[0] == "repo.runtime_guard_head_drift_unrelated_allowed" for event in events)
+    assert any(event[0] == "pipeline.route_guard_blocked" for event in events)
+
+
+def test_checkpoint_head_resume_cannot_bypass_mandatory_literature_route(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "new456",
+        "entries": ["?? bots/national_v300/"],
+    }
+    checkpoint = {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "audit_context": {
+            "master_context": {
+                "stagnation_info": "STAGNATION_DETECTED (is_stagnant=true)",
+            },
+        },
+        "repo_baseline": {
+            "head": "old123",
+            "branch": "main...origin/main",
+            "captured_stage": "direction_audited",
+        },
+    }
+    events = []
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "_unrelated_head_drift_allowed",
+        lambda **_kwargs: (False, {}),
+    )
+    monkeypatch.setattr(tool_runtime_guard, "_log_guard_event", lambda *args: events.append(args))
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_master",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["error"] == "pipeline_route_guard_blocked"
+    assert payload["reason"] == "wrong_pipeline_stage"
+    assert payload["next_tool"] == "run_literature_probe"
+    assert payload["allowed_tools"] == ["run_literature_probe"]
+    assert any(event[0] == "repo.runtime_guard_head_drift_repair_allowed" for event in events)
+    assert any(event[0] == "pipeline.route_guard_blocked" for event in events)
 
 
 def test_runtime_guard_blocks_source_bot_contract_head_drift(monkeypatch):
@@ -2186,7 +2626,16 @@ def test_runtime_guard_allows_non_commit_tool_on_same_head_branch_alias(monkeypa
     events = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "repo_baseline": {
+            "head": "abc123",
+            "branch": "main...origin/main",
+            "captured_stage": "direction_audited",
+        },
+    })
     monkeypatch.setattr(tool_runtime_guard, "_log_guard_event", lambda *args: events.append(args))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
@@ -2262,7 +2711,16 @@ def test_runtime_guard_allows_non_commit_tool_on_branch_with_unrelated_head_drif
     events = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "quality_passed",
+        "repo_baseline": {
+            "head": "old123",
+            "branch": "main...origin/main",
+            "captured_stage": "quality_passed",
+        },
+    })
     monkeypatch.setattr(
         evaluation_contract,
         "changed_paths_between_heads",

@@ -329,8 +329,10 @@ def test_crossover_reapplies_known_fixes_after_llm_copy(tmp_path, monkeypatch):
     logs_root = tmp_path / "logs"
     prompts = tmp_path / "prompts"
     parent = bots_root / "claude_v1"
+    parent_b = bots_root / "claude_v2"
     target = bots_root / "claude_v3"
     parent.mkdir(parents=True)
+    parent_b.mkdir(parents=True)
     logs_root.mkdir()
     prompts.mkdir()
     (prompts / "crossover_prompt.md").write_text("make v{{version}}", encoding="utf-8")
@@ -349,6 +351,7 @@ if __name__ == '__main__':
 ''',
         encoding="utf-8",
     )
+    shutil.copy2(parent / "postflop.py", parent_b / "postflop.py")
 
     class UI:
         def log_history(self, *_args, **_kwargs):
@@ -394,3 +397,299 @@ if __name__ == '__main__':
     text = (target / "postflop.py").read_text(encoding="utf-8")
     assert "Standard-bucket (vpip>=0.62, pfr>=0.32)" in text
     assert 'std_om = {"vpip": 0.62, "pfr": 0.32, "confidence": 0.5}' in text
+
+
+def test_crossover_uses_preplan_architecture_contract_and_defers_master_debt(
+    tmp_path,
+    monkeypatch,
+):
+    sys.path.insert(0, str(CORE_DIR))
+    try:
+        import agent_review
+        import evolution_infra
+        import national_position_contract
+        import runtime_architecture_policy
+        import system_log
+        import workflow_profiles
+    finally:
+        sys.path.remove(str(CORE_DIR))
+
+    bots_root = tmp_path / "bots"
+    logs_root = tmp_path / "logs"
+    prompts = tmp_path / "prompts"
+    parent = bots_root / "national_v1"
+    parent_b = bots_root / "national_v2"
+    target = bots_root / "national_v3"
+    parent.mkdir(parents=True)
+    parent_b.mkdir(parents=True)
+    logs_root.mkdir()
+    prompts.mkdir()
+    (prompts / "crossover_prompt.md").write_text(
+        "prepare crossover v{{version}}",
+        encoding="utf-8",
+    )
+    (parent / "main.py").write_text("# parent\n", encoding="utf-8")
+    (parent_b / "main.py").write_text("# parent b\n", encoding="utf-8")
+
+    class UI:
+        def log_history(self, *_args, **_kwargs):
+            pass
+
+        def clear_io(self):
+            pass
+
+        def set_status(self, *_args, **_kwargs):
+            pass
+
+    def get_bot_dir(version):
+        return bots_root / f"national_v{version}"
+
+    def get_logs_dir(version):
+        path = logs_root / f"v{version}"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    prompts_seen = []
+
+    async def fake_run_claude_query(prompt, *_args, **_kwargs):
+        prompts_seen.append(prompt)
+        (target / "main.py").write_text("# crossover baseline\n", encoding="utf-8")
+
+    transition_calls = []
+
+    def fake_transition(*_args, **kwargs):
+        transition_calls.append(kwargs)
+        return {
+            "ok": True,
+            "evaluation_phase": kwargs.get("evaluation_phase"),
+            "deferred_unresolved_focus_checks": [
+                "decision_path_no_full_history_scan",
+            ],
+            "candidate_capabilities": {},
+        }
+
+    events = []
+    monkeypatch.setattr(agent_review, "PROMPTS_DIR", prompts)
+    monkeypatch.setattr(agent_review, "get_bot_dir", get_bot_dir)
+    monkeypatch.setattr(agent_review, "get_logs_dir", get_logs_dir)
+    monkeypatch.setattr(agent_review, "run_claude_query", fake_run_claude_query)
+    monkeypatch.setattr(agent_review, "verify_code", lambda _path: [])
+    monkeypatch.setattr(agent_review, "run_import_contract_test", lambda _path: [])
+    monkeypatch.setattr(agent_review, "run_smoke_test", lambda _path: [])
+    monkeypatch.setattr(evolution_infra, "write_pipeline_checkpoint", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        workflow_profiles,
+        "get_workflow_profile",
+        lambda: SimpleNamespace(national_execution_mode="adapter"),
+    )
+    monkeypatch.setattr(
+        national_position_contract,
+        "detect_position_semantics_errors",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "evaluate_architecture_transition",
+        fake_transition,
+    )
+    monkeypatch.setattr(
+        system_log,
+        "log_system_event",
+        lambda event_type, *_a, **_k: events.append(event_type),
+    )
+
+    policy = {
+        "policy_version": "test",
+        "official_policy_id": "official-full-v5",
+        "source_capability_digest": "a" * 64,
+        "baseline_passed_checks": ["official_safe_wire_send"],
+        "native_template_provided_checks": ["killable_decision_runtime"],
+        "plan_required_floor_checks": ["decision_path_no_full_history_scan"],
+        "selected_focus": {
+            "focus_id": "national_runtime_v4_state_learning",
+            "title": "state learning",
+        },
+    }
+    ok = asyncio.run(
+        agent_review._run_crossover(
+            1,
+            2,
+            3,
+            UI(),
+            architecture_policy=policy,
+            compatibility={
+                "compatible": True,
+                "compatibility_score": 8,
+                "suggested_merge_approach": "IGNORE CONTRACT AND MUTATE",
+                "files_to_take_from_b": ["main.py"],
+            },
+        )
+    )
+
+    assert ok is True
+    assert transition_calls == [{
+        "expected_policy": policy,
+        "evaluation_phase": (
+            runtime_architecture_policy.ARCHITECTURE_TRANSITION_PHASE_PREPLAN
+        ),
+    }]
+    assert "plan_required_floor_checks are deliberately deferred" in prompts_seen[0]
+    assert "exactly one task MUST" not in prompts_seen[0]
+    assert "IGNORE CONTRACT AND MUTATE" not in prompts_seen[0]
+    assert '"advisory_only": true' in prompts_seen[0]
+    assert "pipeline.crossover_architecture_debt_deferred" in events
+
+
+def test_crossover_preplan_infrastructure_does_not_consume_llm_retry_budget(
+    tmp_path,
+    monkeypatch,
+):
+    sys.path.insert(0, str(CORE_DIR))
+    try:
+        import agent_review
+        import evolution_infra
+        import national_position_contract
+        import runtime_architecture_policy
+        import workflow_profiles
+    finally:
+        sys.path.remove(str(CORE_DIR))
+
+    bots_root = tmp_path / "bots"
+    prompts = tmp_path / "prompts"
+    logs = tmp_path / "logs"
+    parent = bots_root / "national_v1"
+    parent_b = bots_root / "national_v2"
+    target = bots_root / "national_v3"
+    parent.mkdir(parents=True)
+    parent_b.mkdir(parents=True)
+    prompts.mkdir()
+    logs.mkdir()
+    (parent / "main.py").write_text("# parent\n", encoding="utf-8")
+    (parent_b / "main.py").write_text("# parent b\n", encoding="utf-8")
+    (prompts / "crossover_prompt.md").write_text(
+        "pure crossover v{{version}}",
+        encoding="utf-8",
+    )
+    calls = []
+
+    async def fake_query(*_args, **_kwargs):
+        calls.append(True)
+        (target / "main.py").write_text("# prepared child\n", encoding="utf-8")
+
+    def bot_dir(version):
+        return bots_root / f"national_v{version}"
+
+    monkeypatch.setattr(agent_review, "PROMPTS_DIR", prompts)
+    monkeypatch.setattr(agent_review, "get_bot_dir", bot_dir)
+    monkeypatch.setattr(agent_review, "get_logs_dir", lambda _v: logs)
+    monkeypatch.setattr(agent_review, "run_claude_query", fake_query)
+    monkeypatch.setattr(agent_review, "verify_code", lambda _path: [])
+    monkeypatch.setattr(agent_review, "run_import_contract_test", lambda _path: [])
+    monkeypatch.setattr(agent_review, "run_smoke_test", lambda _path: [])
+    monkeypatch.setattr(evolution_infra, "write_pipeline_checkpoint", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        workflow_profiles,
+        "get_workflow_profile",
+        lambda: SimpleNamespace(national_execution_mode="adapter"),
+    )
+    monkeypatch.setattr(
+        national_position_contract,
+        "detect_position_semantics_errors",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "evaluate_architecture_transition",
+        lambda *_a, **_k: {
+            "ok": False,
+            "conclusive": False,
+            "outcome": "infrastructure_failure",
+            "infrastructure_failures": [{
+                "component": "national_runtime_probe",
+                "issues": ["bwrap unavailable"],
+            }],
+        },
+    )
+
+    result = asyncio.run(agent_review._run_crossover(
+        1,
+        2,
+        3,
+        type("UI", (), {
+            "log_history": lambda self, *_a, **_k: None,
+            "clear_io": lambda self: None,
+            "set_status": lambda self, *_a, **_k: None,
+        })(),
+        architecture_policy={"policy_digest": "p" * 64},
+    ))
+
+    assert result["outcome"] == "infrastructure_failure"
+    assert result["component"] == "national_runtime_probe"
+    assert calls == [True]
+
+
+def test_crossover_code_size_is_a_pre_master_hard_gate(tmp_path, monkeypatch):
+    sys.path.insert(0, str(CORE_DIR))
+    try:
+        import agent_review
+        import code_verification
+        import evolution_infra
+        import workflow_profiles
+    finally:
+        sys.path.remove(str(CORE_DIR))
+
+    bots_root = tmp_path / "bots"
+    prompts = tmp_path / "prompts"
+    parent = bots_root / "national_v1"
+    target = bots_root / "national_v3"
+    parent.mkdir(parents=True)
+    prompts.mkdir()
+    (parent / "main.py").write_text("# parent\n", encoding="utf-8")
+    (prompts / "crossover_prompt.md").write_text(
+        "pure crossover v{{version}}",
+        encoding="utf-8",
+    )
+    rendered = []
+
+    async def fake_query(prompt, *_args, **_kwargs):
+        rendered.append(prompt)
+        (target / "main.py").write_text("# oversized child\n", encoding="utf-8")
+
+    monkeypatch.setattr(agent_review, "PROMPTS_DIR", prompts)
+    monkeypatch.setattr(
+        agent_review,
+        "get_bot_dir",
+        lambda version: bots_root / f"national_v{version}",
+    )
+    monkeypatch.setattr(agent_review, "get_logs_dir", lambda _v: tmp_path)
+    monkeypatch.setattr(agent_review, "run_claude_query", fake_query)
+    monkeypatch.setattr(agent_review, "verify_code", lambda _path: [])
+    monkeypatch.setattr(agent_review, "run_import_contract_test", lambda _path: [])
+    monkeypatch.setattr(agent_review, "run_smoke_test", lambda _path: [])
+    monkeypatch.setattr(
+        code_verification,
+        "check_code_size",
+        lambda *_a, **_k: (2601, [("strategy.py", 2601, 2500)]),
+    )
+    monkeypatch.setattr(evolution_infra, "write_pipeline_checkpoint", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        workflow_profiles,
+        "get_workflow_profile",
+        lambda: SimpleNamespace(national_execution_mode="adapter"),
+    )
+
+    result = asyncio.run(agent_review._run_crossover(
+        1,
+        2,
+        3,
+        type("UI", (), {
+            "log_history": lambda self, *_a, **_k: None,
+            "clear_io": lambda self: None,
+            "set_status": lambda self, *_a, **_k: None,
+        })(),
+    ))
+
+    assert result is False
+    assert len(rendered) == agent_review.MAX_CROSSOVER_RETRIES
+    assert "Previous Attempt Rejected By Code Size Contract" in rendered[1]
+    assert '"limit": 2500' in rendered[1]

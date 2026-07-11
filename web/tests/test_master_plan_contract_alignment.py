@@ -369,6 +369,7 @@ def test_execute_workers_rejects_caller_rewritten_initial_task_before_llm(
     tmp_path,
     monkeypatch,
 ):
+    from prepared_baseline_contract import build_prepared_artifact_contract
     import tool_planning
 
     source = tmp_path / "national_v10"
@@ -387,6 +388,13 @@ def test_execute_workers_rejects_caller_rewritten_initial_task_before_llm(
         "source_v": 10,
         "stage": "master_planned",
         "master_plan": {"tasks": [deepcopy(authoritative_task)]},
+        "audit_context": {
+            "prepared_artifact_contract": build_prepared_artifact_contract(
+                candidate,
+                source_v=10,
+                next_v=11,
+            ),
+        },
     }
     executed = []
 
@@ -432,6 +440,81 @@ def test_execute_workers_rejects_caller_rewritten_initial_task_before_llm(
     }))
     feedback_payload = json.loads(feedback_result["content"][0]["text"])
     assert feedback_payload["error"] == "WORKER_INITIAL_FEEDBACK_FORBIDDEN"
+    assert executed == []
+
+
+def test_must_change_cannot_expand_worker_or_repair_write_authority(
+    tmp_path,
+    monkeypatch,
+):
+    from prepared_baseline_contract import build_prepared_artifact_contract
+    import tool_planning
+
+    source = tmp_path / "national_v20"
+    candidate = tmp_path / "national_v21"
+    source.mkdir()
+    candidate.mkdir()
+    task = {
+        "worker_id": 1,
+        "role": "Algorithmic Logic Architect",
+        "target_files": ["strategy.py"],
+        "files_allowed": ["strategy.py"],
+        "must_change_files": ["opponent.py"],
+        "skill_layer": "spr",
+        "worker_prompt": "Change only strategy.py, while claiming opponent.py is required.",
+    }
+    checkpoint = {
+        "next_v": 21,
+        "source_v": 20,
+        "stage": "master_planned",
+        "master_plan": {"tasks": [deepcopy(task)]},
+        "audit_context": {
+            "prepared_artifact_contract": build_prepared_artifact_contract(
+                candidate,
+                source_v=20,
+                next_v=21,
+            ),
+        },
+    }
+    executed = []
+
+    async def no_exhausted_failure(*_args, **_kwargs):
+        return None
+
+    async def must_not_execute(*_args, **_kwargs):
+        executed.append(True)
+        raise AssertionError("invalid completion scope reached worker LLM")
+
+    monkeypatch.setattr(
+        tool_planning,
+        "get_bot_dir",
+        lambda version: source if int(version) == 20 else candidate,
+    )
+    monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(
+        tool_planning,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhausted_failure,
+    )
+    monkeypatch.setattr(tool_planning, "_execute_workers", must_not_execute)
+    monkeypatch.setattr(tool_planning, "log_system_event", lambda *_args, **_kwargs: None)
+
+    assert tool_planning._plan_repair_scope_files(
+        checkpoint["master_plan"],
+        21,
+    ) == {"strategy.py"}
+    result = asyncio.run(tool_planning.execute_workers.handler({
+        "tasks": [deepcopy(task)],
+        "next_v": 21,
+        "source_v": 20,
+    }))
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["error"] == "WORKER_TASK_AUTHORITY_INVALID"
+    assert any(
+        "must_change_outside_writable_scope:['opponent.py']" in error
+        for error in payload["validation_errors"]
+    )
     assert executed == []
 
 
