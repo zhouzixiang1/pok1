@@ -930,6 +930,23 @@ only `provisional_best_configuration`, set `selection_eligible=false`, and left
 `selected_configuration=null`; it is orchestration evidence, not an encoder
 result.
 
+`calibrate_opponent_multitask_v3_ensemble.py` consumes that selection without
+retraining or calibrating every architecture. Formal mode accepts only a
+complete scaling summary, the full selected configuration's at-least-three
+distinct seed checkpoints, identical non-seed training contracts, unchanged
+artifact hashes, and a complete role dataset. It freezes those members into an
+ensemble checkpoint manifest and uses that manifest's SHA-256 for one new
+run-bound train/early-stop/model-calibration authorization. The calibrated
+value lower bound is the mean member q20 minus a configurable multiple of the
+standard deviation of member mean values; response logits are averaged before
+legal-mask temperature calibration. The artifact records every member hash,
+aggregation rule, disagreement diagnostic, clip policy, and retains false
+deployment/strength claims. A provisional one-member pass-9 smoke completed
+the full artifact chain, exposed exactly the three model-development roles,
+and produced zero ensemble disagreement as expected. The same summary was
+rejected without the explicit incomplete-smoke flag, so it cannot enter formal
+calibration accidentally.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
