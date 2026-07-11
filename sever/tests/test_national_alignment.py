@@ -347,6 +347,21 @@ def test_bot_adapter_telemetry_counts_clamped_raise():
     assert adapter.telemetry["would_be_illegal_raise"] == 1
 
 
+def test_bot_adapter_accepts_official_two_x_reraise_boundary():
+    adapter = BotAdapter("127.0.0.1", 10001, "unused", "Bot")
+    adapter._stage = "flop"
+    adapter._my_stage_bet = 0
+    adapter._my_chips = 20000
+    adapter._history = [
+        {"round": 1, "player_id": 1, "action": 200, "action_type": "raise"}
+    ]
+
+    assert adapter._convert_action(399) == ("raise 400", "raise", 400)
+    assert adapter.telemetry["clamped_raises"] == 1
+    assert adapter._convert_action(400) == ("raise 400", "raise", 400)
+    assert adapter.telemetry["clamped_raises"] == 1
+
+
 def test_national_acceptance_matrix_skips_incomplete_default_national_bots(tmp_path, monkeypatch):
     matrix = _load_module_from_path(
         "national_acceptance_matrix_default_test",
@@ -486,8 +501,8 @@ def test_match_manager_auto_starts_after_second_client_connects():
         try:
             assert manager._match_task is not None
             assert not manager._match_task.done()
-            assert writers[0].writes == [b"name\n"]
-            assert writers[1].writes == [b"name\n"]
+            assert writers[0].writes == [b"name"]
+            assert writers[1].writes == [b"name"]
         finally:
             manager._match_task.cancel()
             try:

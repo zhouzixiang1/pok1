@@ -143,7 +143,7 @@ class BotAdapter:
         self.bot = BotProcess(bot_path)
         self.reader = None
         self.writer = None
-        self._buf = ""
+        self._buf = b""
 
         # 游戏状态追踪（每次新手牌重置）
         self._my_cards = []       # judge.py 整数
@@ -203,17 +203,40 @@ class BotAdapter:
                     pass
 
     async def _recv_line(self):
-        while "\n" not in self._buf:
-            data = await self.reader.read(4096)
-            if not data:
-                return None
-            self._buf += data.decode("utf-8")
-        line, self._buf = self._buf.split("\n", 1)
-        return line.strip()
+        if b"\n" in self._buf:
+            line, self._buf = self._buf.split(b"\n", 1)
+            return line.decode("utf-8", errors="replace").rstrip("\r")
+        if self._buf:
+            data = self._buf
+            self._buf = b""
+            return data.decode("utf-8", errors="replace").rstrip("\r\n")
+
+        data = await self.reader.read(4096)
+        if not data:
+            return None
+
+        chunks = [data]
+        if b"\n" not in data:
+            while True:
+                try:
+                    more = await asyncio.wait_for(self.reader.read(4096), timeout=0.02)
+                except asyncio.TimeoutError:
+                    break
+                if not more:
+                    break
+                chunks.append(more)
+                if b"\n" in more:
+                    break
+
+        payload = b"".join(chunks)
+        if b"\n" in payload:
+            line, self._buf = payload.split(b"\n", 1)
+            return line.decode("utf-8", errors="replace").rstrip("\r")
+        return payload.decode("utf-8", errors="replace").rstrip("\r\n")
 
     async def _send_line(self, msg):
         logger.info(f">> {msg}")
-        self.writer.write((msg + "\n").encode("utf-8"))
+        self.writer.write(msg.encode("utf-8"))
         await self.writer.drain()
 
     async def _handle(self, msg):
@@ -582,7 +605,7 @@ class BotAdapter:
         Rules:
         - Preflop first raise: >= 200
         - Postflop first raise: >= 100
-        - Re-raise: > 2 * last_raise_to (strictly greater)
+        - Re-raise: >= 2 * last_raise_to
         - If raise needs all chips, should use allin instead (server rule 11)
         """
         MIN_RAISE_PREFLOP = 200
@@ -602,8 +625,8 @@ class BotAdapter:
 
         # Determine minimum legal raise-to
         if last_raise_to is not None:
-            # Re-raise: must be > 2 * last_raise_to
-            min_raise = last_raise_to * 2 + 1
+            # Re-raise: official platform accepts exactly 2 * last_raise_to.
+            min_raise = last_raise_to * 2
         elif self._stage == "preflop":
             min_raise = MIN_RAISE_PREFLOP
         else:

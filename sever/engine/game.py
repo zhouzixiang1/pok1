@@ -330,7 +330,6 @@ class GameEngine:
                 bets[current_idx] += actual
                 pot += actual
                 actions.append(("call", None))
-                await self.send(waiting_idx, "call")
                 if self.recorder:
                     self.recorder.on_action(current_idx, "call")
                 await self._emit("action", {
@@ -354,13 +353,13 @@ class GameEngine:
                 if action_counts[waiting_idx] > 0:
                     break
                 # preflop SB call 后 BB 还需行动
+                await self.send(waiting_idx, "call")
                 current_idx, waiting_idx = waiting_idx, current_idx
                 continue
 
             # ── Check ──
             if action_type == "check":
                 actions.append(("check", None))
-                await self.send(waiting_idx, "check")
                 if self.recorder:
                     self.recorder.on_action(current_idx, "check")
                 await self._emit("action", {
@@ -374,6 +373,7 @@ class GameEngine:
                     if len(actions) >= 2 and actions[-2][0] == "call":
                         break
 
+                await self.send(waiting_idx, "check")
                 current_idx, waiting_idx = waiting_idx, current_idx
                 continue
 

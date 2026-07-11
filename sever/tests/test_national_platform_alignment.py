@@ -13,6 +13,7 @@ from engine.thp_recorder import THPRecorder
 from engine.validator import validate_action
 from server.protocol import parse_action
 from server.tcp_server import MatchManager
+from server.tcp_server import ClientConnection
 
 
 def _state(**overrides):
@@ -60,6 +61,30 @@ def test_postflop_first_raise_after_check_has_minimum_and_positive_amount():
     assert validate_action("raise", 100, checked) == (True, "")
 
 
+def test_consecutive_raise_boundary_matches_official_platform():
+    after_raise_200 = _state(
+        actions=[("raise", 200)],
+        player_bet=0,
+        opponent_bet=200,
+    )
+
+    assert validate_action("raise", 399, after_raise_200)[0] is False
+    assert validate_action("raise", 400, after_raise_200) == (True, "")
+
+    preflop_bb_after_sb_raise = _state(
+        stage="preflop",
+        actions=[("raise", 200)],
+        player_bet=100,
+        opponent_bet=200,
+        is_small_blind=False,
+        is_big_blind=True,
+        player_action_count=0,
+    )
+
+    assert validate_action("raise", 399, preflop_bb_after_sb_raise)[0] is False
+    assert validate_action("raise", 400, preflop_bb_after_sb_raise) == (True, "")
+
+
 def test_thp_hand_line_uses_big_blind_order_for_cards_earnings_and_players():
     recorder = THPRecorder(team_a_name="A", team_b_name="B")
     recorder.on_hand_start(hand_num=1, sb_idx=0, bb_idx=1)
@@ -99,6 +124,44 @@ def test_game_engine_deck_factory_makes_in_process_eval_reproducible():
     assert asyncio.run(run_once()) == asyncio.run(run_once())
 
 
+def test_game_engine_does_not_forward_street_closing_actions():
+    async def run_once():
+        sent = []
+        actions = {
+            0: ["call", "call", "call", "call"],
+            1: ["check", "check", "check", "check"],
+        }
+
+        async def send(player_idx, msg):
+            sent.append((player_idx, msg))
+
+        engine = GameEngine(
+            send_func=send,
+            deck_factory=lambda hand_num: Deck(seed=4321 + hand_num),
+        )
+        engine.players[0].name = "A"
+        engine.players[1].name = "B"
+
+        async def recv_action(player_idx):
+            return actions[player_idx].pop(0)
+
+        engine._recv_action = recv_action
+        await engine._run_hand(1)
+        return sent
+
+    sent = asyncio.run(run_once())
+    p0_messages = [msg for idx, msg in sent if idx == 0]
+    p1_messages = [msg for idx, msg in sent if idx == 1]
+
+    p0_preflop = next(i for i, msg in enumerate(p0_messages) if msg.startswith("preflop|"))
+    p0_flop = next(i for i, msg in enumerate(p0_messages) if msg.startswith("flop|"))
+    assert "check" not in p0_messages[p0_preflop + 1:p0_flop]
+
+    for stage in ("turn|", "river|"):
+        stage_idx = next(i for i, msg in enumerate(p1_messages) if msg.startswith(stage))
+        assert p1_messages[stage_idx - 1] != "call"
+
+
 def test_allin_runout_records_public_cards_in_thp():
     async def run():
         sent = []
@@ -133,6 +196,7 @@ def test_allin_runout_records_public_cards_in_thp():
     assert len(rec.flop_cards) == 3
     assert rec.turn_card is not None
     assert rec.river_card is not None
+    assert "call" not in [msg for idx, msg in sent if idx == 0]
 
 
 def test_match_manager_auto_starts_after_second_client_connects():
@@ -169,13 +233,48 @@ def test_match_manager_auto_starts_after_second_client_connects():
         try:
             assert manager._match_task is not None
             assert not manager._match_task.done()
-            assert writers[0].writes == [b"name\n"]
-            assert writers[1].writes == [b"name\n"]
+            assert writers[0].writes == [b"name"]
+            assert writers[1].writes == [b"name"]
         finally:
             manager._match_task.cancel()
             try:
                 await manager._match_task
             except asyncio.CancelledError:
                 pass
+
+    asyncio.run(run())
+
+
+def test_client_connection_uses_official_raw_tcp_messages():
+    class FakeWriter:
+        def __init__(self):
+            self.writes = []
+            self.closed = False
+
+        def write(self, data):
+            self.writes.append(data)
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+        async def wait_closed(self):
+            pass
+
+    async def run():
+        reader = asyncio.StreamReader()
+        writer = FakeWriter()
+        conn = ClientConnection(reader, writer)
+
+        assert await conn.send_line("name")
+        assert writer.writes == [b"name"]
+
+        reader.feed_data(b"call")
+        assert await conn.recv_line(timeout=0.1) == "call"
+
+        reader.feed_data(b"raise 200\r\n")
+        assert await conn.recv_line(timeout=0.1) == "raise 200"
 
     asyncio.run(run())

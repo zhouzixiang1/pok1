@@ -3,7 +3,7 @@
 严格遵循国赛协议：
   - 平台为服务器端，引擎为客户端
   - 端口 10001
-  - 行分隔文本协议
+  - 官方平台发送裸 TCP 字符串，不追加换行
   - 60 秒超时 → fold
 """
 from __future__ import annotations
@@ -23,15 +23,19 @@ class ClientConnection:
         self.reader = reader
         self.writer = writer
         self.name = ""
-        self._buffer = ""
+        self._buffer = b""
         self._closed = False
 
     async def send_line(self, msg: str) -> bool:
-        """发送一行消息，返回是否成功。"""
+        """发送一条官方协议消息，返回是否成功。
+
+        方法名保留为 send_line 以减少调用点改动；实际发送格式与
+        官方 Windows 平台一致，不追加换行符。
+        """
         if self._closed:
             return False
         try:
-            self.writer.write((msg + "\n").encode("utf-8"))
+            self.writer.write(msg.encode("utf-8"))
             await self.writer.drain()
             return True
         except (ConnectionResetError, BrokenPipeError, OSError):
@@ -39,26 +43,46 @@ class ClientConnection:
             return False
 
     async def recv_line(self, timeout: float = TIMEOUT_SECONDS) -> str | None:
-        """接收一行消息，超时返回 None。"""
+        """接收一条客户端消息，超时返回 None。
+
+        官方客户端动作是裸字符串。这里同时兼容历史测试客户端发送的
+        CR/LF 结尾消息；无换行时读取当前可用字节并去掉尾部 CR/LF。
+        """
         if self._closed:
             return None
         try:
-            # 检查缓冲区
-            if "\n" in self._buffer:
-                line, self._buffer = self._buffer.split("\n", 1)
-                return line.rstrip("\r")
+            if b"\n" in self._buffer:
+                line, self._buffer = self._buffer.split(b"\n", 1)
+                return line.decode("utf-8", errors="replace").rstrip("\r")
+            if self._buffer:
+                data = self._buffer
+                self._buffer = b""
+                return data.decode("utf-8", errors="replace").rstrip("\r\n")
 
-            # 等待数据
-            async with asyncio.timeout(timeout):
-                while "\n" not in self._buffer:
-                    data = await self.reader.read(4096)
-                    if not data:
+            data = await asyncio.wait_for(self.reader.read(4096), timeout=timeout)
+            if not data:
+                self._closed = True
+                return None
+
+            chunks = [data]
+            if b"\n" not in data:
+                while True:
+                    try:
+                        more = await asyncio.wait_for(self.reader.read(4096), timeout=0.02)
+                    except asyncio.TimeoutError:
+                        break
+                    if not more:
                         self._closed = True
-                        return None
-                    self._buffer += data.decode("utf-8")
+                        break
+                    chunks.append(more)
+                    if b"\n" in more:
+                        break
 
-            line, self._buffer = self._buffer.split("\n", 1)
-            return line.rstrip("\r")
+            payload = b"".join(chunks)
+            if b"\n" in payload:
+                line, self._buffer = payload.split(b"\n", 1)
+                return line.decode("utf-8", errors="replace").rstrip("\r")
+            return payload.decode("utf-8", errors="replace").rstrip("\r\n")
         except (asyncio.TimeoutError, ConnectionResetError, OSError):
             return None
 
@@ -88,7 +112,7 @@ class MatchManager:
 
         if len(self.clients) >= 2:
             # 已有 2 个连接，拒绝
-            writer.write(b"error: match full\n")
+            writer.write(b"error: match full")
             await writer.drain()
             writer.close()
             return

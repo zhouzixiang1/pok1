@@ -1,11 +1,15 @@
 """智能测试客户端：能正确处理完整的德州扑克对弈流程。
 
+官方 Windows 平台使用裸 TCP 字符串，不以换行分隔消息；本客户端
+按官方格式收发，同时兼容旧服务端偶尔返回的 CR/LF。
+
 用法: python test_client.py <服务器IP> <端口> <玩家名称>
 示例: python test_client.py 127.0.0.1 10001 BotA
 """
 import socket
 import sys
 import re
+import time
 
 
 SUIT_NAMES = {0: "S", 1: "H", 2: "D", 3: "C"}
@@ -31,7 +35,7 @@ def run_client(host, port, name):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((host, port))
     sock.settimeout(120)
-    buf = ""
+    sock.settimeout(0.2)
 
     print(f"Connected to {host}:{port} as '{name}'", flush=True)
 
@@ -41,20 +45,48 @@ def run_client(host, port, name):
     in_allin_runout = False
 
     def recv():
-        nonlocal buf
-        while "\n" not in buf:
-            data = sock.recv(4096)
+        chunks = []
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            try:
+                data = sock.recv(4096)
+            except socket.timeout:
+                if chunks:
+                    break
+                continue
             if not data:
                 return None
-            buf += data.decode("utf-8")
-        line, buf = buf.split("\n", 1)
-        return line.strip()
+            chunks.append(data)
+            if b"\n" in data:
+                break
+            # Official messages are one short send. Drain any immediately
+            # available bytes, then treat the chunk as one protocol message.
+            sock.settimeout(0.02)
+            try:
+                while True:
+                    extra = sock.recv(4096)
+                    if not extra:
+                        break
+                    chunks.append(extra)
+                    if b"\n" in extra:
+                        break
+            except socket.timeout:
+                pass
+            finally:
+                sock.settimeout(0.2)
+            break
+        if not chunks:
+            return None
+        payload = b"".join(chunks)
+        if b"\n" in payload:
+            payload = payload.split(b"\n", 1)[0]
+        return payload.decode("utf-8", errors="replace").rstrip("\r\n")
 
     def send(msg):
         nonlocal my_action_count
         my_action_count += 1
         print(f"  >> {msg}", flush=True)
-        sock.sendall((msg + "\n").encode("utf-8"))
+        sock.sendall(msg.encode("utf-8"))
 
     while True:
         msg = recv()
