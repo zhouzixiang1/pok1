@@ -882,6 +882,35 @@ trained checkpoint, stdlib export, active TCP policy, or strength claim yet;
 these results establish only the model/data interface needed for the future
 independent-corpus scaling run.
 
+`train_opponent_multitask_v3.py` now closes the model-development portion of
+that interface without reading policy-selection or policy-gate data. It cycles
+value and response batches to balance the tasks, combines clipped Smooth L1
+means with q05/q10/q20/q50 pinball losses and match-direction losses, masks
+illegal response logits, applies opponent-balanced row weights, and restores
+the best opponent-disjoint early-stop checkpoint. The checkpoint is written and
+hashed before a run-bound authorization can open model calibration. Its payload
+binds the role manifest, train/early-stop artifacts, collection boundary, model
+metadata, training configuration, and SHA-256 values for all seven code modules
+needed to reproduce it. A strict loader reconstructs the architecture and
+rejects metadata or state drift. Incomplete collections are rejected unless the
+caller explicitly enables `--allow-incomplete-smoke`.
+
+The first real CUDA smoke exposed and fixed a second extreme-value path: the
+trainer clipped targets for gradient updates but initially used raw near-20,000
+chip labels for early-stop MAE and lower-value calibration. That produced a
+tail offset near -16,938 and reintroduced all-in domination after training. The
+early-stop estimand and calibration residual now use the same declared symmetric
+clip, while raw MAE is retained only as a diagnostic. A pass-9 small Deep Sets
+run with seed 101 completed train, early stop, checkpoint authorization, and
+calibration on the RTX 4060. Two independent three-epoch executions produced
+the byte-identical checkpoint SHA-256
+`9b0085f4948934da0fadc20607275f98782a42995d9cc1a01d814b374fea2316`
+and identical early-stop score 1.032205. Their exposure ledgers contain only
+train, early-stop, and model-calibration events. The report and artifact
+manifest explicitly retain `strength_evidence=false`,
+`deployment_policy_value=false`, and `source_collection_complete=false`; this
+is deterministic pipeline evidence, not model selection or Bot strength.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
