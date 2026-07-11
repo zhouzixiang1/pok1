@@ -1,0 +1,1 @@
+{"pass":1,"ratings_path":"/home/zzx/project/pok/.evolution_pok/web/core/results/glicko_ratings.json","min_hand":28,"hands":70,"workers":1,"probe_workers":4,"decision_sampling":"uniform","pool":[{"name":"national_v142","split":"val"},{"name":"national_v57","split":"held_out"},{"name":"national_v119","split":"train"}]}

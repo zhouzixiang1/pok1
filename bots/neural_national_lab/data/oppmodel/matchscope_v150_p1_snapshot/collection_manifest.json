@@ -1,0 +1,37 @@
+{
+  "passes_requested": 60,
+  "ratings_sha256_at_start": "ac31741f7175483445028fb11ea76b6e75e2dc9de37b22e5a5bf428d8272eaa6",
+  "resume_contract": {
+    "candidate": "/home/zzx/project/pok/.codex_worktrees/neural-v146-livepool/bots/neural_national_lab/versions/v140_national_v123_overlay_no_large_commit_veto_tcp",
+    "candidate_sha256": "a8dadfefca945832df00a4bc438551834361f5464a8463dda20d146d02aa045d",
+    "collector_sha256": "ef7f1ac3d8401fef7cf36ecf48ae7ab229cac2cf798a2292da722e88bf69153e",
+    "decision_sampling": "uniform",
+    "hand_windows": [
+      0.0,
+      0.2,
+      0.4,
+      0.6,
+      0.8
+    ],
+    "hands": 70,
+    "held_out_opponents": [
+      "national_v57",
+      "national_v66"
+    ],
+    "max_alternatives": 2,
+    "max_decisions": 8,
+    "opponents_per_pass": 6,
+    "probe_sha256": "a5ef35fa9fe524f65d9ca0afad8192ec3c8e2b025a13afaf401ec407e91455cd",
+    "probe_workers": 4,
+    "ratings_path": "/home/zzx/project/pok/.evolution_pok/web/core/results/glicko_ratings.json",
+    "schema_version": 2,
+    "strongest": 16,
+    "timeout_sec": 120,
+    "val_opponents": [
+      "national_v142",
+      "national_v98"
+    ],
+    "workers": 1
+  },
+  "start_pass": 1
+}

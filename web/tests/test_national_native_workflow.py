@@ -2100,6 +2100,32 @@ def test_native_tcp_pair_parses_decision_trace(monkeypatch, tmp_path):
     assert result["passed_compliance"] is True
 
 
+def test_native_tcp_pair_applies_per_bot_environment_overrides(monkeypatch, tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_trace_probe_native_bot(bot_a)
+    _write_trace_probe_native_bot(bot_b)
+    monkeypatch.setenv("POK_TRACE_DECISIONS", "1")
+
+    result = asyncio.run(run_native_tcp_pair(
+        bot_a,
+        bot_b,
+        hands=2,
+        require_native_a=True,
+        require_native_b=True,
+        deck_seed_base=1234,
+        timeout_sec=30,
+        bot_a_env_overrides={"POK_TRACE_DECISIONS": "1"},
+        bot_b_env_overrides={"POK_TRACE_DECISIONS": None},
+        capture_events=True,
+    ))
+
+    assert result["per_player"]["BotA"]["native"]["decision_trace"]
+    assert result["per_player"]["BotB"]["native"]["decision_trace"] == []
+    assert any(event.get("type") == "action" for event in result["events"])
+    assert result["passed_compliance"] is True
+
+
 def test_native_bot_log_parser_summarizes_decision_runtime():
     report = national_native._parse_native_bot_log(
         "[10:00:00] DECIDE start name=BotA hand=1 stage=preflop act_cnt=0\n"
