@@ -249,6 +249,7 @@ def test_master_plan_rejects_two_generation_state_learning_primaries():
             "docs/official-terminal-settlement-oracle-2026-07-11.md",
         ],
     }
+    second["runtime_contract"]["reference_pack_id"] = ""
     second["checks_required"] = ["semantic_line_reachability"]
     second["worker_prompt"] += (
         " Consume hand_runtime can_delayed_probe with a positive/control sanitized "

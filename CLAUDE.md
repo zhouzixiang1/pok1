@@ -339,6 +339,13 @@ formal only after the official full policy completes five self-play and three
 eligible-opponent rounds of 70 hands and publishes a valid signed,
 content-bound certificate with its commit/tag.
 
+The ordinary formal path accepts only published full-v5 certified opponents.
+`scripts/official_certify.py bootstrap-full` is a separate, explicitly
+acknowledged one-time recovery path: it can use only the repository-pinned
+signed-ledger root, binds its receipt into the durable job/certificate, and a
+successful full run consumes that root in the signed verdict ledger. It is
+never an automatic active-pool or grandfather fallback.
+
 Strength is evaluated separately. One sample is one complete 70-hand local
 native TCP match. Positive final net chips is a win, negative is a loss, and
 zero is a draw. Outcome-derived Glicko/H2H/`selection_score` is primary;
@@ -497,7 +504,7 @@ It is sorted by current line count and excludes `__init__.py`,
 | File | Lines | Role |
 |---|---|---|
 | `tool_planning.py` | 7727 | Pipeline tools: direction audit, master planning, workers, literature, repair synthesis |
-| `official_certification.py` | 3782 | Official EXE policy, identity, evidence validation, signed certificates |
+| `official_certification.py` | 3944 | Official EXE policy, identity, evidence validation, signed certificates and explicit one-time bootstrap binding |
 | `tool_gates.py` | 3146 | Pipeline tools: quality gates, code prep, review, advisory critic execution |
 | `orchestrator.py` | 3082 | LLM-driven Orchestrator: pipeline loop and recovery routing |
 | `national_native.py` | 2996 | Native national TCP execution backend for evolved bots |
@@ -514,7 +521,7 @@ It is sorted by current line count and excludes `__init__.py`,
 | `decision_tester.py` | 1318 | Decision scenarios and dynamic regression generation |
 | `battle_experience.py` | 1308 | Incremental match analysis via background LLM thread |
 | `official_llm_analysis.py` | 1073 | Advisory-only EXE evidence explanation and repair guidance |
-| `official_certification_job.py` | 1012 | Durable process-owned official EXE job state machine |
+| `official_certification_job.py` | 1036 | Durable process-owned official EXE job state machine |
 | `code_verification.py` | 1005 | Compile, size, smoke, decisions, reachability and runtime evidence |
 | `tool_helpers.py` | 991 | Shared MCP tool helpers, strength snapshots, gates and repair contracts |
 | `orchestrator_context.py` | 933 | Orchestrator context building and PreCompact hook |
@@ -531,7 +538,8 @@ It is sorted by current line count and excludes `__init__.py`,
 | `bot_action_stats.py` | 666 | Bot action statistics extraction from replay files |
 | `candidate_store.py` | 654 | Candidate ledger plus SQLite query store |
 | `replay_analysis.py` | 639 | Replay statistics and behavior fingerprints |
-| `evaluation_contract.py` | 609 | Active exact-file evaluation contract and HEAD drift policy |
+| `official_bootstrap.py` | 642 | Fail-closed pinned v5 signed-ledger bootstrap root selector and receipt validator |
+| `evaluation_contract.py` | 618 | Active exact-file evaluation contract and HEAD drift policy |
 | `evidence_snapshot.py` | 604 | Immutable per-generation evidence snapshots |
 | `engine/judge.py` | 592 | Poker hand judge: suits, hand types, game engine rules |
 | `national_acceptance.py` | 566 | In-process national-platform acceptance runner (gate API) |
@@ -554,9 +562,10 @@ It is sorted by current line count and excludes `__init__.py`,
 | `qd_async_eval.py` | 436 | Async QD background fitness evaluation |
 | `tool_bot_management.py` | 431 | Reaping, cleanup, abandonment and experience management |
 | `official_evidence_archive.py` | 428 | Immutable official evidence archive |
-| `evolution_scope.py` | 427 | Runtime change classification and protected scopes |
+| `evolution_scope.py` | 434 | Runtime change classification and protected scopes |
 | `national_arena/sandbox.py` | 408 | Read-only managed-bot Arena sandbox |
 | `spot_analyzer.py` | 396 | Diff analyzer identifying changed .py files/functions in bot dirs |
+| `official_verdict_ledger.py` | 359 | Signed append-only official verdict ledger, including successful bootstrap consumption |
 | `psro_meta_solver.py` | 350 | PSRO meta-solver (fictitious play / uniform) over H2H payoffs |
 | `orchestrator_session.py` | 345 | Orchestrator session persistence and startup recovery |
 | `research_governance.py` | 342 | Ratchet-style governance for web-retrieved strategy candidates |
@@ -566,7 +575,6 @@ It is sorted by current line count and excludes `__init__.py`,
 | `precommit_eval_contract.py` | 314 | Frozen evaluator/opponent/deck/seed precommit contract |
 | `web_ui.py` | 314 | `EventBroadcaster` (ring buffer 500) + `WebUI` (terminal + SSE) |
 | `pipeline_infrastructure.py` | 303 | Identity-bound infrastructure retry overlay |
-| `official_verdict_ledger.py` | 302 | Signed append-only official verdict ledger |
 | `fix_verification.py` | 301 | Structural/runtime verification of mandatory bot fixes |
 | `glicko2.py` | 294 | Glicko-2 rating implementation, `TAU=0.3` |
 | `official_eligibility.py` | 282 | Official certificate/grandfather pool eligibility |

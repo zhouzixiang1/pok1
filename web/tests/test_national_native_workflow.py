@@ -19,6 +19,7 @@ from national_native import (
     ensure_native_entry,
     _completed_active_bots,
     run_legacy_debug_tcp_pair_with_wrappers,
+    run_current_runtime_native_strength_pair,
     run_native_tcp_smoke,
     run_native_tcp_pair,
 )
@@ -1780,6 +1781,85 @@ def test_native_tcp_pair_runs_without_adapter(tmp_path):
     )
 
 
+def test_current_runtime_strength_overlay_is_bilateral_and_leaves_sources_immutable(tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    for bot_dir in (bot_a, bot_b):
+        _write_minimal_strategy_bot(bot_dir)
+        ensure_native_entry(bot_dir)
+        entry = bot_dir / "national_bot.py"
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                "NATIONAL_DECISION_RUNTIME_VERSION = 7",
+                "NATIONAL_DECISION_RUNTIME_VERSION = 1",
+            ),
+            encoding="utf-8",
+        )
+        (bot_dir / "precompute.py").unlink()
+
+    source_entries = {
+        path.name: (path / "national_bot.py").read_bytes()
+        for path in (bot_a, bot_b)
+    }
+    assert check_native_contract(bot_a) == []
+    assert check_native_contract(bot_b) == []
+    assert check_native_contract(bot_a, require_current_decision_runtime=True)
+
+    result = asyncio.run(run_current_runtime_native_strength_pair(
+        bot_a,
+        bot_b,
+        hands=2,
+        deck_seed_base=1234,
+        timeout_sec=30,
+    ))
+
+    overlay = result["runtime_overlay"]
+    assert result["hands_played"] == 2
+    assert result["passed_compliance"] is True
+    assert result["wrapper_used"] is False
+    assert overlay["enabled"] is True
+    assert overlay["both_sides"] is True
+    assert overlay["mode"] == "current_system_wrapper_bilateral"
+    assert overlay["native_template_digest"]
+    assert all(
+        row["precompute_source"] == "provisioned_system_facts"
+        and row["precompute_digest"]
+        for row in overlay["by_player"].values()
+    )
+    assert not (bot_a / "precompute.py").exists()
+    assert not (bot_b / "precompute.py").exists()
+    assert {
+        path.name: (path / "national_bot.py").read_bytes()
+        for path in (bot_a, bot_b)
+    } == source_entries
+
+
+def test_current_runtime_strength_overlay_preserves_strategy_precompute_artifact(tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    for bot_dir in (bot_a, bot_b):
+        _write_minimal_strategy_bot(bot_dir)
+        ensure_native_entry(bot_dir)
+        (bot_dir / "precompute.py").write_text(
+            "STRATEGY_TABLE = {1: 2}\n",
+            encoding="utf-8",
+        )
+
+    result = asyncio.run(run_current_runtime_native_strength_pair(
+        bot_a,
+        bot_b,
+        hands=1,
+        deck_seed_base=1234,
+        timeout_sec=30,
+    ))
+
+    assert result["passed_compliance"] is True
+    assert all(
+        row["precompute_source"] == "preserved_candidate_artifact"
+        for row in result["runtime_overlay"]["by_player"].values()
+    )
+
+
 def test_native_tcp_pair_owns_and_releases_shared_capacity(tmp_path, monkeypatch):
     bot_a = tmp_path / "BotA"
     bot_b = tmp_path / "BotB"
@@ -2766,6 +2846,11 @@ def test_native_acceptance_and_precommit_require_native_entries_for_both_players
             "net_chips_a_per_hand": 100.0 / hands,
             "passed_compliance": True,
             "wrapper_used": False,
+            "runtime_overlay": {
+                "enabled": True,
+                "both_sides": True,
+                "mode": "current_system_wrapper_bilateral",
+            },
             "issues": [],
             "per_player": {
                 label_a: {
@@ -2786,6 +2871,11 @@ def test_native_acceptance_and_precommit_require_native_entries_for_both_players
         }
 
     monkeypatch.setattr(national_native, "run_native_tcp_pair", fake_native_pair)
+    monkeypatch.setattr(
+        national_native,
+        "run_current_runtime_native_strength_pair",
+        fake_native_pair,
+    )
 
     acceptance = asyncio.run(national_native.run_native_acceptance_for_candidate(
         candidate,

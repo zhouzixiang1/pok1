@@ -22,6 +22,7 @@ from official_certification import (  # noqa: E402
     select_official_opponent,
     status_payload,
 )
+from official_bootstrap import select_signed_v5_ledger_bootstrap_root  # noqa: E402
 from official_certification_job import job_snapshot, reconcile_jobs, start_or_poll_job  # noqa: E402
 from official_certificate_signing import signing_environment_report  # noqa: E402
 from official_platform_harness import check_environment  # noqa: E402
@@ -77,6 +78,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             action="store_true",
             help="Poll the durable job until it reaches a terminal state.",
         )
+    bootstrap = sub.add_parser(
+        "bootstrap-full",
+        help=(
+            "Explicit one-time 5+3, 70-hand full certification using the "
+            "pinned signed-ledger bootstrap root."
+        ),
+    )
+    bootstrap.add_argument("candidate", help="New native national bot directory.")
+    bootstrap.add_argument(
+        "--root-id",
+        required=True,
+        help="Repository-pinned signed-ledger root id; no active-pool fallback is used.",
+    )
+    bootstrap.add_argument(
+        "--acknowledge-one-time-ledger-bootstrap",
+        action="store_true",
+        help="Required acknowledgement that one successful run permanently consumes this root.",
+    )
+    bootstrap.add_argument("--force", action="store_true", help="Retry a terminal durable job.")
+    bootstrap.add_argument(
+        "--wait-if-busy",
+        action="store_true",
+        help="Poll the durable job until it reaches a terminal state.",
+    )
     p = sub.add_parser("status", help="Read certification status for a bot.")
     p.add_argument("candidate", help="Candidate bot directory or script.")
     p = sub.add_parser("queue-status", help="Show pending official certification queue entries.")
@@ -155,7 +180,16 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0 if not payload.get("errors") else 1
 
-    if args.cmd == "full":
+    if args.cmd == "bootstrap-full" and not args.acknowledge_one_time_ledger_bootstrap:
+        print(json.dumps({
+            "status": "bootstrap-acknowledgement-required",
+            "reason": "acknowledge_one_time_ledger_bootstrap_required",
+            "candidate": args.candidate,
+            "root_id": args.root_id,
+        }, ensure_ascii=False, indent=2))
+        return 2
+
+    if args.cmd in {"full", "bootstrap-full"}:
         ledger = _ledger_report()
         if not ledger.get("valid"):
             print(json.dumps({
@@ -166,11 +200,17 @@ def main(argv: list[str] | None = None) -> int:
             }, ensure_ascii=False, indent=2))
             return 2
 
-    selection = select_official_opponent(
-        args.candidate,
-        preferred=args.opponent,
-        allow_bootstrap_grandfather=False,
-    )
+    if args.cmd == "bootstrap-full":
+        selection = select_signed_v5_ledger_bootstrap_root(
+            args.root_id,
+            candidate_path=args.candidate,
+        )
+    else:
+        selection = select_official_opponent(
+            args.candidate,
+            preferred=args.opponent,
+            allow_bootstrap_grandfather=False,
+        )
     if not selection.get("selected"):
         print(json.dumps({
             "status": "opponent-selection-blocked",
@@ -179,9 +219,10 @@ def main(argv: list[str] | None = None) -> int:
         }, ensure_ascii=False, indent=2))
         return 2
     spec = build_spec(
-        args.cmd,
+        "full" if args.cmd == "bootstrap-full" else args.cmd,
         args.candidate,
         opponent=selection["opponent"]["path"],
+        bootstrap_root_id=(args.root_id if args.cmd == "bootstrap-full" else None),
     )
     payload = start_or_poll_job(
         spec,

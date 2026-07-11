@@ -224,6 +224,9 @@ def test_native_rating_environment_cannot_shorten_70_hand_samples(monkeypatch):
     assert config["national_execution_mode"] == "native_tcp"
     assert config["protocol"] == "national"
     assert config["national_hands"] == 70
+    assert config["native_strength_runtime_overlay"]["mode"] == (
+        "current_system_wrapper_bilateral"
+    )
 
 
 def test_native_precommit_environment_cannot_shorten_70_hand_contract(monkeypatch):
@@ -265,9 +268,18 @@ def test_daemon_native_rating_requires_existing_native_entries_for_both_players(
             "passed_compliance": True,
             "issues": [],
             "wrapper_used": False,
+            "runtime_overlay": {
+                "enabled": True,
+                "both_sides": True,
+                "mode": "current_system_wrapper_bilateral",
+            },
         }
 
-    monkeypatch.setattr(national_native, "run_native_tcp_pair", fake_native_pair)
+    monkeypatch.setattr(
+        national_native,
+        "run_current_runtime_native_strength_pair",
+        fake_native_pair,
+    )
     monkeypatch.setattr(elo_daemon, "save_match_replay", lambda *_args: None)
 
     result = elo_daemon._run_national_rating_match(
@@ -427,7 +439,7 @@ def test_native_precommit_excludes_failed_and_incomplete_strength_rows(tmp_path,
     )
     monkeypatch.setattr(
         national_native,
-        "run_native_tcp_pair",
+        "run_current_runtime_native_strength_pair",
         lambda *_args, **_kwargs: _async_next(results),
     )
 
@@ -468,6 +480,11 @@ def _run_fake_native_precommit(tmp_path, monkeypatch, net_chips):
             "passed_compliance": True,
             "issues": [],
             "wrapper_used": False,
+            "runtime_overlay": {
+                "enabled": True,
+                "both_sides": True,
+                "mode": "current_system_wrapper_bilateral",
+            },
         }
 
     monkeypatch.setattr(
@@ -475,7 +492,11 @@ def _run_fake_native_precommit(tmp_path, monkeypatch, net_chips):
         "resolve_bot",
         lambda token: (Path(token).name, Path(token)),
     )
-    monkeypatch.setattr(national_native, "run_native_tcp_pair", fake_pair)
+    monkeypatch.setattr(
+        national_native,
+        "run_current_runtime_native_strength_pair",
+        fake_pair,
+    )
     return asyncio.run(national_native.run_native_precommit(
         candidate,
         [{"name": "Opponent", "path": str(opponent), "reason": "parent"}],
@@ -535,6 +556,11 @@ def test_tool_backend_excludes_telemetry_only_samples_from_totals_and_contract(
             "passed_compliance": True,
             "issues": [],
             "wrapper_used": False,
+            "runtime_overlay": {
+                "enabled": True,
+                "both_sides": True,
+                "mode": "current_system_wrapper_bilateral",
+            },
         }
 
     monkeypatch.setattr(
@@ -542,7 +568,11 @@ def test_tool_backend_excludes_telemetry_only_samples_from_totals_and_contract(
         "resolve_bot",
         lambda token: (Path(token).name, Path(token)),
     )
-    monkeypatch.setattr(national_native, "run_native_tcp_pair", fake_pair)
+    monkeypatch.setattr(
+        national_native,
+        "run_current_runtime_native_strength_pair",
+        fake_pair,
+    )
     native_result = asyncio.run(national_native.run_native_precommit(
         candidate,
         opponents,

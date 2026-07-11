@@ -3,13 +3,7 @@
   "policy_id": "national-native-transition-readiness-v2",
   "new_candidate_cutoff": 143,
   "sunset_version": 160,
-  "readiness_rules": {
-    "official_opponent": {
-      "minimum_certified_alternatives": 2,
-      "reason": "Keep the content-bound v142 anchor available until two other signed full certificates are usable."
-    }
-  },
-  "purpose": "Preserve the historical rating/source inventory while full content-bound EXE certification is rolled out. New candidates are never grandfathered.",
+  "purpose": "Preserve the historical rating/source inventory during the native transition. A signed full EXE certificate is required for every formal official opponent.",
   "grants": [
     {"bot": "national_v8", "artifact_hash": "788a61b35f6ce112c6b0e7cd641d8e40d381dc62d7536d460e3aff6a0bd36c56", "tag_object": "2b80265b78280ed0a767cce51251db1292a170f4", "completion_tree_oid": "bc90e5655bf322464c3c3e013e212013dbae1409", "roles": ["parent_source", "rating_pool"], "reason": "legacy active-pool transition"},
     {"bot": "national_v31", "artifact_hash": "65d880cd6f55b52f58a0307264edbcbc31d3f020d97b9b9b2d49b7753c46a91f", "tag_object": "e82a30e05e453658fc7184895265c99d869f0fe6", "completion_tree_oid": "5e5907d709c5392e273e5afd92a72db8acd63014", "roles": ["parent_source", "rating_pool"], "reason": "legacy active-pool transition"},
@@ -40,6 +34,6 @@
     {"bot": "national_v123", "artifact_hash": "57c942f88dc32159f5fd2d208ad28f266f5b2b0ade93c38b601fa10eafcac820", "tag_object": "6edc13195ec18ba0976f6cad302c4ed82e1560d5", "completion_tree_oid": "64ebec2a2c75635a95b8a3d9a3fad2a439e4c549", "roles": ["parent_source", "rating_pool"], "reason": "legacy active-pool transition"},
     {"bot": "national_v135", "artifact_hash": "c107986788bb6319dc4c727e48abb182be572f4f5116cd15689a9c2ae98dfe28", "tag_object": "4aaf3493e52740feb6cb96b551c889d7adde6f4e", "completion_tree_oid": "78f6bdd565c0cf3297fd0d74aa5c99f9b4844753", "roles": ["parent_source", "rating_pool"], "reason": "legacy active-pool transition"},
     {"bot": "national_v141", "artifact_hash": "67cd6059e17afdb333137a37a051764ccef405d03072addb92ebaa5a39631796", "tag_object": "b5105699c24cdbce8afc8e137b4a55f074b8b5e5", "completion_tree_oid": "e8b01c77a3173038f50772a2c9c64b7710401c83", "roles": ["parent_source", "rating_pool"], "reason": "legacy active-pool transition"},
-    {"bot": "national_v142", "artifact_hash": "3c00fb7fa6bb963d35925d350c71dc9cdc228c1a31c557eeb3b0a634a99f1517", "tag_object": "e0cdf8c655e3f5c700f248f2354b55a01ee0469d", "completion_tree_oid": "45bbc9fa6e7d361010ec4cf0bbf9f66902dfad75", "roles": ["parent_source", "rating_pool", "official_opponent"], "reason": "readiness-gated official anchor while signed 5+3 certificates are established"}
+    {"bot": "national_v142", "artifact_hash": "3c00fb7fa6bb963d35925d350c71dc9cdc228c1a31c557eeb3b0a634a99f1517", "tag_object": "e0cdf8c655e3f5c700f248f2354b55a01ee0469d", "completion_tree_oid": "45bbc9fa6e7d361010ec4cf0bbf9f66902dfad75", "roles": ["parent_source", "rating_pool"], "reason": "legacy active-pool transition"}
   ]
 }

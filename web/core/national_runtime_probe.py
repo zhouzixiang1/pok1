@@ -23,8 +23,8 @@ from national_runtime_probe_scenarios import (
 from national_native import NATIONAL_DECISION_RUNTIME_VERSION
 
 
-RUNTIME_PROBE_SCHEMA_VERSION = 5
-RUNTIME_PROBE_ORCHESTRATOR_VERSION = 5
+RUNTIME_PROBE_SCHEMA_VERSION = 7
+RUNTIME_PROBE_ORCHESTRATOR_VERSION = 7
 RUNTIME_PROBE_TIMEOUT_SEC = 45.0
 RUNTIME_PROBE_REPEATS = 2
 RUNTIME_PROBE_MAX_IMPORT_MS = 2_500.0
@@ -352,6 +352,11 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
                 "observed_build_phase",
                 "consumer_reads",
                 "consumer_scenarios",
+                "lookup_key_fingerprints",
+                "lookup_key_varies_across_consumer_scenarios",
+                "value_affects_final_wire",
+                "action_influence_scenarios",
+                "counterfactual_scenarios",
                 "fallback_ok",
                 "fallback_scenarios",
                 "issues",
@@ -362,7 +367,11 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(row, dict)
     ]
     for artifact in artifacts:
-        for field in ("consumer_scenarios", "fallback_scenarios"):
+        for field in (
+            "consumer_scenarios",
+            "counterfactual_scenarios",
+            "fallback_scenarios",
+        ):
             for scenario in artifact.get(field) or []:
                 if isinstance(scenario, dict) and "action" in scenario:
                     scenario["action"] = stable_action(scenario["action"])
@@ -505,6 +514,8 @@ def validate_dynamic_precompute_contract(
     max_bytes: int,
     key_shape: str,
     fallback: str,
+    require_action_influence: bool = False,
+    require_key_variation: bool = False,
 ) -> list[str]:
     rows = [
         row for row in probe.get("artifacts") or []
@@ -534,4 +545,11 @@ def validate_dynamic_precompute_contract(
         errors.append("dynamic_precompute_consumer_reads_zero")
     if fallback != "legal_baseline" or row.get("fallback_ok") is not True:
         errors.append("dynamic_precompute_legal_baseline_fallback_failed")
+    if require_action_influence and row.get("value_affects_final_wire") is not True:
+        errors.append("dynamic_precompute_value_no_final_wire_influence")
+    if (
+        require_key_variation
+        and row.get("lookup_key_varies_across_consumer_scenarios") is not True
+    ):
+        errors.append("dynamic_precompute_lookup_key_static")
     return list(dict.fromkeys(errors))

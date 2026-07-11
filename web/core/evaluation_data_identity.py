@@ -21,7 +21,7 @@ from workflow_profiles import get_workflow_profile
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_NAME = "evaluation_data_manifest.json"
 IDENTITY_SCHEMA_VERSION = 1
-PROFILE_ID = "national-native-rating-authority-v1"
+PROFILE_ID = "national-native-rating-authority-v2-current-runtime-overlay"
 SEMANTIC_PATHS = (
     "sever/engine/deck.py",
     "sever/engine/evaluator.py",
@@ -64,6 +64,11 @@ def _sha256(path: Path) -> str:
 
 def base_evaluation_identity() -> dict[str, Any]:
     profile = get_workflow_profile()
+    native_strength_runtime_overlay: dict[str, Any] = {}
+    if str(getattr(profile, "national_execution_mode", "")) == "native_tcp":
+        from national_native import current_strength_runtime_overlay_identity
+
+        native_strength_runtime_overlay = current_strength_runtime_overlay_identity()
     payload = {
         "schema_version": IDENTITY_SCHEMA_VERSION,
         "profile_id": PROFILE_ID,
@@ -75,6 +80,7 @@ def base_evaluation_identity() -> dict[str, Any]:
         ),
         "national_hands": int(getattr(profile, "national_rating_hands", 70)),
         "official_exe_strength_weight": 0,
+        "native_strength_runtime_overlay": native_strength_runtime_overlay,
         "semantic_files": {
             path: _sha256(ROOT / path) if (ROOT / path).is_file() else "missing"
             for path in SEMANTIC_PATHS

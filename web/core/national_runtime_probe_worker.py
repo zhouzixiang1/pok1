@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import importlib
 import io
 import json
@@ -30,10 +31,11 @@ from national_runtime_probe_scenarios import (
 )
 
 
-PROBE_WORKER_VERSION = 4
+PROBE_WORKER_VERSION = 6
 MAX_CAPTURE_CHARS = 64 * 1024
 LEGAL_WIRE_ACTIONS = {"fold", "call", "check", "allin", "raise"}
 PHASE_PATH = Path("/tmp/probe_out/phase.txt")
+MAX_TRACKED_LOOKUP_KEYS = 64
 
 
 def _phase(name: str) -> None:
@@ -80,25 +82,76 @@ class CountingDict(dict):
     def __init__(self, source: dict[Any, Any]) -> None:
         super().__init__(source)
         self._shared_reads = mp.Value("q", 0, lock=True)
+        # Strategy decisions run in a short-lived worker process.  Fixed-size
+        # shared slots retain a deterministic fingerprint of lookup keys across
+        # that boundary without a Manager/socket or unbounded key capture.
+        self._shared_key_count = mp.Value("i", 0, lock=True)
+        self._shared_key_slots = mp.Array("Q", MAX_TRACKED_LOOKUP_KEYS, lock=True)
 
     @property
     def reads(self) -> int:
         return int(self._shared_reads.value)
 
-    def _record_read(self) -> None:
+    @staticmethod
+    def _key_token(key: Any) -> int:
+        try:
+            text = json.dumps(
+                key,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=repr,
+            )
+        except Exception:
+            text = f"{type(key).__name__}:{repr(key)[:512]}"
+        return int.from_bytes(
+            hashlib.blake2b(
+                text.encode("utf-8", errors="replace"), digest_size=8
+            ).digest(),
+            "big",
+        )
+
+    def _record_read(self, key: Any) -> None:
         with self._shared_reads.get_lock():
             self._shared_reads.value += 1
+        token = self._key_token(key)
+        with self._shared_key_count.get_lock():
+            index = int(self._shared_key_count.value)
+            if index < MAX_TRACKED_LOOKUP_KEYS:
+                with self._shared_key_slots.get_lock():
+                    self._shared_key_slots[index] = token
+            self._shared_key_count.value = index + 1
+
+    def reset_key_observations(self) -> None:
+        with self._shared_key_count.get_lock():
+            self._shared_key_count.value = 0
+
+    def key_observation(self) -> dict[str, Any]:
+        with self._shared_key_count.get_lock():
+            total = max(0, int(self._shared_key_count.value))
+        observed = min(total, MAX_TRACKED_LOOKUP_KEYS)
+        with self._shared_key_slots.get_lock():
+            tokens = sorted({int(self._shared_key_slots[index]) for index in range(observed)})
+        canonical = ",".join(f"{token:016x}" for token in tokens)
+        return {
+            "lookup_key_count": total,
+            "lookup_key_tokens": [f"{token:016x}" for token in tokens],
+            "lookup_key_fingerprint": hashlib.sha256(
+                canonical.encode("ascii")
+            ).hexdigest() if tokens else "",
+            "lookup_key_capture_truncated": total > MAX_TRACKED_LOOKUP_KEYS,
+        }
 
     def __getitem__(self, key):
-        self._record_read()
+        self._record_read(key)
         return super().__getitem__(key)
 
     def get(self, key, default=None):
-        self._record_read()
+        self._record_read(key)
         return super().get(key, default)
 
     def __contains__(self, key):
-        self._record_read()
+        self._record_read(key)
         return super().__contains__(key)
 
 
@@ -1256,6 +1309,55 @@ def _restore_identity(changed, original: Any) -> None:
         setattr(module, name, original)
 
 
+# ``bytes.translate`` keeps a packed precomputed row's type and length while
+# mutating it in C rather than spending a Python loop on a multi-megabyte row.
+# Packed equity/texture rows are a realistic space-for-time representation, so
+# they must receive the same value-sensitive proof as scalar lookup values.
+_BYTES_COUNTERFACTUAL_TRANSLATION = bytes.maketrans(
+    bytes(range(256)),
+    bytes(reversed(range(256))),
+)
+
+
+def _counterfactual_value(value: Any, depth: int = 0) -> Any:
+    """Return a same-shape but intentionally different lookup value.
+
+    This is not a poker counterfactual and is never exposed to a bot in a real
+    match.  It is a trusted probe mutation: if an artifact is selected as the
+    strategy primary, changing its values must be able to change at least one
+    final sanitized wire action.  Preserve common container shapes so a real
+    consumer keeps running rather than merely failing type checks.
+    """
+    if depth >= 4:
+        return value
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, int):
+        return -value - 1
+    if isinstance(value, float):
+        return -value - 1.0
+    if isinstance(value, bytes):
+        return value.translate(_BYTES_COUNTERFACTUAL_TRANSLATION)
+    if isinstance(value, bytearray):
+        return bytearray(bytes(value).translate(_BYTES_COUNTERFACTUAL_TRANSLATION))
+    if isinstance(value, str):
+        return value + "__probe_counterfactual__"
+    if isinstance(value, tuple):
+        return tuple(_counterfactual_value(item, depth + 1) for item in value)
+    if isinstance(value, list):
+        return [_counterfactual_value(item, depth + 1) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _counterfactual_value(item, depth + 1)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _counterfactual_mapping(value: dict[Any, Any]) -> dict[Any, Any]:
+    return {key: _counterfactual_value(item) for key, item in value.items()}
+
+
 def _probe_artifacts(imports: CandidateImports, artifacts: list[dict[str, Any]]):
     rows = []
     for spec in artifacts:
@@ -1287,6 +1389,7 @@ def _probe_artifacts(imports: CandidateImports, artifacts: list[dict[str, Any]])
                     consumer_scenarios = []
                     for scenario in DECISION_SCENARIOS:
                         before_reads = counting.reads
+                        counting.reset_key_observations()
                         try:
                             _native, probe_bot = _new_native_bot(imports)
                             action = _timed_formal_action(
@@ -1298,12 +1401,14 @@ def _probe_artifacts(imports: CandidateImports, artifacts: list[dict[str, Any]])
                                 "scenario_id": scenario["id"],
                                 "reads": counting.reads - before_reads,
                                 "action": action,
+                                **counting.key_observation(),
                             })
                         except BaseException as exc:
                             consumer_scenarios.append({
                                 "scenario_id": scenario["id"],
                                 "reads": counting.reads - before_reads,
                                 "error": f"{type(exc).__name__}:{str(exc)[:140]}",
+                                **counting.key_observation(),
                             })
                     row["consumer_reads"] = counting.reads
                     row["consumer_scenarios"] = consumer_scenarios
@@ -1316,6 +1421,64 @@ def _probe_artifacts(imports: CandidateImports, artifacts: list[dict[str, Any]])
                     for item in row.get("consumer_scenarios") or []
                 ):
                     row["issues"].append("artifact_no_successful_formal_consumer_scenario")
+                key_fingerprints = {
+                    str(item.get("lookup_key_fingerprint") or "")
+                    for item in row.get("consumer_scenarios") or []
+                    if isinstance(item, dict)
+                    and "error" not in item
+                    and int(item.get("reads") or 0) > 0
+                    and int(item.get("lookup_key_count") or 0) > 0
+                    and item.get("lookup_key_fingerprint")
+                }
+                row["lookup_key_fingerprints"] = sorted(key_fingerprints)
+                row["lookup_key_varies_across_consumer_scenarios"] = (
+                    len(key_fingerprints) >= 2
+                )
+
+                counterfactual = CountingDict(_counterfactual_mapping(value))
+                changed = _replace_identity(imports, value, counterfactual)
+                try:
+                    counterfactual_scenarios = []
+                    for scenario in DECISION_SCENARIOS:
+                        before_reads = counterfactual.reads
+                        try:
+                            _native, counterfactual_bot = _new_native_bot(imports)
+                            action = _timed_formal_action(
+                                counterfactual_bot,
+                                scenario,
+                                max_refinement_candidates=0,
+                            )
+                            counterfactual_scenarios.append({
+                                "scenario_id": scenario["id"],
+                                "reads": counterfactual.reads - before_reads,
+                                "action": action,
+                            })
+                        except BaseException as exc:
+                            counterfactual_scenarios.append({
+                                "scenario_id": scenario["id"],
+                                "reads": counterfactual.reads - before_reads,
+                                "error": f"{type(exc).__name__}:{str(exc)[:140]}",
+                            })
+                    row["counterfactual_scenarios"] = counterfactual_scenarios
+                    original_by_id = {
+                        str(item.get("scenario_id")): item
+                        for item in row.get("consumer_scenarios") or []
+                        if isinstance(item, dict)
+                    }
+                    action_influence_scenarios = [
+                        item["scenario_id"]
+                        for item in counterfactual_scenarios
+                        if isinstance(item, dict)
+                        and isinstance(original_by_id.get(str(item.get("scenario_id"))), dict)
+                        and _final_wire_action_changed(
+                            original_by_id[str(item["scenario_id"])].get("action") or {},
+                            item.get("action") or {},
+                        )
+                    ]
+                    row["action_influence_scenarios"] = action_influence_scenarios
+                    row["value_affects_final_wire"] = bool(action_influence_scenarios)
+                finally:
+                    _restore_identity(changed, value)
 
                 empty = CountingDict({})
                 changed = _replace_identity(imports, value, empty)

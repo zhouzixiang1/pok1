@@ -149,11 +149,14 @@ def iter_refinements(req, current_view, baseline, deadline):
 
     assert result["ok"] is True
     assert checks["precompute_lookup_path"] is True
+    # The fixture reads a fixed lookup key. It remains a valid acceleration
+    # path, but it must not be promoted to a value-sensitive strategy primary.
+    assert checks["precompute_runtime_influence"] is False
     assert checks["persistent_match_memory"] is True
     assert checks["incremental_opponent_model"] is True
 
     feedback = national_runtime_feedback_summary(bot, source_label="national_v3")
-    assert "No advisory runtime-architecture gaps" in feedback
+    assert "precompute_runtime_influence" in feedback
     assert "Already present" in feedback
 
 
@@ -448,7 +451,7 @@ def main():
 
     result = evaluate_national_capabilities(bot)
 
-    assert result["schema_version"] == 3
+    assert result["schema_version"] == 5
     assert result["detector_version"] == NATIONAL_CAPABILITY_DETECTOR_VERSION
     assert set(result["checks_by_id"]) == {item["check_id"] for item in result["checks"]}
     for check in result["checks"]:

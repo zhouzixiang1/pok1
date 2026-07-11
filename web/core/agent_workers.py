@@ -108,6 +108,19 @@ def _runtime_contract_block(task):
     if not isinstance(contract, dict) or not contract:
         return ""
     lines = ["# Runtime Contract"]
+    reference_pack_id = str(contract.get("reference_pack_id") or "").strip()
+    if reference_pack_id:
+        try:
+            from strategy_reference_pack import worker_reference_card
+
+            card = worker_reference_card(reference_pack_id)
+        except Exception as exc:
+            card = (
+                "# Binding Local Strategy Reference Card\n"
+                f"- unavailable for {reference_pack_id}: {type(exc).__name__}: {str(exc)[:160]}"
+            )
+        if card:
+            lines.append(card)
     decision = contract.get("decision") if isinstance(contract.get("decision"), dict) else None
     if decision:
         lines.append(

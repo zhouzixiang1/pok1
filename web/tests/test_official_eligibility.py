@@ -48,6 +48,14 @@ def _identity(path, *, artifact_hash="abc", published=True):
     }
 
 
+def test_transition_policy_keeps_v142_nonformal_roles_only():
+    policy = official_eligibility.load_grandfather_policy()
+    v142 = next(grant for grant in policy["grants"] if grant["bot"] == "national_v142")
+
+    assert set(v142["roles"]) == {"parent_source", "rating_pool"}
+    assert "official_opponent" not in v142["roles"]
+
+
 def test_grandfather_grant_is_bound_to_artifact_role_and_sunset(monkeypatch, tmp_path):
     bot = tmp_path / "national_v142"
     monkeypatch.setattr(

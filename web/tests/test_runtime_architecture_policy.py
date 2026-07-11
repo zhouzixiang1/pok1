@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,11 @@ from runtime_architecture_policy import (
 )
 import tool_planning
 from national_native import NATIVE_BOT_TEMPLATE
+from national_capability_contract import (
+    _decision_graph,
+    _function_profiles,
+    _incremental_model_evidence,
+)
 
 
 def _write_bot(root: Path, *, complete: bool, lose_wire: bool = False) -> Path:
@@ -281,6 +287,23 @@ def test_policy_identity_detects_stale_source_contract(tmp_path):
     assert any("source_capability_digest_mismatch" in item for item in result["policy_identity_errors"])
 
 
+def test_policy_digest_binds_strategy_reference_pack_registry(tmp_path):
+    import runtime_architecture_policy as policy_module
+
+    source = _write_bot(tmp_path / "national_v1", complete=False)
+    policy = build_architecture_policy(source)
+    original_digest = policy["policy_digest"]
+    policy["strategy_reference_pack_digest"] = "0" * 64
+
+    assert policy_module._policy_contract_digest(policy) != original_digest
+    errors = policy_module._policy_identity_errors(
+        policy,
+        build_architecture_policy(source),
+    )
+    assert any("strategy_reference_pack_digest_mismatch" in error for error in errors)
+    assert any("expected_content_digest_mismatch" in error for error in errors)
+
+
 @pytest.mark.parametrize("field", ["required_checks", "suggested_files", "accepted_skill_layers"])
 def test_policy_identity_detects_focus_contract_tampering(tmp_path, field):
     source = _write_bot(tmp_path / "national_v1", complete=False)
@@ -329,6 +352,7 @@ def test_plan_must_cover_system_selected_focus(tmp_path):
                     "docs/official-terminal-settlement-oracle-2026-07-11.md",
                 ],
             },
+            "reference_pack_id": "range_weighted_candidate_batch_v1",
             "official_feedback_refs": [],
             "forbidden_runtime_work": [],
         },
@@ -618,7 +642,7 @@ def test_repair_contract_prefers_candidate_consumed_precompute_artifact():
     assert artifact["key_shape"] == "int"
 
 
-def test_missing_candidate_precompute_uses_explicit_precompute_owner_fallback():
+def test_missing_candidate_precompute_never_synthesizes_generic_lookup_primary():
     contract = tool_planning._architecture_default_runtime_contract(
         "national_runtime_v4_state_learning",
         "precompute",
@@ -627,17 +651,9 @@ def test_missing_candidate_precompute_uses_explicit_precompute_owner_fallback():
         candidate_capabilities={},
     )
 
-    assert contract["precompute_artifacts"] == [{
-        "name": "bounded_decision_lookup",
-        "owner_file": "precompute.py",
-        "build_phase": "module_import",
-        "max_build_ms": 500,
-        "max_entries": 65_536,
-        "max_bytes": 8 * 1024 * 1024,
-        "key_shape": "tuple[int,int,bool]",
-        "consumer": "strategy.get_baseline_action",
-        "fallback": "legal_baseline",
-    }]
+    assert contract["precompute_artifacts"] == []
+    assert contract["state_learning"]["work_primitive"] == "sample_counted_candidate_batch"
+    assert contract["reference_pack_id"] == "range_weighted_candidate_batch_v1"
 
 
 def test_v4_contract_allows_only_one_typed_primary_innovation():
@@ -846,6 +862,140 @@ def test_selected_donk_control_does_not_require_delayed_probe_control():
     assert validate_runtime_contract_implementation(plan, capabilities) == []
 
 
+def _source_rooted_incremental_evidence(strategy_source: str) -> dict:
+    """Exercise AST evidence against real strategy source, without a sandbox run."""
+    trees = {
+        "strategy.py": ast.parse(strategy_source, filename="strategy.py"),
+        "national_bot.py": ast.parse("", filename="national_bot.py"),
+    }
+    profiles, by_name = _function_profiles(trees)
+    decision_chains, _roots = _decision_graph(profiles, by_name)
+    return _incremental_model_evidence(
+        {"strategy.py": strategy_source, "national_bot.py": ""},
+        trees,
+        profiles,
+        decision_chains,
+    )
+
+
+def _lead_sizing_contract() -> dict:
+    return {
+        "decision": None,
+        "precompute_artifacts": [{
+            "name": "LEAD_TABLE",
+            "owner_file": "strategy.py",
+            "build_phase": "module_import",
+            "max_build_ms": 500,
+            "max_entries": 128,
+            "max_bytes": 262_144,
+            "key_shape": "int",
+            "consumer": "strategy.get_baseline_action",
+            "fallback": "legal_baseline",
+        }],
+        "match_memory": None,
+        "state_learning": {
+            "work_primitive": "bounded_precompute_lookup",
+            "profile_dimensions": [],
+            "line_controls": [],
+            "oracle_refs": [
+                "docs/official-raise-boundary-oracle-2026-07-11.md",
+                "docs/official-terminal-settlement-oracle-2026-07-11.md",
+            ],
+        },
+        "reference_pack_id": "lead_sizing_geometry_v1",
+        "official_feedback_refs": [],
+        "forbidden_runtime_work": [],
+    }
+
+
+def test_reference_card_requires_source_rooted_live_paths_not_literals():
+    live_source = """
+def _live_lead(req):
+    hand = req.get('hand_runtime', {})
+    terminal = req.get('opponent_runtime', {}).get('terminal_response', {})
+    if (
+        hand.get('street') == 'flop'
+        and hand.get('spr', 99.0) < 5.0
+        and hand.get('pot', 0) >= 400
+        and hand.get('effective_stack', 0) >= 500
+        and hand.get('hero_position') == 'bb'
+        and hand.get('preflop_aggressor') == 'opponent'
+        and hand.get('street_open')
+        and terminal.get('confidence', 0.0) >= 0.20
+    ):
+        return 600
+    return 0
+def get_action(req, current_view):
+    return _live_lead(req)
+def get_baseline_action(req, current_view):
+    return _live_lead(req)
+"""
+    dead_literal_source = """
+def _dead_lead(req):
+    hand = req.get('hand_runtime', {})
+    terminal = req.get('opponent_runtime', {}).get('terminal_response', {})
+    required = (
+        'street', 'spr', 'pot', 'effective_stack', 'hero_position',
+        'preflop_aggressor', 'street_open', 'terminal_response', 'confidence',
+    )
+    street = hand.get('street')
+    spr = hand.get('spr')
+    pot = hand.get('pot')
+    stack = hand.get('effective_stack')
+    position = hand.get('hero_position')
+    aggressor = hand.get('preflop_aggressor')
+    open_street = hand.get('street_open')
+    confidence = terminal.get('confidence')
+    return 0
+def get_action(req, current_view):
+    return _dead_lead(req)
+def get_baseline_action(req, current_view):
+    return _dead_lead(req)
+"""
+    live = _source_rooted_incremental_evidence(live_source)
+    dead = _source_rooted_incremental_evidence(dead_literal_source)
+    expected_paths = {
+        "hand_runtime.street",
+        "hand_runtime.spr",
+        "hand_runtime.pot",
+        "hand_runtime.effective_stack",
+        "hand_runtime.hero_position",
+        "hand_runtime.preflop_aggressor",
+        "hand_runtime.street_open",
+        "opponent_runtime.terminal_response.confidence",
+    }
+
+    assert expected_paths.issubset(live["source_rooted_live_access_paths"])
+    assert dead["source_rooted_live_access_paths"] == {}
+    # The old literal evidence *does* see the words in the dead helper.  This
+    # guards the regression that previously let a weak worker satisfy a card by
+    # parking a tuple of field names beside an unrelated fixed table lookup.
+    assert dead["decision_field_locations"]["street"]
+    assert dead["decision_field_function_locations"]["confidence"]
+
+    base_capabilities = {
+        "checks": [
+            {"check_id": "precompute_lookup_path", "passed": True},
+            {"check_id": "precompute_runtime_influence", "passed": True},
+        ],
+        "precompute_evidence": {"consumed_artifacts": []},
+        "decision_path_risks": {},
+    }
+    plan = {"tasks": [{"runtime_contract": _lead_sizing_contract()}]}
+    live_errors = validate_runtime_contract_implementation(
+        plan,
+        {**base_capabilities, "incremental_model_evidence": live},
+    )
+    dead_errors = validate_runtime_contract_implementation(
+        plan,
+        {**base_capabilities, "incremental_model_evidence": dead},
+    )
+
+    assert not any("lacks source-rooted" in error for error in live_errors)
+    assert any("source-rooted live hand_runtime" in error for error in dead_errors)
+    assert any("source-rooted confidence-scaled" in error for error in dead_errors)
+
+
 def test_sample_primary_binds_max_samples_to_trusted_probe_steps_only():
     contract = {
         "decision": {
@@ -867,6 +1017,7 @@ def test_sample_primary_binds_max_samples_to_trusted_probe_steps_only():
                 "docs/official-terminal-settlement-oracle-2026-07-11.md",
             ],
         },
+        "reference_pack_id": "range_weighted_candidate_batch_v1",
     }
     capabilities = {
         "checks": [
@@ -889,10 +1040,37 @@ def test_sample_primary_binds_max_samples_to_trusted_probe_steps_only():
             },
         },
         "decision_path_risks": {},
+        "incremental_model_evidence": {
+            "decision_field_locations": {
+                "street": ["strategy.py:get_baseline_action"],
+                "pot": ["strategy.py:get_baseline_action"],
+                "to_call": ["strategy.py:get_baseline_action"],
+                "pot_odds": ["strategy.py:get_baseline_action"],
+                "spr": ["strategy.py:get_baseline_action"],
+                "terminal_response": ["strategy.py:get_baseline_action"],
+                "confidence": ["strategy.py:get_baseline_action"],
+            },
+        },
     }
     plan = {"tasks": [{"runtime_contract": contract}]}
 
     assert validate_runtime_contract_implementation(plan, capabilities) == []
+
+    capabilities["incremental_model_evidence"]["decision_field_locations"]["spr"] = []
+    errors = validate_runtime_contract_implementation(plan, capabilities)
+    assert any("range_weighted_candidate_batch_v1 lacks live hand_runtime" in error for error in errors)
+    capabilities["incremental_model_evidence"]["decision_field_locations"]["spr"] = [
+        "strategy.py:get_baseline_action"
+    ]
+
+    capabilities["incremental_model_evidence"]["decision_field_locations"]["confidence"] = [
+        "strategy.py:unrelated_helper"
+    ]
+    errors = validate_runtime_contract_implementation(plan, capabilities)
+    assert any("confidence-scaled terminal/showdown" in error for error in errors)
+    capabilities["incremental_model_evidence"]["decision_field_locations"]["confidence"] = [
+        "strategy.py:get_baseline_action"
+    ]
 
     capabilities["decision_runtime_evidence"]["budget_scaling"]["long"][
         "trusted_steps"

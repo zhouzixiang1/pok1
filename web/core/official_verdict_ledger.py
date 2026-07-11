@@ -181,6 +181,50 @@ def _read_validated(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     return entries, issues
 
 
+def _successful_bootstrap_consumption_fields(
+    status: dict[str, Any],
+    outcome: str,
+) -> dict[str, str]:
+    """Extract the one-time root receipt only for a successful full verdict.
+
+    The normal certificate validator performs the full selector comparison
+    before ``append_verdict`` is reached.  This second local boundary prevents
+    a malformed caller from smuggling an unbound root marker into the signed
+    ledger, which would otherwise make the bootstrap root look consumed.
+    """
+    if outcome != "official-certified":
+        return {}
+    identity = status.get("certification_identity")
+    identity = identity if isinstance(identity, dict) else {}
+    spec = identity.get("spec")
+    spec = spec if isinstance(spec, dict) else {}
+    root_id = spec.get("bootstrap_root_id")
+    if not isinstance(root_id, str) or not root_id.strip():
+        return {}
+    selection = status.get("opponent_selection")
+    if not isinstance(selection, dict):
+        raise ValueError("bootstrap root consumption requires opponent selection")
+    if selection.get("bootstrap_root_id", selection.get("root_id")) != root_id:
+        raise ValueError("bootstrap root consumption id does not match spec")
+    receipt = selection.get("bootstrap_root_receipt")
+    if not isinstance(receipt, dict):
+        raise ValueError("bootstrap root consumption receipt is missing")
+    payload = {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    receipt_digest = str(receipt.get("receipt_digest") or "")
+    if receipt_digest != canonical_digest(payload):
+        raise ValueError("bootstrap root consumption receipt digest is invalid")
+    if receipt.get("root_id") != root_id:
+        raise ValueError("bootstrap root consumption receipt id does not match spec")
+    opponent = selection.get("opponent")
+    opponent = opponent if isinstance(opponent, dict) else {}
+    if opponent.get("eligibility_receipt") != receipt:
+        raise ValueError("bootstrap root consumption opponent receipt does not match")
+    return {
+        "bootstrap_root_id": root_id,
+        "bootstrap_root_receipt_digest": receipt_digest,
+    }
+
+
 def append_verdict(status: dict[str, Any]) -> dict[str, Any]:
     from official_certification import authoritative_verdict_status_issues
     identity = status.get("certification_identity") if isinstance(status.get("certification_identity"), dict) else {}
@@ -205,6 +249,10 @@ def append_verdict(status: dict[str, Any]) -> dict[str, Any]:
         entries, issues = _read_validated(path)
         if issues:
             raise RuntimeError("official verdict ledger is invalid: " + ", ".join(issues))
+        bootstrap_consumption = _successful_bootstrap_consumption_fields(
+            status,
+            outcome,
+        )
         payload = {
             "schema_version": LEDGER_SCHEMA_VERSION,
             "kind": LEDGER_ENTRY_KIND,
@@ -225,6 +273,7 @@ def append_verdict(status: dict[str, Any]) -> dict[str, Any]:
             "request_started_ns": status.get("request_started_ns"),
             "request_completed_ns": status.get("request_completed_ns"),
             "strength_evaluation": "not_applicable",
+            **bootstrap_consumption,
         }
         entry = {**payload, "entry_digest": canonical_digest(payload)}
         wrapper = {

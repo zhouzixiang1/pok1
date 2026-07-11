@@ -14,8 +14,8 @@ import re
 from typing import Any
 
 
-NATIONAL_CAPABILITY_DETECTOR_VERSION = "4.1.0"
-CAPABILITY_SCHEMA_VERSION = 3
+NATIONAL_CAPABILITY_DETECTOR_VERSION = "4.3.0"
+CAPABILITY_SCHEMA_VERSION = 5
 DECISION_GRAPH_MAX_DEPTH = 5
 MIN_PRECOMPUTE_ENTRIES = 20
 MAX_PRECOMPUTE_ENTRIES = 65_536
@@ -64,6 +64,19 @@ _OPPONENT_RUNTIME_CORE_FIELDS = frozenset({
     "terminal_response",
     "showdown_range",
 })
+
+# Runtime-contract reference cards must be tied to real request reads, rather
+# than to string literals which happen to name the same fields.  Native strategy
+# entry points conventionally receive this object as ``req``; ``request`` and
+# the two explicit long-form variants cover thin forwarding helpers without
+# treating arbitrary local dictionaries as authoritative runtime state.
+_REQUEST_ROOT_PARAMETER_NAMES = frozenset({
+    "req",
+    "request",
+    "request_data",
+    "request_payload",
+})
+_LIVE_RUNTIME_ROOTS = frozenset({"hand_runtime", "opponent_runtime"})
 
 
 def _read_python_sources(bot_dir: str | Path) -> dict[str, str]:
@@ -232,6 +245,218 @@ def _function_body_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[a
     for statement in node.body:
         collector.visit(statement)
     return collector.nodes
+
+
+def _literal_string(node: ast.AST | None) -> str | None:
+    """Return one literal dictionary key, if this expression has one."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return str(node.value)
+    # ``ast.Index`` disappeared in Python 3.9, but accepting its legacy shape
+    # costs almost nothing and keeps the detector usable on archived workers.
+    legacy_value = getattr(node, "value", None)
+    if type(node).__name__ == "Index":
+        return _literal_string(legacy_value)
+    return None
+
+
+def _source_rooted_expr_paths(
+    node: ast.AST | None,
+    aliases: dict[str, set[tuple[str, ...]]],
+) -> set[tuple[str, ...]]:
+    """Trace literal dict access chains back to a request-root alias.
+
+    This deliberately recognizes concrete ``req.get('hand_runtime')`` /
+    ``req['hand_runtime']`` style accesses, including aliases such as
+    ``hand = req.get(...)``.  It does *not* infer evidence from a bare string
+    literal, a variable name, or a comment.  The caller later retains only
+    paths which reach an action sink.
+    """
+    if node is None:
+        return set()
+    if isinstance(node, ast.Name):
+        return set(aliases.get(node.id, set()))
+    if isinstance(node, ast.Subscript):
+        base_paths = _source_rooted_expr_paths(node.value, aliases)
+        key = _literal_string(node.slice)
+        if key is None:
+            return base_paths
+        return {(*path, key) for path in base_paths}
+    if isinstance(node, ast.Call):
+        # ``mapping.get('field', default)`` is the dominant runtime-request
+        # access idiom in native strategies.  Only its receiver and literal
+        # key define the source path; the fallback is not treated as a live
+        # input for this purpose.
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+        ):
+            base_paths = _source_rooted_expr_paths(node.func.value, aliases)
+            key = _literal_string(node.args[0])
+            if key is None:
+                return base_paths
+            return {(*path, key) for path in base_paths}
+        # A strategy may cast or combine a live scalar before comparing it at
+        # the action sink.  Propagate concrete request paths through call
+        # arguments so ``float(terminal.get('confidence', 0.0))`` remains
+        # inspectable.  This still requires an actual source-rooted access.
+        paths: set[tuple[str, ...]] = set()
+        for argument in [*node.args, *(keyword.value for keyword in node.keywords)]:
+            paths.update(_source_rooted_expr_paths(argument, aliases))
+        return paths
+    if isinstance(node, ast.Attribute):
+        return _source_rooted_expr_paths(node.value, aliases)
+
+    # Arithmetic, comparisons, boolean expressions, conditional expressions,
+    # literals nested in containers, and comprehensions can all transport a
+    # previously proven request value into an action.  Recursing through their
+    # children is safe because only Name aliases established from a request
+    # root can create a path.
+    paths: set[tuple[str, ...]] = set()
+    for child in ast.iter_child_nodes(node):
+        paths.update(_source_rooted_expr_paths(child, aliases))
+    return paths
+
+
+def _source_rooted_live_access_paths(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[str]:
+    """Return live request paths that syntactically reach an action sink.
+
+    A field read into a dead local is deliberately omitted.  Reads qualify only
+    when they reach a ``return``/``yield`` expression or control a branch which
+    returns/yields an action.  This is intentionally a conservative, local
+    data-flow approximation: dynamic probes remain the proof that the observed
+    field actually changes a final sanitized wire action.
+    """
+    arguments = (
+        [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        if hasattr(node.args, "posonlyargs")
+        else [*node.args.args, *node.args.kwonlyargs]
+    )
+    aliases: dict[str, set[tuple[str, ...]]] = {
+        argument.arg: {()}
+        for argument in arguments
+        if argument.arg.lower() in _REQUEST_ROOT_PARAMETER_NAMES
+    }
+    if not aliases:
+        return []
+
+    body_nodes = _function_body_nodes(node)
+    assignments: list[tuple[set[str], ast.AST]] = []
+    for item in body_nodes:
+        if isinstance(item, ast.Assign):
+            targets: set[str] = set()
+            for target in item.targets:
+                targets.update(_target_names(target))
+            if targets:
+                assignments.append((targets, item.value))
+        elif isinstance(item, ast.AnnAssign):
+            targets = _target_names(item.target)
+            if targets and item.value is not None:
+                assignments.append((targets, item.value))
+        elif isinstance(item, ast.AugAssign):
+            targets = _target_names(item.target)
+            if targets:
+                assignments.append((targets, item.value))
+
+    # Resolve aliases to a small fixed point.  Assignment order is normally
+    # sufficient, while the fixed point also covers simple forwarding aliases.
+    for _ in range(max(1, len(assignments) + 1)):
+        changed = False
+        for targets, value in assignments:
+            paths = _source_rooted_expr_paths(value, aliases)
+            for target in targets:
+                before = len(aliases.get(target, set()))
+                aliases.setdefault(target, set()).update(paths)
+                changed = changed or len(aliases[target]) != before
+        if not changed:
+            break
+
+    returned_names: set[str] = set()
+    for item in body_nodes:
+        if isinstance(item, ast.Return) and item.value is not None:
+            returned_names.update(_loaded_identifiers(item.value))
+        elif isinstance(item, (ast.Yield, ast.YieldFrom)) and item.value is not None:
+            returned_names.update(_loaded_identifiers(item.value))
+
+    sink_paths: set[tuple[str, ...]] = set()
+
+    class _SinkVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.control_paths: list[set[tuple[str, ...]]] = []
+
+        def _active_controls(self) -> set[tuple[str, ...]]:
+            result: set[tuple[str, ...]] = set()
+            for paths in self.control_paths:
+                result.update(paths)
+            return result
+
+        def visit_FunctionDef(self, nested: ast.FunctionDef) -> Any:
+            # Nested functions are independent decision profiles when reachable;
+            # do not let their closures claim evidence for this function.
+            return None
+
+        def visit_AsyncFunctionDef(self, nested: ast.AsyncFunctionDef) -> Any:
+            return None
+
+        def visit_If(self, item: ast.If) -> Any:
+            self.control_paths.append(_source_rooted_expr_paths(item.test, aliases))
+            for statement in item.body:
+                self.visit(statement)
+            for statement in item.orelse:
+                self.visit(statement)
+            self.control_paths.pop()
+
+        def visit_While(self, item: ast.While) -> Any:
+            self.control_paths.append(_source_rooted_expr_paths(item.test, aliases))
+            for statement in item.body:
+                self.visit(statement)
+            for statement in item.orelse:
+                self.visit(statement)
+            self.control_paths.pop()
+
+        def visit_Assign(self, item: ast.Assign) -> Any:
+            # Support the common ``if live_field: action = ...; return action``
+            # form without crediting a dead temporary.  Only variables that are
+            # later returned/yielded receive active-control provenance.
+            active = self._active_controls()
+            if active:
+                for target in item.targets:
+                    for name in _target_names(target):
+                        if name in returned_names:
+                            aliases.setdefault(name, set()).update(active)
+            self.generic_visit(item)
+
+        def visit_AnnAssign(self, item: ast.AnnAssign) -> Any:
+            active = self._active_controls()
+            if active:
+                for name in _target_names(item.target):
+                    if name in returned_names:
+                        aliases.setdefault(name, set()).update(active)
+            self.generic_visit(item)
+
+        def visit_Return(self, item: ast.Return) -> Any:
+            sink_paths.update(_source_rooted_expr_paths(item.value, aliases))
+            sink_paths.update(self._active_controls())
+
+        def visit_Yield(self, item: ast.Yield) -> Any:
+            sink_paths.update(_source_rooted_expr_paths(item.value, aliases))
+            sink_paths.update(self._active_controls())
+
+        def visit_YieldFrom(self, item: ast.YieldFrom) -> Any:
+            sink_paths.update(_source_rooted_expr_paths(item.value, aliases))
+            sink_paths.update(self._active_controls())
+
+    visitor = _SinkVisitor()
+    for statement in node.body:
+        visitor.visit(statement)
+
+    return sorted({
+        ".".join(path)
+        for path in sink_paths
+        if len(path) >= 2 and path[0] in _LIVE_RUNTIME_ROOTS
+    })
 
 
 def _function_contract_evidence(
@@ -426,6 +651,7 @@ def _function_contract_evidence(
 
     return {
         "sink_dependencies": sorted(sink_dependencies),
+        "source_rooted_live_access_paths": _source_rooted_live_access_paths(node),
         "weighted_runtime_locations": sorted(dict.fromkeys(weighted_runtime_locations)),
         "deadline_assignments": [
             _line_label(filename, node, f"deadline_assignment_line[{line}]")
@@ -1036,14 +1262,37 @@ def _incremental_model_evidence(
         "terminal_response",
         "contexts",
         "hand_runtime",
+        # Legacy literal-level hints retained for older persisted capability
+        # reports.  New reference-card gates use source_rooted_live_access_paths
+        # below, never these strings, because a dead literal is not consumption.
+        "street",
+        "spr",
+        "pot",
+        "effective_stack",
+        "hero_position",
+        "preflop_aggressor",
+        "street_open",
+        "to_call",
+        "pot_odds",
         "can_donk",
         "can_delayed_probe",
     )
     field_locations: dict[str, list[str]] = {field: [] for field in tracked_fields}
+    # Keep an evidence key that identifies the reachable decision function or
+    # helper chain but intentionally excludes the individual literal/line.
+    # A nested access such as terminal_response["confidence"] produces two
+    # different literal locations, yet they do belong to the same live
+    # decision path.  Policy gates use this normalized representation when a
+    # reference card requires a multi-part opponent-runtime path.
+    field_function_locations: dict[str, list[str]] = {
+        field: [] for field in tracked_fields
+    }
+    source_rooted_live_access_locations: dict[str, list[str]] = {}
     for key in decision_chains:
         profile = profiles.get(key) or {}
         if profile.get("filename") == "national_bot.py":
             continue
+        decision_location = "->".join(decision_chains.get(key) or [key])
         for location in profile.get("weighted_runtime_locations") or []:
             consumer_locations.append(_format_path(decision_chains.get(key) or [key], location))
         literals = {str(item).lower() for item in profile.get("string_literals") or []}
@@ -1055,6 +1304,21 @@ def _incremental_model_evidence(
                         _line_label(str(profile.get("filename") or ""), None, field),
                     )
                 )
+                field_function_locations[field].append(decision_location)
+        for access_path in profile.get("source_rooted_live_access_paths") or []:
+            path = str(access_path)
+            if not path:
+                continue
+            source_rooted_live_access_locations.setdefault(path, []).append(
+                _format_path(
+                    decision_chains.get(key) or [key],
+                    _line_label(
+                        str(profile.get("filename") or ""),
+                        None,
+                        f"source_rooted_live_access[{path}]",
+                    ),
+                )
+            )
     required_provider = (
         "tracker_defined",
         "tracker_instantiated",
@@ -1079,6 +1343,18 @@ def _incremental_model_evidence(
         "decision_field_locations": {
             field: sorted(dict.fromkeys(locations))
             for field, locations in field_locations.items()
+        },
+        "decision_field_function_locations": {
+            field: sorted(dict.fromkeys(locations))
+            for field, locations in field_function_locations.items()
+        },
+        # Exact, source-rooted request paths which reach a return/yield action
+        # sink in a reachable strategy helper.  Presence of this key (including
+        # an empty mapping) marks the v4.3+ detector evidence: consumers must
+        # not silently fall back to the older literal-name heuristic.
+        "source_rooted_live_access_paths": {
+            path: sorted(dict.fromkeys(locations))
+            for path, locations in sorted(source_rooted_live_access_locations.items())
         },
         "consumed_by_decision": bool(consumer_locations),
         "incremental_complete": provider_complete and bool(consumer_locations),
@@ -1214,12 +1490,22 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         item for item in dynamic_probe.get("artifacts") or []
         if isinstance(item, dict) and item.get("ok")
     ]
+    dynamic_action_influence_artifacts = [
+        item for item in dynamic_artifacts
+        if item.get("value_affects_final_wire") is True
+    ]
     precompute["dynamic_probe_artifacts"] = dynamic_probe.get("artifacts") or []
     precompute["dynamic_probe_passed"] = (
         None if probe_infrastructure_failure else bool(dynamic_artifacts)
     )
     if not probe_infrastructure_failure:
         precompute["passed"] = bool(precompute.get("passed") and dynamic_artifacts)
+    precompute["dynamic_action_influence_artifacts"] = dynamic_action_influence_artifacts
+    precompute["dynamic_action_influence_passed"] = (
+        None
+        if probe_infrastructure_failure
+        else bool(precompute.get("passed") and dynamic_action_influence_artifacts)
+    )
     incremental["dynamic_tracker"] = dynamic_probe.get("tracker") or {}
     incremental["dynamic_strategy_influence"] = dynamic_probe.get("strategy_influence") or {}
     hand_context = dynamic_probe.get("hand_context") or {}
@@ -1415,6 +1701,30 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
             confidence=0.9,
         ),
         _check(
+            "precompute_runtime_influence",
+            precompute["dynamic_action_influence_passed"],
+            "advisory",
+            "precompute",
+            "a bounded lookup's values change a final sanitized wire action under a trusted same-shape counterfactual",
+            "For a selected precompute innovation, consume live hand/opponent inputs and make an inspectable table value alter a legal final action; retain a legal empty-table fallback.",
+            locations=[
+                str(item.get("location") or "")
+                for item in precompute["dynamic_action_influence_artifacts"][:8]
+            ],
+            facts={
+                "dynamic_action_influence_count": len(dynamic_action_influence_artifacts),
+                "artifacts": [
+                    {
+                        "owner_file": item.get("owner_file"),
+                        "name": item.get("name"),
+                        "scenarios": item.get("action_influence_scenarios") or [],
+                    }
+                    for item in dynamic_action_influence_artifacts[:8]
+                ],
+            },
+            confidence=0.95,
+        ),
+        _check(
             "persistent_match_memory",
             incremental["provider_complete"],
             "advisory",
@@ -1544,6 +1854,7 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
                 "incremental_refinement_protocol",
                 "budget_scaled_refinement",
                 "precompute_lookup_path",
+                "precompute_runtime_influence",
                 "persistent_match_memory",
                 "terminal_response_memory",
                 "showdown_range_posterior",

@@ -65,12 +65,18 @@ def evaluator_identity(
     execution_mode: str,
     evaluation_protocol: str,
 ) -> dict[str, Any]:
+    native_strength_runtime_overlay: dict[str, Any] = {}
+    if str(execution_mode) == "native_tcp":
+        from national_native import current_strength_runtime_overlay_identity
+
+        native_strength_runtime_overlay = current_strength_runtime_overlay_identity()
     payload = {
         "schema_version": 1,
         "authority": "precommit_eval",
         "profile_id": str(profile_id),
         "execution_mode": str(execution_mode),
         "evaluation_protocol": str(evaluation_protocol),
+        "native_strength_runtime_overlay": native_strength_runtime_overlay,
         "semantic_files": {
             relative: _sha256(ROOT / relative) if (ROOT / relative).is_file() else "missing"
             for relative in SEMANTIC_PATHS

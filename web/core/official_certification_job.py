@@ -104,14 +104,13 @@ def _stable_opponent_selection(selection: dict[str, Any] | None) -> dict[str, An
 
 
 def _request_payload(spec, *, opponent_selection, source_v) -> dict[str, Any]:
-    from dataclasses import asdict
-    from official_certification import certification_identity
+    from official_certification import certification_identity, spec_record
 
     identity = certification_identity(spec)
     payload = {
         "schema_version": JOB_SCHEMA_VERSION,
         "manager_version": JOB_MANAGER_VERSION,
-        "spec": asdict(spec),
+        "spec": spec_record(spec),
         "identity": identity,
         # Volatile diagnostics such as `considered` and readiness counts must
         # not create a new request on every poll. The selected content-bound

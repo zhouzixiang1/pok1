@@ -161,6 +161,14 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     else:
         architecture_policy_text = "System-owned runtime architecture policy: not active for this source."
     try:
+        from strategy_reference_pack import master_reference_summary
+        strategy_reference_packet = _trim_to_budget(master_reference_summary(), 6_000)
+    except Exception as exc:
+        strategy_reference_packet = (
+            "Local strategy reference cards unavailable: "
+            f"{type(exc).__name__}: {str(exc)[:200]}"
+        )
+    try:
         from workflow_profiles import get_workflow_profile, profile_summary
         workflow_profile = get_workflow_profile()
         workflow_profile_text = profile_summary(workflow_profile)
@@ -206,6 +214,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "research_proposals": research_trimmed,
         "official_feedback": official_feedback,
         "runtime_feedback": runtime_feedback,
+        "strategy_reference_packet": strategy_reference_packet,
         "h2h_data_file": h2h_data_file,
         "h2h_snapshot_contract": h2h_snapshot_contract,
         "master_plan_executable_contract": master_plan_executable_contract_text(),

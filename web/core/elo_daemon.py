@@ -718,7 +718,7 @@ def _rating_protocol_config(n_pairs=None):
         strict_bool = bool(getattr(profile, "national_acceptance_hard", True))
     else:
         strict_bool = strict not in {"0", "false", "False", "no", "NO"}
-    return {
+    config = {
         "profile_id": getattr(profile, "profile_id", "default"),
         "protocol": protocol,
         "national_execution_mode": national_execution_mode,
@@ -726,6 +726,13 @@ def _rating_protocol_config(n_pairs=None):
         "national_matches": national_matches,
         "strict": strict_bool,
     }
+    if national_execution_mode == "native_tcp":
+        from national_native import current_strength_runtime_overlay_identity
+
+        config["native_strength_runtime_overlay"] = (
+            current_strength_runtime_overlay_identity()
+        )
+    return config
 
 
 def _rotate_jsonl(filepath, max_lines):
@@ -827,7 +834,7 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
             [],
         )
     if native_tcp_mode:
-        from national_native import run_native_tcp_pair
+        from national_native import run_current_runtime_native_strength_pair
     else:
         from national_acceptance import resolve_bot, run_pair
         bot_a = resolve_bot(bot_a_path)
@@ -839,7 +846,7 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
 
     for repeat in range(matches):
         if native_tcp_mode:
-            result = asyncio.run(run_native_tcp_pair(
+            result = asyncio.run(run_current_runtime_native_strength_pair(
                 bot_a_path,
                 bot_b_path,
                 hands,
@@ -860,6 +867,14 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
             issues.extend(reported or [f"repeat={repeat + 1}: compliance_failed"])
         if native_tcp_mode and result.get("wrapper_used") is True:
             issues.append(f"repeat={repeat + 1}: native_wrapper_used")
+        if native_tcp_mode:
+            overlay = result.get("runtime_overlay") or {}
+            if not (
+                overlay.get("enabled") is True
+                and overlay.get("both_sides") is True
+                and overlay.get("mode") == "current_system_wrapper_bilateral"
+            ):
+                issues.append(f"repeat={repeat + 1}: native_runtime_overlay_missing")
         if issues:
             continue
         net = int(result.get("net_chips_a", 0) or 0)

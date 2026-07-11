@@ -3,7 +3,6 @@
 import json
 import os
 import time
-from dataclasses import asdict
 from typing import Annotated, TypedDict
 
 from logging_config import get_logger
@@ -657,6 +656,7 @@ async def _run_official_full_commit_gate(
         official_compliance_verdict,
         official_full_certified,
         select_official_opponent,
+        spec_record,
     )
     from official_certification_job import start_or_poll_job
 
@@ -694,7 +694,7 @@ async def _run_official_full_commit_gate(
             "outcome": "pending",
             "version": v,
             "source_v": source_v,
-            "spec": asdict(spec),
+            "spec": spec_record(spec),
             "job": job,
             "opponent_selection": opponent_selection,
             "issues": [],
@@ -707,7 +707,7 @@ async def _run_official_full_commit_gate(
             "failure_class": "infrastructure",
             "version": v,
             "source_v": source_v,
-            "spec": asdict(spec),
+            "spec": spec_record(spec),
             "job": job,
             "opponent_selection": opponent_selection,
             "issues": list(job.get("issues") or [
@@ -721,7 +721,7 @@ async def _run_official_full_commit_gate(
         "passed": passed,
         "version": v,
         "source_v": source_v,
-        "spec": asdict(spec),
+        "spec": spec_record(spec),
         "status": status,
         "verdict": verdict,
         "opponent_selection": opponent_selection,

@@ -1243,6 +1243,20 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
             return [
                 f"Task {index}: sample_counted_candidate_batch requires a decision contract."
             ]
+        if state_learning.work_primitive is not None:
+            from strategy_reference_pack import validate_reference_task
+
+            reference_errors = validate_reference_task(
+                validated.reference_pack_id,
+                state_learning.primary_innovation(),
+                target_files=[
+                    *(task.get("target_files") or []),
+                    *(task.get("files_allowed") or []),
+                ],
+                worker_prompt=str(task.get("worker_prompt", task.get("instruction", ""))),
+            )
+            if reference_errors:
+                return [f"Task {index}: {error}" for error in reference_errors]
 
     prompt = str(task.get("worker_prompt", task.get("instruction", ""))).lower()
     contract_terms = runtime_contract_worker_prompt_terms(validated)
@@ -5292,13 +5306,20 @@ def _detected_artifact_consumer(artifact):
     return candidates[0] if candidates else "strategy.get_baseline_action"
 
 
-def _candidate_consumed_precompute_contracts(candidate_capabilities):
+def _candidate_consumed_precompute_contracts(
+    candidate_capabilities,
+    *,
+    require_action_influence: bool = False,
+):
     """Translate proven candidate artifacts into repair declarations.
 
     Static evidence owns identity, build phase, bound, and consumer. Dynamic
     evidence supplies measured key shape, bytes, and import latency. This keeps a
     repair attached to the candidate's real artifact instead of inventing a
-    generic lookup whenever an unrelated architecture check fails.
+    generic lookup whenever an unrelated architecture check fails.  When a
+    lookup is the selected primary, require the runtime counterfactual proof as
+    well: a read-only/discarded foundation table is still useful acceleration,
+    but is not a strategy innovation.
     """
     if not isinstance(candidate_capabilities, dict):
         return []
@@ -5331,6 +5352,8 @@ def _candidate_consumed_precompute_contracts(candidate_capabilities):
         if not owner_file.endswith(".py") or len(name) < 2:
             continue
         dynamic = dynamic_rows.get((owner_file, name)) or {}
+        if require_action_influence and not dynamic.get("value_affects_final_wire"):
+            continue
         raw_shape = str(dynamic.get("observed_key_shape") or "int")
         key_shape = (
             raw_shape
@@ -5358,15 +5381,32 @@ def _candidate_consumed_precompute_contracts(candidate_capabilities):
     return contracts
 
 
-def _default_state_learning_contract(focus_id, skill_layer, required_checks):
+def _default_state_learning_contract(
+    focus_id,
+    skill_layer,
+    required_checks,
+    candidate_capabilities=None,
+):
     if focus_id != "national_runtime_v4_state_learning":
         return None
     required = {str(item) for item in required_checks or []}
     work_primitive = None
     profile_dimensions = []
     line_controls = []
-    if "precompute_lookup_path" in required or skill_layer == "precompute":
+    wants_precompute = "precompute_lookup_path" in required or skill_layer == "precompute"
+    has_live_precompute = bool(_candidate_consumed_precompute_contracts(
+        candidate_capabilities,
+        require_action_influence=True,
+    ))
+    if wants_precompute and has_live_precompute:
         work_primitive = "bounded_precompute_lookup"
+    elif wants_precompute:
+        # Do not manufacture a generic bounded_decision_lookup merely to get a
+        # repair task past schema validation.  A Master must name an actual
+        # artifact and earn its value-sensitive runtime evidence.  Until then,
+        # the deterministic repair contract uses the independently verifiable
+        # bounded-candidate primitive.
+        work_primitive = "sample_counted_candidate_batch"
     elif "terminal_response_adaptation" in required:
         profile_dimensions = ["terminal_response"]
     elif "showdown_range_adaptation" in required:
@@ -5405,7 +5445,9 @@ def _architecture_default_runtime_contract(
             focus_id,
             skill_layer,
             required_checks,
+            candidate_capabilities,
         ),
+        "reference_pack_id": "",
         "official_feedback_refs": [],
         "forbidden_runtime_work": [
             "full-match requests/responses/showdowns scan inside the decision path",
@@ -5415,6 +5457,10 @@ def _architecture_default_runtime_contract(
     }
     state_learning = contract.get("state_learning") or {}
     primary_work = state_learning.get("work_primitive")
+    if primary_work:
+        from strategy_reference_pack import default_reference_pack_id
+
+        contract["reference_pack_id"] = default_reference_pack_id(primary_work)
     primary_profiles = set(state_learning.get("profile_dimensions") or [])
     if (
         skill_layer in {"match_memory", "opponent_model"}
@@ -5469,18 +5515,9 @@ def _architecture_default_runtime_contract(
         })
     ):
         contract["precompute_artifacts"] = _candidate_consumed_precompute_contracts(
-            candidate_capabilities
-        ) or [{
-            "name": "bounded_decision_lookup",
-            "owner_file": "precompute.py",
-            "build_phase": "module_import",
-            "max_build_ms": 500,
-            "max_entries": 65_536,
-            "max_bytes": 8 * 1024 * 1024,
-            "key_shape": "tuple[int,int,bool]",
-            "consumer": "strategy.get_baseline_action",
-            "fallback": "legal_baseline",
-        }]
+            candidate_capabilities,
+            require_action_influence=(primary_work == "bounded_precompute_lookup"),
+        )
     if (
         skill_layer in {"runtime_architecture", "native_tcp"}
         or focus_id in {
@@ -5522,6 +5559,14 @@ def _merge_runtime_contract_floor(inherited, floor_contract):
         result["match_memory"] = deepcopy(inherited["match_memory"])
     if inherited.get("state_learning") is not None:
         result["state_learning"] = deepcopy(inherited["state_learning"])
+    if inherited.get("reference_pack_id"):
+        result["reference_pack_id"] = str(inherited["reference_pack_id"])
+    state_learning = result.get("state_learning") or {}
+    primary_work = state_learning.get("work_primitive") if isinstance(state_learning, dict) else None
+    if primary_work and not result.get("reference_pack_id"):
+        from strategy_reference_pack import default_reference_pack_id
+
+        result["reference_pack_id"] = default_reference_pack_id(primary_work)
     inherited_artifacts = [
         deepcopy(item)
         for item in inherited.get("precompute_artifacts") or []

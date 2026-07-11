@@ -31,7 +31,7 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 6
+CONTRACT_VERSION = 7
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
@@ -56,6 +56,8 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/official_certification_job.py",
     "web/core/official_certifier_allowed_signers",
     "web/core/official_bot_sandbox.py",
+    "web/core/official_bootstrap.py",
+    "web/core/official_bootstrap_roots.json",
     "web/core/official_execution_profile.py",
     "web/core/official_execution_profile.json",
     "web/core/official_eligibility.py",
@@ -143,6 +145,7 @@ MASTER_STAGE_EXACT = frozenset().union(
         "web/core/llm_failure.py",
         "web/core/llm_query.py",
         "web/core/output_schema.py",
+        "web/core/strategy_reference_pack.py",
         "web/core/plan_compiler.py",
         "web/core/research_governance.py",
         "web/core/skill_library.py",
@@ -177,6 +180,7 @@ WORKER_REPAIR_STAGE_EXACT = frozenset().union(
         "web/core/llm_failure.py",
         "web/core/llm_query.py",
         "web/core/output_schema.py",
+        "web/core/strategy_reference_pack.py",
         "web/core/plan_compiler.py",
         "web/core/tool_helpers.py",
         "web/core/tool_planning.py",
@@ -204,6 +208,7 @@ QUALITY_STAGE_EXACT = frozenset().union(
         "web/core/national_runtime_probe_worker.py",
         "web/core/protected_contracts.py",
         "web/core/runtime_architecture_policy.py",
+        "web/core/strategy_reference_pack.py",
         "web/core/smoke_tester.py",
         "web/core/tool_gates.py",
         "web/core/worker_boundary.py",
@@ -249,6 +254,7 @@ PRECOMMIT_STAGE_EXACT = frozenset().union(
         "web/core/precommit_eval_contract.py",
         "web/core/rating_snapshot.py",
         "web/core/runtime_architecture_policy.py",
+        "web/core/strategy_reference_pack.py",
         "web/core/strength_order.py",
         "web/core/tool_eval.py",
     },
