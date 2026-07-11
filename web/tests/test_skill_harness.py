@@ -53,8 +53,10 @@ def test_national_native_runtime_layers_are_schema_valid():
                 "update_events": ["hand_start", "opponent_action", "settlement", "showdown"],
                 "snapshot_field": "opponent_runtime",
                 "max_recent_hands": 8,
-                "prior_rule": "beta prior weight 8",
-                "confidence_rule": "actions divided by actions plus 24",
+                "prior_rule": "beta_prior_weight_8",
+                "confidence_rule": (
+                    "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
+                ),
                 "adaptation_cap": 0.65,
                 "consumer": "strategy.get_action",
             },
@@ -64,8 +66,9 @@ def test_national_native_runtime_layers_are_schema_valid():
         task = WorkerTask(
             worker_id=1,
             role="Algorithmic Logic Architect",
-            target_files=["national_bot.py"],
+            target_files=["strategy.py"],
             files_allowed=["strategy.py"],
+            read_only_dependencies=["national_bot.py"],
             skill_layer=layer,
             worker_prompt=(
                 "Implement a bounded decision budget with a legal fallback, fast baseline, "

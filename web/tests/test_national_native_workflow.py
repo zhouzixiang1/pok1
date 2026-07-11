@@ -1,8 +1,10 @@
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
 import runpy
+import signal
 import sys
 import time
 
@@ -148,13 +150,16 @@ def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_pat
     assert ".readline(" not in text
     assert "msg + \"\\n\"" not in text
     assert "NATIONAL_STREAM_DECODER_VERSION = 2" in text
-    assert "NATIONAL_DECISION_RUNTIME_VERSION = 6" in text
+    assert "NATIONAL_DECISION_RUNTIME_VERSION = 7" in text
     assert 'os.environ["POK_NATIVE_BOT_SEED"]' in text
     assert "random.seed(int(random_seed))" in text
     assert "def _reap_retired_strategy_workers" in text
     assert '_stop_strategy_worker("decision_deadline", wait=False)' in text
     assert "def _strategy_worker_main" in text
     assert "process.terminate()" in text
+    assert "daemon=False" in text
+    assert "os.killpg" in text
+    assert '"taskkill"' in text
     assert "iter_refinements" in text
     assert "def _infer_suppressed_terminal_opponent_action" in text
     assert check_native_stream_decoder(bot_dir) == []
@@ -216,8 +221,33 @@ def test_native_strategy_worker_receives_explicit_replay_seed(
 
     assert bot._ensure_strategy_worker() is True
     assert captured["args"][2] == 4321
+    assert captured["daemon"] is False
     assert bot._strategy_worker_seed == 4321
     assert captured["started"] is True
+
+
+def test_strategy_worker_is_non_daemon_so_bounded_cpu_children_are_allowed(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    (bot_dir / "strategy.py").write_text(
+        "import multiprocessing as mp\n"
+        "def get_action(req, requests): return -1\n"
+        "def get_baseline_action(req, requests):\n"
+        "    return 321 if not mp.current_process().daemon else -1\n",
+        encoding="utf-8",
+    )
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    bot = module.NativeNationalBot("BotA")
+
+    action = bot._strategy_action()
+
+    assert action == 321
+    assert bot._last_decision_metrics["strategy_baseline_action"] == 321
+    bot.close()
 
 
 @pytest.mark.parametrize(
@@ -309,6 +339,207 @@ def test_decision_runtime_kills_timed_out_worker_and_restarts_next_decision(
     assert second_elapsed < 0.25
     assert bot._last_decision_source == "refinement_deadline_latest_safe"
     assert bot._strategy_worker_generation == 2
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX process-group regression; Windows uses taskkill /T /F",
+)
+def test_decision_deadline_force_kills_sigterm_ignoring_worker_and_child(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    child_pid_path = bot_dir / "strategy-child.pid"
+    _write_minimal_strategy_bot(bot_dir)
+    (bot_dir / "strategy.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "import signal\n"
+        "import subprocess\n"
+        "import sys\n"
+        "import time\n"
+        f"CHILD_PID_PATH = Path({str(child_pid_path)!r})\n"
+        "def get_action(req, requests):\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    child = subprocess.Popen([\n"
+        "        sys.executable, '-c',\n"
+        "        'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)',\n"
+        "    ])\n"
+        "    CHILD_PID_PATH.write_text(str(child.pid), encoding='utf-8')\n"
+        "    while True:\n"
+        "        time.sleep(1.0)\n",
+        encoding="utf-8",
+    )
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_DECISION_HARD_DEADLINE_SEC", "0.25")
+    monkeypatch.setenv("POK_DECISION_REFINEMENT_BUDGET_SEC", "0.20")
+    monkeypatch.setenv("POK_DECISION_BASELINE_TARGET_SEC", "0.02")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    bot = module.NativeNationalBot("BotA")
+    child_pid = None
+
+    def process_is_running(pid: int) -> bool:
+        proc_stat = Path(f"/proc/{pid}/stat")
+        if proc_stat.is_file():
+            try:
+                # A zombie has already exited and cannot consume CPU.
+                return proc_stat.read_text(encoding="utf-8").split()[2] != "Z"
+            except (OSError, IndexError):
+                pass
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    try:
+        action = bot._strategy_action()
+        metrics = dict(bot._last_decision_metrics)
+        worker_pid = int(metrics["worker_pid"])
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and (
+            process_is_running(worker_pid) or process_is_running(child_pid)
+        ):
+            time.sleep(0.01)
+
+        assert action == 0
+        assert metrics["timed_out"] is True
+        assert metrics["worker_terminated"] is True
+        assert bot._last_stopped_worker_terminated is True
+        assert bot._last_stopped_worker_tree_termination_requested is True
+        assert bot._retired_strategy_processes == []
+        assert process_is_running(worker_pid) is False
+        assert process_is_running(child_pid) is False
+    finally:
+        bot.close()
+        if child_pid is not None and process_is_running(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+
+
+def test_worker_tree_fallback_is_fail_closed_when_tree_kill_is_unconfirmed(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class Process:
+        pid = 9876
+
+        def __init__(self):
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+    process = Process()
+    if os.name == "posix":
+        monkeypatch.setattr(
+            module.os,
+            "killpg",
+            lambda *_args: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+    else:
+        class FailedTaskkill:
+            @staticmethod
+            def wait(*, timeout):
+                return 1
+
+        monkeypatch.setattr(
+            module.subprocess,
+            "Popen",
+            lambda *_args, **_kwargs: FailedTaskkill(),
+        )
+
+    tree_confirmed = module.NativeNationalBot._terminate_worker_tree(
+        process,
+        force=True,
+    )
+
+    assert tree_confirmed is False
+    assert process.killed is True
+
+
+def test_unconfirmed_dead_worker_tree_blocks_replacement(monkeypatch, tmp_path):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    bot = module.NativeNationalBot("BotA")
+
+    class DeadParentWithUnconfirmedTree:
+        pid = 9877
+        exitcode = 0
+
+        @staticmethod
+        def join(timeout=0):
+            return None
+
+        @staticmethod
+        def is_alive():
+            return False
+
+    process = DeadParentWithUnconfirmedTree()
+    bot._strategy_process = process
+    bot._strategy_connection = None
+    monkeypatch.setattr(bot, "_terminate_worker_tree", lambda *_a, **_k: False)
+
+    bot._stop_strategy_worker("test_unconfirmed_tree", wait=False)
+
+    assert process in bot._retired_strategy_processes
+    assert process.pid in bot._unconfirmed_strategy_tree_pids
+    assert bot._ensure_strategy_worker() is False
+    assert bot._strategy_worker_generation == 0
+
+
+def test_windows_taskkill_failure_is_reported_fail_closed(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class Process:
+        pid = 9876
+
+        def __init__(self):
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+    class FailedTaskkill:
+        @staticmethod
+        def wait(*, timeout):
+            assert timeout == module.STRATEGY_WORKER_KILL_GRACE_SEC
+            return 1
+
+    process = Process()
+    # Exercise the generated Windows branch even on the Linux CI host. Restore
+    # the shared os/subprocess modules before leaving this test scope.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(module.os, "name", "nt")
+        scoped.setattr(
+            module.subprocess,
+            "Popen",
+            lambda *_args, **_kwargs: FailedTaskkill(),
+        )
+        tree_confirmed = module.NativeNationalBot._terminate_worker_tree(
+            process,
+            force=True,
+        )
+
+    assert tree_confirmed is False
+    assert process.killed is True
 
 
 def test_decision_runtime_preserves_strategy_baseline_when_refinement_times_out(
@@ -415,6 +646,9 @@ def test_decision_runtime_consumes_incremental_candidates_and_reuses_worker(
     assert first_metrics["latest_sequence"] == 3
     assert first_metrics["completed"] is True
     assert first_metrics["timed_out"] is False
+    assert first_metrics["trusted_refinement_steps"] == 2
+    assert first_metrics["refinement_iterator_exhausted"] is True
+    assert first_metrics["refinement_progress"][-1]["reported_complete"] is True
     bot.close()
 
 
@@ -468,7 +702,7 @@ def test_opponent_tracker_keeps_terminal_response_and_bayesian_confidence(
     assert snapshot["hands_completed"] == 1
     assert snapshot["samples"]["fold_to_raise"] == 1
     assert snapshot["rates"]["fold_to_raise"] < 1.0
-    assert snapshot["schema_version"] == 3
+    assert snapshot["schema_version"] == 4
     for field in (
         "vpip",
         "pfr",
@@ -518,6 +752,186 @@ def test_opponent_tracker_uses_hand_pfr_and_isolates_context_confidence(monkeypa
     assert max(row["confidence"] for row in preflop) > max(row["confidence"] for row in river)
     assert max(row["adaptation_weight"] for row in river) < module.OPPONENT_ADAPTATION_CAP
     assert snapshot["showdown_hole_classes"]["pair"] == 1
+
+
+def test_showdown_cards_update_bounded_selection_scoped_range_posterior(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    tight = module.OpponentTracker()
+    loose = module.OpponentTracker()
+
+    for hand in range(1, 9):
+        for tracker, cards in ((tight, [48, 49]), (loose, [20, 1])):
+            tracker.begin_hand(hand, opponent_is_sb=bool(hand % 2))
+            tracker.observe_action("opponent", "preflop", "raise", amount=300)
+            tracker.observe_showdown(hand, cards, [4, 8, 12, 16, 24])
+            tracker.observe_settlement(hand, hero_earned=0)
+
+    tight_range = tight.snapshot()["showdown_range"]
+    loose_range = loose.snapshot()["showdown_range"]
+
+    assert tight_range["schema_version"] == 1
+    assert tight_range["samples"] == loose_range["samples"] == 8
+    assert tight_range["selection_scope"] == "reached_showdown_only"
+    assert tight_range["selection_bias_guard"] == "reach_rate_discount_and_capped_influence"
+    assert tight_range["prior_source"] == "uniform_1326_hole_combinations_v1"
+    assert sum(tight_range["bucket_combo_counts"].values()) == 1326
+    assert sum(tight_range["bucket_priors"].values()) == pytest.approx(1.0)
+    assert 0.0 < tight_range["confidence"] < 1.0
+    assert 0.0 < tight_range["adaptation_weight"] <= module.OPPONENT_ADAPTATION_CAP
+    assert tight_range["showdown_reach_rate"] == 1.0
+    assert tight_range["class_counts"] == {"AA": 8}
+    assert loose_range["class_counts"] == {"72o": 8}
+    assert tight_range["tightness"] > loose_range["tightness"]
+    assert tight_range["bucket_rates"]["premium_pair"] > (
+        loose_range["bucket_rates"]["premium_pair"]
+    )
+    assert set(tight_range["contexts"]) == {"bb|pfr", "sb|pfr"}
+
+
+def test_showdown_bucket_prior_is_calibrated_to_all_1326_hole_combinations(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    counts = {bucket: 0 for bucket in module.SHOWDOWN_RANGE_BUCKET_COMBOS}
+
+    for first in range(52):
+        for second in range(first + 1, 52):
+            _hand_class, bucket = module.OpponentTracker._showdown_class(
+                [first, second]
+            )
+            counts[bucket] += 1
+
+    assert counts == module.SHOWDOWN_RANGE_BUCKET_COMBOS
+    assert sum(counts.values()) == 1326
+    assert module.SHOWDOWN_RANGE_BUCKET_PRIORS == {
+        bucket: count / 1326.0 for bucket, count in counts.items()
+    }
+
+
+def test_terminal_response_posteriors_include_real_river_overcall_samples(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    folder = module.OpponentTracker()
+    caller = module.OpponentTracker()
+
+    for hand in range(1, 11):
+        for tracker, response in ((folder, "fold"), (caller, "call")):
+            tracker.begin_hand(hand, opponent_is_sb=bool(hand % 2))
+            tracker.observe_action("hero", "river", "raise", amount=1200)
+            tracker.observe_action("opponent", "river", response)
+            tracker.observe_settlement(hand, hero_earned=50 if response == "fold" else -50)
+
+    fold_snapshot = folder.snapshot()
+    call_snapshot = caller.snapshot()
+
+    assert fold_snapshot["river_overcall_samples"] == 10
+    assert call_snapshot["river_overcall_samples"] == 10
+    assert fold_snapshot["river_overcall_freq"] < call_snapshot["river_overcall_freq"]
+    assert fold_snapshot["fold_to_raise"] > call_snapshot["fold_to_raise"]
+    assert fold_snapshot["facing_raise_by_street"]["river"]["fold"] == 10
+    assert call_snapshot["facing_raise_by_street"]["river"]["call"] == 10
+
+
+def test_terminal_fold_and_call_share_the_hero_pressure_size_context(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    tracker = module.OpponentTracker()
+
+    for hand, response, response_amount in (
+        (1, "fold", None),
+        (2, "call", 1200),
+    ):
+        tracker.begin_hand(hand, opponent_is_sb=True)
+        tracker.observe_action("hero", "river", "raise", amount=1200)
+        tracker.observe_action(
+            "opponent",
+            "river",
+            response,
+            amount=response_amount,
+            committed=0 if response == "fold" else 800,
+        )
+
+    contexts = tracker.snapshot()["contexts"]
+    assert list(contexts) == ["river|sb|raise|large"]
+    assert contexts["river|sb|raise|large"]["samples"] == 2
+    assert contexts["river|sb|raise|large"]["semantic_actions"]["fold"] == 1
+    assert contexts["river|sb|raise|large"]["semantic_actions"]["call"] == 1
+
+
+def test_official_zero_commit_call_updates_semantic_checkback_memory(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    tracker = module.OpponentTracker()
+
+    for hand in range(1, 7):
+        tracker.begin_hand(hand, opponent_is_sb=True)
+        tracker.observe_action("hero", "flop", "check", amount=0, committed=0)
+        tracker.observe_action("opponent", "flop", "call", amount=0, committed=0)
+
+    snapshot = tracker.snapshot()
+    assert snapshot["raw_street_actions"]["flop"]["call"] == 6
+    assert snapshot["semantic_street_actions"]["flop"]["call"] == 0
+    assert snapshot["semantic_street_actions"]["flop"]["pass"] == 6
+    assert snapshot["postflop_checkback_samples"] == 6
+    assert snapshot["postflop_checkback_rate"] > 0.5
+    context = snapshot["contexts"]["flop|sb|check|none"]
+    assert context["semantic_actions"]["pass"] == 6
+    assert context["actions"]["call"] == 6
+    assert context["raw_actions"]["call"] == 6
+
+
+def test_showdown_influence_is_discounted_by_observation_reach_rate(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    sparse = module.OpponentTracker()
+    dense = module.OpponentTracker()
+
+    for hand in range(1, 41):
+        for tracker in (sparse, dense):
+            tracker.begin_hand(hand, opponent_is_sb=bool(hand % 2))
+        if hand <= 4:
+            sparse.observe_showdown(hand, [48, 49], [])
+        if hand <= 20:
+            dense.observe_showdown(hand, [48, 49], [])
+        sparse.observe_settlement(hand, hero_earned=0)
+        dense.observe_settlement(hand, hero_earned=0)
+
+    sparse_range = sparse.snapshot()["showdown_range"]
+    dense_range = dense.snapshot()["showdown_range"]
+    assert sparse_range["showdown_reach_rate"] == 0.1
+    assert dense_range["showdown_reach_rate"] == 0.5
+    assert sparse_range["adaptation_weight"] < dense_range["adaptation_weight"]
+    assert dense_range["adaptation_weight"] <= module.OPPONENT_ADAPTATION_CAP
 
 
 @pytest.mark.parametrize("showdown_first", [True, False])
@@ -858,6 +1272,124 @@ def test_official_suppressed_postflop_pass_is_inferred_before_next_street(
     assert bot._pot == 200
     snapshot = bot._opponent_tracker.snapshot()
     assert snapshot["street_actions"]["flop"]["call"] == 1
+
+
+def test_hand_runtime_reaches_donk_then_delayed_probe_from_official_transcript(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class FakeSock:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    actions = iter((0, 0))
+    captured_requests = []
+    bot = module.NativeNationalBot("Probe")
+    bot._strategy_action = lambda: (captured_requests.append(bot._request()), next(actions))[1]
+    sock = FakeSock()
+
+    bot.handle("preflop|BIGBLIND|<0,12><1,11>", sock)
+    bot.handle("raise 300", sock)
+    bot.handle("flop|<2,0><0,9><3,7>", sock)
+
+    flop_request = captured_requests[-1]
+    flop_runtime = flop_request["hand_runtime"]
+    assert flop_runtime["preflop_aggressor"] == "opponent"
+    assert flop_runtime["preflop_spot"] == "bb_vs_raise"
+    assert flop_runtime["hero_position"] == "bb"
+    assert flop_runtime["street_open"] is True
+    assert flop_runtime["can_donk"] is True
+    assert flop_runtime["can_delayed_probe"] is False
+    assert flop_runtime["pot"] == flop_request["pot"] == 600
+    assert flop_runtime["opponent_chips"] == flop_request["opponent_chips"] == 19700
+
+    bot._send_decision = lambda _sock: None
+    bot.handle("turn|<1,3>", sock)
+    turn_runtime = bot._request()["hand_runtime"]
+
+    assert turn_runtime["can_donk"] is False
+    assert turn_runtime["can_delayed_probe"] is True
+    assert turn_runtime["previous_street"]["checked_through"] is True
+    assert turn_runtime["previous_street"]["opponent_checked_back"] is True
+    assert turn_runtime["previous_street"]["actions"][-1] == {
+        "actor": "opponent",
+        "action": "call",
+        "semantic_action": "pass",
+        "committed": 0,
+        "inferred": True,
+    }
+    assert sock.sent == [b"call", b"check"]
+
+
+def test_relayed_terminal_fold_survives_into_next_hand_runtime_snapshot(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class FakeSock:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._strategy_action = lambda: 282
+    sock = FakeSock()
+
+    bot.handle("preflop|SMALLBLIND|<0,12><1,11>", sock)
+    bot.handle("fold", sock)
+    bot.handle("earnChips 100", sock)
+    bot._send_decision = lambda _sock: None
+    bot.handle("preflop|BIGBLIND|<0,7><1,6>", sock)
+
+    profile = bot._request()["opponent_runtime"]
+    assert profile["samples"]["fold_to_raise"] == 1
+    assert profile["facing_raise_by_street"]["preflop"]["fold"] == 1
+    assert profile["recent_hands"][-1]["last_opponent_action"] == "fold"
+
+
+def test_new_hand_boundary_repairs_unflushed_terminal_call_before_reset(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    bot = module.NativeNationalBot("Probe")
+    bot._hand_num = 1
+    bot._stage = "river"
+    bot._my_chips = 19_900
+    bot._opponent_chips = 19_900
+    bot._pot = 200
+    bot._opponent_tracker.begin_hand(1, opponent_is_sb=True)
+    committed = bot._apply_my_action("raise", 400)
+    bot._record_action(bot._my_id, "raise", 400, committed)
+    bot._send_decision = lambda _sock: None
+
+    bot.handle("preflop|BIGBLIND|<0,7><1,6>", None)
+
+    profile = bot._request()["opponent_runtime"]
+    assert profile["samples"]["fold_to_raise"] == 1
+    assert profile["facing_raise_by_street"]["river"]["call"] == 1
+    assert bot._hand_num == 2
+    assert bot._history == []
+    assert bot._pot == 150
 
 
 def test_official_suppressed_big_blind_check_is_inferred_after_open_limp(
@@ -2129,6 +2661,8 @@ def test_native_tcp_pair_applies_per_bot_environment_overrides(monkeypatch, tmp_
 def test_native_bot_log_parser_summarizes_decision_runtime():
     report = national_native._parse_native_bot_log(
         "[10:00:00] DECIDE start name=BotA hand=1 stage=preflop act_cnt=0\n"
+        "[10:00:00] DECIDE refinement decision_id=1 sequence=2 action=400 elapsed=0.100s trusted_step=1 trusted_cpu_ms=8.5 reported_samples=64 reported_confidence=0.75\n"
+        "[10:00:00] DECIDE worker_done decision_id=1 sequence=2 latest_safe=400 elapsed=0.110s trusted_steps=1 trusted_cpu_ms=8.5 iterator_exhausted=True termination=iterator_exhausted\n"
         "[10:00:00] DECIDE done action=0 elapsed=0.125s\n"
         "[10:00:00] SEND name=BotA hand=1 stage=preflop act_cnt=0 msg='call'\n"
         "[10:00:01] OFFICIAL_ACTION_DELAY wait=0.250s target=0.300s\n"
@@ -2143,6 +2677,12 @@ def test_native_bot_log_parser_summarizes_decision_runtime():
     assert report["official_action_delay"]["count"] == 1
     assert report["official_action_delay"]["target_sec"] == 0.3
     assert report["send_count"] == 1
+    assert report["refinement"]["message_count"] == 1
+    assert report["refinement"]["trusted_steps_max"] == 1
+    assert report["refinement"]["trusted_cpu"]["max_sec"] == 0.0085
+    assert report["refinement"]["iterator_exhausted_count"] == 1
+    assert report["refinement"]["reported_sample_count_max"] == 64
+    assert report["refinement"]["candidate_reported_fields_authoritative"] is False
 
 
 def test_native_tcp_pair_captures_template_runtime_telemetry(tmp_path, monkeypatch):
@@ -2275,6 +2815,11 @@ def test_native_acceptance_and_precommit_require_native_entries_for_both_players
     assert all(call["bot_seed_base"] is not None for call in calls)
     assert calls[-1]["deck_seed_base"] == 777
     assert calls[-1]["bot_seed_base"] == 888
+    assert calls[-1]["timeout_sec"] == national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC
+    assert calls[-1]["bot_a_env_overrides"][
+        "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC"
+    ] == national_native.LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC
+    assert calls[-1]["bot_b_env_overrides"] == calls[-1]["bot_a_env_overrides"]
 
 
 def test_native_tcp_pair_reorders_clients_by_bot_label(tmp_path):
@@ -2302,6 +2847,32 @@ def test_native_tcp_pair_reorders_clients_by_bot_label(tmp_path):
         and event.get("connection_order") == ["BotB", "BotA"]
         for event in result["events_tail"]
     )
+
+
+def test_generated_template_completes_full_70_hand_native_match(tmp_path):
+    bot_a = tmp_path / "TemplateA"
+    bot_b = tmp_path / "TemplateB"
+    for bot_dir in (bot_a, bot_b):
+        _write_minimal_strategy_bot(bot_dir)
+        ensure_native_entry(bot_dir)
+
+    result = asyncio.run(run_native_tcp_pair(
+        bot_a,
+        bot_b,
+        hands=70,
+        require_native_a=True,
+        require_native_b=True,
+        deck_seed_base=20260711,
+        bot_seed_base=30260711,
+        timeout_sec=120,
+    ))
+
+    assert result["hands_played"] == 70
+    assert result["passed_compliance"] is True
+    assert result["issues"] == []
+    for player in result["per_player"].values():
+        assert player["illegal_actions"] == 0
+        assert player["timeouts"] == 0
 
 
 def test_native_tcp_pair_disambiguates_duplicate_labels(tmp_path):

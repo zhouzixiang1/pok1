@@ -20,7 +20,8 @@ was caused by strategy code or communication.
 2. Generated `national_bot.py` entrypoints are launched with `--log` during
    local native acceptance when they support that argument.
 3. `web/core/national_runtime_telemetry.py` deterministically parses bounded
-   timing, stage, hand-bucket, send-count, and exception fields.
+   timing, stage, hand-bucket, send-count, exception, trusted iterator-step,
+   worker CPU, exhaustion, and termination fields.
 4. `web/core/national_native.py` puts the compact summary into the national
    acceptance report and quality scorecard.
 5. Temporary local bot logs are deleted after parsing. Full raw communication
@@ -47,3 +48,65 @@ Runtime telemetry is evidence, not a strength score. It must not change Glicko
 or H2H ratings. Future deadline, precomputation, and persistent opponent-model
 work should first consume these fields in shadow mode, then add explicit gates
 only after stable baselines exist.
+
+Local native strength evaluation, including precommit, deliberately uses a
+2.0 second per-action hard deadline, 1.8 second refinement budget, and 420
+second whole-match timeout. This is the local strength envelope, not a change
+to the official 60 second action limit.
+A strategy should finish cheap/obvious decisions early and reserve long formal
+refinement for uncertainty-sensitive high-EV decisions; spending the maximum
+on every action is a throughput defect.
+
+## Event-State And Anytime Contract
+
+Generated runtime v7 separates two authoritative snapshots:
+
+- `hand_runtime` is rebuilt by the socket owner from the current hand event
+  stream. It carries the repaired pot/stacks/street contributions, stable
+  preflop aggressor and spot, semantic checked-through street summaries,
+  `can_donk`, `can_delayed_probe`, SPR, and pot odds. Strategy modules must not
+  reconstruct these facts from archived requests.
+- `opponent_runtime` is connection-level bounded memory. It records relayed and
+  boundary-inferred terminal responses, per-street raise/all-in responses,
+  real river overcall samples, and a prior-smoothed `showdown_range`. The latter
+  is explicitly labelled `reached_showdown_only`. Its prior is pinned to the
+  1,326 uniformly possible hole-card combinations, while showdown reach rate
+  discounts its confidence-derived, capped adaptation weight. This prevents a
+  selected showdown sample from silently becoming an unconditional range.
+
+The runtime capability probe keeps four counterfactual dimensions separate:
+proactive action style, terminal responses, showdown-only range evidence, and
+donk/delayed-probe line semantics. One dimension cannot make another pass. The
+line cases use legal national transcripts, including the in-position player's
+zero-chip `call` that closes a postflop check-through.
+
+Refinement telemetry distinguishes candidate-reported metadata from trusted
+runtime evidence. `reported_sample_count`, confidence, and completion are
+diagnostic only. The system worker owns iterator `next()` counts, process CPU,
+elapsed time, true `StopIteration`, termination reason, and every sanitized
+action in the trajectory. A valid strategy publishes a legal baseline within
+250 ms, performs at least eight system-observed refinement steps or exhausts a
+finite batch of that size, scales under a longer budget (unless both tiers
+prove the same finite exhaustion), and changes the sanitized baseline in at
+least one deterministic scenario. A single `complete=True` yield cannot pass.
+For action-profile, terminal-response, showdown-range, donk, and delayed-probe
+influence, at least one completed counterfactual tier must change the final
+sanitized wire action. A transient intermediate yield is diagnostic evidence,
+not proof that live behavior changed.
+
+The strategy worker is non-daemon so a candidate may use a bounded fixed CPU
+pool. On POSIX it owns a process group; on Windows the owner uses tree-aware
+termination. The socket owner kills the whole compute tree at the action
+deadline and marks termination successful only after the worker has exited and
+tree-aware termination was confirmed, so multi-core refinement cannot escape
+timeout cleanup or accumulate across decisions.
+
+These local runtime probes are not formal completion or strength evidence.
+Formal profile `official-full-v5` and the content-pinned 2026-07-11 official
+oracles remain authoritative:
+`docs/official-raise-boundary-oracle-2026-07-11.md` proves exact consecutive 2x
+is legal, and `docs/official-terminal-settlement-oracle-2026-07-11.md` proves a
+natural hand-70 finish may have 70 starts but only 69 paired TCP settlements.
+That terminal form passes only through the strict, hash-bound THP cross-proof
+for `STATE:0..69`. Official/THP outcomes retain zero weight in ratings, H2H,
+source selection, precommit strength, and experience.

@@ -868,8 +868,16 @@ def check_code_size(directory, max_lines_per_file=None, source_dir=None):
                 total += lines
 
                 # Compute limit: base → adaptive (if source_dir) → override (if max_lines_per_file)
-                base_limit = MAX_LINES_PER_FILE if f in CORE_STRATEGY_FILES else MAX_LINES_HELPER
-                limit = _get_adaptive_limit(f, base_limit, source_dir)
+                if f == "national_bot.py":
+                    # System-generated protocol/runtime owner. Candidate workers
+                    # cannot edit it, so source-relative strategy growth is the
+                    # wrong policy; retain only the repository hard cap.
+                    limit = MAX_LINES_HARD_CAP
+                else:
+                    base_limit = (
+                        MAX_LINES_PER_FILE if f in CORE_STRATEGY_FILES else MAX_LINES_HELPER
+                    )
+                    limit = _get_adaptive_limit(f, base_limit, source_dir)
 
                 # Explicit override wins (backward compatibility)
                 if max_lines_per_file is not None:

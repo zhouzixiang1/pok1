@@ -23,9 +23,9 @@ from national_runtime_probe_scenarios import (
 from national_native import NATIONAL_DECISION_RUNTIME_VERSION
 
 
-RUNTIME_PROBE_SCHEMA_VERSION = 4
-RUNTIME_PROBE_ORCHESTRATOR_VERSION = 4
-RUNTIME_PROBE_TIMEOUT_SEC = 15.0
+RUNTIME_PROBE_SCHEMA_VERSION = 5
+RUNTIME_PROBE_ORCHESTRATOR_VERSION = 5
+RUNTIME_PROBE_TIMEOUT_SEC = 45.0
 RUNTIME_PROBE_REPEATS = 2
 RUNTIME_PROBE_MAX_IMPORT_MS = 2_500.0
 RUNTIME_PROBE_MAX_ENTRIES = 65_536
@@ -194,6 +194,7 @@ def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str,
     with tempfile.TemporaryDirectory(prefix="pok_runtime_probe_") as output_dir:
         output_root = Path(output_dir)
         report_host = output_root / "report.json"
+        phase_host = output_root / "phase.txt"
         stdout_host = output_root / "stdout.log"
         stderr_host = output_root / "stderr.log"
         command = [
@@ -246,10 +247,15 @@ def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str,
             except subprocess.TimeoutExpired:
                 _kill_process_group(process)
                 process.wait(timeout=5.0)
+                phase = (
+                    phase_host.read_text(encoding="utf-8", errors="replace")[:120]
+                    if phase_host.is_file()
+                    else "unknown"
+                )
                 return {
                     "ok": False,
-                    "failure_class": "probe_infra",
-                    "issues": ["runtime_probe_timeout"],
+                    "failure_class": "candidate_contract",
+                    "issues": [f"runtime_probe_candidate_timeout:phase={phase}"],
                 }
         stdout_bytes = stdout_host.stat().st_size
         stderr_bytes = stderr_host.stat().st_size
@@ -302,20 +308,37 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(action, dict):
             return action
         cleaned = copy.deepcopy(action)
+        # Deadline scheduling may report worker_done versus latest_safe while
+        # preserving the same sanitized action and trusted capability facts.
+        # Source labels are diagnostic timing outcomes, not deterministic
+        # strategy evidence.
+        cleaned.pop("source", None)
         metrics = cleaned.get("runtime_metrics") or {}
         cleaned["runtime_metrics"] = {
-            key: metrics.get(key)
-            for key in (
-                "runtime_version",
-                "socket_fallback_action",
-                "refinement_messages",
-                "latest_sequence",
-                "timed_out",
-                "worker_terminated",
-                "completed",
-            )
+            "runtime_version": metrics.get("runtime_version"),
+            "socket_fallback_action": metrics.get("socket_fallback_action"),
+            "refinement_observed": bool(metrics.get("refinement_messages")),
+            "refinement_changed_action": bool(metrics.get("refinement_action_changes")),
+            "trusted_refinement_steps_ge_8": int(
+                metrics.get("trusted_refinement_steps") or 0
+            ) >= 8,
+            "refinement_iterator_exhausted": bool(
+                metrics.get("refinement_iterator_exhausted")
+            ),
+            "timed_out": metrics.get("timed_out"),
+            "worker_terminated": metrics.get("worker_terminated"),
+            "completed": metrics.get("completed"),
         }
         return cleaned
+
+    def stable_action_tree(value: Any) -> Any:
+        if isinstance(value, dict):
+            if "runtime_metrics" in value and ("wire" in value or "internal" in value):
+                return stable_action(value)
+            return {key: stable_action_tree(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [stable_action_tree(item) for item in value]
+        return value
 
     artifacts = [
         {
@@ -343,18 +366,31 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
             for scenario in artifact.get(field) or []:
                 if isinstance(scenario, dict) and "action" in scenario:
                     scenario["action"] = stable_action(scenario["action"])
-    strategy = copy.deepcopy(result.get("strategy_influence") or {})
-    for row in strategy.get("rows") or []:
-        if not isinstance(row, dict):
-            continue
-        for label in ("baseline", "aggressive", "passive"):
-            action = row.get(label)
-            if not isinstance(action, dict):
-                continue
-            row[label] = stable_action(action)
+    strategy = stable_action_tree(
+        copy.deepcopy(result.get("strategy_influence") or {})
+    )
     decision_runtime = copy.deepcopy(result.get("decision_runtime") or {})
     decision_runtime.pop("baseline_samples_ms", None)
     decision_runtime.pop("fallback_ready_samples_ms", None)
+    decision_runtime.pop("refinement_evidence", None)
+    scaling = decision_runtime.get("budget_scaling") or {}
+    short = scaling.get("short") or {}
+    long = scaling.get("long") or {}
+    decision_runtime["budget_scaling"] = {
+        "short_has_work": int(short.get("trusted_steps") or 0) > 0,
+        "long_has_real_work": int(long.get("trusted_steps") or 0) >= 8,
+        "long_scales_or_completes": (
+            int(long.get("trusted_steps") or 0) > int(short.get("trusted_steps") or 0)
+            or (
+                bool(short.get("iterator_exhausted"))
+                and bool(long.get("iterator_exhausted"))
+            )
+        ),
+        "short_changed_action": bool(short.get("action_changes")),
+        "long_changed_action": bool(long.get("action_changes")),
+        "short_wire": short.get("wire"),
+        "long_wire": long.get("wire"),
+    }
     for action in (decision_runtime.get("timeout_recovery") or {}).values():
         if not isinstance(action, dict):
             continue
@@ -371,6 +407,7 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
         "issues": result.get("issues") or [],
         "artifacts": artifacts,
         "tracker": result.get("tracker") or {},
+        "hand_context": result.get("hand_context") or {},
         "strategy_influence": strategy,
         "decision_runtime": decision_runtime,
     }
@@ -395,13 +432,26 @@ def run_national_runtime_probe(
     cached = _runtime_probe_cache_get(cache_key)
     if cached is not None:
         return cached
-    runs = [
-        _run_once(root, spec, timeout_sec)
-        for _ in range(max(2, int(repeats)))
-    ]
+    runs = []
+    for _ in range(max(2, int(repeats))):
+        run = _run_once(root, spec, timeout_sec)
+        runs.append(run)
+        # Dynamic dimensions remain useful shadow evidence when unrelated
+        # advisory checks fail, so ordinary candidate-contract results still
+        # repeat. Launch failures and candidate timeouts return immediately
+        # instead of burning another complete sandbox timeout.
+        non_repeatable_failure = run.get("failure_class") == "probe_infra" or any(
+            str(issue).startswith("runtime_probe_candidate_timeout:")
+            for issue in run.get("issues") or []
+        )
+        if non_repeatable_failure:
+            break
     after = _bot_code_fingerprint(root)
     for run in runs:
-        if run.get("failure_class") == "probe_infra":
+        if run.get("failure_class") == "probe_infra" or any(
+            str(issue).startswith("runtime_probe_candidate_timeout:")
+            for issue in run.get("issues") or []
+        ):
             return {
                 **run,
                 "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,

@@ -116,6 +116,15 @@ def test_replay_accepts_real_official_exact_2x_oracle_fixture():
 def test_terminal_settlement_oracle_fixture_binds_wire_and_thp_prefixes():
     oracle = json.loads(TERMINAL_ORACLE_FIXTURE.read_text(encoding="utf-8"))
 
+    assert oracle["exe_sha256"] == (
+        "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
+    )
+    assert oracle["wire_events_sha256"] == (
+        "ca6e29cee830740ab511f06a3231df39edde26229529fc91bcc8a1c4a482d234"
+    )
+    assert oracle["thp_sha256"] == (
+        "c70b60ac80375a2bf41fa72825bd91358cc48c5369eaee778aec0dd10226ca50"
+    )
     assert oracle["wire_hands_started"] == 70
     assert oracle["wire_settlement_hands"] == {
         "first": 1,
@@ -126,6 +135,14 @@ def test_terminal_settlement_oracle_fixture_binds_wire_and_thp_prefixes():
     }
     assert oracle["thp_state_indices"]["count"] == 70
     assert oracle["wire_prefix_digest"] == oracle["thp_prefix_digest"]
+    assert oracle["wire_prefix_digest"] == (
+        "b5079bf195205a2c90e1aeb8a9fcb28a35efe922ef12392b945212590c6acd07"
+    )
+    assert oracle["terminal_state"] == "STATE:69:f:Jc9s|3cTs:50|-50:BotB|BotA;"
+    assert oracle["wire_totals_before_terminal"] == {"BotA": 19721, "BotB": -19721}
+    assert oracle["terminal_earnings"] == {"BotA": -50, "BotB": 50}
+    assert oracle["thp_match_totals"] == {"BotA": 19671, "BotB": -19671}
+    assert oracle["thp_footer_result"] == "BotA赢得19671个筹码"
     assert sum(oracle["terminal_earnings"].values()) == 0
     assert sum(oracle["thp_match_totals"].values()) == 0
     assert oracle["strength_evaluation"] == "not_applicable"

@@ -28,6 +28,7 @@ from evolution_core import (
     write_pipeline_checkpoint,
     check_code_size,
     MAX_PRECOMMIT_REWORK_ROUNDS,
+    MAX_OFFICIAL_REWORK_ROUNDS,
 )
 from tool_helpers import (
     _get_ui, _json_tool_result,
@@ -44,6 +45,10 @@ from system_log import log_system_event
 from pipeline_state import route_policy
 from output_schema import (
     MASTER_PLAN_MAX_TASKS,
+    PRECOMPUTE_KEY_SHAPE_PATTERN,
+    PRECOMPUTE_MAX_BUILD_MS,
+    PRECOMPUTE_MAX_BYTES,
+    PRECOMPUTE_MAX_ENTRIES,
     RuntimeContract,
     WORKER_PROMPT_MAX_CHARS,
     WORKER_TASK_MAX_TARGET_FILES,
@@ -519,6 +524,27 @@ async def _abandon_master_generation(next_v, source_v, *, error, fail_count, rea
         "logs": ui.get_output() if ui else "",
     }
     return _json_tool_result(result)
+
+
+async def _force_abandon_official_rework_generation(next_v, source_v):
+    """End a non-converging formal-repair loop in the tool control plane."""
+    try:
+        from orchestrator_session import _clear_orchestrator_session
+        _clear_orchestrator_session()
+    except Exception:
+        pass
+    try:
+        from tool_bot_management import _do_abandon_generation
+        return await _do_abandon_generation(
+            reason="official_rework_circuit_breaker"
+        )
+    except Exception as exc:
+        return {
+            "abandoned": False,
+            "error": f"official rework abandon failed: {type(exc).__name__}: {exc}",
+            "next_v": next_v,
+            "source_v": source_v,
+        }
 
 
 async def _handle_master_analysis_failure(next_v, source_v, ui, *, message,
@@ -1141,7 +1167,7 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
             f"{', '.join(missing)}"
         ]
 
-    declared_scope = {
+    writable_scope = {
         Path(str(item)).name
         for item in [
             *(task.get("target_files") or []),
@@ -1149,17 +1175,74 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
         ]
         if str(item).strip()
     }
+    read_only_scope = {
+        Path(str(item)).name
+        for item in task.get("read_only_dependencies") or []
+        if str(item).strip()
+    }
+    overlap = sorted(writable_scope.intersection(read_only_scope))
+    if overlap:
+        return [
+            f"Task {index}: read_only_dependencies overlap writable "
+            f"target_files/files_allowed: {overlap}"
+        ]
     owners = []
     if validated.match_memory is not None:
         owners.append(validated.match_memory.owner_file)
     owners.extend(item.owner_file for item in validated.precompute_artifacts)
-    missing_owners = sorted({owner for owner in owners if owner not in declared_scope})
+    missing_owners = sorted({
+        owner
+        for owner in owners
+        if owner not in writable_scope and owner not in read_only_scope
+    })
     if missing_owners:
         return [
             f"Task {index}: runtime_contract owner file(s) {missing_owners} are outside "
-            f"target_files/files_allowed={sorted(declared_scope)}. The worker must be "
-            "allowed to implement and verify every declared artifact owner."
+            "the declared writable/read-only scope: "
+            f"writable={sorted(writable_scope)}, read_only={sorted(read_only_scope)}."
         ]
+    target_scope = {
+        Path(str(item)).name for item in task.get("target_files") or []
+    }
+    if (
+        validated.match_memory is not None
+        and validated.match_memory.owner_file == "national_bot.py"
+        and "national_bot.py" not in target_scope
+        and "national_bot.py" in writable_scope
+    ):
+        return [
+            f"Task {index}: system-provided national_bot.py must be a target_file when "
+            "writable; otherwise put it in read_only_dependencies."
+        ]
+
+    state_learning = validated.state_learning
+    if state_learning is not None:
+        missing_checks = sorted(
+            set(state_learning.primary_checks()).difference(
+                str(item) for item in task.get("checks_required") or []
+            )
+        )
+        if missing_checks:
+            return [
+                f"Task {index}: state_learning primary innovation "
+                f"{state_learning.primary_innovation()!r} requires checks_required "
+                f"{missing_checks}."
+            ]
+        if (
+            state_learning.work_primitive == "bounded_precompute_lookup"
+            and not validated.precompute_artifacts
+        ):
+            return [
+                f"Task {index}: bounded_precompute_lookup requires a concrete "
+                "precompute_artifacts declaration."
+            ]
+        if (
+            state_learning.work_primitive == "sample_counted_candidate_batch"
+            and validated.decision is None
+        ):
+            return [
+                f"Task {index}: sample_counted_candidate_batch requires a decision contract."
+            ]
 
     prompt = str(task.get("worker_prompt", task.get("instruction", ""))).lower()
     contract_terms = runtime_contract_worker_prompt_terms(validated)
@@ -4344,17 +4427,17 @@ def _official_failure_items(ckpt, feedback=""):
             if text:
                 items.append(text)
 
-    add(feedback)
     if isinstance(ckpt, dict):
         official = (ckpt.get("gate_results") or {}).get("official_full") or {}
         if isinstance(official, dict):
             add(official.get("issues"))
             add(official.get("official_evidence_summary"))
+            add(official.get("verdict"))
             status = official.get("status") if isinstance(official.get("status"), dict) else {}
             add(status.get("official_llm_repair_guidance"))
             add(status.get("official_llm_prompt_feedback"))
             add(status.get("official_llm_analysis_summary"))
-            add(official.get("verdict"))
+    add(feedback)
     deduped = []
     seen = set()
     for item in items:
@@ -4364,8 +4447,39 @@ def _official_failure_items(ckpt, feedback=""):
     return deduped
 
 
-def _official_failure_is_protocol(items, feedback=""):
-    text = "\n".join([*(str(item) for item in items or []), str(feedback or "")]).lower()
+def _official_deterministic_failure_items(ckpt):
+    """Return only machine-owned official verdict evidence used for repair scope.
+
+    Reviewer feedback and the official LLM analysis are useful context for a
+    worker, but they are not authority for making the system-owned TCP entrypoint
+    writable.  In particular, an advisory sentence containing ``wire`` or
+    ``protocol`` must never redirect an otherwise strategic repair.
+    """
+    items = []
+
+    def add(value):
+        if isinstance(value, dict):
+            for key, val in value.items():
+                add(f"{key}: {val}")
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                add(item)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                items.append(text)
+
+    if isinstance(ckpt, dict):
+        official = (ckpt.get("gate_results") or {}).get("official_full") or {}
+        if isinstance(official, dict):
+            add(official.get("issues"))
+            add(official.get("official_evidence_summary"))
+            add(official.get("verdict"))
+    return list(dict.fromkeys(items))
+
+
+def _official_failure_is_protocol(items):
+    text = "\n".join(str(item) for item in items or []).lower()
     return any(marker in text for marker in (
         "protocol",
         "illegal",
@@ -4383,9 +4497,9 @@ def _official_failure_is_protocol(items, feedback=""):
 
 
 def _official_repair_target_files(ckpt, feedback):
-    items = _official_failure_items(ckpt, feedback)
-    evidence_files = _extract_quality_failure_files(items)
-    if _official_failure_is_protocol(items, feedback):
+    deterministic_items = _official_deterministic_failure_items(ckpt)
+    evidence_files = _extract_quality_failure_files(deterministic_items)
+    if _official_failure_is_protocol(deterministic_items):
         protocol_targets = [
             rel for rel in _precommit_filter_repair_targets(
                 evidence_files or ["national_bot.py"],
@@ -4431,7 +4545,9 @@ def _official_repair_target_files(ckpt, feedback):
 def _official_repair_tasks(ckpt, feedback):
     items = _official_failure_items(ckpt, feedback)
     targets = _official_repair_target_files(ckpt, feedback)
-    protocol_repair = _official_failure_is_protocol(items, feedback)
+    protocol_repair = _official_failure_is_protocol(
+        _official_deterministic_failure_items(ckpt)
+    )
     evidence = "\n".join(str(item) for item in items[:30]) or str(feedback or "official full certification failed")
     next_v = ckpt.get("next_v") if isinstance(ckpt, dict) else "?"
     source_v = ckpt.get("source_v") if isinstance(ckpt, dict) else "?"
@@ -5122,6 +5238,7 @@ def _official_smoke_contracts(quality, failures):
 
 _ARCHITECTURE_FOCUS_LAYERS = {
     "national_runtime_v3_migration": "runtime_architecture",
+    "national_runtime_v4_state_learning": "runtime_architecture",
     "incremental_match_model": "opponent_model",
     "reusable_precompute": "precompute",
     "deadline_refinement": "runtime_architecture",
@@ -5136,20 +5253,147 @@ _ARCHITECTURE_CHECK_FILES = {
     "killable_decision_runtime": ["national_bot.py"],
     "fast_strategy_baseline": ["strategy.py"],
     "incremental_refinement_protocol": ["strategy.py"],
+    "budget_scaled_refinement": ["strategy.py", "simulation.py"],
     "decision_path_no_external_io": ["strategy.py", "postflop.py", "opponent.py"],
     "decision_path_no_full_history_scan": ["strategy.py", "opponent.py", "state.py"],
     "decision_path_no_large_runtime_tables": ["simulation.py", "card_utils.py", "strategy.py"],
     "precompute_lookup_path": ["precompute.py", "card_utils.py", "simulation.py", "strategy.py"],
     "persistent_match_memory": ["national_bot.py"],
+    "terminal_response_memory": ["national_bot.py"],
+    "showdown_range_posterior": ["national_bot.py"],
+    "authoritative_hand_context": ["national_bot.py"],
     "incremental_opponent_model": ["strategy.py", "opponent.py", "state.py"],
+    "terminal_response_adaptation": ["strategy.py", "opponent.py"],
+    "showdown_range_adaptation": ["strategy.py", "opponent.py", "simulation.py"],
+    "semantic_line_reachability": ["strategy.py", "donk_probe.py"],
 }
+
+_STATE_LEARNING_ORACLE_REFS = [
+    "docs/official-raise-boundary-oracle-2026-07-11.md",
+    "docs/official-terminal-settlement-oracle-2026-07-11.md",
+]
+
+
+def _detected_artifact_consumer(artifact):
+    """Return a schema consumer bound to an actual detector call-chain node."""
+    candidates = []
+    for location in artifact.get("consumer_locations") or []:
+        for segment in str(location).split("->"):
+            match = re.fullmatch(
+                r"([A-Za-z_][A-Za-z0-9_]*)\.py:([A-Za-z_][A-Za-z0-9_]*)",
+                segment,
+            )
+            if match:
+                candidates.append(f"{match.group(1)}.{match.group(2)}")
+    for preferred in ("get_baseline_action", "get_action"):
+        for candidate in candidates:
+            if candidate.endswith(f".{preferred}"):
+                return candidate
+    return candidates[0] if candidates else "strategy.get_baseline_action"
+
+
+def _candidate_consumed_precompute_contracts(candidate_capabilities):
+    """Translate proven candidate artifacts into repair declarations.
+
+    Static evidence owns identity, build phase, bound, and consumer. Dynamic
+    evidence supplies measured key shape, bytes, and import latency. This keeps a
+    repair attached to the candidate's real artifact instead of inventing a
+    generic lookup whenever an unrelated architecture check fails.
+    """
+    if not isinstance(candidate_capabilities, dict):
+        return []
+    precompute = candidate_capabilities.get("precompute_evidence") or {}
+    dynamic_rows = {
+        (str(row.get("owner_file") or ""), str(row.get("name") or "")): row
+        for row in (
+            (candidate_capabilities.get("dynamic_runtime_probe") or {}).get("artifacts")
+            or []
+        )
+        if isinstance(row, dict)
+    }
+    contracts = []
+    static_artifacts = [
+        artifact
+        for artifact in precompute.get("consumed_artifacts") or []
+        if isinstance(artifact, dict)
+    ]
+    static_artifacts.sort(key=lambda artifact: (
+        not bool(dynamic_rows.get((
+            str(artifact.get("location") or "").split(":", 1)[0],
+            str(artifact.get("name") or ""),
+        ), {}).get("ok")),
+        str(artifact.get("location") or ""),
+        str(artifact.get("name") or ""),
+    ))
+    for artifact in static_artifacts:
+        owner_file = str(artifact.get("location") or "").split(":", 1)[0]
+        name = str(artifact.get("name") or "").strip()
+        if not owner_file.endswith(".py") or len(name) < 2:
+            continue
+        dynamic = dynamic_rows.get((owner_file, name)) or {}
+        raw_shape = str(dynamic.get("observed_key_shape") or "int")
+        key_shape = (
+            raw_shape
+            if re.fullmatch(PRECOMPUTE_KEY_SHAPE_PATTERN, raw_shape)
+            else "int"
+        )
+        entries = max(1, int(artifact.get("bound_entries") or 1))
+        measured_bytes = max(262_144, int(dynamic.get("deep_bytes") or 0))
+        measured_ms = max(
+            500,
+            int(float(dynamic.get("import_elapsed_ms") or 0) + 0.999),
+        )
+        contracts.append({
+            "name": name,
+            "owner_file": owner_file,
+            "build_phase": str(artifact.get("build_phase") or "module_import"),
+            "max_build_ms": min(PRECOMPUTE_MAX_BUILD_MS, measured_ms),
+            "max_entries": min(PRECOMPUTE_MAX_ENTRIES, entries),
+            "max_bytes": min(PRECOMPUTE_MAX_BYTES, measured_bytes),
+            "key_shape": key_shape,
+            "consumer": _detected_artifact_consumer(artifact),
+            "fallback": "legal_baseline",
+        })
+        break
+    return contracts
+
+
+def _default_state_learning_contract(focus_id, skill_layer, required_checks):
+    if focus_id != "national_runtime_v4_state_learning":
+        return None
+    required = {str(item) for item in required_checks or []}
+    work_primitive = None
+    profile_dimensions = []
+    line_controls = []
+    if "precompute_lookup_path" in required or skill_layer == "precompute":
+        work_primitive = "bounded_precompute_lookup"
+    elif "terminal_response_adaptation" in required:
+        profile_dimensions = ["terminal_response"]
+    elif "showdown_range_adaptation" in required:
+        profile_dimensions = ["showdown_range"]
+    elif "incremental_opponent_model" in required or skill_layer in {
+        "match_memory",
+        "opponent_model",
+    }:
+        profile_dimensions = ["action_profile"]
+    elif "semantic_line_reachability" in required or skill_layer == "line_template":
+        line_controls = ["donk"]
+    else:
+        work_primitive = "sample_counted_candidate_batch"
+    return {
+        "work_primitive": work_primitive,
+        "profile_dimensions": profile_dimensions,
+        "line_controls": line_controls,
+        "oracle_refs": list(_STATE_LEARNING_ORACLE_REFS),
+    }
 
 
 def _architecture_default_runtime_contract(
     focus_id,
     skill_layer,
-    owner_file,
+    owner_file=None,
     required_checks=(),
+    candidate_capabilities=None,
 ):
     """Return a strict fallback contract for deterministic/crossover repair plans."""
     required_checks = {str(item) for item in required_checks or []}
@@ -5157,6 +5401,11 @@ def _architecture_default_runtime_contract(
         "decision": None,
         "precompute_artifacts": [],
         "match_memory": None,
+        "state_learning": _default_state_learning_contract(
+            focus_id,
+            skill_layer,
+            required_checks,
+        ),
         "official_feedback_refs": [],
         "forbidden_runtime_work": [
             "full-match requests/responses/showdowns scan inside the decision path",
@@ -5164,12 +5413,25 @@ def _architecture_default_runtime_contract(
             "unbounded combinatorial construction per decision",
         ],
     }
+    state_learning = contract.get("state_learning") or {}
+    primary_work = state_learning.get("work_primitive")
+    primary_profiles = set(state_learning.get("profile_dimensions") or [])
     if (
         skill_layer in {"match_memory", "opponent_model"}
-        or focus_id in {"incremental_match_model", "national_runtime_v3_migration"}
+        or focus_id in {
+            "incremental_match_model",
+            "national_runtime_v3_migration",
+        }
+        or primary_profiles
         or required_checks.intersection({
             "persistent_match_memory",
+            "terminal_response_memory",
+            "showdown_range_posterior",
+            "authoritative_hand_context",
             "incremental_opponent_model",
+            "terminal_response_adaptation",
+            "showdown_range_adaptation",
+            "semantic_line_reachability",
             "decision_path_no_full_history_scan",
         })
     ):
@@ -5186,8 +5448,10 @@ def _architecture_default_runtime_contract(
             ],
             "snapshot_field": "opponent_runtime",
             "max_recent_hands": 8,
-            "prior_rule": "Beta-style prior with weight 8 before observed actions",
-            "confidence_rule": "actions / (actions + 24)",
+            "prior_rule": "beta_prior_weight_8",
+            "confidence_rule": (
+                "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
+            ),
             "adaptation_cap": 0.65,
             "consumer": "strategy.get_baseline_action",
         }
@@ -5198,14 +5462,17 @@ def _architecture_default_runtime_contract(
             "bounded_runtime_enumeration",
             "national_runtime_v3_migration",
         }
+        or primary_work == "bounded_precompute_lookup"
         or required_checks.intersection({
             "precompute_lookup_path",
             "decision_path_no_large_runtime_tables",
         })
     ):
-        contract["precompute_artifacts"] = [{
+        contract["precompute_artifacts"] = _candidate_consumed_precompute_contracts(
+            candidate_capabilities
+        ) or [{
             "name": "bounded_decision_lookup",
-            "owner_file": owner_file,
+            "owner_file": "precompute.py",
             "build_phase": "module_import",
             "max_build_ms": 500,
             "max_entries": 65_536,
@@ -5221,11 +5488,13 @@ def _architecture_default_runtime_contract(
             "decision_path_purity",
             "national_runtime_v3_migration",
         }
+        or primary_work == "sample_counted_candidate_batch"
         or required_checks.intersection({
             "decision_time_budget_visible",
             "killable_decision_runtime",
             "fast_strategy_baseline",
             "incremental_refinement_protocol",
+            "budget_scaled_refinement",
             "decision_path_no_external_io",
         })
     ):
@@ -5251,6 +5520,8 @@ def _merge_runtime_contract_floor(inherited, floor_contract):
         result["decision"] = deepcopy(inherited["decision"])
     if inherited.get("match_memory") is not None:
         result["match_memory"] = deepcopy(inherited["match_memory"])
+    if inherited.get("state_learning") is not None:
+        result["state_learning"] = deepcopy(inherited["state_learning"])
     inherited_artifacts = [
         deepcopy(item)
         for item in inherited.get("precompute_artifacts") or []
@@ -5333,8 +5604,9 @@ def _architecture_transition_repair_files(transition, candidate_dir=None):
             add_file(rel)
         for rel in _ARCHITECTURE_CHECK_FILES.get(check_id, []):
             add_file(rel)
-    for rel in focus.get("suggested_files") or []:
-        add_file(rel)
+    if not files:
+        for rel in focus.get("suggested_files") or []:
+            add_file(rel)
     return files
 
 
@@ -5397,6 +5669,12 @@ def _architecture_contracts(quality, ckpt):
         return []
     target_files = target_files[:3]
     primary = target_files[0]
+    if primary != "national_bot.py":
+        # national_bot.py is refreshed by the system template. Provider failures
+        # may mention it as context, but that must not silently widen a strategy
+        # repair worker's write boundary. A genuine entrypoint repair still keeps
+        # it when it is the primary target.
+        target_files = [item for item in target_files if item != "national_bot.py"]
     precompute_owner = next(
         (
             item for item in target_files
@@ -5409,15 +5687,23 @@ def _architecture_contracts(quality, ckpt):
         skill_layer,
         precompute_owner,
         required_checks=failing_ids,
+        candidate_capabilities=candidate,
     )
     runtime_contract = _merge_runtime_contract_floor(inherited_contract, floor_contract)
+    validated_runtime_contract = RuntimeContract.model_validate(runtime_contract)
+    primary_checks = (
+        list(validated_runtime_contract.state_learning.primary_checks())
+        if validated_runtime_contract.state_learning is not None
+        else []
+    )
+    task_required_checks = list(dict.fromkeys([*failing_ids, *primary_checks]))
     return [{
         "blocker": "runtime_architecture",
         "file": primary,
         "files": target_files,
         "must_change_files": [primary],
         "focus_id": focus_id,
-        "required_checks": failing_ids,
+        "required_checks": task_required_checks,
         "preserve_checks": list(policy.get("baseline_passed_checks") or []),
         "skill_layer": skill_layer,
         "evidence": "\n".join(evidence_lines),
@@ -5879,7 +6165,68 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
         for artifact in runtime_contract.get("precompute_artifacts") or []:
             if isinstance(artifact, dict) and artifact.get("owner_file"):
                 owner_files.append(Path(str(artifact["owner_file"])).name)
-        files_allowed = list(dict.fromkeys([*targets, *owner_files]))
+        state_learning = runtime_contract.get("state_learning") or {}
+        if (
+            state_learning.get("profile_dimensions")
+            or state_learning.get("line_controls")
+        ):
+            owner_files.append("national_bot.py")
+        target_set = set(targets)
+        read_only_dependencies = list(dict.fromkeys(
+            owner
+            for owner in owner_files
+            if owner == "national_bot.py" and owner not in target_set
+        ))
+        files_allowed = list(dict.fromkeys(
+            owner
+            for owner in owner_files
+            if owner not in target_set and owner not in read_only_dependencies
+        ))
+        try:
+            selected_state = RuntimeContract.model_validate(runtime_contract).state_learning
+            primary_innovation = (
+                selected_state.primary_innovation() if selected_state is not None else ""
+            )
+        except Exception:
+            primary_innovation = ""
+        primary_guidance = {
+            "sample_counted_candidate_batch": (
+                "- Primary innovation: publish a sanitized legal baseline, then run real "
+                "deadline-scaled candidate batches. Candidate-reported `sample_count`, "
+                "`confidence`, and `complete` are diagnostic only; hard proof is system-trusted "
+                "iterator steps, CPU/elapsed work, true StopIteration exhaustion, and the sanitized "
+                "action trajectory. Stop early at low uncertainty. Design for the local 2-second "
+                "strength envelope; the official 55-second ceiling is safety headroom, not a target "
+                "to spend on every decision.\n"
+            ),
+            "bounded_precompute_lookup": (
+                "- Primary innovation: consume the declared candidate artifact (or create the "
+                "declared `precompute.py` fallback), enforce its entry/byte/build bounds, and "
+                "prove a reachable decision lookup plus legal empty-mapping fallback in telemetry.\n"
+            ),
+            "action_profile": (
+                "- Primary innovation: consume the `action_profile` fields from bounded "
+                "`opponent_runtime`, scale by confidence, and prove a sanitized-action "
+                "counterfactual plus telemetry.\n"
+            ),
+            "terminal_response": (
+                "- Primary innovation: consume terminal-response fold-to-raise/fold-to-jam/"
+                "river-overcall posteriors with confidence and prove a sanitized-action "
+                "counterfactual plus telemetry.\n"
+            ),
+            "showdown_range": (
+                "- Primary innovation: consume the selection-aware `showdown_range` posterior "
+                "with confidence and prove a tight/loose sanitized-action counterfactual plus telemetry.\n"
+            ),
+            "donk": (
+                "- Primary innovation: consume `hand_runtime.can_donk` and prove its one-predicate "
+                "positive/control transcript changes a sanitized action and telemetry.\n"
+            ),
+            "delayed_probe": (
+                "- Primary innovation: consume `hand_runtime.can_delayed_probe` and prove its "
+                "one-predicate positive/control transcript changes a sanitized action and telemetry.\n"
+            ),
+        }.get(primary_innovation, "")
         if skill_layer in {"match_memory", "opponent_model"}:
             role = "Opponent Modeler"
         else:
@@ -5893,15 +6240,16 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             f"- Parent checks that must not regress: {', '.join(preserve_checks)}\n"
             f"- Target files: {', '.join(f'`{item}`' for item in targets)}\n"
             f"- Files that must change: {', '.join(f'`{item}`' for item in must_change)}\n"
+            f"- Read-only system dependencies: {', '.join(f'`{item}`' for item in read_only_dependencies) or 'none'}; never edit these files.\n"
+            f"- Typed primary innovation: `{primary_innovation or 'none'}`. Other strategy dimensions are shadow/advisory unless listed in parent preservation checks.\n"
             f"- Detector evidence:\n{contract.get('evidence') or 'transition hard gate failed'}\n\n"
             "Executable RuntimeContract (implement it; do not merely copy its names):\n"
             f"```json\n{json.dumps(runtime_contract, ensure_ascii=False, indent=2)}\n```\n\n"
             "Required method:\n"
             "- Read every target plus the source-parent counterpart before editing. Preserve the legal fast baseline.\n"
             "- Implement the provider-to-consumer behavior in the real get_action call graph. A class, cache, label, comment, or telemetry field that the decision path does not consume is failure.\n"
-            "- For opponent memory, consume `opponent_runtime` incrementally and scale adaptation by `confidence`; do not rescan full-match requests/responses/showdowns.\n"
-            "- For precompute, bound entries and bytes, construct outside the hot path, and prove a reachable decision helper performs the lookup.\n"
-            "- For deadline refinement, compute a legal fallback first, use a monotonic deadline with headroom below 60 seconds, and keep a finite work cap.\n"
+            f"{primary_guidance}"
+            "- Treat wrapper-provided `hand_runtime`/`opponent_runtime` as bounded authoritative inputs; do not rescan full-match requests/responses/showdowns.\n"
             "- Do not weaken native TCP, official wire, card mapping, or any parent capability to make the selected check pass.\n"
             "- Run `evaluate_national_capabilities` on the candidate and report the required check states before finishing."
         )
@@ -5910,6 +6258,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "role": role,
             "target_files": targets,
             "files_allowed": files_allowed,
+            "read_only_dependencies": read_only_dependencies,
             "must_change_files": must_change,
             "worker_prompt": prompt,
             "task_kind": task_kind,
@@ -6636,6 +6985,7 @@ async def execute_workers(args):
 
     review_rework_checkpoint = _is_review_rework_checkpoint(ckpt)
     critic_rework_checkpoint = _is_critic_rework_checkpoint(ckpt)
+    official_rework_checkpoint = _is_official_rework_checkpoint(ckpt)
     replace_checkpoint_tasks = False
 
     def _finish_declared_scope_ledger_only(ledger_files):
@@ -6683,6 +7033,26 @@ async def execute_workers(args):
             "costs": getattr(_get_ui(), "costs", {}) if _get_ui() else {},
             "audit_focus_areas": [],
         })
+
+    if official_rework_checkpoint:
+        checkpoint_tasks = _checkpoint_master_plan(ckpt).get("tasks", [])
+        supplied_tasks = tasks
+        tasks = _official_repair_tasks(ckpt, reviewer_feedback)
+        replace_checkpoint_tasks = True
+        log_system_event(
+            "pipeline.official_repair_tasks_forced",
+            "warn",
+            f"Replaced prior/supplied tasks with deterministic official repair for v{next_v}",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "stage": ckpt.get("stage"),
+                "old_target_files": sorted(_task_target_filenames(checkpoint_tasks)),
+                "supplied_target_files": sorted(_task_target_filenames(supplied_tasks)),
+                "new_target_files": sorted(_task_target_filenames(tasks)),
+                "worker_id": tasks[0].get("worker_id") if tasks else None,
+            },
+        )
 
     # Fallback: if tasks not provided, load from checkpoint master_plan.
     # This happens when the orchestrator session is fresh (not resumed) and
@@ -7066,10 +7436,11 @@ async def execute_workers(args):
     task_skipper = None
     rework_plan_metadata = None
     precommit_rework_count_for_write = None
+    official_rework_count_for_write = None
     mechanical_trim_results = []
     if reviewer_feedback and ckpt.get("stage") in (
         "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked",
-        "precommit_failed", "repair_planned", "rework_running"
+        "precommit_failed", "official_failed", "repair_planned", "rework_running"
     ):
         rework_kind = "quality_repair" if ckpt.get("stage") == "quality_failed" else "gate_rework"
         if ckpt.get("stage") == "official_failed":
@@ -7108,6 +7479,7 @@ async def execute_workers(args):
         elif _is_official_rework_checkpoint(ckpt) or any("official_repair" in kind for kind in task_kinds):
             rework_kind = "official_repair"
         is_precommit_rework = rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt)
+        is_official_rework = rework_kind == "official_repair" or _is_official_rework_checkpoint(ckpt)
         if is_precommit_rework:
             prior_rework_count = int(ckpt.get("precommit_rework_count") or 0)
             precommit_rework_count_for_write = prior_rework_count + 1
@@ -7138,6 +7510,47 @@ async def execute_workers(args):
                     "precommit_rework_count": prior_rework_count,
                     "max_rework_rounds": MAX_PRECOMMIT_REWORK_ROUNDS,
                     "directive": "Abandon this generation; repeated precommit repair did not converge.",
+                })
+        if is_official_rework:
+            prior_official_rework_count = int(ckpt.get("official_rework_count") or 0)
+            official_rework_count_for_write = prior_official_rework_count + 1
+            if official_rework_count_for_write > MAX_OFFICIAL_REWORK_ROUNDS:
+                message = (
+                    f"OFFICIAL_REWORK_CIRCUIT_BREAKER: v{next_v} already used "
+                    f"{prior_official_rework_count} official repair round(s) "
+                    f"(max {MAX_OFFICIAL_REWORK_ROUNDS}). Abandon this generation; "
+                    "repeated formal certification repair did not converge."
+                )
+                log_system_event(
+                    "pipeline.official_rework_circuit_breaker",
+                    "error",
+                    message,
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "stage": ckpt.get("stage"),
+                        "official_rework_count": prior_official_rework_count,
+                        "max_rework_rounds": MAX_OFFICIAL_REWORK_ROUNDS,
+                        "task_targets": sorted(_task_target_filenames(tasks)),
+                    },
+                )
+                abandon_result = await _force_abandon_official_rework_generation(
+                    next_v,
+                    source_v,
+                )
+                return _json_tool_result({
+                    "error": "OFFICIAL_REWORK_CIRCUIT_BREAKER",
+                    "message": message,
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "official_rework_count": prior_official_rework_count,
+                    "max_rework_rounds": MAX_OFFICIAL_REWORK_ROUNDS,
+                    "abandoned": bool(abandon_result.get("abandoned")),
+                    "abandon_result": abandon_result,
+                    "directive": (
+                        "This generation was abandoned by the tool layer after "
+                        "repeated official repair failed to converge. Start a fresh direction."
+                    ),
                 })
         source_dir_r = get_bot_dir(source_v)
         reset_before_rework = _should_reset_before_rework(ckpt, tasks)
@@ -7260,7 +7673,8 @@ async def execute_workers(args):
                                   master_plan=retry_plan,
                                   reviewer_feedback=reviewer_feedback,
                                   worker_failure_count=ckpt.get("worker_failure_count", 0),
-                                  precommit_rework_count=precommit_rework_count_for_write)
+                                  precommit_rework_count=precommit_rework_count_for_write,
+                                  official_rework_count=official_rework_count_for_write)
         task_kinds = {
             str(task.get("task_kind") or "")
             for task in tasks or []
@@ -7472,7 +7886,8 @@ async def execute_workers(args):
                                   master_plan=running_plan,
                                   reviewer_feedback=reviewer_feedback,
                                   worker_failure_count=ckpt.get("worker_failure_count", 0) if ckpt else 0,
-                                  precommit_rework_count=precommit_rework_count_for_write)
+                                  precommit_rework_count=precommit_rework_count_for_write,
+                                  official_rework_count=official_rework_count_for_write)
 
     ui = _get_ui()
     from worker_boundary import diff_snapshot, restore_python_files, snapshot_python_files
@@ -7619,7 +8034,7 @@ async def execute_workers(args):
             )
             if ckpt else {"tasks": tasks}
         )
-        if ckpt and ckpt.get("stage") in {"quality_failed", "precommit_failed", "repair_planned", "rework_running"}:
+        if ckpt and ckpt.get("stage") in {"quality_failed", "precommit_failed", "official_failed", "repair_planned", "rework_running"}:
             existing_work = rework_plan_metadata or (
                 (ckpt.get("master_plan") or {}).get("work_item")
                 if isinstance(ckpt.get("master_plan"), dict) else None
@@ -7646,6 +8061,7 @@ async def execute_workers(args):
                                   worker_failure_count=failure_count,
                                   audit_context=_audit_ctx,
                                   precommit_rework_count=precommit_rework_count_for_write,
+                                  official_rework_count=official_rework_count_for_write,
                                   **checkpoint_kwargs)
     else:
         # Increment failure count on worker failure; successful batches do not
@@ -7736,6 +8152,7 @@ async def execute_workers(args):
                                   worker_failure_count=next_failure_count,
                                   audit_context=failure_audit_context,
                                   precommit_rework_count=precommit_rework_count_for_write,
+                                  official_rework_count=official_rework_count_for_write,
                                   touch_stage_timestamp=True)
 
     sev = "success" if success else "error"

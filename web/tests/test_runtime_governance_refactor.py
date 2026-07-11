@@ -415,6 +415,21 @@ def test_oversized_source_does_not_inflate_child_limit(tmp_path):
     assert oversized == [("strategy.py", 2178, 2147)]
 
 
+def test_system_generated_national_entry_uses_repository_hard_cap(tmp_path):
+    import code_verification
+
+    source = tmp_path / "source"
+    child = tmp_path / "child"
+    source.mkdir()
+    child.mkdir()
+    (source / "national_bot.py").write_text("x = 1\n" * 1400, encoding="utf-8")
+    (child / "national_bot.py").write_text("x = 1\n" * 2326, encoding="utf-8")
+
+    _total, oversized = code_verification.check_code_size(child, source_dir=source)
+
+    assert oversized == []
+
+
 def test_oversized_source_allows_child_to_match_or_shrink(tmp_path):
     """A child matching or shrinking an oversized source must pass the size gate.
 

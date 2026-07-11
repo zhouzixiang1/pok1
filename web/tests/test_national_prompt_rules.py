@@ -150,6 +150,92 @@ def test_prompts_require_national_runtime_architecture_contracts():
     assert "Never use EXE" in critic_prompt
 
 
+def test_native_prompts_require_authoritative_terminal_repair_and_memory():
+    master = _prompt("master_prompt.md")
+    worker = _prompt("worker_profile_national_native.md")
+    reviewer = _prompt("reviewer_prompt.md")
+
+    for prompt in (master, worker, reviewer):
+        assert "street-closing" in prompt
+        assert "exactly once" in prompt
+        assert "req['hand_runtime']" in prompt
+        assert "req['opponent_runtime']" in prompt
+        assert "old `requests`" in prompt or "archived `requests`" in prompt
+        assert "showdown_range" in prompt
+        assert "selection-bias" in prompt
+        assert "terminal" in prompt and "fold" in prompt and "call" in prompt
+
+    required_hand_runtime_fields = (
+        "preflop_aggressor",
+        "preflop_spot",
+        "hero_position",
+        "previous_street",
+        "can_donk",
+        "can_delayed_probe",
+        "street_open",
+        "spr",
+        "pot_odds",
+    )
+    for field in required_hand_runtime_fields:
+        assert field in master
+        assert field in worker
+        assert field in reviewer
+
+
+def test_native_prompts_require_transcript_reachability_and_control_pairs():
+    master = _prompt("master_prompt.md")
+    worker = _prompt("worker_profile_national_native.md")
+    reviewer = _prompt("reviewer_prompt.md")
+
+    for prompt in (master, worker, reviewer):
+        assert "producer -> consumer -> sanitized action -> telemetry" in prompt
+        assert "firing tuple" in prompt
+        assert "one-predicate control" in prompt
+        assert "action difference" in prompt
+        assert "hero BB" in prompt
+        assert "SB raise" in prompt
+        assert "official `call`" in prompt or "official wire `call`" in prompt
+        assert "opponent_checked_back" in prompt
+        assert "check/check" in prompt
+
+
+def test_native_prompts_reject_fake_refinement_and_threshold_only_innovation():
+    master = _prompt("master_prompt.md")
+    worker = _prompt("worker_profile_national_native.md")
+    reviewer = _prompt("reviewer_prompt.md")
+
+    for prompt in (master, worker, reviewer):
+        assert "strictly under 250 ms" in prompt
+        assert "sample_count" in prompt
+        assert "original baseline" in prompt or "input baseline" in prompt
+        assert "fixed-seed" in prompt
+        assert "improved action" in prompt or "action improves" in prompt
+
+    assert "one attributable structural hypothesis" in master
+    assert "threshold-only" in master
+    assert "unreachable refinement facade" in master
+
+
+def test_native_prompts_preserve_both_20260711_official_oracles():
+    master = _prompt("master_prompt.md")
+    worker = _prompt("worker_profile_national_native.md")
+    reviewer = _prompt("reviewer_prompt.md")
+
+    for prompt in (master, worker, reviewer):
+        normalized = " ".join(prompt.split())
+        assert "Exact" in normalized and "2x" in normalized
+        assert "1..70" in normalized
+        assert "1..69" in normalized
+        assert "STATE:0..69" in normalized
+        assert "69 settlements alone" in normalized
+        assert "hand-70 `earnChips`" in normalized
+        assert "Glicko" in normalized and "H2H" in normalized
+        assert "official-full-v5" in normalized
+
+    assert "advisory context only" in master
+    assert "Only deterministic official verdict/issues/evidence" in master
+
+
 def test_prompts_never_promote_web_arena_to_official_or_strength_authority():
     orchestrator = _prompt("orchestrator.md")
     worker = _prompt("worker_profile_national_native.md")

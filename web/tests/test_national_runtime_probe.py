@@ -2,7 +2,7 @@ from pathlib import Path
 
 import national_runtime_probe
 from national_native import NATIVE_BOT_TEMPLATE
-from national_runtime_probe_scenarios import DECISION_SCENARIOS
+from national_runtime_probe_scenarios import DECISION_SCENARIOS, LINE_SCENARIO_PAIRS
 
 
 def _write_probe_bot(root: Path) -> Path:
@@ -18,14 +18,43 @@ def _write_probe_bot(root: Path) -> Path:
         encoding="utf-8",
     )
     (root / "strategy.py").write_text(
+        "import time\n"
         "POSTFLOP_TABLE = {i: i / 31.0 for i in range(32)}\n"
-        "def get_action(req, current_request_view):\n"
+        "def _choose(req):\n"
         "    profile = req.get('opponent_runtime', {})\n"
+        "    hand = req.get('hand_runtime', {})\n"
         "    if req.get('public_cards'):\n"
         "        POSTFLOP_TABLE.get(12, 0.0)\n"
+        "    if hand.get('can_donk'):\n"
+        "        return 600\n"
+        "    if hand.get('can_delayed_probe'):\n"
+        "        return 500\n"
+        "    if profile.get('fold_to_jam_samples', 0) >= 10:\n"
+        "        pressure = profile.get('fold_to_raise', 0.0) + profile.get('fold_to_jam_rate', 0.0) - profile.get('river_overcall_freq', 0.0)\n"
+        "        return -2 if pressure > 0.5 else 0\n"
+        "    revealed = profile.get('showdown_range', {})\n"
+        "    if (revealed.get('selection_scope') == 'reached_showdown_only' and revealed.get('confidence', 0.0) > 0.1 and revealed.get('adaptation_weight', 0.0) > 0.0 and revealed.get('samples', 0) >= 10 and revealed.get('tightness', 0.0) > 0.30):\n"
+        "        return -1\n"
         "    if profile.get('adaptation_weight', 0.0) > 0.1 and profile.get('vpip', 0.0) > 0.5:\n"
         "        return -2\n"
-        "    return 0\n",
+        "    return 0\n"
+        "def get_action(req, current_request_view):\n"
+        "    return _choose(req)\n"
+        "def get_baseline_action(req, current_request_view):\n"
+        "    return _choose(req)\n"
+        "def iter_refinements(req, current_request_view, baseline, deadline):\n"
+        "    refined = -1 if baseline == 0 and req.get('to_call', 0) > 0 else baseline\n"
+        "    for samples in range(1, 17):\n"
+        "        if time.monotonic() >= deadline:\n"
+        "            return\n"
+        "        work = 0\n"
+        "        for outer in range(100):\n"
+        "            for unit in range(100):\n"
+        "                for lane in range(4):\n"
+        "                    work += (outer * unit * samples + lane) % 17\n"
+        "        if work < 0:\n"
+        "            refined = baseline\n"
+        "        yield {'action': refined, 'sample_count': samples, 'confidence': samples / 16.0, 'complete': samples == 16}\n",
         encoding="utf-8",
     )
     return root
@@ -37,6 +66,32 @@ def _artifact_request():
         "name": "POSTFLOP_TABLE",
         "kind": "module_mapping",
     }]
+
+
+def test_runtime_scenario_bank_uses_coherent_national_transcripts():
+    by_id = {scenario["id"]: scenario for scenario in DECISION_SCENARIOS}
+    for scenario in DECISION_SCENARIOS:
+        hero_blind = 50 if scenario["is_sb"] else 100
+        opponent_blind = 100 if scenario["is_sb"] else 50
+        committed = [hero_blind, opponent_blind]
+        rounds = []
+        for record in scenario["history"]:
+            assert record["player_id"] in {0, 1}
+            rounds.append(record["round"])
+            committed[record["player_id"]] += int(record.get("committed", 0) or 0)
+        assert rounds == sorted(rounds)
+        assert sum(committed) == scenario["pot"], scenario["id"]
+        assert max(0, scenario["opponent_stage_bet"] - scenario["my_stage_bet"]) >= 0
+
+    for pair in LINE_SCENARIO_PAIRS:
+        positive = by_id[pair["positive"]]
+        negative = by_id[pair["negative"]]
+        assert positive["stage"] == negative["stage"]
+        assert positive["my_cards"] == negative["my_cards"]
+        assert positive["public_cards"] == negative["public_cards"]
+        assert positive["pot"] == negative["pot"]
+        assert positive["expected_hand_runtime"][pair["flag"]] is True
+        assert negative["expected_hand_runtime"][pair["flag"]] is False
 
 
 def test_probe_measures_postflop_consumer_across_scenario_bank_and_caches(tmp_path):
@@ -89,7 +144,7 @@ def test_probe_infrastructure_failure_is_never_cached(monkeypatch, tmp_path):
 
     assert first["failure_class"] == "probe_infra"
     assert second["failure_class"] == "probe_infra"
-    assert len(calls) == 4
+    assert len(calls) == 2
 
 
 def test_probe_cache_is_bound_to_code_fingerprint(monkeypatch, tmp_path):
