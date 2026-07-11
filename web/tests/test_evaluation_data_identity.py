@@ -1,6 +1,8 @@
 import asyncio
 import json
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -116,6 +118,51 @@ def test_archive_rejects_unsafe_generation_snapshot_before_moving_ratings(tmp_pa
 
     assert ratings.is_file()
     assert not (results / "archive").exists()
+
+
+def test_archive_preflights_evaluator_imports_before_moving_ratings(tmp_path, monkeypatch):
+    results = tmp_path / "results"
+    results.mkdir()
+    ratings = results / "glicko_ratings.json"
+    ratings.write_text('{"national_v1": {}}\n', encoding="utf-8")
+
+    def broken_identity():
+        raise ModuleNotFoundError("sever")
+
+    monkeypatch.setattr(identity, "base_evaluation_identity", broken_identity)
+
+    with pytest.raises(ModuleNotFoundError, match="sever"):
+        identity.archive_and_initialize(results, reason="preflight failure")
+
+    assert ratings.is_file()
+    assert not (results / "archive").exists()
+
+
+def test_evaluation_identity_cli_imports_repo_packages_from_any_cwd(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    results = tmp_path / "results"
+    script = root / "scripts" / "evaluation_data_identity.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--results-dir",
+            str(results),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["base_identity"]["profile_id"].startswith(
+        "national-native-rating-authority-v2"
+    )
+    assert (results / identity.MANIFEST_NAME).is_file()
 
 
 def test_inline_native_eval_is_diagnostic_only(tmp_path, monkeypatch):

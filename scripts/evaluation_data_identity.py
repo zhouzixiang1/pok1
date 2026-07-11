@@ -10,7 +10,14 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "web" / "core"))
+CORE_DIR = ROOT / "web" / "core"
+if str(CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_DIR))
+if str(ROOT) not in sys.path:
+    # ``evaluation_data_identity`` imports the native evaluator identity, which
+    # in turn imports the repository-level ``sever`` package.  Executing this
+    # script by path sets sys.path[0] to ``scripts/``, not the repository root.
+    sys.path.insert(1, str(ROOT))
 
 from evaluation_data_identity import (  # noqa: E402
     archive_and_initialize,
