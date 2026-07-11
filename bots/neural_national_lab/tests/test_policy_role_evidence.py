@@ -48,6 +48,16 @@ def _evaluation(*, mean: float = 10.0, lower: float = 1.0) -> dict:
     }
 
 
+def _gate_evaluation(*, mean: float = 10.0, lower: float = 1.0) -> dict:
+    result = _evaluation(mean=mean, lower=lower)
+    result.update({
+        "config": result["selected_policy"],
+        "policy_search_performed": False,
+        "source_collection_complete": True,
+    })
+    return result
+
+
 def test_selection_phase_opens_only_selection_role() -> None:
     dataset = _Dataset()
 
@@ -164,3 +174,63 @@ def test_result_write_then_gate_open_preserves_candidate_binding(
     )
     assert gate["deployment_policy_value"] is False
     assert gate["strength_evidence"] is False
+
+
+def test_policy_gate_result_binds_fixed_policy_and_authorizes_only_build(
+    tmp_path: Path,
+) -> None:
+    dataset = _Dataset()
+    selection_path = tmp_path / "selection.json"
+    selection_path.write_text("{}")
+    phase = evidence.open_policy_gate(
+        dataset,
+        candidate_sha256=CANDIDATE,
+        selection_result_path=selection_path,
+    )
+
+    result = evidence.build_policy_gate_result(phase, _gate_evaluation())
+    path = tmp_path / "gate.json"
+    digest = evidence.write_policy_gate_result(path, result)
+
+    assert result["passed"] is True
+    assert result["native_candidate_build_authorized"] is True
+    assert result["deployment_policy_value"] is False
+    assert result["strength_evidence"] is False
+    assert result["selection_result_sha256"] == "e" * 64
+    assert len(result["selected_policy_sha256"]) == 64
+    assert len(digest) == 64
+
+
+def test_failed_policy_gate_does_not_authorize_native_candidate() -> None:
+    dataset = _Dataset()
+    phase = evidence.open_policy_gate(
+        dataset,
+        candidate_sha256=CANDIDATE,
+        selection_result_path=Path("selection.json"),
+    )
+
+    result = evidence.build_policy_gate_result(
+        phase, _gate_evaluation(mean=-1.0)
+    )
+
+    assert result["passed"] is False
+    assert result["native_candidate_build_authorized"] is False
+    assert any("negative_mean" in error for error in result["errors"])
+
+
+def test_policy_gate_rejects_grid_search_or_policy_substitution() -> None:
+    dataset = _Dataset()
+    phase = evidence.open_policy_gate(
+        dataset,
+        candidate_sha256=CANDIDATE,
+        selection_result_path=Path("selection.json"),
+    )
+    searched = _gate_evaluation()
+    searched["policy_search_performed"] = True
+    with pytest.raises(ValueError, match="invalid offline policy gate"):
+        evidence.build_policy_gate_result(phase, searched)
+
+    substituted = _gate_evaluation()
+    substituted["config"] = {"margin": 999.0}
+    with pytest.raises(ValueError, match="invalid offline policy gate"):
+        evidence.build_policy_gate_result(phase, substituted)

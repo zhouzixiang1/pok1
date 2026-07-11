@@ -253,3 +253,91 @@ def open_policy_gate(
         "deployment_policy_value": False,
         "strength_evidence": False,
     }
+
+
+def build_policy_gate_result(
+    phase: Mapping[str, Any],
+    evaluation: Mapping[str, Any],
+    *,
+    thresholds: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if (
+        phase.get("schema") != "policy_gate_phase_v1"
+        or phase.get("deployment_policy_value") is not False
+        or phase.get("strength_evidence") is not False
+        or evaluation.get("offline_estimand") != POLICY_OFFLINE_ESTIMAND
+        or evaluation.get("policy_search_performed") is not False
+        or evaluation.get("source_collection_complete") is not True
+        or evaluation.get("deployment_policy_value") is not False
+        or evaluation.get("strength_evidence") is not False
+        or evaluation.get("config") != evaluation.get("selected_policy")
+    ):
+        raise ValueError("invalid offline policy gate evidence")
+    limits = _thresholds(thresholds)
+    errors = _gate_errors(evaluation, limits)
+    selected = evaluation.get("selected_policy")
+    selected_sha256 = (
+        _canonical_sha256(selected) if isinstance(selected, Mapping) else None
+    )
+    result = {
+        "schema": POLICY_GATE_RESULT_SCHEMA,
+        "passed": not errors,
+        "errors": errors,
+        "run_id": phase.get("run_id"),
+        "candidate_sha256": _digest(
+            phase.get("candidate_sha256"), field="candidate_sha256"
+        ),
+        "role_manifest_sha256": _digest(
+            phase.get("role_manifest_sha256"), field="role_manifest_sha256"
+        ),
+        "policy_gate_artifact_sha256": _digest(
+            phase.get("policy_gate_artifact_sha256"),
+            field="policy_gate_artifact_sha256",
+        ),
+        "selection_result_sha256": _digest(
+            phase.get("selection_result_sha256"),
+            field="selection_result_sha256",
+        ),
+        "evaluation_report_sha256": _canonical_sha256(evaluation),
+        "selected_policy_sha256": selected_sha256,
+        "offline_estimand": POLICY_OFFLINE_ESTIMAND,
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+        "native_candidate_build_authorized": not errors,
+        "thresholds": limits,
+        "summary": {
+            key: evaluation.get(key)
+            for key in (
+                "overrides",
+                "override_clusters",
+                "match_cluster_bootstrap_mean_ci",
+                "match_opponent_stratified_cluster_ci",
+                "by_opponent",
+            )
+        },
+    }
+    if result["passed"] and selected_sha256 is None:
+        raise RuntimeError("passing policy gate has no selected policy")
+    return result
+
+
+def write_policy_gate_result(path: Path, result: Mapping[str, Any]) -> str:
+    if result.get("schema") != POLICY_GATE_RESULT_SCHEMA:
+        raise ValueError("invalid policy gate result schema")
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(result, indent=2, sort_keys=True).encode()
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+    return hashlib.sha256(raw).hexdigest()

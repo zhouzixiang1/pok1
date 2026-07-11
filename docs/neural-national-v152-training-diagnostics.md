@@ -1034,6 +1034,26 @@ protected policy selection failed, the bundle records
 to override the rule policy. This is the required failure-safe behavior, not a
 candidate result.
 
+`evaluate_opponent_multitask_v3_policy_gate.py` now implements the next
+opponent-disjoint boundary. It accepts only a complete role dataset, formally
+calibrated ensemble, and passing hash-bound policy-selection result. The gate
+opens through `RoleDatasetAccess.open_role("policy_gate")`, evaluates exactly
+the frozen selected policy without another grid search, and recomputes override
+coverage, ordinary match-cluster CI, opponent-stratified cluster CI, and every
+opponent mean. Its result binds the selection-result file, gate-role artifact,
+selected-policy, and complete evaluation hashes. A pass authorizes only
+construction of a native development candidate; deployment-value and strength
+flags remain false. Synthetic tests demonstrate a pass with 16 overrides over
+eight clusters and two positive opponents, and rejection when either opponent
+mean is negative. Policy substitution or gate-time grid search is rejected as
+an invalid evidence contract.
+
+The real pass-9 invocation was intentionally rejected because the source
+collection is incomplete. The exposure ledger remained unchanged with no
+`policy_gate` event and no output directory was created. The complete neural-
+lab regression suite now passes 287 tests. This proves fail-closed gate wiring,
+not that any current policy has passed the gate.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
