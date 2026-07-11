@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 from typing import Any, Iterator
 
@@ -45,6 +46,8 @@ AUTHORITATIVE_FILES = (
     "match_history.jsonl",
     "rating_history.jsonl",
 )
+GENERATION_DIR_RE = re.compile(r"v[0-9]+")
+GENERATION_EVIDENCE_DIR = "evidence_snapshot"
 
 
 class EvaluationDataIdentityError(RuntimeError):
@@ -167,6 +170,41 @@ def current_evaluation_digest(results_dir: str | Path) -> str:
     return str(ensure_evaluation_data_identity(results_dir).get("manifest_digest") or "")
 
 
+def _generation_evidence_snapshots(results_dir: Path) -> list[Path]:
+    """Return safe, identity-bound generation snapshots below ``results_dir``.
+
+    H2H snapshots are derived from the authoritative rating payload and embed
+    its manifest digest.  They therefore belong to the same explicit migration
+    boundary as the top-level rating files.  Validate the complete set before
+    moving anything so a symlink or malformed path cannot make a partial
+    migration follow data outside the results directory.
+    """
+    snapshots: list[Path] = []
+    for version_dir in results_dir.iterdir():
+        if not GENERATION_DIR_RE.fullmatch(version_dir.name):
+            continue
+        if version_dir.is_symlink():
+            raise EvaluationDataIdentityError(
+                f"unsafe generation results path during evaluator migration: {version_dir.name}"
+            )
+        if not version_dir.is_dir():
+            continue
+        snapshot = version_dir / GENERATION_EVIDENCE_DIR
+        if snapshot.is_symlink():
+            raise EvaluationDataIdentityError(
+                "unsafe generation evidence snapshot during evaluator migration: "
+                f"{version_dir.name}/{GENERATION_EVIDENCE_DIR}"
+            )
+        if snapshot.exists() and not snapshot.is_dir():
+            raise EvaluationDataIdentityError(
+                "invalid generation evidence snapshot during evaluator migration: "
+                f"{version_dir.name}/{GENERATION_EVIDENCE_DIR}"
+            )
+        if snapshot.is_dir():
+            snapshots.append(snapshot)
+    return sorted(snapshots, key=lambda path: int(path.parent.name[1:]))
+
+
 def archive_and_initialize(
     results_dir: str | Path,
     *,
@@ -176,6 +214,7 @@ def archive_and_initialize(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     destination = root / "archive" / "evaluation_identity" / timestamp
     with _manifest_lock(root):
+        generation_snapshots = _generation_evidence_snapshots(root)
         destination.mkdir(parents=True, exist_ok=False)
         moved: list[str] = []
         for name in (*AUTHORITATIVE_FILES, MANIFEST_NAME):
@@ -183,6 +222,12 @@ def archive_and_initialize(
             if source.exists():
                 shutil.move(str(source), str(destination / name))
                 moved.append(name)
+        for snapshot in generation_snapshots:
+            relative = snapshot.relative_to(root)
+            archived = destination / "generation_snapshots" / relative
+            archived.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(snapshot), str(archived))
+            moved.append(relative.as_posix())
         (destination / "migration.json").write_text(
             json.dumps({
                 "archived_at": datetime.now().isoformat(timespec="seconds"),

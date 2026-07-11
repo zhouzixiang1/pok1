@@ -59,6 +59,65 @@ def test_archive_preserves_old_authoritative_data_before_fresh_manifest(tmp_path
     assert not (results / "glicko_ratings.json").exists()
 
 
+def test_archive_rotates_identity_bound_generation_snapshots(tmp_path, monkeypatch):
+    import evidence_snapshot
+    import evolution_infra
+
+    results = tmp_path / "web" / "core" / "results"
+    old_snapshot = results / "v143" / identity.GENERATION_EVIDENCE_DIR
+    old_snapshot.mkdir(parents=True)
+    (old_snapshot / "head_to_head.json").write_text('{"old": {}}', encoding="utf-8")
+    (old_snapshot / "manifest.json").write_text(
+        json.dumps({"available": True, "next_v": 143}),
+        encoding="utf-8",
+    )
+    unrelated_log = results / "v143" / "logs" / "master_io.txt"
+    unrelated_log.parent.mkdir(parents=True)
+    unrelated_log.write_text("historical audit log", encoding="utf-8")
+    (results / "head_to_head.json").write_text("{}\n", encoding="utf-8")
+
+    migrated = identity.archive_and_initialize(
+        results,
+        reason="test evaluator and generation evidence migration",
+    )
+
+    archive = Path(migrated["archive_dir"])
+    archived_snapshot = (
+        archive / "generation_snapshots" / "v143" / identity.GENERATION_EVIDENCE_DIR
+    )
+    assert archived_snapshot.is_dir()
+    assert (archived_snapshot / "manifest.json").is_file()
+    assert "v143/evidence_snapshot" in migrated["moved"]
+    assert not old_snapshot.exists()
+    assert unrelated_log.read_text(encoding="utf-8") == "historical audit log"
+
+    monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results)
+    monkeypatch.setattr(evolution_infra, "H2H_FILE", results / "head_to_head.json")
+    recreated = evidence_snapshot.ensure_generation_h2h_snapshot(143)
+
+    assert recreated["available"] is True
+    assert recreated["reused"] is False
+    assert recreated["schema_version"] == evidence_snapshot.SNAPSHOT_SCHEMA_VERSION
+    assert recreated["evaluation_identity_digest"] == migrated["manifest"]["manifest_digest"]
+
+
+def test_archive_rejects_unsafe_generation_snapshot_before_moving_ratings(tmp_path):
+    results = tmp_path / "results"
+    results.mkdir()
+    ratings = results / "glicko_ratings.json"
+    ratings.write_text('{"national_v1": {}}\n', encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (results / "v143").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(identity.EvaluationDataIdentityError, match="unsafe generation results"):
+        identity.archive_and_initialize(results, reason="unsafe migration must fail closed")
+
+    assert ratings.is_file()
+    assert not (results / "archive").exists()
+
+
 def test_inline_native_eval_is_diagnostic_only(tmp_path, monkeypatch):
     import daemon_management
     import evolution_infra

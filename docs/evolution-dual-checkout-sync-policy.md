@@ -94,8 +94,14 @@ python3 scripts/official_certify.py doctor
 
 If the evaluation-data command reports an identity mismatch with existing
 authoritative rating payloads, use its explicit `--archive-and-initialize`
-workflow before restart. If the verdict ledger is corrupt or truncated, do not
-initialize over it; recover the operator ledger/history and run doctor again.
+workflow before restart. That explicit rotation archives both the top-level
+rating/H2H/history payloads and every per-generation `evidence_snapshot/`
+derived from them; otherwise an abandoned generation can retain an old H2H
+manifest and correctly fail the new identity's integrity check forever. The
+snapshot validator must remain fail-closed -- do not use `force=True` or accept
+an old schema as a migration shortcut. If the verdict ledger is corrupt or
+truncated, do not initialize over it; recover the operator ledger/history and
+run doctor again.
 
 After `.evolution_pok` publishes a bot:
 
