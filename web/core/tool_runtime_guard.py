@@ -22,7 +22,11 @@ from evolution_scope import (
 from pipeline_state import head_drift_allowed_tools, head_drift_resume_policy, route_policy
 
 _BOT_DIR_RE = re.compile(rf"^\?\? bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)/$")
-_HEAD_CHANGE_ALLOWED_TOOLS = {"run_archivist"}
+# Explicit abandonment is the safe resolution when a checkpoint's evaluation
+# contract changed underneath it.  Keep normal pipeline tools fail-closed, but
+# allow that cleanup tool to cross the HEAD boundary; branch/worktree guards
+# still run and ``_do_abandon_generation`` applies its own stage/cooldown rules.
+_HEAD_CHANGE_ALLOWED_TOOLS = {"run_archivist", "abandon_generation"}
 _PIPELINE_ROUTE_TOOLS = {
     "prepare_next_gen",
     "run_crossover",
