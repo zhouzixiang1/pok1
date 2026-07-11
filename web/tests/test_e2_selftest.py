@@ -83,6 +83,66 @@ def test_E1_isolated_legacy_fallback_no_runid():
             history.unlink(missing_ok=True)
 
 
+def test_combined_analysis_accepts_frozen_h2h_snapshot(monkeypatch):
+    """The generation-scoped H2H path must execute before any analyst LLM call."""
+    import asyncio
+    import combined_analyst
+    import rating_snapshot
+
+    captured = {}
+
+    def fake_strength_rows(
+        ratings,
+        bot_stats,
+        h2h_data,
+        active_bots,
+        *,
+        match_history_path,
+    ):
+        captured["ratings"] = ratings
+        captured["h2h_data"] = h2h_data
+        captured["active_bots"] = active_bots
+        captured["match_history_path"] = match_history_path
+        return [{
+            "name": "national_v142",
+            "selection_score": 0.5,
+            "leaderboard_score": 0.5,
+            "h2h_avg_wr": 0.5,
+            "opponent_coverage": 1.0,
+            "opponents_evaluated": 1,
+            "opponents_total": 1,
+        }]
+
+    monkeypatch.setattr(rating_snapshot, "build_strength_rows", fake_strength_rows)
+    monkeypatch.setattr(
+        combined_analyst,
+        "_statistical_stagnation_check",
+        lambda *_args: (False, "high", 25.0),
+    )
+
+    frozen_h2h = {
+        "national_v141 vs national_v142": {
+            "games": 20,
+            "a_wins": 9,
+            "b_wins": 11,
+            "draws": 0,
+            "win_rate": 0.45,
+        }
+    }
+    result = asyncio.run(combined_analyst._run_combined_analysis(
+        source_v=142,
+        active_bots=["national_v142"],
+        ratings={},
+        ui=None,
+        h2h_data=frozen_h2h,
+    ))
+
+    assert result["trend"] == "improving"
+    assert captured["h2h_data"] == frozen_h2h
+    assert captured["active_bots"] == ["national_v142"]
+    assert captured["match_history_path"] == Path("/dev/null")
+
+
 class _FakeRating:
     def __init__(self, cons):
         self._cons = cons
