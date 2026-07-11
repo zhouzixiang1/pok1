@@ -14,6 +14,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from output_schema import RuntimeContract, runtime_contract_worker_prompt_terms
+
 
 SOFT_WORKER_PROMPT_CHARS = 6_000
 HARD_WORKER_PROMPT_CHARS = 10_000
@@ -51,6 +53,30 @@ def _relative_to_project(path: Path, project_root: Path | None) -> str:
 def _reset_task_context_dir(context_dir: Path) -> None:
     if context_dir.exists():
         shutil.rmtree(context_dir)
+
+
+def _compiled_prompt_validation_terms(
+    plan: dict[str, Any],
+    task: dict[str, Any],
+) -> tuple[str, ...]:
+    """Keep hard-gate terms visible after an oversized prompt is externalized."""
+    terms: list[str] = []
+    raw_contract = task.get("runtime_contract")
+    if isinstance(raw_contract, dict):
+        try:
+            contract = RuntimeContract.model_validate(raw_contract)
+        except Exception:
+            contract = None
+        if contract is not None:
+            terms.extend(runtime_contract_worker_prompt_terms(contract))
+
+    policy = plan.get("architecture_policy")
+    focus = policy.get("selected_focus") if isinstance(policy, dict) else None
+    if isinstance(focus, dict) and str(task.get("architecture_focus_id") or "") == str(
+        focus.get("focus_id") or ""
+    ):
+        terms.extend(str(term) for term in focus.get("required_terms") or [] if str(term))
+    return tuple(dict.fromkeys(terms))
 
 
 def compile_master_plan(
@@ -100,6 +126,14 @@ def compile_master_plan(
         )
         rel_context = _relative_to_project(context_path, project_root)
         targets = ", ".join(map(str, task.get("target_files", []))) or "declared target files"
+        validation_terms = _compiled_prompt_validation_terms(compiled, task)
+        validation_anchor = ""
+        if validation_terms:
+            validation_anchor = (
+                " Preserve these literal hard-contract terms while following the brief: "
+                + ", ".join(validation_terms)
+                + "."
+            )
         task["task_brief_file"] = rel_context
         task["worker_prompt_compiled"] = True
         task["worker_prompt_original_chars"] = len(prompt)
@@ -108,6 +142,7 @@ def compile_master_plan(
             f"Implement only Worker {task.get('worker_id', idx + 1)} ({task.get('role', 'worker')}) "
             f"for v{next_v}. Target files: {targets}. Do not broaden scope. "
             "Run the checks named in the task context and report the exact files changed."
+            + validation_anchor
         )
         meta["compiled"] = True
         meta["compiled_tasks"].append({
@@ -117,6 +152,7 @@ def compile_master_plan(
             "original_chars": len(prompt),
             "compiled_chars": len(task["worker_prompt"]),
             "context_trimmed": trimmed,
+            "validation_terms": list(validation_terms),
         })
 
     if meta["compiled"]:

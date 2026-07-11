@@ -231,3 +231,111 @@ def test_architecture_focus_contract_requirements_are_not_deferred():
     assert schema_errors == []
     semantic_errors, _warnings = _validate_master_plan(validated)
     assert semantic_errors == []
+
+
+def test_unknown_future_focus_requires_contract_in_both_layers():
+    plan = {
+        "analysis": "Exercise forward-compatible architecture focus validation.",
+        "targeted_failure": "A future focus must not bypass the runtime contract gate.",
+        "tasks": [{
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy.py"],
+            "skill_layer": "telemetry",
+            "architecture_focus_id": "future_focus",
+            "worker_prompt": "Implement the future architecture focus with bounded telemetry.",
+        }],
+    }
+
+    _unchanged, schema_errors = validate_agent_output("master", plan)
+    assert any("runtime_contract is required" in error for error in schema_errors)
+    semantic_errors, _warnings = _validate_master_plan(plan)
+    assert any("runtime_contract is required" in error for error in semantic_errors)
+
+
+def test_compiler_preserves_runtime_terms_across_ten_to_twelve_k_boundary(tmp_path):
+    import plan_compiler
+
+    plan = {
+        "analysis": "Compile a long but valid deadline-aware implementation brief.",
+        "targeted_failure": "Long runtime prompts lost executable contract terms.",
+        "tasks": [{
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy.py"],
+            "skill_layer": "runtime_architecture",
+            "worker_prompt": (
+                "Keep the decision budget, legal fallback, fast baseline, and hard deadline. "
+                + ("bounded refinement detail " * 430)
+            ),
+            "runtime_contract": _runtime_contract(decision=True),
+        }],
+    }
+    original_chars = len(plan["tasks"][0]["worker_prompt"])
+    assert plan_compiler.HARD_WORKER_PROMPT_CHARS < original_chars <= WORKER_PROMPT_MAX_CHARS
+    _validated, schema_errors = validate_agent_output("master", plan)
+    assert schema_errors == []
+
+    compiled, meta = plan_compiler.compile_master_plan(
+        plan,
+        next_v=144,
+        target_dir=tmp_path / "national_v144",
+        project_root=tmp_path,
+    )
+
+    assert meta["compiled"] is True
+    compiled_prompt = compiled["tasks"][0]["worker_prompt"].lower()
+    for term in ("budget", "fallback", "baseline", "deadline"):
+        assert term in compiled_prompt
+    semantic_errors, _warnings = _validate_master_plan(compiled)
+    assert semantic_errors == []
+
+
+def test_compiler_preserves_dynamic_focus_terms(tmp_path):
+    import plan_compiler
+
+    plan = {
+        "analysis": "Externalize a long decision-path purity task without losing focus terms.",
+        "targeted_failure": "Compiled prompts lost dynamic architecture focus terms.",
+        "architecture_policy": {
+            "plan_required_floor_checks": [],
+            "selected_focus": {
+                "focus_id": "decision_path_purity",
+                "accepted_skill_layers": ["telemetry"],
+                "suggested_files": ["strategy.py"],
+                "required_terms": ["decision path", "telemetry", "I/O"],
+            }
+        },
+        "tasks": [{
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy.py"],
+            "skill_layer": "telemetry",
+            "architecture_focus_id": "decision_path_purity",
+            "worker_prompt": (
+                "Keep telemetry and I/O outside the decision path; preserve the decision "
+                "budget, legal fallback, fast baseline, and hard deadline. "
+                + ("purity implementation detail " * 400)
+            ),
+            "runtime_contract": _runtime_contract(decision=True),
+        }],
+    }
+    original_chars = len(plan["tasks"][0]["worker_prompt"])
+    assert plan_compiler.HARD_WORKER_PROMPT_CHARS < original_chars <= WORKER_PROMPT_MAX_CHARS
+    schema_plan = deepcopy(plan)
+    schema_plan.pop("architecture_policy")
+    _validated, schema_errors = validate_agent_output("master", schema_plan)
+    assert schema_errors == []
+
+    compiled, _meta = plan_compiler.compile_master_plan(
+        plan,
+        next_v=145,
+        target_dir=tmp_path / "national_v145",
+        project_root=tmp_path,
+    )
+
+    compiled_prompt = compiled["tasks"][0]["worker_prompt"].lower()
+    for term in ("decision path", "telemetry", "i/o"):
+        assert term in compiled_prompt
+    semantic_errors, _warnings = _validate_master_plan(compiled)
+    assert semantic_errors == []

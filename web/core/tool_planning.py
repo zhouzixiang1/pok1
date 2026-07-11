@@ -48,7 +48,7 @@ from output_schema import (
     WORKER_PROMPT_MAX_CHARS,
     WORKER_TASK_MAX_TARGET_FILES,
     runtime_contract_missing_sections,
-    runtime_contract_required_layers,
+    runtime_contract_is_required,
     runtime_contract_required_sections,
     runtime_contract_worker_prompt_terms,
 )
@@ -1106,9 +1106,8 @@ def _validate_master_plan(
 
 def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
     """Return hard Master-plan errors for runtime-architecture task contracts."""
-    required_layers = runtime_contract_required_layers()
     focus_id = str(task.get("architecture_focus_id") or "").strip()
-    if layer not in required_layers and not focus_id:
+    if not runtime_contract_is_required(layer, focus_id):
         return []
 
     contract = task.get("runtime_contract")

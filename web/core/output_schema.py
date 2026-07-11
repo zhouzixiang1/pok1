@@ -95,6 +95,17 @@ def runtime_contract_required_sections(
     return tuple(dict.fromkeys(sections))
 
 
+def runtime_contract_is_required(
+    skill_layer: str,
+    architecture_focus_id: str = "",
+) -> bool:
+    """Return whether a task must carry a RuntimeContract at all."""
+    return (
+        skill_layer in RUNTIME_CONTRACT_REQUIRED_LAYERS
+        or bool(architecture_focus_id.strip())
+    )
+
+
 class DecisionRuntimeContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -340,7 +351,10 @@ class WorkerTask(BaseModel):
             self.skill_layer,
             self.architecture_focus_id.strip(),
         )
-        if not required_sections:
+        if not runtime_contract_is_required(
+            self.skill_layer,
+            self.architecture_focus_id,
+        ):
             return self
 
         contract = self.runtime_contract
