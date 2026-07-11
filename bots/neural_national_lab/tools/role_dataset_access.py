@@ -31,7 +31,8 @@ ROLE_PREREQUISITES = {
     "policy_selection": ("train", "early_stop", "model_calibration"),
     "policy_gate": ("policy_selection",),
 }
-POLICY_SELECTION_RESULT_SCHEMA = "policy_selection_result_v1"
+POLICY_SELECTION_RESULT_SCHEMA = "policy_selection_result_v2"
+POLICY_OFFLINE_ESTIMAND = "single_decision_action_uplift_ipw_v2"
 REQUIRED_INVARIANTS = (
     "opponent_disjoint",
     "match_cluster_disjoint",
@@ -205,8 +206,25 @@ class RoleDatasetAccess:
             or report.get("run_id") != self.run_id
             or report.get("candidate_sha256") != candidate_sha256
             or report.get("role_manifest_sha256") != self.manifest_sha256
+            or report.get("offline_estimand") != POLICY_OFFLINE_ESTIMAND
+            or report.get("deployment_policy_value") is not False
+            or report.get("strength_evidence") is not False
+            or report.get("policy_gate_opened") is not False
+            or report.get("policy_selection_artifact_sha256")
+            != self._role_artifact_sha256("policy_selection")
         ):
             raise RuntimeError("policy-selection result did not authorize policy_gate")
+        for field in (
+            "calibration_payload_sha256",
+            "evaluation_report_sha256",
+            "selected_policy_sha256",
+        ):
+            try:
+                _digest(report.get(field), field=field)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "policy-selection result did not authorize policy_gate"
+                ) from exc
         return _sha256_bytes(raw)
 
     def _read_output(self, filename: str, role: str) -> list[dict[str, Any]]:

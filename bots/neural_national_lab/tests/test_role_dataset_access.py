@@ -121,6 +121,16 @@ def _selection_result(
         "run_id": dataset.run_id,
         "candidate_sha256": CANDIDATE_SHA,
         "role_manifest_sha256": dataset.manifest_sha256,
+        "offline_estimand": access.POLICY_OFFLINE_ESTIMAND,
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+        "policy_gate_opened": False,
+        "policy_selection_artifact_sha256": dataset._role_artifact_sha256(
+            "policy_selection"
+        ),
+        "calibration_payload_sha256": "c" * 64,
+        "evaluation_report_sha256": "d" * 64,
+        "selected_policy_sha256": "e" * 64,
     }), encoding="utf-8")
     return path
 
@@ -194,6 +204,29 @@ def test_failed_policy_selection_does_not_open_policy_gate_data(
     )
     gate_path = dataset.root / "cf_policy_gate.jsonl"
     gate_path.unlink()
+
+    with pytest.raises(RuntimeError, match="did not authorize"):
+        dataset.open_role(
+            "policy_gate",
+            candidate_sha256=CANDIDATE_SHA,
+            prerequisite_report=result,
+        )
+
+    report = ledger.status(dataset.ledger_path)
+    assert "national_v5" not in report["opponents"]
+
+
+def test_policy_gate_rejects_selection_role_artifact_mismatch(
+    tmp_path: Path,
+) -> None:
+    dataset = _access(tmp_path)
+    for role in ("train", "early_stop", "model_calibration"):
+        dataset.open_role(role)
+    dataset.open_role("policy_selection", candidate_sha256=CANDIDATE_SHA)
+    result = _selection_result(dataset, tmp_path / "selection_result.json")
+    payload = json.loads(result.read_text())
+    payload["policy_selection_artifact_sha256"] = "0" * 64
+    result.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="did not authorize"):
         dataset.open_role(

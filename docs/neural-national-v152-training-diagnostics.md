@@ -833,6 +833,22 @@ frozen checkpoint, role manifest, and model-calibration artifact and declares
 that no policy evidence was used. This remains a standalone interface until the
 active old-data scaling process releases the trainer file.
 
+`policy_role_evidence.py` adds the next protected boundary. A frozen candidate
+and calibration payload digest are recorded before the policy-selection role is
+opened. The selection decision is recomputed from minimum override and
+match-cluster coverage, positive ordinary and opponent-stratified cluster CI
+lower bounds, and nonnegative per-opponent means. Its signed v2 result binds the
+role artifact, calibration payload, complete evaluation report, and selected
+policy digests. It also records `deployment_policy_value=false` and
+`strength_evidence=false`: single-decision IPW uplift can screen a policy but
+cannot prove deployed trajectory value. `role_dataset_access.py` verifies every
+binding before it opens or records exposure to policy-gate rows. The policy gate
+therefore remains unopened after any failed or mismatched selection result, and
+native TCP evaluation remains the only release-strength authority. A temporary
+pass-7 access-chain smoke opened 48/312 policy-selection value/behavior rows and,
+only after a fully bound synthetic pass credential, 84/219 v57/v66 policy-gate
+rows; both phases retained false deployment-value and strength-evidence flags.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
