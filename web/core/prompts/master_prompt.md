@@ -54,7 +54,7 @@ Never read `web/core/results/head_to_head.json` for this planning step when
 </h2h_evidence_hierarchy>
 
 <task>
-1. Read H2H, match history, ratings, and stats; evaluate source strength by `leaderboard_score`/coverage/RD when available, and use per-opponent H2H for weakness diagnosis
+1. Read H2H, match history, ratings, and stats. Treat one complete 70-hand local native TCP match as one strength sample: positive final net chips is a win, negative is a loss, and zero is a draw. Rank by outcome-derived `selection_score`/`leaderboard_score` with coverage/RD first; use net-chip magnitude only as a secondary tie-breaker, then use per-opponent H2H for weakness diagnosis.
 2. Read the performance verification report below for objective trend analysis
 3. Read experience pool to learn from past iterations
 4. Read current bot source code and reference bots to identify weaknesses
@@ -132,25 +132,51 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 
 Every worker task must declare exactly one primary `skill_layer` so the change can be traced through decision tests, national acceptance, and the candidate ledger. Use the offline skill-library vocabulary injected in the workflow profile; useful layers include `preflop_range`, `texture`, `spr`, `blocker`, `line_template`, `opponent_model`, `action_sanitizer`, `protocol`, `adapter`, `native_tcp`, and `telemetry`.
 
+The injected system-owned runtime architecture policy is authoritative. When it
+contains a `selected_focus`, exactly one task must copy that focus id into
+`architecture_focus_id`, use an accepted skill layer, and implement the complete
+mechanism. A label is not proof: quality gates compare AST evidence with the
+source bot, reject capability regressions, and require every selected check to
+pass.
+
 Runtime-contract task layers: if a task's `skill_layer` is one of
 `runtime_architecture`, `precompute`, `match_memory`, `opponent_model`, or
 `native_tcp`, the task MUST include a `runtime_contract` object and the same
 contract must be mirrored into `worker_prompt` as concrete work. This is a
 hard planning gate, not optional prose.
 
+The system-owned policy may also contain `plan_required_floor_checks`. Every
+listed check id must appear verbatim in at least one task's `checks_required`.
+Group coherent debt into at most three tasks: opponent memory plus full-history
+removal belong together; reusable precompute plus hot-path table removal belong
+together; deadline/purity belong together. Checks supplied by
+`native_template_provided_checks` are verified by the refreshed native entry
+and do not require a worker unless quality evidence says they still fail.
+
 `runtime_contract` fields:
-- `decision_budget_ms`: per-action bound before fallback; required for
-  `runtime_architecture` and `native_tcp`, and must be below 60000.
-- `fallback_action`: legal pending-action fallback such as "use existing
-  sanitizer to emit check/call/fold"; required for `runtime_architecture` and
-  `native_tcp`.
-- `decision_path_bound`: exact loop/search/history bound, e.g.
-  "no full-history scan; at most 64 samples"; required for
-  `runtime_architecture` and `native_tcp`.
-- `precompute_artifacts`: lookup/cache/table names built outside the decision
-  path; required for `precompute`.
-- `state_lifecycle`: how match memory persists across 70 hands and resets on a
-  new TCP connection; required for `match_memory` and `opponent_model`.
+- `decision`: required for `runtime_architecture` and `native_tcp`. Declare
+  `clock`, `hard_deadline_ms` (at most 55000), `baseline_target_ms`, and
+  `refinement_budget_ms`, where baseline target < refinement budget < hard
+  deadline. Also declare a fast legal `baseline_path`, a legal
+  `fallback_action`, an exact `refinement_bound`, and optional `max_samples`.
+  The socket fallback exists before strategy code starts; publish a stronger
+  strategy baseline near the target, then use the remaining refinement budget.
+- `precompute_artifacts`: required for `precompute`. Each artifact is an object
+  with `name`, `owner_file`, `build_phase`, `max_entries`, `max_bytes`,
+  `max_build_ms`, `key_shape`, exact `module.function` consumer, and
+  `fallback="legal_baseline"`. `key_shape` is a machine-readable type such as
+  `int` or `tuple[int,int,bool]`. Empty caches, comments, names, opaque LRU
+  caches, and dead reads are not evidence; the formal sanitized decision path
+  must consume the bounded artifact and remain legal when the mapping is empty.
+- `match_memory`: required for `match_memory` and `opponent_model`. Declare
+  `tracker_class`, `owner_file`, `reset_boundary="tcp_connection"`,
+  `update_events`, `snapshot_field="opponent_runtime"`, `max_recent_hands`,
+  `prior_rule`, `confidence_rule`, `adaptation_cap`, and the strategy `consumer`.
+  Terminal opponent actions, settlement, and showdown must be recorded even
+  when the hero receives no later decision in that hand.
+  Preserve all opponent-model fields consumed by the parent decision graph, or
+  assign explicit consumer migrations in the same task. A sparse snapshot that
+  merely triggers default priors is a parent capability regression.
 - `official_feedback_refs`: official evidence or LLM analysis ids being fixed;
   empty only when the task is not reacting to official EXE feedback.
 - `forbidden_runtime_work`: file/network/subprocess I/O, full-history scans,
@@ -245,7 +271,7 @@ When ALL H2H matchups are within 45-55% win rate (no exploitable weakness visibl
 3. Aggressive parameter exploration: test extreme values (2x or 0.5x of current) to find the true sensitivity curve
 4. Opponent-model-driven changes: add per-opponent-type exploitation logic
 
-**DISCOURAGED at plateaus** (Critic is a hard strategy gate before precommit):
+**DISCOURAGED at plateaus** (Critic records advisory strategy risk; native TCP precommit is the measured strategy gate):
 - Pure small constant adjustments without a structural companion mechanism.
   Do not revisit an EXHAUSTED direction in an initial generation plan. Master
   validation will reject positive worker intent that repeats an exhausted axis.
@@ -259,8 +285,9 @@ Read the experience pool for EXHAUSTED entries — these directions have underpe
 
 <measurement_plan>
 For each worker task, state expected impact:
-- Target opponent + expected WR delta (e.g. "vs v47: 50%→53%, ≥30 mirror pairs")
-- Statistic that will confirm (paired net-chips CI lower bound > 0)
+- Target opponent + expected positive-result delta over complete 70-hand native matches (e.g. "vs the cited stable opponent: 50%→53%, ≥30 complete matches")
+- Primary statistic that will confirm: more positive than negative 70-hand match outcomes, with draws explicit and uncertainty reported
+- Secondary statistic: final net-chip magnitude/CI, used only after the primary outcome signal and never as a substitute for it
 measurement_plan 是 Master 自评估记录，当前不回流。待 rating_delta 异步回填机制（fix-2）就位后，Master 预测与 daemon 实际 delta 将写入 experience_pool RECENT_LESSONS。
 </measurement_plan>
 
@@ -318,7 +345,8 @@ Required schema (emit exactly this structure as raw JSON):
       "worker_id": 1,
       "role": "Algorithmic Logic Architect",
       "target_files": ["strategy.py"],
-      "skill_layer": "spr",
+      "skill_layer": "runtime_architecture",
+      "architecture_focus_id": "copy the exact selected_focus id, or empty only when selected_focus=none",
       "files_allowed": ["strategy.py"],
       "prohibited_files": ["sever/", "engine/", "web/core/tool_gates.py"],
       "expected_diff_shape": "Add one helper and wire it into the live decision path.",
@@ -327,11 +355,18 @@ Required schema (emit exactly this structure as raw JSON):
       "merge_policy": "disjoint_target_files",
       "difficulty": "medium",
       "runtime_contract": {
-        "decision_budget_ms": 250,
-        "fallback_action": "fall back through the existing legal action sanitizer",
-        "decision_path_bound": "no file/network I/O; no full-history scan; at most one bounded lookup pass",
+        "decision": {
+          "clock": "time.monotonic",
+          "hard_deadline_ms": 55000,
+          "baseline_target_ms": 250,
+          "refinement_budget_ms": 54000,
+          "baseline_path": "compute the existing deterministic legal action before optional refinement",
+          "fallback_action": "return the baseline through the existing legal action sanitizer",
+          "refinement_bound": "no file/network I/O; no full-history scan; at most 64 samples",
+          "max_samples": 64
+        },
         "precompute_artifacts": [],
-        "state_lifecycle": "",
+        "match_memory": null,
         "official_feedback_refs": [],
         "forbidden_runtime_work": ["file_io_in_decision", "network_io_in_decision", "unbounded_history_scan"]
       },
@@ -348,19 +383,15 @@ FINAL CHECK before you emit: is your response a ```json fence wrapping a single
 `{...}` JSON object with a `"tasks"` array at the top level? If not, rewrite it.
 </output_format>
 
-## Known Mandatory Fixes (DO NOT REMOVE)
+## Deterministic Invariants
 
-The following fixes have been verified as critical and must be preserved in any new bot:
+Do not maintain a version-specific fix database in this prompt. Protocol,
+position, evaluator, line-size, reachability, telemetry-placement, and mandatory
+behavior invariants are enforced by repository tests and quality gates. Preserve
+every passing parent contract and use current gate evidence when a repair is
+required; do not infer a current defect from an old generation narrative.
 
-1. **Wheel Straight (A-2-3-4-5)**: In `card_utils.py` `evaluate_5()`, the wheel straight check `elif set(unique_ranks) == {14, 2, 3, 4, 5}:` must be present. Without it, A-2-3-4-5 is misclassified as high card.
-2. **Re-raise Minimum**: In `state.py`, `min_raise_action` must use `2 * last_raise_to + 1 - my_round_bet` (strictly > 2x, not >= 2x).
-3. **TOTAL_HANDS**: In `constants.py`, `TOTAL_HANDS` must be 70.
-4. **Placement Shadow + Stack-Off Fix (0%-fold leak, unfixed 6 gens v138-v145)**: The `to_call >= my_chips` allin-cover block (strategy.py ~L1018) currently has NO fold gate — marginal hands (made_strength 0.40-0.50) always call because `win_rate >= shove_odds + shove_buffer` (buffer capped +0.14) never folds. This is the root cause of the -15.5k/-20k stack-off leak. The permitted fix = add an **SPR-commitment fold branch** (NEW function `_spr_commitment_gate` using pot-odds equity via `simulation.py monte_carlo_weighted_equity`). **PLACEMENT UPDATE (A1-verified post-Phase-A, 21-agent audit)**: the `to_call>=my_chips` allin-cover block is **DEAD CODE** — entered ZERO times across 153,484 v147/v152 replay decisions (equal stacks S=20000: any legal non-allin raise leaves raiser≥1 chip → to_call<my_chips always). v147 already wired `_spr_commitment_gate` into this dead block (SPR_FOLD=0 fires confirms INERT). Wire the gate in the `to_call>0` (gt0) block (~40% of decisions, ALIVE) or merge into the opponent_allin branch — NOT the dead allin-cover block. fold when `round_idx==3 AND tier∈{thin,none} AND made_strength<0.55 AND equity < pot_odds` where `pot_odds = to_call/(pot+to_call)` if the local code defines `pot` as the current pot before calling. This is a NEW structural axis (closed-form SPR math), NOT a re-tune of `_river_stackoff_guard` (which is exhausted + placement-shadowed). Any guard MUST be grep-proven to sit BEFORE the L1018 early-return — `run_quality_gates` now AST-flags placement shadows. Add `SPR_FOLD` stderr telemetry (daemon captures stderr now).
-
-5. **Margin/Sizing Detector INERTNESS Rule (M5, post-Phase-A, 9-gen verified v137-v152)**: ANY new sizing/margin/fold-rate delta detector MUST be proven non-zero-delta in the STANDARD bucket before adding. The v137 `classify_sizing_tendency` margin framework (`postflop_call_margin` strategy_helpers.py:135-159) and 8 sibling detectors (sb_open/bb_vs_limp/bb_vs_raise sizing deltas, street_fold_boost, delayed_calldown_bluff, calldown consumers) shipped v137-v152 as 0-fire or 99.96%-delta=+0 INERT dead code. Root causes: (a) bucket-gating deadzone — delta non-zero ONLY when an opp signal crosses a hard threshold (0.50/0.32/0.55) that `smooth_rate(prior_mean=0.42-0.44, weight=4.0)` makes structurally unreachable (even a TRUE 50%-folder saturates at 0.491 at n=30); (b) compound AND of (opp-tendency-bucket AND this-hand-size-bucket) joint prob ~0.04% (live pool 96.9% standard / 3.1% overbettor / 0% underbettor); (c) telemetry gated behind `if delta != 0` so 0-fires invisible — 9 gens undetected. **MANDATORY PRE-CHECK**: (1) delta MUST be a CONTINUOUS function `delta = sign * 0.025 * clamp((signal - prior_mean)/0.15, -1, 1)` with NO deadzone gap, NOT a thresholded elif chain; (2) embedded `if __name__ == "__main__":` assertion fixture calling the detector with LIVE POOL DEFAULTS (tendency='standard', size_bucket='medium', confidence=0.5) asserting returned delta is NON-ZERO — a detector returning +0 for the 96.9% standard bucket is INERT by construction; if a top-level `_self_test_*` helper is added, `__main__` must call it; (3) NO `!= 0` gate on telemetry — print unconditionally with reason tag (`reason=standard_bucket`/`deadzone`/`conf_gate`/`fired`); (4) cite the `smooth_rate` prior_mean/prior_weight of every signal read and compute the smoothed value at a realistic opp. Current hard enforcement is the static/AST/self-test telemetry and reachability checks implemented in quality gates; daemon-side delta!=0 rates are diagnostic unless a concrete gate has been added in code.
-
-6. **Margin/Sizing Detector TELEMETRY-FIDELITY Rule (M6, v154 case-verified)** — strengthens M5. **The `postflop_call_margin` framework is ALREADY behaviorally LIVE via STANDARD arm A** (unconditional deltas `weak_showdown`+0.020 / `air_hand`+0.028 / `facing_postflop_aggression`+0.008-0.032, added to `margin` BEFORE the tendency block, not clamped by `return clamp(margin,0,0.08)`, consumed at `strategy.py call_margin=postflop_call_margin(...)`). v154 r=1605 (pool #2) vs v153 r=1413 confirms it. The `experience_pool.md` "99.96% DEADZONE / 9-gen INERT" verdict was a **TELEMETRY ARTIFACT** — it described ONLY tendency arm B (`underbettor+small`/`overbettor+large`, joint prob ~0.04%), while arm A fires nearly every postflop decision. The v154 `SIZING_MARGIN_ADJ` telemetry sits INSIDE the `if sizing...` block and prints ONLY arm B's `adj_milli=30/-25/0` → "99.98% delta=+0" → v155 Master misread the LIVE framework as INERT and listed it in `do_not_touch`. **Do NOT repeat: grep `delta_adj!=0` on a sub-arm-only telemetry token yields a FALSE INERT verdict.**
-
-   ANY detector whose returned value is built from >1 arm (standard arm + bucket-gated arms) MUST instrument the TOTAL returned value: (1) **Hoist `sys.stderr.write` to function scope** (same indent as `return`, dedented from every `if sizing/bucket/confidence` gate — telemetry nested in a bucket gate is a placement shadow on telemetry itself); (2) **Print TOTAL delta** `SIZING_MARGIN_FINAL margin_milli=%+d standard_milli=%+d tendency_milli=%+d reason=%s` where `margin_milli=round(returned_value*1000)` (the consumer-read value); `margin_milli==0` is the only honest "contributed nothing" signal; (3) **reason= tag** ∈ {standard_arm, tendency_fired, conf_gate, no_margin}; (4) **Embedded `if __name__ == "__main__":` self-test fixture feeding LIVE POOL DEFAULTS** (`tendency='standard'`, `size_bucket='medium'`, `confidence=0.5`, `samples=0`) asserting (a) return≠0 AND (b) emitted `margin_milli`==`round(return*1000)`; do not leave standalone `_self_test_*` helpers uncalled. **This fixture is the SOLE machine gate — Reviewer never reads master_prompt.md (only receives `{master_plan}` JSON via tool_gates), so M5/M6 "Reviewer MUST reject" clauses are NON-enforceable; daemon ≥30g delta!=0≥5% is diagnostic unless a concrete Python gate implements it.** **FOLLOW-UP Python work order (out of scope for this prompt edit)**: extend `run_quality_gates`/`code_verification.py` AST walk to assert multi-arm detector telemetry parent is `FunctionDef` not `If` + that a self-test fixture exists — would make M6 a hard precommit gate. Track as separate python_change.
-
-If you see these fixes in the source code, preserve them. If they are missing, add them.
+When a task adds a detector or helper, require a reachable embedded fixture under
+`if __name__ == "__main__":` when that is the repository's executable self-test
+pattern. Never leave new standalone `_self_test_*` helpers uncalled. Telemetry
+must report the total value consumed by strategy rather than only one nested arm.

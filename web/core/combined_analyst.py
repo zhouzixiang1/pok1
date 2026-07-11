@@ -123,7 +123,14 @@ def _statistical_stagnation_check(source_v, ratings):
         return None  # Ambiguous — needs LLM
 
 
-async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic_info: str = ""):
+async def _run_combined_analysis(
+    source_v,
+    active_bots,
+    ratings,
+    ui,
+    prev_critic_info: str = "",
+    h2h_data: dict | None = None,
+):
     """Combined stagnation + performance analysis in a single LLM call.
 
     Returns a dict with unified fields:
@@ -154,9 +161,31 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
         "llm_failed": False,
     }
 
-    h2h_winrates = load_h2h_avg_winrates()
-    strength_scores = load_strength_scores()
-    coverage_data = load_h2h_avg_winrates_with_coverage()
+    if h2h_data is None:
+        h2h_winrates = load_h2h_avg_winrates()
+        strength_scores = load_strength_scores()
+        coverage_data = load_h2h_avg_winrates_with_coverage()
+        frozen_h2h_data = None
+    else:
+        # Planning receives the generation-scoped immutable matrix. Rebuilding
+        # from a later match_history file here would silently defeat the freeze.
+        from rating_snapshot import build_strength_rows
+
+        frozen_h2h_data = dict(h2h_data)
+        rows = build_strength_rows(
+            ratings,
+            {},
+            frozen_h2h_data,
+            active_bots,
+            match_history_path=Path("/dev/null"),
+        )
+        h2h_winrates = {
+            row["name"]: row.get("h2h_avg_wr", 0.5) for row in rows
+        }
+        strength_scores = {
+            row["name"]: row.get("leaderboard_score", 0.5) for row in rows
+        }
+        coverage_data = {row["name"]: row for row in rows}
 
     # ── Data sufficiency check ──
     source_bot_name = bot_name(source_v)
@@ -289,11 +318,14 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
     # H2H per-opponent
     h2h_lines = []
     h2h_file = _results_dir() / "head_to_head.json"
-    if h2h_file.exists():
+    if frozen_h2h_data is not None or h2h_file.exists():
         try:
-            with locked_file(h2h_file, "r") as f:
-                h2h_data = json.load(f)
-            for k, v in h2h_data.items():
+            if frozen_h2h_data is None:
+                with locked_file(h2h_file, "r") as f:
+                    analyzed_h2h = json.load(f)
+            else:
+                analyzed_h2h = frozen_h2h_data
+            for k, v in analyzed_h2h.items():
                 parts = k.split(" vs ")
                 if len(parts) != 2:
                     continue

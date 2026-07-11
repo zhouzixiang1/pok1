@@ -1,7 +1,10 @@
 import asyncio
 import json
 
+import pytest
+
 from official_llm_analysis import (
+    advisory_analysis_contract_issues,
     build_official_analysis_prompt,
     compact_evidence_for_llm,
     normalize_official_analysis,
@@ -269,11 +272,123 @@ def test_normalize_does_not_allow_llm_to_block_clean_deterministic_pass():
 
     analysis = normalize_official_analysis(raw, _clean_evidence())
 
-    assert analysis["compliance_verdict"] == "inconclusive"
-    assert analysis["blocking"] is False
+    assert analysis["analysis_status"] == "no_findings"
+    assert analysis["authority"] == "advisory_only"
+    assert "compliance_verdict" not in analysis
+    assert "blocking" not in analysis
     assert analysis["strength_evaluation"] == "not_applicable"
     assert analysis["ignored_strength_fields"] == ["rating"]
-    assert "llm_failure_without_deterministic_confirmation_is_advisory" in analysis["notes"]
+    assert analysis["ignored_authority_fields"] == ["blocking", "compliance_verdict"]
+    assert "llm_authority_fields_ignored" in analysis["notes"]
+    assert analysis["root_cause_hypothesis"] == ""
+    assert analysis["repair_guidance"] == ""
+    assert analysis["prompt_feedback"] == ""
+    assert analysis["ignored_strength_text_fields"] == [
+        "prompt_feedback",
+        "repair_guidance",
+        "root_cause_hypothesis",
+    ]
+
+
+def test_clean_pass_cannot_inject_grounded_repair_feedback():
+    evidence = _clean_evidence()
+    evidence["rounds"] = [{
+        "round_id": "self_play_01",
+        "round_kind": "self_play",
+        "round_index": 1,
+        "target_hands": 70,
+        "passed": True,
+        "classification": "pass",
+        "issues": [],
+    }]
+    evidence_id = compact_evidence_for_llm(evidence)["rounds"][0]["evidence_id"]
+
+    analysis = normalize_official_analysis({
+        "analysis_status": "explained",
+        "hypothesis_class": "state_machine",
+        "confidence": 0.99,
+        "evidence": [{"evidence_id": evidence_id}],
+        "root_cause_hypothesis": "The wire layer is wrong.",
+        "repair_guidance": "Rewrite the wire layer.",
+        "prompt_feedback": "Make the next worker change protocol code.",
+    }, evidence)
+
+    assert analysis["analysis_status"] == "no_findings"
+    assert analysis["hypothesis_class"] == "none"
+    assert analysis["root_cause_hypothesis"] == ""
+    assert analysis["repair_guidance"] == ""
+    assert analysis["prompt_feedback"] == ""
+    assert "clean_pass_llm_feedback_removed" in analysis["notes"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Increase EV and equity realization by bluffing more aggressively.",
+        "提高胜率和强度，并增加诈唬与激进程度。",
+    ],
+)
+def test_strength_tuning_text_is_removed_from_grounded_failure_analysis(text):
+    evidence = _blocking_evidence()
+    finding_id = "self_play_01:001:strength-filter"
+    evidence["rounds"] = [{
+        "round_id": "self_play_01",
+        "round_kind": "self_play",
+        "round_index": 1,
+        "target_hands": 70,
+        "passed": False,
+        "classification": "protocol",
+        "issues": ["illegal_check"],
+        "attribution": {
+            "findings": [{
+                "finding_id": finding_id,
+                "code": "illegal_check",
+                "category": "protocol",
+                "subject_domain": "candidate",
+                "subject_instance_id": "candidate_a",
+                "candidate_impact": "block",
+                "connection": "A",
+                "evidence": {"hand": 17, "stage": "turn", "message": "check"},
+            }],
+        },
+        "wire_replay_summary": {},
+        "thp_summaries": [],
+    }]
+
+    analysis = normalize_official_analysis({
+        "analysis_status": "explained",
+        "hypothesis_class": "protocol",
+        "evidence": [{"evidence_id": finding_id}],
+        "repair_guidance": text,
+        "prompt_feedback": text,
+    }, evidence)
+
+    assert analysis["repair_guidance"] == ""
+    assert analysis["prompt_feedback"] == ""
+
+
+def test_normalize_removes_strength_tuning_text_from_nonblocking_analysis():
+    raw = {
+        "compliance_verdict": "pass",
+        "failure_class": "none",
+        "blocking": False,
+        "confidence": 0.9,
+        "evidence": [],
+        "root_cause": "Protocol is clean.",
+        "repair_guidance": "Increase win rate by exploiting weak calls.",
+        "prompt_feedback": "Raise rating with stronger river play.",
+    }
+
+    analysis = normalize_official_analysis(raw, _clean_evidence())
+
+    assert analysis["analysis_status"] == "no_findings"
+    assert analysis["root_cause_hypothesis"] == ""
+    assert analysis["repair_guidance"] == ""
+    assert analysis["prompt_feedback"] == ""
+    assert analysis["ignored_strength_text_fields"] == [
+        "prompt_feedback",
+        "repair_guidance",
+    ]
 
 
 def test_normalize_forces_fail_when_deterministic_evidence_blocks():
@@ -290,10 +405,73 @@ def test_normalize_forces_fail_when_deterministic_evidence_blocks():
 
     analysis = normalize_official_analysis(raw, _blocking_evidence())
 
-    assert analysis["compliance_verdict"] == "fail"
-    assert analysis["failure_class"] == "protocol"
-    assert analysis["blocking"] is True
-    assert "llm_pass_overridden_by_deterministic_blocking_evidence" in analysis["notes"]
+    assert analysis["analysis_status"] == "insufficient_evidence"
+    assert analysis["hypothesis_class"] == "none"
+    assert analysis["deterministic_context"]["blocking"] is True
+    assert "blocking" not in analysis
+    assert "llm_authority_fields_ignored" in analysis["notes"]
+
+
+def test_normalize_rejects_forged_evidence_and_preserves_deterministic_actor():
+    evidence = _blocking_evidence()
+    evidence["rounds"] = [{
+        "round_id": "opponent_01",
+        "round_kind": "opponent",
+        "round_index": 1,
+        "passed": False,
+        "classification": "protocol",
+        "issues": [],
+        "attribution": {
+            "policy_id": "official-attribution-v1",
+            "candidate_verdict": "fail",
+            "candidate_blocking": True,
+            "countable": False,
+            "retry_required": False,
+            "findings": [{
+                "finding_id": "opponent_01:001:abc123",
+                "code": "illegal_check",
+                "category": "protocol",
+                "subject_domain": "candidate",
+                "subject_instance_id": "candidate_a",
+                "candidate_impact": "block",
+                "connection": "A",
+                "evidence": {"hand": 17, "stage": "turn", "message": "check"},
+            }],
+        },
+        "wire_replay_summary": {},
+        "thp_summaries": [],
+    }]
+    raw = {
+        "compliance_verdict": "fail",
+        "failure_class": "protocol",
+        "blocking": True,
+        "confidence": 0.9,
+        "evidence": [
+            {
+                "evidence_id": "opponent_01:001:abc123",
+                "subject_domain": "opponent",
+                "subject_instance_id": "forged_actor",
+            },
+            {"evidence_id": "invented-id", "subject_domain": "candidate"},
+        ],
+    }
+
+    analysis = normalize_official_analysis(raw, evidence)
+
+    assert analysis["evidence"] == [{
+        "evidence_id": "opponent_01:001:abc123",
+        "round_id": "opponent_01",
+        "hand": 17,
+        "street": "turn",
+        "connection": "A",
+        "observed_action": "check",
+        "subject_domain": "candidate",
+        "subject_instance_id": "candidate_a",
+        "candidate_impact": "block",
+        "code": "illegal_check",
+        "category": "protocol",
+    }]
+    assert any(note.startswith("llm_evidence_ids_rejected:invented-id") for note in analysis["notes"])
 
 
 def test_run_official_llm_analysis_accepts_fake_runner_and_writes_json(tmp_path):
@@ -327,8 +505,9 @@ def test_run_official_llm_analysis_accepts_fake_runner_and_writes_json(tmp_path)
         run_official_llm_analysis(_blocking_evidence(), runner=fake_runner, output_path=output_path)
     )
 
-    assert analysis["compliance_verdict"] == "fail"
-    assert analysis["failure_class"] == "protocol"
+    assert analysis["analysis_status"] == "insufficient_evidence"
+    assert analysis["hypothesis_class"] == "protocol"
+    assert analysis["authority"] == "advisory_only"
     assert analysis["confidence"] == 0.88
     assert output_path.exists()
 
@@ -351,8 +530,8 @@ def test_run_official_llm_analysis_sync_uses_fake_runner(tmp_path):
         output_path=tmp_path / "analysis.json",
     )
 
-    assert analysis["compliance_verdict"] == "pass"
-    assert analysis["blocking"] is False
+    assert analysis["analysis_status"] == "no_findings"
+    assert analysis["authority"] == "advisory_only"
     assert analysis["strength_evaluation"] == "not_applicable"
 
 
@@ -393,7 +572,8 @@ def test_default_official_analysis_runner_supports_headless_ui(monkeypatch, tmp_
     ))
 
     assert analysis["analysis_source"] == "llm"
-    assert analysis["compliance_verdict"] == "pass"
+    assert analysis["analysis_status"] == "no_findings"
+    assert analysis["authority"] == "advisory_only"
     assert analysis["confidence"] == 0.91
     assert isinstance(seen["ui"], NullUI)
     assert seen["role_name"] == "OFFICIAL PLATFORM COMPLIANCE ANALYST"
@@ -406,6 +586,23 @@ def test_default_official_analysis_runner_supports_headless_ui(monkeypatch, tmp_
 def test_safe_default_analysis_never_evaluates_strength():
     analysis = safe_default_analysis(_blocking_evidence(), reason="llm_not_run")
 
-    assert analysis["compliance_verdict"] == "fail"
-    assert analysis["blocking"] is True
+    assert analysis["analysis_status"] == "insufficient_evidence"
+    assert analysis["authority"] == "advisory_only"
+    assert analysis["deterministic_context"]["blocking"] is True
+    assert "blocking" not in analysis
     assert analysis["strength_evaluation"] == "not_applicable"
+
+
+def test_advisory_contract_rejects_authority_fields_and_ungrounded_feedback():
+    valid = safe_default_analysis(_clean_evidence())
+    assert advisory_analysis_contract_issues(valid) == []
+
+    invalid = {
+        **valid,
+        "blocking": False,
+        "compliance_verdict": "pass",
+        "repair_guidance": "Change the bot without evidence.",
+    }
+    issues = advisory_analysis_contract_issues(invalid)
+    assert any("forbidden_authority_fields" in issue for issue in issues)
+    assert "official_llm_analysis_feedback_without_evidence" in issues

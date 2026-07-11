@@ -1,7 +1,13 @@
 from pathlib import Path
+import hashlib
 import json
 import sys
+from types import SimpleNamespace
 
+import pytest
+
+from bot_artifact import hash_path
+import official_platform_harness as harness
 from official_platform_harness import (
     BotLaunchConfig,
     OfficialPlatformConfig,
@@ -12,6 +18,7 @@ from official_platform_harness import (
     summarize_round_logs,
     _format_wire_issues,
     _collect_new_thp_files,
+    _canonical_thp_evidence,
     _sent_action_issue,
     _snapshot_platform_thp_files,
     _summarize_thp_files,
@@ -25,25 +32,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def test_official_required_does_not_enable_quality_long_acceptance(monkeypatch):
+def test_official_required_enables_short_durable_smoke(monkeypatch):
     import tool_gates
 
     monkeypatch.setenv("POK_OFFICIAL_REQUIRED", "1")
-    monkeypatch.delenv("POK_OFFICIAL_ACCEPTANCE_GATE", raising=False)
-
     assert tool_gates._official_gate_enabled("POK_OFFICIAL_SMOKE_GATE")
-    assert not tool_gates._official_gate_enabled(
-        "POK_OFFICIAL_ACCEPTANCE_GATE",
-        include_required=False,
-    )
 
 
-def test_pokctl_defaults_official_smoke_to_queue():
+def test_pokctl_defaults_official_smoke_to_durable_job():
     script = (ROOT / "pokctl.sh").read_text(encoding="utf-8")
 
-    assert 'POK_OFFICIAL_SMOKE_GATE:=queue' in script
+    assert 'POK_OFFICIAL_SMOKE_GATE:=1' in script
     assert 'POK_OFFICIAL_PRECOMMIT_TARGET_HANDS:=10' in script
-    assert 'POK_OFFICIAL_ACCEPTANCE_GATE:=0' in script
+    assert 'POK_OFFICIAL_JOB_RECONCILER:=1' in script
 
 
 def test_official_platform_cli_defaults_to_manual_70_hand_rounds():
@@ -319,6 +320,8 @@ def test_official_wire_capture_writes_round_artifacts(tmp_path):
     finally:
         capture.stop()
 
+    if not ports and any("could not bind on any address" in issue for issue in capture.issues):
+        pytest.skip("sandbox forbids loopback listener sockets")
     assert set(ports) == {"A", "B"}
     assert all(isinstance(port, int) and port > 0 for port in ports.values())
     assert (tmp_path / "round" / "wire_events.jsonl").exists()
@@ -369,19 +372,25 @@ def test_acceptance_scheduler_runs_self_and_opponent_rounds(tmp_path):
         candidate,
         opponent=opponent,
         self_play_rounds=2,
-        opponent_rounds=1,
+        opponent_rounds=3,
         target_hands=70,
         results_dir=tmp_path / "results",
         round_runner=fake_round,
     )
 
     assert result.passed
-    assert result.summary["rounds_run"] == 3
-    assert [call[3] for call in calls] == ["self_play", "self_play", "opponent"]
+    assert result.summary["rounds_run"] == 5
+    assert [call[3] for call in calls] == [
+        "self_play", "self_play", "opponent", "opponent", "opponent"
+    ]
     assert calls[0][0].seat == "upper"
     assert calls[0][1].seat == "lower"
-    assert calls[-1][0].name == "Candidate"
-    assert calls[-1][1].name == "Opponent"
+    opponent_calls = calls[-3:]
+    assert [(call[0].role, call[1].role) for call in opponent_calls] == [
+        ("candidate", "opponent"),
+        ("opponent", "candidate"),
+        ("candidate", "opponent"),
+    ]
 
 
 def test_acceptance_scheduler_defaults_to_one_plus_one_compliance(tmp_path):
@@ -436,6 +445,212 @@ def test_acceptance_scheduler_reports_round_failure(tmp_path):
 
     assert not result.passed
     assert result.issues == ["self_play_1: no_progress_timeout"]
+
+
+def test_acceptance_resume_reuses_only_complete_identity_bound_rounds(tmp_path):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    suite = tmp_path / "suite"
+    round_dir = suite / "self_play_01"
+    round_dir.mkdir(parents=True)
+    artifact_paths = {}
+    for name in (
+        "platform_log",
+        "bot_a_log",
+        "bot_b_log",
+        "bot_a_stdout",
+        "bot_a_stderr",
+        "bot_b_stdout",
+        "bot_b_stderr",
+    ):
+        path = round_dir / f"{name}.log"
+        path.write_text("", encoding="utf-8")
+        artifact_paths[name] = str(path)
+    receipt_path = round_dir / "receipt.json"
+    thp_path = round_dir / "match.txt"
+    thp_path.write_text(
+        "\n".join(f"STATE:{index}:x:y:z:p;" for index in range(70)) + "\n",
+        encoding="gb2312",
+    )
+    thp_bytes = thp_path.read_bytes()
+    thp_sha256 = hashlib.sha256(thp_bytes).hexdigest()
+    receipt = {
+        "passed": True,
+        "issues": [],
+        "duration_sec": 12.0,
+        "round_kind": "self_play",
+        "round_index": 1,
+        "target_hands": 70,
+        "bot_a": {"path": str(candidate), "role": "candidate"},
+        "bot_b": {"path": str(candidate), "role": "candidate"},
+        "log_summary": {"hands_started_min": 70, "settlements_min": 69},
+        "artifacts": {
+            "receipt": str(receipt_path),
+            **artifact_paths,
+            "thp_files": [str(thp_path)],
+            "thp_summaries": [{
+                "path": str(thp_path),
+                "exists": True,
+                "hand_records": 70,
+                "bytes": len(thp_bytes),
+                "sha256": thp_sha256,
+            }],
+            "canonical_thp": {
+                "path": str(thp_path),
+                "sha256": thp_sha256,
+                "bytes": len(thp_bytes),
+                "hand_records": 70,
+                "duplicate_paths": [],
+            },
+        },
+    }
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    calls = []
+
+    def fake_round(_bot_a, _bot_b, *, target_hands, round_kind, round_index, **_kwargs):
+        calls.append((round_kind, round_index))
+        return {
+            "passed": True,
+            "issues": [],
+            "round_kind": round_kind,
+            "round_index": round_index,
+            "target_hands": target_hands,
+            "log_summary": {"hands_started_min": target_hands, "settlements_min": target_hands - 1},
+        }
+
+    result = run_official_acceptance_sync(
+        candidate,
+        self_play_rounds=2,
+        opponent_rounds=0,
+        target_hands=70,
+        suite_dir=suite,
+        round_runner=fake_round,
+    )
+
+    assert result.passed is True
+    assert result.summary["resumed_rounds"] == 1
+    assert calls == [("self_play", 2)]
+
+
+def test_acceptance_resume_preserves_completed_failed_round(tmp_path):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    suite = tmp_path / "suite"
+    round_dir = suite / "self_play_01"
+    round_dir.mkdir(parents=True)
+    receipt = {
+        "passed": False,
+        "issues": ["protocol_illegal_check"],
+        "duration_sec": 8.0,
+        "round_kind": "self_play",
+        "round_index": 1,
+        "target_hands": 70,
+        "bot_a": {"path": str(candidate), "role": "candidate"},
+        "bot_b": {"path": str(candidate), "role": "candidate"},
+        "log_summary": {"hands_started_min": 3, "settlements_min": 2},
+        "artifacts": {},
+    }
+    (round_dir / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+    def must_not_rerun(*_args, **_kwargs):
+        raise AssertionError("completed failed round must not be cherry-picked away")
+
+    result = run_official_acceptance_sync(
+        candidate,
+        self_play_rounds=1,
+        opponent_rounds=0,
+        target_hands=70,
+        suite_dir=suite,
+        round_runner=must_not_rerun,
+    )
+
+    assert result.passed is False
+    assert result.summary["resumed_rounds"] == 1
+    assert result.report["rounds"][0]["issues"] == ["protocol_illegal_check"]
+    assert result.outcome == "infrastructure_failure"
+
+
+def test_formal_full_reruns_user_writable_passed_receipt_in_fresh_directory(
+    tmp_path,
+    monkeypatch,
+):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    suite = tmp_path / "suite"
+    round_slot = suite / "self_play_01"
+    round_slot.mkdir(parents=True)
+    envelope = {
+        "candidate_hash": hash_path(candidate),
+        "opponent_hash": "",
+    }
+    forged = {
+        "passed": True,
+        "issues": [],
+        "duration_sec": 1.0,
+        "round_kind": "self_play",
+        "round_index": 1,
+        "target_hands": 70,
+        "bot_a": {"path": str(candidate), "role": "candidate"},
+        "bot_b": {"path": str(candidate), "role": "candidate"},
+        "job_envelope": envelope,
+        "log_summary": {"hands_started_min": 70, "settlements_min": 69},
+        "artifacts": {},
+    }
+    (round_slot / "receipt.json").write_text(json.dumps(forged), encoding="utf-8")
+    calls = []
+
+    def fake_production_round(bot_a, bot_b, **kwargs):
+        calls.append(kwargs["out_dir"])
+        return {
+            "passed": True,
+            "issues": [],
+            "duration_sec": 2.0,
+            "round_kind": kwargs["round_kind"],
+            "round_index": kwargs["round_index"],
+            "target_hands": kwargs["target_hands"],
+            "bot_a": {"path": str(bot_a.path), "role": bot_a.role},
+            "bot_b": {"path": str(bot_b.path), "role": bot_b.role},
+            "job_envelope": kwargs["job_envelope"],
+            "log_summary": {"hands_started_min": 70, "settlements_min": 69},
+            "artifacts": {},
+        }
+
+    monkeypatch.setattr(harness, "_PRODUCTION_ROUND_RUNNER", fake_production_round)
+    monkeypatch.setattr(
+        harness,
+        "validate_execution_profile",
+        lambda *_a, **_k: {"ok": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        harness,
+        "seal_bot_artifact",
+        lambda _path, _destination, *, expected_hash: SimpleNamespace(
+            artifact_hash=expected_hash
+        ),
+    )
+
+    result = run_official_acceptance_sync(
+        candidate,
+        self_play_rounds=1,
+        opponent_rounds=0,
+        target_hands=70,
+        suite_dir=suite,
+        round_runner=fake_production_round,
+        job_envelope=envelope,
+        config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
+    )
+
+    assert result.passed is True
+    assert result.summary["resumed_rounds"] == 0
+    assert len(calls) == 1
+    assert calls[0].parent.parent == round_slot
+    assert calls[0].name.startswith("run_")
+    assert json.loads((round_slot / "receipt.json").read_text(encoding="utf-8"))[
+        "duration_sec"
+    ] == 2.0
 
 
 def test_target_reached_accepts_official_final_settlement_quirk(tmp_path):
@@ -498,7 +713,45 @@ def test_summarize_thp_files_counts_state_records(tmp_path):
         "exists": True,
         "hand_records": 2,
         "bytes": thp.stat().st_size,
+        "sha256": hashlib.sha256(thp.read_bytes()).hexdigest(),
     }]
+
+
+def test_canonical_thp_requires_exact_match_length_and_one_content_identity(tmp_path):
+    first = tmp_path / "THP-first.txt"
+    duplicate = tmp_path / "THP-duplicate.txt"
+    overrun = tmp_path / "THP-overrun.txt"
+    exact_text = "\n".join(f"STATE:{index}:x:y:z:p;" for index in range(70)) + "\n"
+    first.write_text(exact_text, encoding="gb2312")
+    duplicate.write_text(exact_text, encoding="gb2312")
+    overrun.write_text(
+        "\n".join(f"STATE:{index}:x:y:z:p;" for index in range(71)) + "\n",
+        encoding="gb2312",
+    )
+
+    canonical, issues = _canonical_thp_evidence(
+        _summarize_thp_files([str(first), str(duplicate)]),
+        expected_hands=70,
+    )
+    assert issues == []
+    assert canonical["hand_records"] == 70
+    assert sorted([canonical["path"], *canonical["duplicate_paths"]]) == sorted(
+        [str(first), str(duplicate)]
+    )
+
+    canonical, issues = _canonical_thp_evidence(
+        _summarize_thp_files([str(first), str(overrun)]),
+        expected_hands=70,
+    )
+    assert canonical is None
+    assert any("thp_ambiguous_multiple_outputs" in issue for issue in issues)
+
+    canonical, issues = _canonical_thp_evidence(
+        _summarize_thp_files([str(overrun)]),
+        expected_hands=70,
+    )
+    assert canonical["hand_records"] == 71
+    assert any("thp_hand_count_mismatch" in issue for issue in issues)
 
 
 def test_collect_new_thp_files_scans_platform_root_and_exe_dir(tmp_path):

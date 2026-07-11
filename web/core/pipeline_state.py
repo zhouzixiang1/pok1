@@ -24,10 +24,21 @@ STAGE_ORDER = [
     "repair_planned",
     "rework_running",
     "verified",
+    "official_certifying",
     "official_failed",
     "official_inconclusive",
     "archived",
 ]
+
+# Checkpoints in these stages contain enough durable state to resume with a
+# fresh orchestrator conversation.  Keep this classification next to the
+# authoritative stage machine so newly-added stages cannot silently drift from
+# startup watchdog and stale-checkpoint handling.
+SESSION_RECOVERABLE_STAGES = frozenset(
+    stage
+    for stage in STAGE_ORDER
+    if stage not in {"official_inconclusive", "archived"}
+)
 
 STAGE_GATE_ALLOWLIST = {
     "selected": set(),
@@ -45,6 +56,7 @@ STAGE_GATE_ALLOWLIST = {
     "repair_planned": {"quality", "review", "critic", "precommit_eval"},
     "rework_running": {"quality", "review", "critic", "precommit_eval"},
     "verified": {"quality", "review", "critic", "precommit_eval", "official_full"},
+    "official_certifying": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "official_failed": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "official_inconclusive": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "archived": {"quality", "review", "critic", "precommit_eval", "official_full"},
@@ -66,6 +78,7 @@ NEXT_TOOL_BY_STAGE = {
     "repair_planned": "execute_workers",
     "rework_running": "execute_workers",
     "verified": "commit_bot",
+    "official_certifying": "commit_bot",
     "official_failed": "execute_workers",
     "official_inconclusive": None,
     "archived": "run_archivist",
@@ -74,6 +87,11 @@ NEXT_TOOL_BY_STAGE = {
 }
 
 _STAGE_RANK = {stage: idx for idx, stage in enumerate(STAGE_ORDER)}
+
+
+def session_recoverable_stages() -> frozenset[str]:
+    """Return stages safe to resume with a new orchestrator session."""
+    return SESSION_RECOVERABLE_STAGES
 
 
 HEAD_DRIFT_RESUME_POLICY = {
@@ -194,6 +212,14 @@ HEAD_DRIFT_RESUME_POLICY = {
         "requires_contract_unchanged": True,
         "branch_alias_allowed": False,
     },
+    "official_certifying": {
+        "allowed_tools": ("commit_bot",),
+        "resume_kind": "official_certifying",
+        "warning_suffix": "official_certifying",
+        "requires_target": True,
+        "requires_contract_unchanged": True,
+        "branch_alias_allowed": False,
+    },
     "official_failed": {
         "allowed_tools": ("execute_workers",),
         "resume_kind": "repair",
@@ -282,17 +308,9 @@ def _critic_gate_passed(gate_results: dict) -> bool:
     critic = (gate_results or {}).get("critic") or {}
     if not critic:
         return False
-    if critic.get("approved") is not True:
+    if critic.get("llm_failed") or critic.get("parse_failed"):
         return False
-    if critic.get("raw_approved") is False or critic.get("advisory_approved") is False:
-        return False
-    score = critic.get("score", critic.get("advisory_score"))
-    if score is None:
-        return True
-    try:
-        return float(score) >= 6.0
-    except (TypeError, ValueError):
-        return False
+    return critic.get("approved") is True
 
 
 def validate_stage_transition(current_stage, proposed_stage):
@@ -312,6 +330,13 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "infra_timeout_override"
     if proposed_stage in {"selected", "preparing", "prepared"}:
         return True, "fresh_prepare_restart"
+    if current_stage == "official_certifying" and proposed_stage in {
+        "quality_failed",
+        "quality_passed",
+        "precommit_failed",
+        "verified",
+    }:
+        return True, "official_profile_refresh"
 
     retry_sources = {
         "workers_done",
@@ -321,12 +346,18 @@ def validate_stage_transition(current_stage, proposed_stage):
         "critic_checked",
         "precommit_failed",
         "verified",
+        "official_certifying",
         "official_failed",
     }
     if proposed_stage == "master_planned" and current_stage in retry_sources:
         return True, "retry_reset"
     if current_stage == "master_planned" and proposed_stage == "direction_audited":
         return True, "master_plan_rejected_replan"
+    if (
+        current_stage in {"quality_failed", "repair_planned", "rework_running"}
+        and proposed_stage == "direction_audited"
+    ):
+        return True, "architecture_policy_identity_replan"
     if proposed_stage == "repair_planned" and current_stage in retry_sources:
         return True, "rework_planned"
     if proposed_stage == "repair_planned" and current_stage == "rework_running":
@@ -345,6 +376,8 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "rework_done"
     if proposed_stage == "workers_done" and current_stage == "verified":
         return True, "verified_rework_reset"
+    if proposed_stage == "workers_done" and current_stage == "official_certifying":
+        return True, "official_certification_rework_reset"
     if proposed_stage == "workers_done" and current_stage == "official_failed":
         return True, "official_rework_done"
     if current_stage == "critic_checked" and proposed_stage == "reviewed":
@@ -374,11 +407,23 @@ def is_rework_reset_transition(current_stage: str | None, proposed_stage: str | 
         "critic_checked",
         "precommit_failed",
         "verified",
+        "official_certifying",
     }:
         return True
     old_rank = _STAGE_RANK[current_stage]
     new_rank = _STAGE_RANK[proposed_stage]
     return new_rank < old_rank and new_rank <= _STAGE_RANK["workers_done"]
+
+
+def invalidates_official_job_transition(
+    current_stage: str | None,
+    proposed_stage: str | None,
+) -> bool:
+    """True when a workflow-profile refresh invalidates an attached EXE job."""
+    return bool(
+        current_stage == "official_certifying"
+        and proposed_stage in {"quality_failed", "quality_passed", "precommit_failed", "verified"}
+    )
 
 
 def route_policy(checkpoint: dict | None) -> dict:
@@ -397,6 +442,22 @@ def route_policy(checkpoint: dict | None) -> dict:
             "directive": "No active checkpoint. Start or select a generation before calling pipeline tools.",
         }
 
+    from pipeline_infrastructure import (
+        infrastructure_route,
+        normalize_checkpoint_infrastructure,
+    )
+
+    checkpoint = normalize_checkpoint_infrastructure(checkpoint)
+    infra_route = infrastructure_route(checkpoint)
+    if infra_route is not None:
+        return {
+            "stage": checkpoint.get("stage"),
+            "next_v": checkpoint.get("next_v"),
+            "source_v": checkpoint.get("source_v"),
+            "parent2_v": checkpoint.get("parent2_v"),
+            **infra_route,
+        }
+
     stage = checkpoint.get("stage")
     next_v = checkpoint.get("next_v")
     source_v = checkpoint.get("source_v")
@@ -406,7 +467,7 @@ def route_policy(checkpoint: dict | None) -> dict:
     profile_refresh_needed = False
 
     if (
-        stage in {"quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified", "official_failed"}
+        stage in {"quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified", "official_certifying", "official_failed"}
         and "quality" in gate_results
         and not _quality_gate_matches_active_workflow(gate_results)
     ):
@@ -414,7 +475,7 @@ def route_policy(checkpoint: dict | None) -> dict:
         intent = "quality_profile_refresh"
         profile_refresh_needed = True
     elif (
-        stage == "verified"
+        stage in {"verified", "official_certifying"}
         and not _precommit_gate_matches_active_workflow(gate_results)
     ):
         next_tool = "run_precommit_eval"
@@ -447,6 +508,8 @@ def route_policy(checkpoint: dict | None) -> dict:
             intent = "precommit_rework"
         elif stage == "official_failed":
             intent = "official_rework"
+        elif stage == "official_certifying":
+            intent = "official_poll"
         elif stage in {"quality_passed", "reviewed"}:
             intent = "gate"
         elif stage == "master_planned":
@@ -464,7 +527,7 @@ def route_policy(checkpoint: dict | None) -> dict:
         "execute_workers": "Call execute_workers with the checkpoint task plan and exact failure feedback when present.",
         "run_quality_gates": "Call run_quality_gates; it owns compile, national, decision, size, and scope validation.",
         "run_review": "Call run_review. Do not rerun workers unless the reviewer returns a code rejection.",
-        "run_critic": "Call run_critic; critic is a hard strategy gate before precommit.",
+        "run_critic": "Call run_critic; its score is advisory and native-TCP precommit is the final strategy gate.",
         "run_precommit_eval": "Call run_precommit_eval unless the precommit gate already recorded a regression.",
         "commit_bot": "Call commit_bot only after all gates are passed.",
         "run_archivist": "Call run_archivist to finish post-commit cleanup.",
@@ -485,6 +548,11 @@ def route_policy(checkpoint: dict | None) -> dict:
             "Official EXE full certification found a deterministic bot-side compliance, "
             "state-machine, or obvious decision blocker. Call execute_workers with the "
             "official_full evidence; do not retry commit_bot on unchanged code."
+        )
+    elif stage == "official_certifying":
+        directive = (
+            "Official EXE 5+3x70 certification is running as a durable job. "
+            "Call commit_bot only to poll the attached job; do not edit bot code or start another EXE suite."
         )
     elif stage == "official_inconclusive":
         directive = (

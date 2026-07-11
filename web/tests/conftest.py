@@ -34,6 +34,7 @@ from server.routes.pipeline import router as pipeline_router
 from server.routes.prompts import router as prompts_router
 from server.routes.data_stream import router as data_stream_router
 from server.routes.scheduler import router as scheduler_router
+from server.routes.national_arena import router as national_arena_router
 
 # --- Bot detection for conditional test skipping ---
 # NOTE: These must be set during pytest_configure (which runs BEFORE collection),
@@ -117,6 +118,7 @@ def app():
         ratings_router, matches_router, evolution_router, logs_router,
         control_router, bots_router, certification_router, pipeline_router, prompts_router,
         data_stream_router, scheduler_router,
+        national_arena_router,
     ]:
         test_app.include_router(r)
     return test_app
@@ -231,6 +233,11 @@ def isolate_state(tmp_path, monkeypatch):
 
     from server.state import app_state
     import system_log
+
+    monkeypatch.setenv(
+        "POK_OFFICIAL_VERDICT_LEDGER",
+        str(tmp_path / "operator-state" / "official-verdict-ledger.jsonl"),
+    )
 
     # Reset module-global injected UI: tests that call the real orchestrator_loop
     # invoke inject_ui(stub), which mutates tool_helpers._injected_ui DIRECTLY

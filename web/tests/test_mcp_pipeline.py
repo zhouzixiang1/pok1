@@ -247,6 +247,20 @@ class TestRunMasterIdempotent:
     """run_master idempotency guard (fix-4): returns cached plan when checkpoint
     already has a master_plan at a stage >= master_planned."""
 
+    @pytest.fixture(autouse=True)
+    def _architecture_source_fixture(self, monkeypatch):
+        import tool_planning
+
+        monkeypatch.setattr(
+            tool_planning,
+            "_build_generation_architecture_policy",
+            lambda _source_v: {
+                "outcome": "skipped",
+                "policy": None,
+                "capabilities": None,
+            },
+        )
+
     def test_run_master_idempotent_returns_cache(self, client, monkeypatch):
         """run_master with existing plan in checkpoint returns cached result
         without calling _run_master_analysis."""

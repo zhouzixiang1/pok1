@@ -36,6 +36,19 @@ _DEBUG_AGENT_MAX_TURNS = 5
 QUALITY_REWORK_WORKER_TIMEOUT = int(os.environ.get("POK_WORKER_QUALITY_REWORK_TIMEOUT", "600"))
 
 
+class WorkerInfrastructureError(RuntimeError):
+    """The worker role produced no code verdict because its LLM transport failed."""
+
+    def __init__(self, worker_id, role, issues):
+        self.worker_id = worker_id
+        self.role = role
+        self.issues = [str(item)[:500] for item in issues]
+        super().__init__(
+            f"worker {worker_id} ({role}) infrastructure unavailable: "
+            + "; ".join(self.issues[:3])
+        )
+
+
 def _worker_timeout_for_task(task, reviewer_feedback):
     text = " ".join([
         str(task.get("task_kind", "")),
@@ -95,21 +108,44 @@ def _runtime_contract_block(task):
     if not isinstance(contract, dict) or not contract:
         return ""
     lines = ["# Runtime Contract"]
-    budget = contract.get("decision_budget_ms")
-    if budget is not None:
-        lines.append(f"- Decision budget: finish bounded work within {budget} ms before fallback.")
-    fallback = str(contract.get("fallback_action") or "").strip()
-    if fallback:
-        lines.append(f"- Fallback action: {fallback}.")
-    bound = str(contract.get("decision_path_bound") or "").strip()
-    if bound:
-        lines.append(f"- Decision path bound: {bound}.")
+    decision = contract.get("decision") if isinstance(contract.get("decision"), dict) else None
+    if decision:
+        lines.append(
+            "- Decision timing: "
+            f"clock={decision.get('clock')}, "
+            f"hard_deadline={decision.get('hard_deadline_ms')} ms, "
+            f"baseline_target={decision.get('baseline_target_ms')} ms, "
+            f"refinement_budget={decision.get('refinement_budget_ms')} ms."
+        )
+        lines.append(f"- Baseline path: {decision.get('baseline_path')}.")
+        lines.append(f"- Fallback action: {decision.get('fallback_action')}.")
+        lines.append(f"- Refinement bound: {decision.get('refinement_bound')}.")
+        if decision.get("max_samples") is not None:
+            lines.append(f"- Maximum refinement samples: {decision.get('max_samples')}.")
     artifacts = contract.get("precompute_artifacts") or []
     if artifacts:
-        lines.append("- Precompute artifacts: " + ", ".join(str(item) for item in artifacts[:8]) + ".")
-    lifecycle = str(contract.get("state_lifecycle") or "").strip()
-    if lifecycle:
-        lines.append(f"- Match-state lifecycle: {lifecycle}.")
+        for artifact in artifacts[:4]:
+            if isinstance(artifact, dict):
+                lines.append(
+                    "- Precompute artifact: "
+                    f"{artifact.get('name')} in {artifact.get('owner_file')}, "
+                    f"phase={artifact.get('build_phase')}, max_build_ms={artifact.get('max_build_ms')}, "
+                    f"max_entries={artifact.get('max_entries')}, "
+                    f"max_bytes={artifact.get('max_bytes')}, key={artifact.get('key_shape')}, "
+                    f"consumer={artifact.get('consumer')}, fallback={artifact.get('fallback')}."
+                )
+    memory = contract.get("match_memory") if isinstance(contract.get("match_memory"), dict) else None
+    if memory:
+        lines.append(
+            "- Match memory: "
+            f"{memory.get('tracker_class')} in {memory.get('owner_file')}; "
+            f"reset={memory.get('reset_boundary')}; events={memory.get('update_events')}; "
+            f"snapshot={memory.get('snapshot_field')}; recent_hands<={memory.get('max_recent_hands')}."
+        )
+        lines.append(
+            f"- Adaptation: prior={memory.get('prior_rule')}; confidence={memory.get('confidence_rule')}; "
+            f"cap={memory.get('adaptation_cap')}; consumer={memory.get('consumer')}."
+        )
     refs = contract.get("official_feedback_refs") or []
     if refs:
         lines.append("- Official feedback refs: " + ", ".join(str(item) for item in refs[:8]) + ".")
@@ -817,6 +853,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     _last_failure_type = "unknown"
     _last_error_output = ""   # fix-7: captured error output for debug agent
     _last_changed_diff = ""   # fix-7: captured changed diff for debug agent
+    _infrastructure_issues = []
     ui.log_history(f"Worker {w_id} ({role}) started", "info")
     # Capture this worker's own pre-run baseline if caller did not supply
     # snapshots. Retries roll back to this baseline (NOT source) so that, in
@@ -914,20 +951,22 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         except (asyncio.TimeoutError, Exception) as exc:
             if isinstance(exc, asyncio.TimeoutError):
                 _last_reason = f"timed out after {worker_timeout}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
-                _last_failure_type = "timeout"
+                _last_failure_type = "llm_infrastructure"
                 # fix-7: capture timeout context for debug agent
                 _last_error_output = f"Worker timed out after {worker_timeout}s"
                 _last_changed_diff = "(timeout — partial edits rolled back)"
                 ui.log_history(
-                    f"Worker {w_id} ({role}) timed out after {worker_timeout}s. Retrying with simpler task...",
+                    f"Worker {w_id} ({role}) timed out after {worker_timeout}s. "
+                    "Retrying the same hard contract with a more direct implementation...",
                     "warn",
                 )
             else:
                 _last_reason = f"unexpected error: {type(exc).__name__}: {str(exc)[:200]}"
-                _last_failure_type = "timeout"  # treat as timeout for debug agent trigger
+                _last_failure_type = "llm_infrastructure"
                 _last_error_output = f"{type(exc).__name__}: {str(exc)[:500]}"
                 _last_changed_diff = "(exception — partial edits rolled back)"
                 ui.log_history(f"Worker {w_id} ({role}) error: {exc}", "error")
+            _infrastructure_issues.append(_last_reason)
             preserve_reason = _preserve_timed_out_worker_if_blocker_cleared(
                 task, idx, next_dir, next_v, source_v,
                 worker_snapshots, _local_snapshots, _boundary_snapshot,
@@ -954,8 +993,10 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 ]
             restore_python_files(next_dir, _boundary_snapshot, changed_after_timeout)
             base_worker_prompt += (
-                "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
-                "Implement only the single most impactful change — do NOT try to do everything at once."
+                "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a more direct, bounded "
+                "implementation of the SAME assigned task. Reduce incidental complexity, "
+                "but implement every mandatory Runtime Contract boundary and every assigned "
+                "target; do not narrow the contract to one convenient change."
             )
             continue
 
@@ -1071,7 +1112,13 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         ui.log_history(f"Worker {w_id} ({role}) done", "info")
         return True
 
-    # Worker failed all retries — record failure
+    if _last_failure_type == "llm_infrastructure":
+        raise WorkerInfrastructureError(
+            w_id,
+            role,
+            _infrastructure_issues or [_last_reason],
+        )
+    # Worker failed all retries — record a real implementation failure.
     _record_worker_failure(next_v, w_id, role, _last_reason, failure_type=_last_failure_type)
     return False
 
@@ -1220,6 +1267,21 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         for result in results:
             if isinstance(result, asyncio.CancelledError):
                 raise result
+        infrastructure_failures = [
+            result for result in results
+            if isinstance(result, WorkerInfrastructureError)
+        ]
+        if infrastructure_failures:
+            issues = [
+                issue
+                for failure in infrastructure_failures
+                for issue in failure.issues
+            ]
+            raise WorkerInfrastructureError(
+                ",".join(str(failure.worker_id) for failure in infrastructure_failures),
+                "parallel worker batch",
+                issues,
+            )
 
         # Check results — roll back failed workers' target files from source.
         # Since files are disjoint, rolling back one worker cannot corrupt another.

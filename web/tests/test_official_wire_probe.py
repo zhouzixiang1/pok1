@@ -43,6 +43,32 @@ def test_client_stream_split_preserves_illegal_raise_spacing_for_replay():
     assert rest == "raise  200"
 
 
+def test_client_stream_split_defers_fragmented_numeric_tail_until_idle_flush():
+    messages, rest = split_client_messages(
+        "raise 2",
+        allow_name=False,
+        flush_numeric=False,
+    )
+    assert messages == []
+    assert rest == "raise 2"
+
+    messages, rest = split_client_messages(
+        rest + "00",
+        allow_name=False,
+        flush_numeric=False,
+    )
+    assert messages == []
+    assert rest == "raise 200"
+
+    messages, rest = split_client_messages(
+        rest,
+        allow_name=False,
+        flush_numeric=True,
+    )
+    assert messages == ["raise 200"]
+    assert rest == ""
+
+
 def test_replay_flags_second_postflop_check_as_illegal():
     summary = replay_events([
         _event(0, "B", "server_to_bot", ["flop|<0,1><1,2><2,3>"]),
@@ -73,10 +99,37 @@ def test_replay_flags_platform_silent_settlement_gap_without_pending_bot_timeout
         _event(64, "A", "server_to_bot", ["earnChips 200"]),
     ])
 
-    assert summary["issues"][0]["kind"] == "platform_silent_timeout_gap"
+    assert summary["issues"][0]["kind"] == "platform_silent_idle_gap"
     assert summary["issues"][0]["waited_sec"] >= 62
     assert summary["max_platform_silent_gap_sec"] >= 62
     assert summary["pending_expected_actions"] == []
+
+
+def test_replay_does_not_create_runout_actions_after_allin_is_called():
+    summary = replay_events([
+        _event(0, "A", "server_to_bot", ["preflop|BIGBLIND|<0,1><1,2>"]),
+        _event(1, "A", "server_to_bot", ["allin"]),
+        _event(2, "A", "bot_to_server", ["call"]),
+        _event(3, "A", "server_to_bot", ["flop|<0,3><1,4><2,5>"]),
+        _event(4, "A", "server_to_bot", ["turn|<3,6>"]),
+        _event(5, "A", "server_to_bot", ["river|<0,7>"]),
+    ])
+
+    assert summary["pending_expected_actions"] == []
+    assert not any(item["kind"] == "pending_bot_response_timeout" for item in summary["issues"])
+
+
+def test_replay_reports_unparseable_client_tail_at_eof():
+    event = _event(0, "A", "bot_to_server", [])
+    event.update({
+        "event_type": "stream_eof",
+        "remaining": "raise  200",
+    })
+
+    summary = replay_events([event])
+
+    assert summary["issues"][0]["kind"] == "wire_stream_eof_remainder"
+    assert summary["issues"][0]["direction"] == "bot_to_server"
 
 
 def test_replay_flags_client_action_without_pending_request():

@@ -205,7 +205,10 @@ def _matching_checkpoint(version, source_v=None):
 
 
 def _record_gate(version, source_v, gate_name, gate_data, stage=None,
-                 master_plan=None, reviewer_feedback=None, generation_attempt=None):
+                 master_plan=None, reviewer_feedback=None, generation_attempt=None,
+                 infra_failure=None, clear_infra_failure=False,
+                 infra_failure_owner=None,
+                 expected_infra_failure_digest=None, record_gate=True):
     ckpt = _matching_checkpoint(version, source_v)
     if not ckpt:
         log.warning("_record_gate: no matching checkpoint for v%s/v%s, gate '%s' dropped", version, source_v, gate_name)
@@ -239,8 +242,12 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
             else ckpt.get("reviewer_feedback", "")
         ),
         generation_attempt=generation_attempt,
-        gate_results={gate_name: gate_data},
+        gate_results={gate_name: gate_data} if record_gate else None,
         direction_audit=ckpt.get("direction_audit"),
+        infra_failure=infra_failure,
+        clear_infra_failure=clear_infra_failure,
+        infra_failure_owner=infra_failure_owner,
+        expected_infra_failure_digest=expected_infra_failure_digest,
     )
     if not recorded:
         log.warning(
@@ -264,6 +271,187 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
         except Exception:
             pass
     return bool(recorded)
+
+
+def _owned_infrastructure_failure(checkpoint, owner_tool):
+    """Return ``(failure, error)`` for a tool-owned recovery overlay."""
+    failure = checkpoint.get("infra_failure") if isinstance(checkpoint, dict) else None
+    if not isinstance(failure, dict):
+        return None, None
+    from pipeline_infrastructure import validate_infrastructure_failure
+
+    errors = validate_infrastructure_failure(failure)
+    if errors:
+        return failure, "invalid infrastructure overlay: " + "; ".join(errors[:5])
+    if failure.get("owner_tool") != owner_tool:
+        return failure, (
+            f"infrastructure recovery is owned by {failure.get('owner_tool')}; "
+            f"{owner_tool} cannot consume it"
+        )
+    return failure, None
+
+
+def _prepare_official_profile_refresh(checkpoint, tool_name):
+    """Cancel an attached EXE job before profile-driven gate revalidation."""
+    if not isinstance(checkpoint, dict) or checkpoint.get("stage") != "official_certifying":
+        return {"ok": True, "needed": False}
+    from pipeline_state import route_policy
+
+    route = route_policy(checkpoint)
+    if route.get("intent") not in {"quality_profile_refresh", "precommit_profile_refresh"}:
+        return {"ok": True, "needed": False}
+    if route.get("next_tool") != tool_name:
+        return {
+            "ok": False,
+            "needed": True,
+            "error": (
+                f"official profile refresh is owned by {route.get('next_tool')}; "
+                f"{tool_name} cannot run first"
+            ),
+            "route": route,
+        }
+    attachment = checkpoint.get("official_job") or {}
+    job_id = str(attachment.get("job_id") or "")
+    if not job_id:
+        return {"ok": True, "needed": True, "job_state": "missing_attachment"}
+    try:
+        from official_certification_job import cancel_job
+
+        cancelled = cancel_job(job_id, reason=f"workflow_profile_refresh:{tool_name}")
+    except Exception as exc:
+        return {
+            "ok": False,
+            "needed": True,
+            "error": f"official job cancellation failed: {type(exc).__name__}: {str(exc)[:240]}",
+        }
+    state = str(cancelled.get("state") or "")
+    if state not in {"cancelled", "completed", "failed", "missing"}:
+        return {
+            "ok": False,
+            "needed": True,
+            "error": f"official job did not reach a terminal state before profile refresh: {state}",
+            "job": cancelled,
+        }
+    return {"ok": True, "needed": True, "job_state": state, "job": cancelled}
+
+
+async def _execute_exhausted_infrastructure_failure(
+    version,
+    source_v,
+    *,
+    owner_tool,
+):
+    """Execute centralized abandonment for an exhausted owned overlay."""
+    checkpoint = _matching_checkpoint(version, source_v)
+    failure, error = _owned_infrastructure_failure(checkpoint, owner_tool)
+    if error:
+        return {
+            "state_blocked": True,
+            "failure_class": "infrastructure",
+            "error": error,
+            "infra_failure": failure,
+        }
+    if not failure or not failure.get("exhausted"):
+        return None
+    from tool_bot_management import _do_abandon_generation
+
+    abandon_result = await _do_abandon_generation(
+        reason=f"infrastructure_exhausted:{failure.get('component')}"
+    )
+    return {
+        "failure_class": "infrastructure",
+        "action": "abandon_generation",
+        "infra_failure": failure,
+        "abandon_result": abandon_result,
+        "abandoned": bool(abandon_result.get("abandoned")),
+    }
+
+
+async def _record_infrastructure_failure(
+    version,
+    source_v,
+    *,
+    owner_tool,
+    resume_stage,
+    component,
+    code,
+    attempt_key,
+    issues,
+    max_attempts=3,
+    metadata=None,
+    master_plan=None,
+    reviewer_feedback=None,
+):
+    """Advance one identity-bound retry and abandon when its budget expires."""
+    from pipeline_infrastructure import build_infrastructure_failure
+    from pipeline_infrastructure import infrastructure_failure_digest
+
+    overlay = None
+    recorded = False
+    for _cas_attempt in range(5):
+        checkpoint = _matching_checkpoint(version, source_v)
+        if not checkpoint:
+            return {
+                "state_blocked": True,
+                "failure_class": "infrastructure",
+                "error": "no matching checkpoint for infrastructure failure",
+            }
+        existing, error = _owned_infrastructure_failure(checkpoint, owner_tool)
+        if error:
+            return {
+                "state_blocked": True,
+                "failure_class": "infrastructure",
+                "error": error,
+                "infra_failure": existing,
+            }
+        overlay = build_infrastructure_failure(
+            existing,
+            component=component,
+            code=code,
+            owner_tool=owner_tool,
+            resume_stage=resume_stage,
+            attempt_key=attempt_key,
+            issues=list(issues or []),
+            max_attempts=max_attempts,
+            metadata=metadata,
+        )
+        recorded = _record_gate(
+            version,
+            source_v,
+            owner_tool,
+            {},
+            stage=resume_stage,
+            master_plan=master_plan,
+            reviewer_feedback=reviewer_feedback,
+            infra_failure=overlay,
+            expected_infra_failure_digest=infrastructure_failure_digest(existing),
+            record_gate=False,
+        )
+        if recorded:
+            break
+    if not recorded or overlay is None:
+        return {
+            "state_blocked": True,
+            "failure_class": "infrastructure",
+            "error": "infrastructure overlay compare-and-swap did not converge",
+            "checkpoint_recorded": False,
+        }
+    result = {
+        "failure_class": "infrastructure",
+        "action": overlay["action"],
+        "infra_failure": overlay,
+        "checkpoint_recorded": bool(recorded),
+        "abandoned": False,
+    }
+    if overlay["exhausted"] and recorded:
+        from tool_bot_management import _do_abandon_generation
+
+        abandon_result = await _do_abandon_generation(
+            reason=f"infrastructure_exhausted:{component}"
+        )
+        result["abandon_result"] = abandon_result
+        result["abandoned"] = bool(abandon_result.get("abandoned"))
+    return result
 
 
 def _gate_payload(version, source_v, passed, **extra):
@@ -358,17 +546,10 @@ def _review_gate_ok(checkpoint):
 
 def _critic_gate_ok(checkpoint):
     critic = _checkpoint_gate(checkpoint, "critic")
-    if critic.get("approved") is not True:
-        return False
-    if critic.get("raw_approved") is False or critic.get("advisory_approved") is False:
-        return False
-    score = critic.get("score", critic.get("advisory_score"))
-    if score is None:
-        return True
-    try:
-        return float(score) >= 6.0
-    except (TypeError, ValueError):
-        return False
+    # The Critic is an advisory LLM role. Requiring its successful execution
+    # prevents silent skipping, while strategy acceptance remains owned by the
+    # reproducible native-TCP precommit gate.
+    return critic.get("approved") is True
 
 
 def _bot_main(bot_name):
@@ -379,6 +560,9 @@ def _bot_main(bot_name):
 
 
 def _load_h2h_data():
+    from evaluation_data_identity import ensure_evaluation_data_identity
+
+    ensure_evaluation_data_identity(PROJECT_ROOT / "web" / "core" / "results")
     return _read_json(PROJECT_ROOT / "web" / "core" / "results" / "head_to_head.json", {})
 
 
@@ -473,6 +657,17 @@ def load_selection_scores():
     return {name: 0.5 for name in get_active_bots()}
 
 
+def load_selection_order_keys():
+    """Load lexicographic primary-result/secondary-chip ordering keys."""
+
+    from strength_order import strength_order_key
+
+    rows = _rating_rows_for_active()
+    if rows:
+        return {row["name"]: strength_order_key(row) for row in rows}
+    return {name: (0.5, float("-inf")) for name in get_active_bots()}
+
+
 def load_h2h_avg_winrates():
     """Load H2H avg win rates for all active bots from the unified snapshot.
 
@@ -516,6 +711,11 @@ def load_h2h_avg_winrates_with_coverage():
             "leaderboard_score": row.get("leaderboard_score", 0.5),
             "selection_score": row.get("selection_score", row.get("leaderboard_score", 0.5)),
             "selection_penalty": row.get("selection_penalty", 0.0),
+            "primary_70_hand_match_score": row.get("primary_70_hand_match_score"),
+            "secondary_net_chips_total": row.get("secondary_net_chips_total"),
+            "secondary_net_chips_mean": row.get("secondary_net_chips_mean"),
+            "strength_sample_count": row.get("strength_sample_count", 0),
+            "strength_order_contract": row.get("strength_order_contract", []),
             "rank_basis": row.get("rank_basis", ""),
             "strength_confidence": row.get("strength_confidence", "low"),
             "strength_note": row.get("strength_note", ""),
@@ -559,9 +759,13 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
 
     strength_scores = load_strength_scores()
     selection_scores = load_selection_scores()
+    selection_order_keys = load_selection_order_keys()
     top = sorted(
         active,
-        key=lambda name: selection_scores.get(name, strength_scores.get(name, 0.0)),
+        key=lambda name: selection_order_keys.get(
+            name,
+            (selection_scores.get(name, strength_scores.get(name, 0.0)),),
+        ),
         reverse=True,
     )
     for name in top[:max_top]:

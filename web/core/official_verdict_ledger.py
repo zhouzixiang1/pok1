@@ -1,0 +1,302 @@
+"""Signed append-only authority history for formal official-EXE verdicts."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+import fcntl
+import json
+import os
+from pathlib import Path
+import time
+from typing import Any, Iterator
+
+from bot_artifact import canonical_digest
+from official_certificate_signing import sign_certificate, verify_certificate_signature
+
+
+LEDGER_SCHEMA_VERSION = 1
+LEDGER_ENTRY_KIND = "official-exe-verdict-ledger-entry"
+LEDGER_HEAD_SCHEMA_VERSION = 1
+LEDGER_HEAD_KIND = "official-exe-verdict-ledger-head"
+DEFAULT_LEDGER_PATH = Path.home() / ".local" / "share" / "pok" / "official-verdict-ledger.jsonl"
+AUTHORITATIVE_OUTCOMES = {"official-certified", "official-failed"}
+
+
+def ledger_path() -> Path:
+    return Path(
+        os.environ.get("POK_OFFICIAL_VERDICT_LEDGER", str(DEFAULT_LEDGER_PATH))
+    ).expanduser()
+
+
+def ledger_head_path(path: Path | None = None) -> Path:
+    target = path or ledger_path()
+    return target.with_suffix(target.suffix + ".head.json")
+
+
+@contextmanager
+def _locked_ledger() -> Iterator[Path]:
+    path = ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_suffix(path.suffix + ".lock")
+    descriptor = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield path
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _entry_digest(entry: dict[str, Any]) -> str:
+    return canonical_digest({key: value for key, value in entry.items() if key != "entry_digest"})
+
+
+def _head_payload(
+    path: Path,
+    entry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    entry = entry or {}
+    return {
+        "schema_version": LEDGER_HEAD_SCHEMA_VERSION,
+        "kind": LEDGER_HEAD_KIND,
+        "sequence": int(entry.get("sequence", 0) or 0),
+        "entry_digest": str(entry.get("entry_digest") or ""),
+        "ledger_size_bytes": path.stat().st_size,
+    }
+
+
+def _write_signed_head(path: Path, entry: dict[str, Any] | None = None) -> None:
+    head = ledger_head_path(path)
+    payload = _head_payload(path, entry)
+    wrapper = {
+        "head": payload,
+        "signature": sign_certificate(payload),
+    }
+    raw = (
+        json.dumps(wrapper, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    tmp = head.with_name(f".{head.name}.tmp-{os.getpid()}-{time.time_ns()}")
+    descriptor = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        os.write(descriptor, raw)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(tmp, head)
+    directory = os.open(head.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _validate_signed_head(path: Path, entries: list[dict[str, Any]]) -> list[str]:
+    head_path = ledger_head_path(path)
+    try:
+        if head_path.is_symlink() or not head_path.is_file():
+            return ["official_verdict_ledger_head_missing"]
+        wrapper = json.loads(head_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [f"official_verdict_ledger_head_read_error:{type(exc).__name__}"]
+    head = wrapper.get("head") if isinstance(wrapper, dict) else None
+    signature = wrapper.get("signature") if isinstance(wrapper, dict) else None
+    if not isinstance(head, dict) or not isinstance(signature, str):
+        return ["official_verdict_ledger_head_wrapper_invalid"]
+    issues: list[str] = []
+    if (
+        head.get("schema_version") != LEDGER_HEAD_SCHEMA_VERSION
+        or head.get("kind") != LEDGER_HEAD_KIND
+    ):
+        issues.append("official_verdict_ledger_head_schema_invalid")
+    verification = verify_certificate_signature(head, signature)
+    if not verification.get("valid"):
+        issues.append("official_verdict_ledger_head_signature_invalid")
+    latest = entries[-1] if entries else {}
+    expected_sequence = int(latest.get("sequence", 0) or 0)
+    expected_digest = str(latest.get("entry_digest") or "")
+    if head.get("sequence") != expected_sequence:
+        issues.append("official_verdict_ledger_truncated_sequence")
+    if head.get("entry_digest") != expected_digest:
+        issues.append("official_verdict_ledger_truncated_digest")
+    try:
+        if int(head.get("ledger_size_bytes", -1)) != path.stat().st_size:
+            issues.append("official_verdict_ledger_truncated_size")
+    except (TypeError, ValueError, OSError):
+        issues.append("official_verdict_ledger_head_size_invalid")
+    return issues
+
+
+def _read_validated(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    if not path.exists():
+        return [], ["official_verdict_ledger_missing"]
+    try:
+        if path.is_symlink() or not path.is_file():
+            return [], ["official_verdict_ledger_not_regular"]
+        raw = path.read_bytes()
+    except Exception as exc:
+        return [], [f"official_verdict_ledger_read_error:{type(exc).__name__}"]
+    if not raw:
+        return [], _validate_signed_head(path, [])
+    if not raw.endswith(b"\n"):
+        return [], ["official_verdict_ledger_truncated_line"]
+    entries: list[dict[str, Any]] = []
+    issues: list[str] = []
+    previous = ""
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except Exception as exc:
+        return [], [f"official_verdict_ledger_read_error:{type(exc).__name__}"]
+    for index, line in enumerate(lines, start=1):
+        try:
+            wrapper = json.loads(line)
+        except Exception:
+            issues.append(f"official_verdict_ledger_json_invalid:{index}")
+            break
+        entry = wrapper.get("entry") if isinstance(wrapper, dict) else None
+        signature = wrapper.get("signature") if isinstance(wrapper, dict) else None
+        if not isinstance(entry, dict) or not isinstance(signature, str):
+            issues.append(f"official_verdict_ledger_wrapper_invalid:{index}")
+            break
+        if entry.get("schema_version") != LEDGER_SCHEMA_VERSION or entry.get("kind") != LEDGER_ENTRY_KIND:
+            issues.append(f"official_verdict_ledger_schema_invalid:{index}")
+        if entry.get("sequence") != index:
+            issues.append(f"official_verdict_ledger_sequence_invalid:{index}")
+        if entry.get("previous_entry_digest") != previous:
+            issues.append(f"official_verdict_ledger_chain_invalid:{index}")
+        digest = str(entry.get("entry_digest") or "")
+        if digest != _entry_digest(entry):
+            issues.append(f"official_verdict_ledger_digest_invalid:{index}")
+        verification = verify_certificate_signature(entry, signature)
+        if not verification.get("valid"):
+            issues.append(f"official_verdict_ledger_signature_invalid:{index}")
+        if issues:
+            break
+        entries.append(entry)
+        previous = digest
+    if not issues:
+        issues.extend(_validate_signed_head(path, entries))
+    return entries, issues
+
+
+def append_verdict(status: dict[str, Any]) -> dict[str, Any]:
+    from official_certification import authoritative_verdict_status_issues
+    identity = status.get("certification_identity") if isinstance(status.get("certification_identity"), dict) else {}
+    candidate_hash = str(identity.get("candidate_hash") or "")
+    if len(candidate_hash) != 64:
+        raise ValueError("official verdict ledger requires candidate artifact hash")
+    outcome = str(status.get("status") or "")
+    if outcome not in {"official-certified", "official-failed", "official-inconclusive"}:
+        raise ValueError(f"unsupported official verdict ledger outcome: {outcome}")
+    summary = status.get("official_evidence_summary") if isinstance(status.get("official_evidence_summary"), dict) else {}
+    deterministic = status.get("official_deterministic_status_receipt")
+    deterministic = deterministic if isinstance(deterministic, dict) else {}
+    envelope = status.get("official_job_envelope")
+    envelope = envelope if isinstance(envelope, dict) else {}
+    with _locked_ledger() as path:
+        status_issues = authoritative_verdict_status_issues(status)
+        if status_issues:
+            raise ValueError(
+                "official verdict ledger rejected unverified status: "
+                + ", ".join(status_issues)
+            )
+        entries, issues = _read_validated(path)
+        if issues:
+            raise RuntimeError("official verdict ledger is invalid: " + ", ".join(issues))
+        payload = {
+            "schema_version": LEDGER_SCHEMA_VERSION,
+            "kind": LEDGER_ENTRY_KIND,
+            "sequence": len(entries) + 1,
+            "previous_entry_digest": str(entries[-1].get("entry_digest") or "") if entries else "",
+            "recorded_at_ns": time.time_ns(),
+            "candidate_label": str(status.get("bot") or ""),
+            "candidate_hash": candidate_hash,
+            "policy_id": str(status.get("policy_id") or ""),
+            "mode": str(status.get("mode") or ""),
+            "outcome": outcome,
+            "authoritative": outcome in AUTHORITATIVE_OUTCOMES,
+            "blocking": bool(summary.get("blocking")),
+            "classification": str(summary.get("classification") or ""),
+            "certificate_digest": str(status.get("certificate_digest") or ""),
+            "deterministic_status_receipt_digest": str(deterministic.get("receipt_digest") or ""),
+            "job_envelope_digest": str(envelope.get("envelope_digest") or ""),
+            "request_started_ns": status.get("request_started_ns"),
+            "request_completed_ns": status.get("request_completed_ns"),
+            "strength_evaluation": "not_applicable",
+        }
+        entry = {**payload, "entry_digest": canonical_digest(payload)}
+        wrapper = {
+            "entry": entry,
+            "signature": sign_certificate(entry),
+        }
+        line = json.dumps(wrapper, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+        descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            os.write(descriptor, line.encode("utf-8"))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _write_signed_head(path, entry)
+        return entry
+
+
+def initialize_verdict_ledger() -> dict[str, Any]:
+    """Create the explicit signed genesis required before the first append."""
+    with _locked_ledger() as path:
+        head = ledger_head_path(path)
+        if path.exists() or head.exists():
+            entries, issues = _read_validated(path)
+            if issues:
+                raise RuntimeError(
+                    "official verdict ledger already exists but is invalid: "
+                    + ", ".join(issues)
+                )
+            return {
+                "initialized": False,
+                "valid": True,
+                "entry_count": len(entries),
+            }
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _write_signed_head(path)
+        return {
+            "initialized": True,
+            "valid": True,
+            "entry_count": 0,
+        }
+
+
+def ledger_integrity() -> dict[str, Any]:
+    with _locked_ledger() as path:
+        entries, issues = _read_validated(path)
+    return {
+        "valid": not issues,
+        "issues": issues,
+        "entry_count": len(entries),
+        "head": entries[-1] if entries else None,
+    }
+
+
+def latest_authoritative_verdict(candidate_hash: str) -> dict[str, Any]:
+    with _locked_ledger() as path:
+        entries, issues = _read_validated(path)
+    if issues:
+        return {"valid": False, "issues": issues, "entry": None}
+    matching = [
+        entry
+        for entry in entries
+        if entry.get("candidate_hash") == candidate_hash
+        and entry.get("authoritative") is True
+    ]
+    return {
+        "valid": True,
+        "issues": [],
+        "entry": matching[-1] if matching else None,
+    }

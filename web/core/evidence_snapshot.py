@@ -9,17 +9,23 @@ against the same evidence contract.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
+import os
 import re
+import shutil
+import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 SNAPSHOT_DIRNAME = "evidence_snapshot"
 H2H_SNAPSHOT_FILENAME = "head_to_head.json"
 MANIFEST_FILENAME = "manifest.json"
+SNAPSHOT_SCHEMA_VERSION = 2
 
 
 def _infra():
@@ -47,74 +53,193 @@ def _sha256(data: bytes) -> str:
 
 def _read_manifest(path: Path) -> dict[str, Any] | None:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
     except Exception:
         return None
+
+
+def _canonical_digest(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _evaluation_identity_digest(results_dir: Path) -> str:
+    path = results_dir / "evaluation_data_manifest.json"
+    payload = _read_manifest(path) or {}
+    return str(payload.get("manifest_digest") or "missing")
+
+
+@contextmanager
+def _snapshot_lock(next_v: int | str) -> Iterator[None]:
+    parent = _snapshot_dir(next_v).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(parent / ".evidence_snapshot.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _snapshot_paths(next_v: int | str) -> tuple[Path, Path, Path]:
+    directory = _snapshot_dir(next_v)
+    return directory, directory / H2H_SNAPSHOT_FILENAME, directory / MANIFEST_FILENAME
+
+
+def _validate_existing_snapshot(next_v: int | str) -> tuple[dict[str, Any] | None, list[str]]:
+    directory, snapshot_path, manifest_path = _snapshot_paths(next_v)
+    issues: list[str] = []
+    if not directory.is_dir() or directory.is_symlink():
+        return None, ["snapshot_directory_missing_or_unsafe"]
+    if not snapshot_path.is_file() or snapshot_path.is_symlink():
+        issues.append("snapshot_payload_missing_or_unsafe")
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        issues.append("snapshot_manifest_missing_or_unsafe")
+    manifest = _read_manifest(manifest_path)
+    if manifest is None:
+        issues.append("snapshot_manifest_invalid_json")
+        return None, issues
+    if manifest.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
+        issues.append("snapshot_schema_mismatch")
+    if manifest.get("next_v") != int(next_v):
+        issues.append("snapshot_version_mismatch")
+    claimed_digest = str(manifest.get("manifest_digest") or "")
+    actual_digest = _canonical_digest({
+        key: value for key, value in manifest.items() if key != "manifest_digest"
+    })
+    if claimed_digest != actual_digest:
+        issues.append("snapshot_manifest_digest_mismatch")
+    if issues or not snapshot_path.is_file():
+        return None, issues
+    try:
+        payload = snapshot_path.read_bytes()
+        parsed = json.loads(payload.decode("utf-8"))
+    except Exception as exc:
+        return None, [*issues, f"snapshot_payload_invalid:{type(exc).__name__}"]
+    if not isinstance(parsed, dict):
+        issues.append("snapshot_payload_not_object")
+    if manifest.get("sha256") != _sha256(payload):
+        issues.append("snapshot_payload_digest_mismatch")
+    if manifest.get("bytes") != len(payload):
+        issues.append("snapshot_payload_size_mismatch")
+    if manifest.get("entries") != (len(parsed) if isinstance(parsed, dict) else 0):
+        issues.append("snapshot_entry_count_mismatch")
+    current_identity = _evaluation_identity_digest(_infra().RESULTS_DIR)
+    if manifest.get("evaluation_identity_digest") != current_identity:
+        issues.append("snapshot_evaluation_identity_mismatch")
+    return (manifest if not issues else None), issues
+
+
+def _write_file_durable(path: Path, payload: bytes) -> None:
+    with path.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def ensure_generation_h2h_snapshot(next_v: int | str, *, force: bool = False) -> dict[str, Any]:
     """Create or return the stable H2H snapshot for ``next_v``."""
     infra = _infra()
-    snapshot_dir = _snapshot_dir(next_v)
-    snapshot_path = snapshot_dir / H2H_SNAPSHOT_FILENAME
-    manifest_path = snapshot_dir / MANIFEST_FILENAME
-    if snapshot_path.exists() and not force:
-        manifest = _read_manifest(manifest_path) or {}
-        return {
-            **manifest,
-            "available": True,
-            "h2h_path": str(snapshot_path),
-            "h2h_relpath": _repo_rel(snapshot_path),
-            "manifest_path": str(manifest_path),
-            "manifest_relpath": _repo_rel(manifest_path),
-            "reused": True,
-        }
-
+    snapshot_dir, snapshot_path, manifest_path = _snapshot_paths(next_v)
     live_path = infra.H2H_FILE
-    if not live_path.exists():
-        return {
-            "available": False,
-            "reason": "missing_live_h2h",
-            "h2h_path": str(live_path),
-            "h2h_relpath": _repo_rel(live_path),
-            "live_h2h_relpath": _repo_rel(live_path),
-            "reused": False,
-        }
 
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        with infra.locked_file(live_path, "rb") as handle:
-            payload = handle.read()
-    except Exception as exc:
-        return {
-            "available": False,
-            "reason": f"read_live_h2h_failed:{type(exc).__name__}",
-            "error": str(exc),
-            "h2h_path": str(live_path),
-            "h2h_relpath": _repo_rel(live_path),
-            "live_h2h_relpath": _repo_rel(live_path),
-            "reused": False,
-        }
+    with _snapshot_lock(next_v):
+        if snapshot_dir.exists() and not force:
+            manifest, issues = _validate_existing_snapshot(next_v)
+            if manifest is None:
+                return {
+                    "available": False,
+                    "reason": "snapshot_integrity_failure",
+                    "issues": issues,
+                    "h2h_path": str(snapshot_path),
+                    "h2h_relpath": _repo_rel(snapshot_path),
+                    "manifest_path": str(manifest_path),
+                    "manifest_relpath": _repo_rel(manifest_path),
+                    "reused": True,
+                }
+            return {
+                **manifest,
+                "available": True,
+                "h2h_path": str(snapshot_path),
+                "h2h_relpath": _repo_rel(snapshot_path),
+                "manifest_path": str(manifest_path),
+                "manifest_relpath": _repo_rel(manifest_path),
+                "reused": True,
+            }
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir)
 
-    snapshot_path.write_bytes(payload)
-    try:
-        parsed = json.loads(payload.decode("utf-8"))
-        entry_count = len(parsed) if isinstance(parsed, dict) else 0
-    except Exception:
-        entry_count = 0
-    manifest = {
-        "available": True,
-        "next_v": int(next_v),
-        "created_at": time.time(),
-        "h2h_relpath": _repo_rel(snapshot_path),
-        "manifest_relpath": _repo_rel(manifest_path),
-        "live_h2h_relpath": _repo_rel(live_path),
-        "sha256": _sha256(payload),
-        "bytes": len(payload),
-        "entries": entry_count,
-        "reused": False,
-    }
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+        try:
+            if live_path.exists():
+                with infra.locked_file(live_path, "rb") as handle:
+                    payload = handle.read()
+                    live_stat = os.fstat(handle.fileno())
+            else:
+                payload = b"{}"
+                live_stat = None
+            parsed = json.loads(payload.decode("utf-8"))
+            if not isinstance(parsed, dict):
+                raise ValueError("live H2H payload is not an object")
+        except Exception as exc:
+            return {
+                "available": False,
+                "reason": f"read_live_h2h_failed:{type(exc).__name__}",
+                "error": str(exc),
+                "h2h_path": str(live_path),
+                "h2h_relpath": _repo_rel(live_path),
+                "live_h2h_relpath": _repo_rel(live_path),
+                "reused": False,
+            }
+
+        snapshot_dir.parent.mkdir(parents=True, exist_ok=True)
+        temporary_dir = Path(tempfile.mkdtemp(
+            prefix=f".{SNAPSHOT_DIRNAME}-",
+            dir=snapshot_dir.parent,
+        ))
+        try:
+            temporary_snapshot = temporary_dir / H2H_SNAPSHOT_FILENAME
+            temporary_manifest = temporary_dir / MANIFEST_FILENAME
+            _write_file_durable(temporary_snapshot, payload)
+            manifest = {
+                "schema_version": SNAPSHOT_SCHEMA_VERSION,
+                "available": True,
+                "next_v": int(next_v),
+                "created_at": time.time(),
+                "h2h_relpath": _repo_rel(snapshot_path),
+                "manifest_relpath": _repo_rel(manifest_path),
+                "live_h2h_relpath": _repo_rel(live_path),
+                "evaluation_identity_digest": _evaluation_identity_digest(infra.RESULTS_DIR),
+                "live_cutoff": {
+                    "mtime_ns": int(live_stat.st_mtime_ns) if live_stat else None,
+                    "size": int(live_stat.st_size) if live_stat else 0,
+                },
+                "sha256": _sha256(payload),
+                "bytes": len(payload),
+                "entries": len(parsed),
+            }
+            manifest["manifest_digest"] = _canonical_digest(manifest)
+            _write_file_durable(
+                temporary_manifest,
+                json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8"),
+            )
+            directory_fd = os.open(temporary_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            os.rename(temporary_dir, snapshot_dir)
+            parent_fd = os.open(snapshot_dir.parent, os.O_RDONLY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+        finally:
+            if temporary_dir.exists():
+                shutil.rmtree(temporary_dir, ignore_errors=True)
+
     try:
         from system_log import log_system_event
 
@@ -122,12 +247,14 @@ def ensure_generation_h2h_snapshot(next_v: int | str, *, force: bool = False) ->
             "pipeline.h2h_snapshot_created",
             "info",
             f"H2H evidence snapshot created for v{int(next_v)}",
-            {k: manifest[k] for k in ("next_v", "h2h_relpath", "sha256", "entries", "bytes")},
+            {k: manifest[k] for k in ("next_v", "h2h_relpath", "sha256", "entries", "bytes", "manifest_digest")},
         )
     except Exception:
         pass
     return {
         **manifest,
+        "available": True,
+        "reused": False,
         "h2h_path": str(snapshot_path),
         "manifest_path": str(manifest_path),
     }
@@ -351,8 +478,9 @@ def h2h_snapshot_contract_text(
     snapshot = ensure_generation_h2h_snapshot(next_v)
     if not snapshot.get("available"):
         return (
-            "Stable H2H snapshot unavailable; live H2H may be used as fallback: "
-            f"{snapshot.get('h2h_relpath', 'web/core/results/head_to_head.json')}"
+            "Stable H2H snapshot unavailable or failed integrity checks. Do not "
+            "read live H2H or make matchup-count claims for this generation. "
+            f"Reason: {snapshot.get('reason', 'unknown')}"
         )
     lines = [
         "Stable H2H evidence snapshot for this generation:",

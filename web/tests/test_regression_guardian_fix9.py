@@ -77,6 +77,9 @@ class TestRegressionGuardianWritesJsonl:
         # Guardian diagnosis should be in result (existing behavior)
         assert "regression_guardian" in res
         assert res["regression_guardian"]["diagnosis"] == "Preflop range too wide against tight opponents"
+        assert res["approved"] is True
+        assert res["advisory_approved"] is False
+        assert res["action"] == "proceed_to_precommit"
 
         # NEW: JSONL file should have been written
         guardian_file = tmp_path / "regression_guardian.jsonl"

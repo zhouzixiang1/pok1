@@ -31,28 +31,51 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 4
+CONTRACT_VERSION = 6
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
 # Guarding the guard itself is non-negotiable: if these files changed on disk,
 # the running process may be making drift decisions with older in-memory code.
 ALWAYS_CRITICAL_EXACT = frozenset({
+    "web/core/blocking_runtime.py",
     "web/core/bot_artifact.py",
     "web/core/bot_namespace.py",
     "web/core/evaluation_contract.py",
+    "web/core/evaluation_data_identity.py",
     "web/core/evolution_infra.py",
     "web/core/evolution_scope.py",
     "web/core/national_epoch_registry.py",
+    "web/core/national_bot_launcher.py",
+    "web/core/national_game_runtime.py",
+    "web/core/national_runtime_telemetry.py",
+    "web/core/national_transport.py",
+    "web/core/official_attribution.py",
+    "web/core/official_certificate_signing.py",
     "web/core/official_certification.py",
+    "web/core/official_certification_job.py",
+    "web/core/official_certifier_allowed_signers",
+    "web/core/official_bot_sandbox.py",
+    "web/core/official_execution_profile.py",
+    "web/core/official_execution_profile.json",
     "web/core/official_eligibility.py",
+    "web/core/official_evidence.py",
+    "web/core/official_evidence_archive.py",
     "web/core/official_grandfathering.json",
+    "web/core/official_job_envelope.py",
+    "web/core/official_llm_analysis.py",
+    "web/core/official_platform_harness.py",
+    "web/core/official_platform_resource.py",
+    "web/core/official_verdict_ledger.py",
+    "web/core/official_wire_probe.py",
     "web/core/orchestrator.py",
     "web/core/pipeline_recovery.py",
+    "web/core/pipeline_infrastructure.py",
     "web/core/pipeline_state.py",
     "web/core/publish_reconcile.py",
     "web/core/repo_state.py",
     "web/core/tool_runtime_guard.py",
+    "web/core/runtime_capacity.py",
     "web/core/workflow_profiles.py",
 })
 
@@ -173,8 +196,14 @@ QUALITY_STAGE_EXACT = frozenset().union(
         "web/core/decision_tester.py",
         "web/core/eval_stats.py",
         "web/core/fix_verification.py",
+        "web/core/gate_execution.py",
+        "web/core/national_capability_contract.py",
         "web/core/national_native.py",
+        "web/core/national_runtime_probe.py",
+        "web/core/national_runtime_probe_scenarios.py",
+        "web/core/national_runtime_probe_worker.py",
         "web/core/protected_contracts.py",
+        "web/core/runtime_architecture_policy.py",
         "web/core/smoke_tester.py",
         "web/core/tool_gates.py",
         "web/core/worker_boundary.py",
@@ -211,7 +240,13 @@ PRECOMMIT_STAGE_EXACT = frozenset().union(
         "web/core/battle_scheduler.py",
         "web/core/elo_daemon.py",
         "web/core/eval_stats.py",
+        "web/core/gate_execution.py",
+        "web/core/national_capability_contract.py",
         "web/core/national_native.py",
+        "web/core/national_runtime_probe.py",
+        "web/core/national_runtime_probe_scenarios.py",
+        "web/core/national_runtime_probe_worker.py",
+        "web/core/runtime_architecture_policy.py",
         "web/core/tool_eval.py",
     },
 )
@@ -220,6 +255,11 @@ COMMIT_STAGE_EXACT = frozenset().union(
     ALWAYS_CRITICAL_EXACT,
     {
         "web/core/candidate_hygiene.py",
+        "web/core/gate_execution.py",
+        "web/core/official_attribution.py",
+        "web/core/official_certificate_signing.py",
+        "web/core/official_certification_job.py",
+        "web/core/official_evidence_archive.py",
         "web/core/protected_contracts.py",
         "web/core/tool_commit.py",
     },
@@ -241,6 +281,7 @@ _STAGE_EXACT = {
     "reviewed": CRITIC_STAGE_EXACT,
     "critic_checked": PRECOMMIT_STAGE_EXACT,
     "verified": COMMIT_STAGE_EXACT,
+    "official_certifying": COMMIT_STAGE_EXACT,
 }
 
 NATIVE_TCP_EXCLUDED_EXACT = frozenset(CRITICAL_ENGINE_EXACT).union({
@@ -309,6 +350,11 @@ def _extract_opponent_versions(checkpoint: dict[str, Any] | None) -> set[int]:
         return versions
     gate_results = checkpoint.get("gate_results")
     for value in _iter_values(gate_results if isinstance(gate_results, dict) else {}):
+        version = bot_version_from_name(value)
+        if version is not None:
+            versions.add(version)
+    official_job = checkpoint.get("official_job")
+    for value in _iter_values(official_job if isinstance(official_job, dict) else {}):
         version = bot_version_from_name(value)
         if version is not None:
             versions.add(version)
@@ -390,10 +436,13 @@ def build_evaluation_contract(
         extra_versions=extra_versions,
     )
     prefixes = list(CRITICAL_PREFIXES) + [bot_relpath(version) + "/" for version in bot_versions]
-    exact = sorted(critical_exact_for_stage(
+    exact = sorted({
+        *critical_exact_for_stage(
         contract_stage,
         national_execution_mode=execution_mode,
-    ))
+        ),
+        *(f"official_certificates/{ACTIVE_BOT_PREFIX}{version}.json" for version in bot_versions),
+    })
     contract = {
         "version": CONTRACT_VERSION,
         "stage": contract_stage,

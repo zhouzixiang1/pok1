@@ -81,13 +81,10 @@ This is protocol correctness, not a strategic tuning choice:
   `next_player(..., 1/2)`.
 </non_negotiable_position_contract>
 
-## Known Mandatory Fixes (DO NOT REMOVE)
+## Deterministic Invariants
 
-The following fixes have been verified as critical and must be preserved in any new bot:
-
-1. **Wheel Straight (A-2-3-4-5)**: In `card_utils.py` `evaluate_5()`, the wheel straight check `elif set(unique_ranks) == {14, 2, 3, 4, 5}:` must be present. Without it, A-2-3-4-5 is misclassified as high card.
-2. **Re-raise Minimum**: In `state.py`, `min_raise_action` must use `2 * last_raise_to + 1 - my_round_bet` (strictly > 2x, not >= 2x).
-3. **TOTAL_HANDS**: In `constants.py`, `TOTAL_HANDS` must be 70.
-4. **National Position Semantics**: In `state.py`, `opponent.py`, and any position helper, dealer is SB and non-dealer is BB. Preserve `sb = dealer_id` and `bb = 1 - dealer_id`; do not reintroduce dealer-derived `next_player(..., 1/2)` formulas.
-
-If you see these fixes in the source code, preserve them. If they are missing, add them.
+Do not infer required edits from generation-specific prompt history. Preserve all
+parent capabilities that pass the current deterministic contracts. The quality
+pipeline independently checks evaluator correctness, strict raise semantics,
+70-hand configuration, national position semantics, native TCP behavior, and
+the selected runtime architecture focus.

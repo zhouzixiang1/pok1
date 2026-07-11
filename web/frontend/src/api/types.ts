@@ -19,6 +19,11 @@ export interface BotRating {
   leaderboard_score?: number;
   selection_score?: number;
   selection_penalty?: number;
+  primary_70_hand_match_score?: number;
+  secondary_net_chips_total?: number;
+  secondary_net_chips_mean?: number;
+  strength_sample_count?: number;
+  strength_order_contract?: string[];
   rank_basis?: string;
   strength_confidence?: string;
   strength_note?: string;
@@ -176,6 +181,11 @@ export interface BotSummary {
   leaderboard_score?: number;
   selection_score?: number;
   selection_penalty?: number;
+  primary_70_hand_match_score?: number;
+  secondary_net_chips_total?: number;
+  secondary_net_chips_mean?: number;
+  strength_sample_count?: number;
+  strength_order_contract?: string[];
   rank_basis?: string;
   strength_confidence?: string;
   strength_note?: string;
@@ -292,4 +302,109 @@ export interface SchedulerStatus {
   claimed_jobs: number;
   recent_results: number;
   pending_details?: Record<string, unknown>[];
+}
+
+// National Web Arena (local diagnostics/presentation; official EXE remains authoritative)
+export type ArenaMode = "external_tcp" | "managed_bots";
+export type ArenaStatus =
+  | "created"
+  | "starting"
+  | "waiting_for_players"
+  | "ready"
+  | "running"
+  | "stopping"
+  | "finalizing"
+  | "finished"
+  | "failed"
+  | "stopped";
+
+export interface ArenaCertificationSnapshot {
+  status?: string | null;
+  mode?: string | null;
+  official_full_certified?: boolean;
+  official_exe_passed?: boolean;
+  arena_launch_eligible?: boolean;
+  eligibility_basis?: "official_full" | "content_bound_grandfather" | "ineligible" | string;
+  authority: "windows_exe";
+  error?: string;
+}
+
+export interface ArenaBot {
+  id: string;
+  version: number | null;
+  display_name: string;
+  launchable: boolean;
+  native_contract: "passed";
+  certification: ArenaCertificationSnapshot;
+  artifact_identity: Record<string, string | null>;
+  result_authority: "diagnostic_only";
+  selection_authority: "official_windows_exe";
+}
+
+export interface ArenaSession {
+  session_id: string;
+  mode: ArenaMode;
+  status: ArenaStatus;
+  host: string;
+  port: number;
+  hands_total: number;
+  hands_completed: number;
+  action_timeout_seconds: number;
+  official_action_delay: number;
+  top_bot: string | null;
+  bottom_bot: string | null;
+  top_player_name: string | null;
+  bottom_player_name: string | null;
+  connected_players: number;
+  top_total_earnings: number;
+  bottom_total_earnings: number;
+  winner: string | null;
+  illegal_actions: [number, number];
+  timeouts: [number, number];
+  last_event_id: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  failure_reason: string | null;
+  artifacts: Record<string, string>;
+  managed_bot_identities: Record<string, Record<string, string | null>>;
+  official_certification: Record<string, ArenaCertificationSnapshot | string>;
+  result_authority: "diagnostic_only";
+  affects_glicko: false;
+  official_exe_certification: false;
+  compliance_oracle: "official_windows_exe";
+  wire_log_complete: boolean;
+}
+
+export interface ArenaEvent {
+  event_id: number;
+  session_id: string;
+  type: string;
+  timestamp: string;
+  hand_no: number;
+  payload: Record<string, unknown>;
+}
+
+export interface ArenaWireRecord {
+  sequence: number;
+  session_id: string;
+  player_idx: 0 | 1;
+  peer: string;
+  timestamp: number;
+  direction: "server_to_bot" | "bot_to_server";
+  phase: "chunk" | "message";
+  payload: string;
+  byte_count: number;
+  message_type?: "name" | "action";
+}
+
+export interface ArenaCreatePayload {
+  mode: ArenaMode;
+  host: string;
+  port: number;
+  hands: number;
+  action_timeout_seconds: number;
+  official_action_delay: number;
+  top_bot?: string | null;
+  bottom_bot?: string | null;
 }

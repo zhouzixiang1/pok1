@@ -6,10 +6,10 @@ Covers `web/core/llm_failure.py` (is_llm_infra_error / infra_payload) and the
 The infra short-circuit must:
 - NOT increment generation_attempt
 - NOT call _record_quality_failure / guardian / *_rejected log
-- <3 attempts -> action "retry_critic"/"retry_review", >=3 -> "abandon_cycle"
+- <3 attempts -> action "retry_same_tool", >=3 -> "abandon_generation"
 - keep stage at its current value (reviewed for critic, quality_passed for reviewer)
-- persist *_infra_retry count, reset to 0 on abandon
-- write llm_failed marker gate (NOT an approved:False rejection gate)
+- persist an identity-bound top-level infra_failure overlay
+- never write an approved:False business gate for infrastructure failure
 """
 
 import asyncio
@@ -169,14 +169,23 @@ class TestRunReviewInfraShortCircuit:
             raise exc
         monkeypatch.setattr(tool_gates, "run_claude_query", fake_run_claude_query)
 
-        # Track that _record_quality_failure is NEVER called
-        calls = {"quality_failure": 0}
+        # Track that neither business failure recording nor worker routing occurs.
+        calls = {"quality_failure": 0, "abandon": 0}
         monkeypatch.setattr(tool_gates, "_record_quality_failure",
                             lambda *a, **k: calls.__setitem__("quality_failure", calls["quality_failure"] + 1))
+        import tool_bot_management
+
+        async def fake_abandon(*_a, **_kw):
+            calls["abandon"] += 1
+            return {"abandoned": True, "reason": "test infrastructure exhaustion"}
+
+        monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", fake_abandon)
 
         self._patch_idempotency(monkeypatch)
 
-        result = asyncio.run(tool_gates.run_review.handler({"version": 101, "source_v": 100, "plan": []}))
+        result = None
+        for _ in range((review_retry or 0) + 1):
+            result = asyncio.run(tool_gates.run_review.handler({"version": 101, "source_v": 100, "plan": []}))
         return result, calls
 
     def _parse(self, result):
@@ -187,7 +196,7 @@ class TestRunReviewInfraShortCircuit:
         from claude_agent_sdk import ClaudeSDKError
         result, calls = self._run(monkeypatch, ClaudeSDKError("signature error"), review_retry=0)
         data = self._parse(result)
-        assert data["action"] == "retry_review"
+        assert data["action"] == "retry_same_tool"
         assert data["llm_failed"] is True
         assert calls["quality_failure"] == 0
 
@@ -195,9 +204,10 @@ class TestRunReviewInfraShortCircuit:
         from claude_agent_sdk import ClaudeSDKError
         result, calls = self._run(monkeypatch, ClaudeSDKError("signature error"), review_retry=2)
         data = self._parse(result)
-        assert data["action"] == "abandon_cycle"
+        assert data["action"] == "abandon_generation"
         assert data["llm_failed"] is True
         assert calls["quality_failure"] == 0
+        assert calls["abandon"] == 1
 
     def test_no_quality_failure_recorded(self, monkeypatch):
         from claude_agent_sdk import ClaudeSDKError
@@ -224,27 +234,77 @@ class TestRunReviewInfraShortCircuit:
         import evolution_infra
         self._run(monkeypatch, ClaudeSDKError("sig"), review_retry=1)
         ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
-        assert ckpt["gate_results"]["review"]["review_infra_retry"] == 2
+        assert ckpt["infra_failure"]["attempt"] == 2
+        assert ckpt["infra_failure"]["owner_tool"] == "run_review"
 
-    def test_review_infra_retry_resets_on_abandon(self, monkeypatch):
+    def test_review_infra_exhaustion_is_preserved_for_attribution(self, monkeypatch):
         from claude_agent_sdk import ClaudeSDKError
         import evolution_infra
         self._run(monkeypatch, ClaudeSDKError("sig"), review_retry=2)
         ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
-        # abandon path resets counter to 0
-        assert ckpt["gate_results"]["review"]["review_infra_retry"] == 0
+        assert ckpt["infra_failure"]["attempt"] == 3
+        assert ckpt["infra_failure"]["exhausted"] is True
+        assert ckpt["infra_failure"]["action"] == "abandon_generation"
 
-    def test_review_gate_has_llm_failed_marker(self, monkeypatch):
+    def test_review_infra_does_not_write_business_rejection_gate(self, monkeypatch):
         from claude_agent_sdk import ClaudeSDKError
         import evolution_infra
         self._run(monkeypatch, ClaudeSDKError("boom"), review_retry=0)
         ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
         review = ckpt["gate_results"]["review"]
-        assert review["llm_failed"] is True
-        assert review["approved"] is False
+        assert "llm_failed" not in review
+        assert "approved" not in review
+        assert ckpt["infra_failure"]["failure_class"] == "infrastructure"
 
 
 class TestRunReviewCodeRejection:
+    def test_reviewer_receives_authoritative_checkpoint_plan(self, monkeypatch):
+        import evolution_infra
+        import tool_gates
+
+        _seed_review_checkpoint(101, 100, stage="quality_passed", generation_attempt=2)
+        ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
+        ckpt["master_plan"] = {
+            "architecture_policy": {"policy_version": "test-authority"},
+            "runtime_contract_ledger": {
+                "schema_version": 1,
+                "entries": [],
+                "ledger_digest": "authoritative-ledger",
+            },
+            "tasks": [{"worker_id": 1, "target_files": ["strategy.py"]}],
+        }
+        evolution_infra.PIPELINE_STATE_FILE.write_text(json.dumps(ckpt))
+        captured = {}
+
+        async def fake_run_claude_query(prompt, *_a, **_kw):
+            captured["prompt"] = prompt
+            return (
+                json.dumps({
+                    "approved": True,
+                    "quality_score": 8,
+                    "feedback": "",
+                    "change_summary": "runtime contract preserved",
+                    "risk_areas": [],
+                }),
+                None,
+                None,
+            )
+
+        monkeypatch.setattr(tool_gates, "run_claude_query", fake_run_claude_query)
+        monkeypatch.setattr(tool_gates, "_idempotency_check", lambda *a, **k: None)
+
+        result = asyncio.run(tool_gates.run_review.handler({
+            "version": 101,
+            "source_v": 100,
+            "plan": [{"worker_id": "forged-argument"}],
+        }))
+        data = json.loads(result["content"][0]["text"])
+
+        assert data["approved"] is True
+        assert "test-authority" in captured["prompt"]
+        assert "authoritative-ledger" in captured["prompt"]
+        assert "forged-argument" not in captured["prompt"]
+
     def test_valid_rejection_moves_to_repair_planned_not_review_retry(self, monkeypatch):
         import evolution_infra
         import tool_gates
@@ -311,8 +371,16 @@ class TestRunReviewParseRetry:
             "_record_quality_failure",
             lambda *a, **k: quality_failures.append((a, k)),
         )
+        import tool_bot_management
 
-        result = asyncio.run(tool_gates.run_review.handler({"version": 101, "source_v": 100, "plan": []}))
+        async def fake_abandon(*_a, **_kw):
+            return {"abandoned": True, "reason": "test parse exhaustion"}
+
+        monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", fake_abandon)
+
+        result = None
+        for _ in range((review_retry or 0) + 1):
+            result = asyncio.run(tool_gates.run_review.handler({"version": 101, "source_v": 100, "plan": []}))
         data = json.loads(result["content"][0]["text"])
         ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
         return data, ckpt, quality_failures
@@ -320,26 +388,26 @@ class TestRunReviewParseRetry:
     def test_parse_error_retries_review_without_business_rejection(self, monkeypatch):
         data, ckpt, quality_failures = self._run(monkeypatch, review_retry=0)
 
-        assert data["action"] == "retry_review"
+        assert data["action"] == "retry_same_tool"
         assert data["llm_failed"] is True
         assert data["parse_error"] is True
-        assert "error" not in data
         assert ckpt["stage"] == "quality_passed"
         assert ckpt["generation_attempt"] == 2
-        assert ckpt["reviewer_feedback"].startswith("Reviewer parse error:")
-        assert ckpt["gate_results"]["review"]["llm_failed"] is True
-        assert ckpt["gate_results"]["review"]["parse_error"] is True
-        assert ckpt["gate_results"]["review"]["review_parse_retry"] == 1
+        assert ckpt["reviewer_feedback"] == ""
+        assert "llm_failed" not in ckpt["gate_results"]["review"]
+        assert ckpt["infra_failure"]["attempt"] == 1
+        assert ckpt["infra_failure"]["owner_tool"] == "run_review"
         assert quality_failures == []
 
-    def test_parse_error_resets_retry_counter_on_abandon(self, monkeypatch):
+    def test_parse_error_exhausts_shared_reviewer_infra_budget(self, monkeypatch):
         data, ckpt, quality_failures = self._run(monkeypatch, review_retry=2)
 
-        assert data["action"] == "abandon_cycle"
+        assert data["action"] == "abandon_generation"
         assert data["llm_failed"] is True
         assert data["parse_error"] is True
         assert ckpt["stage"] == "quality_passed"
-        assert ckpt["gate_results"]["review"]["review_parse_retry"] == 0
+        assert ckpt["infra_failure"]["attempt"] == 3
+        assert ckpt["infra_failure"]["exhausted"] is True
         assert quality_failures == []
 
 
@@ -372,13 +440,22 @@ class TestRunCriticInfraShortCircuit:
         monkeypatch.setattr(tool_gates, "_run_critic", fake_run_critic)
 
         # Track that _record_quality_failure is NEVER called
-        calls = {"quality_failure": 0, "guardian": 0}
+        calls = {"quality_failure": 0, "guardian": 0, "abandon": 0}
         monkeypatch.setattr(tool_gates, "_record_quality_failure",
                             lambda *a, **k: calls.__setitem__("quality_failure", calls["quality_failure"] + 1))
+        import tool_bot_management
+
+        async def fake_abandon(*_a, **_kw):
+            calls["abandon"] += 1
+            return {"abandoned": True, "reason": "test critic exhaustion"}
+
+        monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", fake_abandon)
 
         self._patch_idempotency(monkeypatch)
 
-        result = asyncio.run(tool_gates.run_critic.handler({"version": 101, "source_v": 100, "plan": []}))
+        result = None
+        for _ in range((critic_retry or 0) + 1):
+            result = asyncio.run(tool_gates.run_critic.handler({"version": 101, "source_v": 100, "plan": []}))
         return result, calls
 
     def _parse(self, result):
@@ -392,7 +469,7 @@ class TestRunCriticInfraShortCircuit:
                                    "approved": False},
                                   critic_retry=0)
         data = self._parse(result)
-        assert data["action"] == "retry_critic"
+        assert data["action"] == "retry_same_tool"
         assert data["llm_failed"] is True
         assert calls["quality_failure"] == 0
 
@@ -402,9 +479,10 @@ class TestRunCriticInfraShortCircuit:
                                    "approved": False},
                                   critic_retry=2)
         data = self._parse(result)
-        assert data["action"] == "abandon_cycle"
+        assert data["action"] == "abandon_generation"
         assert data["llm_failed"] is True
         assert calls["quality_failure"] == 0
+        assert calls["abandon"] == 1
 
     def test_no_quality_failure_recorded(self, monkeypatch):
         # retry path
@@ -436,26 +514,28 @@ class TestRunCriticInfraShortCircuit:
                   {"llm_failed": True, "error": "sig", "approved": False},
                   critic_retry=1)
         ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
-        assert ckpt["gate_results"]["critic"]["critic_infra_retry"] == 2
+        assert ckpt["infra_failure"]["attempt"] == 2
+        assert ckpt["infra_failure"]["owner_tool"] == "run_critic"
 
-    def test_critic_infra_retry_resets_on_abandon(self, monkeypatch):
+    def test_critic_infra_exhaustion_is_preserved_for_attribution(self, monkeypatch):
         import evolution_infra
         self._run(monkeypatch,
                   {"llm_failed": True, "error": "sig", "approved": False},
                   critic_retry=2)
         ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
-        # abandon path resets counter to 0
-        assert ckpt["gate_results"]["critic"]["critic_infra_retry"] == 0
+        assert ckpt["infra_failure"]["attempt"] == 3
+        assert ckpt["infra_failure"]["exhausted"] is True
 
-    def test_critic_gate_has_llm_failed_marker(self, monkeypatch):
+    def test_critic_infra_does_not_write_business_rejection_gate(self, monkeypatch):
         import evolution_infra
         self._run(monkeypatch,
                   {"llm_failed": True, "error": "boom", "approved": False},
                   critic_retry=0)
         ckpt = json.loads(evolution_infra.PIPELINE_STATE_FILE.read_text())
         critic = ckpt["gate_results"]["critic"]
-        assert critic["llm_failed"] is True
-        assert critic["approved"] is False
+        assert "llm_failed" not in critic
+        assert "approved" not in critic
+        assert ckpt["infra_failure"]["failure_class"] == "infrastructure"
 
 
 # ---------------------------------------------------------------------------

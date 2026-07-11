@@ -11,8 +11,6 @@ import asyncio
 import ast
 from dataclasses import dataclass
 from datetime import datetime
-import importlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -22,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 from typing import Any
 
 from eval_stats import paired_bootstrap_ci
@@ -33,22 +32,18 @@ from national_runtime_telemetry import (
     parse_native_bot_log as _parse_native_bot_log,
     server_action_latency as _server_action_latency,
 )
+from national_bot_launcher import build_native_bot_launch, native_entry_supports_log_arg
+from national_game_runtime import NationalTCPGameEngine
+from national_transport import NationalTCPClient
 from pipeline_schema import NationalAcceptanceResult
+from runtime_capacity import acquire_match_slots_async
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SEVER_DIR = ROOT / "sever"
 NATIVE_ENTRY = "national_bot.py"
-SEEDED_NATIVE_LAUNCHER = (
-    "import os, random, runpy, sys\n"
-    "entry = os.environ['POK_NATIVE_ENTRY']\n"
-    "seed = os.environ.get('POK_NATIVE_BOT_SEED')\n"
-    "if seed not in (None, ''):\n"
-    "    random.seed(int(seed))\n"
-    "sys.argv = [entry] + sys.argv[1:]\n"
-    "runpy.run_path(entry, run_name='__main__')\n"
-)
+PRECOMPUTE_ENTRY = "precompute.py"
 TRACE_PREFIX = "POK_TRACE_DECISION "
+NATIONAL_DECISION_RUNTIME_VERSION = 5
 
 
 NATIVE_BOT_TEMPLATE = r'''#!/usr/bin/env python3
@@ -64,8 +59,14 @@ stdout.
 from __future__ import annotations
 
 import argparse
+from collections import deque
+import importlib
+import json
+import multiprocessing as mp
 import os
+import random
 import re
+import select
 import socket
 import sys
 import time
@@ -86,6 +87,23 @@ ACTION_PREFIX_RE = re.compile(r"^(raise|bet)\s+(\d+)")
 EARN_PREFIX_RE = re.compile(r"^earnChips\s+-?\d+")
 DEFAULT_OFFICIAL_ACTION_DELAY_SEC = 0.30
 OFFICIAL_ACTION_DELAY_ENV = "POK_OFFICIAL_ACTION_DELAY"
+NATIONAL_STREAM_DECODER_VERSION = 2
+NATIONAL_DECISION_RUNTIME_VERSION = __POK_DECISION_RUNTIME_VERSION__
+DEFAULT_STREAM_IDLE_FLUSH_SEC = 0.10
+STREAM_IDLE_FLUSH_ENV = "POK_NATIONAL_STREAM_IDLE_FLUSH"
+MAX_STREAM_BUFFER_CHARS = 16_384
+OPPONENT_TRACKER_SCHEMA_VERSION = 3
+OPPONENT_PRIOR_WEIGHT = 8.0
+OPPONENT_ADAPTATION_CAP = 0.65
+DEFAULT_DECISION_HARD_DEADLINE_SEC = 55.0
+DEFAULT_DECISION_BASELINE_TARGET_SEC = 0.25
+DEFAULT_DECISION_REFINEMENT_BUDGET_SEC = 54.0
+DECISION_HARD_DEADLINE_ENV = "POK_DECISION_HARD_DEADLINE_SEC"
+DECISION_BASELINE_TARGET_ENV = "POK_DECISION_BASELINE_TARGET_SEC"
+DECISION_REFINEMENT_BUDGET_ENV = "POK_DECISION_REFINEMENT_BUDGET_SEC"
+STRATEGY_WORKER_STOP_GRACE_SEC = 0.05
+STRATEGY_WORKER_KILL_GRACE_SEC = 0.05
+MAX_REFINEMENT_MESSAGES = 4096
 
 _LOG_FP = None
 
@@ -117,6 +135,54 @@ def _official_action_delay_sec() -> float:
     except (TypeError, ValueError):
         delay = DEFAULT_OFFICIAL_ACTION_DELAY_SEC
     return max(0.0, min(delay, 2.0))
+
+
+def _bounded_runtime_seconds(env_name: str, default: float, upper: float) -> float:
+    raw = os.environ.get(env_name, str(default))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(0.001, min(value, upper))
+
+
+def _decision_runtime_limits() -> tuple[float, float, float]:
+    hard_deadline = _bounded_runtime_seconds(
+        DECISION_HARD_DEADLINE_ENV,
+        DEFAULT_DECISION_HARD_DEADLINE_SEC,
+        DEFAULT_DECISION_HARD_DEADLINE_SEC,
+    )
+    refinement_ceiling = max(0.002, hard_deadline - min(0.5, hard_deadline * 0.1))
+    refinement_budget = _bounded_runtime_seconds(
+        DECISION_REFINEMENT_BUDGET_ENV,
+        min(DEFAULT_DECISION_REFINEMENT_BUDGET_SEC, refinement_ceiling),
+        refinement_ceiling,
+    )
+    baseline_ceiling = max(0.001, refinement_budget - min(0.05, refinement_budget * 0.1))
+    baseline_target = _bounded_runtime_seconds(
+        DECISION_BASELINE_TARGET_ENV,
+        min(DEFAULT_DECISION_BASELINE_TARGET_SEC, baseline_ceiling),
+        baseline_ceiling,
+    )
+    return hard_deadline, baseline_target, refinement_budget
+
+
+def _decision_process_context():
+    # Normal submissions run as __main__ and use portable spawn. Contract probes
+    # import the entry under a synthetic module name on POSIX; fork keeps that
+    # isolated test path executable while preserving killable process semantics.
+    if os.name != "nt" and __name__ not in {"__main__", "__mp_main__"}:
+        return mp.get_context("fork")
+    return mp.get_context("spawn")
+
+
+def _stream_idle_flush_sec() -> float:
+    raw = os.environ.get(STREAM_IDLE_FLUSH_ENV, str(DEFAULT_STREAM_IDLE_FLUSH_SEC))
+    try:
+        delay = float(raw)
+    except (TypeError, ValueError):
+        delay = DEFAULT_STREAM_IDLE_FLUSH_SEC
+    return max(0.01, min(delay, 0.50))
 
 
 def _tcp_card_to_int(suit: int, rank: int) -> int:
@@ -151,7 +217,7 @@ def _take_card_message(buffer: str, prefix: str, count: int) -> tuple[str | None
     return buffer[:pos], buffer[pos:]
 
 
-def _take_message(buffer: str) -> tuple[str | None, str]:
+def _take_message(buffer: str, *, flush_numeric: bool = False) -> tuple[str | None, str]:
     buffer = buffer.lstrip("\r\n\t ")
     if not buffer:
         return None, ""
@@ -167,9 +233,13 @@ def _take_message(buffer: str) -> tuple[str | None, str]:
             return msg, rest
     match = EARN_PREFIX_RE.match(buffer)
     if match:
+        if match.end() == len(buffer) and not flush_numeric:
+            return None, buffer
         return buffer[:match.end()], buffer[match.end():]
     match = ACTION_PREFIX_RE.match(buffer)
     if match:
+        if match.end() == len(buffer) and not flush_numeric:
+            return None, buffer
         return buffer[:match.end()], buffer[match.end():]
     for word in ("allin", "check", "call", "fold"):
         if buffer.startswith(word):
@@ -177,15 +247,432 @@ def _take_message(buffer: str) -> tuple[str | None, str]:
     return None, buffer
 
 
-def _split_messages(buffer: str) -> tuple[list[str], str]:
+def _split_messages(buffer: str, *, flush_numeric: bool = False) -> tuple[list[str], str]:
     messages: list[str] = []
     while buffer:
-        msg, rest = _take_message(buffer)
+        msg, rest = _take_message(buffer, flush_numeric=flush_numeric)
         if msg is None:
             return messages, rest
         messages.append(msg)
         buffer = rest
     return messages, ""
+
+
+def _has_ambiguous_numeric_tail(buffer: str) -> bool:
+    candidate = buffer.lstrip("\r\n\t ")
+    if not candidate:
+        return False
+    return any(
+        match is not None and match.end() == len(candidate)
+        for match in (EARN_PREFIX_RE.match(candidate), ACTION_PREFIX_RE.match(candidate))
+    )
+
+
+class NationalStreamDecoder:
+    """Decode the delimiter-free official stream without truncating numbers.
+
+    A terminal ``raise 2`` may be the first fragment of ``raise 200``. Numeric
+    messages are therefore committed only after a following protocol token or a
+    short socket-quiescence window. Fixed-width/card and keyword messages remain
+    immediately dispatchable.
+    """
+
+    def __init__(self, *, max_buffer_chars: int = MAX_STREAM_BUFFER_CHARS):
+        self.buffer = ""
+        self.max_buffer_chars = max_buffer_chars
+
+    def feed(self, chunk: str) -> list[str]:
+        self.buffer += chunk
+        if len(self.buffer) > self.max_buffer_chars:
+            raise ValueError(
+                f"national protocol buffer exceeded {self.max_buffer_chars} characters"
+            )
+        messages, self.buffer = _split_messages(self.buffer)
+        return messages
+
+    @property
+    def has_pending_numeric(self) -> bool:
+        return _has_ambiguous_numeric_tail(self.buffer)
+
+    def flush_idle(self) -> list[str]:
+        messages, self.buffer = _split_messages(self.buffer, flush_numeric=True)
+        return messages
+
+
+class OpponentTracker:
+    """Bounded connection-level facts for confidence-scaled opponent adaptation."""
+
+    _STREETS = ("preflop", "flop", "turn", "river")
+    _ACTIONS = ("fold", "check", "call", "raise", "allin")
+
+    def __init__(self) -> None:
+        self.reset_match()
+
+    def reset_match(self) -> None:
+        self.hands_started = 0
+        self.hands_completed = 0
+        self.showdowns = 0
+        self.total_actions = 0
+        self.opponent_wins = 0
+        self.hero_wins = 0
+        self.net_earned = 0
+        self.preflop_vpip_hands = 0
+        self.preflop_raise_hands = 0
+        self.raise_total_sum = 0
+        self.raise_total_count = 0
+        self.street_actions = {
+            street: {action: 0 for action in self._ACTIONS}
+            for street in self._STREETS
+        }
+        self.street_raise_sum = {street: 0.0 for street in self._STREETS}
+        self.street_raise_sumsq = {street: 0.0 for street in self._STREETS}
+        self.street_raise_count = {street: 0 for street in self._STREETS}
+        self.facing_raise = self._response_counter()
+        self.facing_allin = self._response_counter()
+        self.context_actions: dict[str, dict] = {}
+        self.showdown_hole_classes = {"pair": 0, "suited": 0, "offsuit": 0}
+        self._active_hand: dict | None = None
+        self._pending_hero_pressure: str | None = None
+        self._last_hero_action: str | None = None
+        self._settled_hands: set[int] = set()
+        self._showdown_hands: set[int] = set()
+        self._recent_hands = deque(maxlen=8)
+
+    def _response_counter(self) -> dict[str, int]:
+        return {
+            "opportunities": 0,
+            "fold": 0,
+            "call": 0,
+            "raise": 0,
+            "allin": 0,
+        }
+
+    def begin_hand(self, hand: int, *, opponent_is_sb: bool) -> None:
+        self.hands_started += 1
+        self._active_hand = {
+            "hand": int(hand),
+            "opponent_is_sb": bool(opponent_is_sb),
+            "opponent_actions": 0,
+            "opponent_vpip": False,
+            "opponent_pfr": False,
+            "showdown": False,
+            "last_opponent_action": None,
+        }
+        self._pending_hero_pressure = None
+        self._last_hero_action = None
+
+    def begin_street(self) -> None:
+        self._pending_hero_pressure = None
+        self._last_hero_action = None
+
+    @staticmethod
+    def _size_bucket(amount: int | None) -> str:
+        if not amount:
+            return "none"
+        bb = max(0.0, float(amount) / float(BIG_BLIND))
+        return "small" if bb <= 4.0 else "medium" if bb <= 10.0 else "large"
+
+    def _context_key(self, street: str, amount: int | None) -> str:
+        position = "sb" if (self._active_hand or {}).get("opponent_is_sb") else "bb"
+        facing = self._pending_hero_pressure or (
+            "check" if self._last_hero_action == "check" else "unopened"
+        )
+        return "|".join((street, position, facing, self._size_bucket(amount)))
+
+    def observe_action(
+        self,
+        actor: str,
+        street: str,
+        action: str,
+        *,
+        amount: int | None = None,
+    ) -> None:
+        if actor == "hero":
+            self._pending_hero_pressure = action if action in {"raise", "allin"} else None
+            self._last_hero_action = action
+            return
+        if actor != "opponent" or action not in self._ACTIONS:
+            return
+
+        street = street if street in self._STREETS else "preflop"
+        self.total_actions += 1
+        self.street_actions[street][action] += 1
+        context_key = self._context_key(street, amount)
+        context = self.context_actions.setdefault(
+            context_key,
+            {"samples": 0, **{name: 0 for name in self._ACTIONS}},
+        )
+        context["samples"] += 1
+        context[action] += 1
+        if action in {"raise", "allin"} and amount is not None:
+            try:
+                raise_total = max(0, int(amount))
+            except (TypeError, ValueError):
+                raise_total = 0
+            if raise_total:
+                self.raise_total_sum += raise_total
+                self.raise_total_count += 1
+                raise_bb = raise_total / float(BIG_BLIND)
+                self.street_raise_sum[street] += raise_bb
+                self.street_raise_sumsq[street] += raise_bb * raise_bb
+                self.street_raise_count[street] += 1
+        if self._active_hand is not None:
+            self._active_hand["opponent_actions"] += 1
+            self._active_hand["last_opponent_action"] = action
+            if street == "preflop" and action in {"call", "raise", "allin"}:
+                if not self._active_hand["opponent_vpip"]:
+                    self.preflop_vpip_hands += 1
+                self._active_hand["opponent_vpip"] = True
+            if street == "preflop" and action in {"raise", "allin"}:
+                if not self._active_hand["opponent_pfr"]:
+                    self.preflop_raise_hands += 1
+                self._active_hand["opponent_pfr"] = True
+
+        if self._pending_hero_pressure is not None:
+            counter = (
+                self.facing_allin
+                if self._pending_hero_pressure == "allin"
+                else self.facing_raise
+            )
+            counter["opportunities"] += 1
+            if action in counter:
+                counter[action] += 1
+            self._pending_hero_pressure = None
+
+    def observe_settlement(self, hand: int, *, hero_earned: int) -> None:
+        hand = int(hand)
+        if hand in self._settled_hands:
+            return
+        self._settled_hands.add(hand)
+        self.hands_completed += 1
+        self.net_earned += int(hero_earned)
+        if hero_earned > 0:
+            self.hero_wins += 1
+        elif hero_earned < 0:
+            self.opponent_wins += 1
+        summary = dict(self._active_hand or {"hand": hand})
+        summary["hand"] = hand
+        summary["hero_earned"] = int(hero_earned)
+        summary["showdown"] = hand in self._showdown_hands or bool(summary.get("showdown"))
+        self._recent_hands.append(summary)
+        self._pending_hero_pressure = None
+
+    def observe_showdown(
+        self,
+        hand: int,
+        opponent_cards: list[int] | None = None,
+        public_cards: list[int] | None = None,
+    ) -> None:
+        hand = int(hand)
+        if hand in self._showdown_hands:
+            return
+        self._showdown_hands.add(hand)
+        self.showdowns += 1
+        cards = list(opponent_cards or [])
+        if len(cards) == 2:
+            ranks = [card // 4 for card in cards]
+            suits = [card % 4 for card in cards]
+            hole_class = "pair" if ranks[0] == ranks[1] else "suited" if suits[0] == suits[1] else "offsuit"
+            self.showdown_hole_classes[hole_class] += 1
+        if self._active_hand is not None and self._active_hand.get("hand") == hand:
+            self._active_hand["showdown"] = True
+        for summary in reversed(self._recent_hands):
+            if summary.get("hand") == hand:
+                summary["showdown"] = True
+                break
+
+    @staticmethod
+    def _smoothed_rate(successes: int, total: int, prior: float) -> float:
+        return (float(successes) + prior * OPPONENT_PRIOR_WEIGHT) / (
+            float(total) + OPPONENT_PRIOR_WEIGHT
+        )
+
+    def snapshot(self) -> dict:
+        aggressive = sum(
+            counts["raise"] + counts["allin"]
+            for counts in self.street_actions.values()
+        )
+        fold_to_raise = self._smoothed_rate(
+            self.facing_raise["fold"],
+            self.facing_raise["opportunities"],
+            0.35,
+        )
+        fold_to_allin = self._smoothed_rate(
+            self.facing_allin["fold"],
+            self.facing_allin["opportunities"],
+            0.45,
+        )
+        confidence = self.total_actions / (self.total_actions + 24.0)
+        adaptation_weight = min(OPPONENT_ADAPTATION_CAP, confidence * OPPONENT_ADAPTATION_CAP)
+        postflop_actions = sum(
+            sum(self.street_actions[street].values())
+            for street in ("flop", "turn", "river")
+        )
+        postflop_aggressive = sum(
+            self.street_actions[street]["raise"] + self.street_actions[street]["allin"]
+            for street in ("flop", "turn", "river")
+        )
+        postflop_checks = sum(
+            self.street_actions[street]["check"]
+            for street in ("flop", "turn", "river")
+        )
+        allins = sum(counts["allin"] for counts in self.street_actions.values())
+
+        def street_aggression(street: str, prior: float = 0.36) -> float:
+            counts = self.street_actions[street]
+            aggressive_count = counts["raise"] + counts["allin"]
+            return self._smoothed_rate(aggressive_count, sum(counts.values()), prior)
+
+        def average_raise(street: str, default: float) -> float:
+            count = self.street_raise_count[street]
+            return self.street_raise_sum[street] / count if count else default
+
+        def street_polarity(street: str) -> float:
+            count = self.street_raise_count[street]
+            if count < 3:
+                return 0.0
+            mean = self.street_raise_sum[street] / count
+            variance = max(0.0, self.street_raise_sumsq[street] / count - mean * mean)
+            cv = variance ** 0.5 / max(mean, 0.1)
+            return max(-1.0, min(1.0, (cv - 0.30) / 0.30)) * min(1.0, count / 8.0)
+
+        flop_aggr = street_aggression("flop")
+        turn_aggr = street_aggression("turn")
+        river_aggr = street_aggression("river")
+        avg_flop_raise = average_raise("flop", 5.0)
+        avg_turn_raise = average_raise("turn", 5.5)
+        avg_river_raise = average_raise("river", 5.5)
+        postflop_raise_samples = sum(
+            self.street_raise_count[street] for street in ("flop", "turn", "river")
+        )
+        postflop_shoves = sum(
+            self.street_actions[street]["allin"] for street in ("flop", "turn", "river")
+        )
+        context_profiles = {}
+        for key, counts in sorted(self.context_actions.items()):
+            samples = int(counts["samples"])
+            context_confidence = samples / (samples + OPPONENT_PRIOR_WEIGHT)
+            context_profiles[key] = {
+                "samples": samples,
+                "confidence": round(context_confidence, 6),
+                "adaptation_weight": round(
+                    min(OPPONENT_ADAPTATION_CAP, context_confidence * OPPONENT_ADAPTATION_CAP),
+                    6,
+                ),
+                "actions": {action: int(counts[action]) for action in self._ACTIONS},
+            }
+        return {
+            "schema_version": OPPONENT_TRACKER_SCHEMA_VERSION,
+            "hands_started": self.hands_started,
+            "hands_completed": self.hands_completed,
+            "showdowns": self.showdowns,
+            "total_actions": self.total_actions,
+            "confidence": round(confidence, 6),
+            "adaptation_weight": round(adaptation_weight, 6),
+            "rates": {
+                "aggression": round(self._smoothed_rate(aggressive, self.total_actions, 0.30), 6),
+                "preflop_vpip": round(
+                    self._smoothed_rate(self.preflop_vpip_hands, self.hands_started, 0.55),
+                    6,
+                ),
+                "fold_to_raise": round(fold_to_raise, 6),
+                "fold_to_allin": round(fold_to_allin, 6),
+            },
+            "samples": {
+                "preflop_vpip": self.hands_started,
+                "fold_to_raise": self.facing_raise["opportunities"],
+                "fold_to_allin": self.facing_allin["opportunities"],
+                "raises": self.raise_total_count,
+            },
+            "contexts": context_profiles,
+            "showdown_hole_classes": dict(self.showdown_hole_classes),
+            "average_raise_total": round(
+                self.raise_total_sum / self.raise_total_count,
+                3,
+            ) if self.raise_total_count else 0.0,
+            # Flat compatibility projection consumed by existing strategy modules.
+            # Values are updated incrementally; no decision-time history scan is needed.
+            "vpip": round(
+                self._smoothed_rate(self.preflop_vpip_hands, self.hands_started, 0.55), 6
+            ),
+            "pfr": round(
+                self._smoothed_rate(self.preflop_raise_hands, self.hands_started, 0.28), 6
+            ),
+            "allin_rate": round(self._smoothed_rate(allins, self.total_actions, 0.08), 6),
+            "postflop_aggr": round(
+                self._smoothed_rate(postflop_aggressive, postflop_actions, 0.36), 6
+            ),
+            "postflop_check_rate": round(
+                self._smoothed_rate(postflop_checks, postflop_actions, 0.42), 6
+            ),
+            "fold_to_raise": round(fold_to_raise, 6),
+            "aggression": round(
+                self._smoothed_rate(aggressive, self.total_actions, 0.32), 6
+            ),
+            "avg_raise_bb": round(
+                self.raise_total_sum / float(BIG_BLIND * self.raise_total_count), 3
+            ) if self.raise_total_count else 3.0,
+            "raise_samples": self.raise_total_count,
+            "flop_aggr": round(flop_aggr, 6),
+            "turn_aggr": round(turn_aggr, 6),
+            "river_aggr": round(river_aggr, 6),
+            "avg_flop_raise_bb": round(avg_flop_raise, 3),
+            "avg_turn_raise_bb": round(avg_turn_raise, 3),
+            "avg_river_raise_bb": round(avg_river_raise, 3),
+            "barrel_freq": 0.45,
+            "river_overcall_freq": 0.55,
+            "river_overcall_samples": 0,
+            "fold_to_jam_rate": round(fold_to_allin, 6),
+            "fold_to_jam_samples": self.facing_allin["opportunities"],
+            "betsize_polarity": round(
+                (street_polarity("flop") + street_polarity("turn") + street_polarity("river")) / 3.0,
+                6,
+            ),
+            "shove_rate": round(
+                self._smoothed_rate(postflop_shoves, postflop_aggressive, 0.08), 6
+            ),
+            "postflop_raise_samples": postflop_raise_samples,
+            "postflop_shove_samples": postflop_shoves,
+            "flop_shove_rate": round(
+                self._smoothed_rate(
+                    self.street_actions["flop"]["allin"],
+                    self.street_actions["flop"]["raise"] + self.street_actions["flop"]["allin"],
+                    0.08,
+                ),
+                6,
+            ),
+            "turn_shove_rate": round(
+                self._smoothed_rate(
+                    self.street_actions["turn"]["allin"],
+                    self.street_actions["turn"]["raise"] + self.street_actions["turn"]["allin"],
+                    0.08,
+                ),
+                6,
+            ),
+            "river_shove_rate": round(
+                self._smoothed_rate(
+                    self.street_actions["river"]["allin"],
+                    self.street_actions["river"]["raise"] + self.street_actions["river"]["allin"],
+                    0.08,
+                ),
+                6,
+            ),
+            "flop_shove_samples": self.street_actions["flop"]["allin"],
+            "turn_shove_samples": self.street_actions["turn"]["allin"],
+            "river_shove_samples": self.street_actions["river"]["allin"],
+            "flop_polarity": round(street_polarity("flop"), 6),
+            "turn_polarity": round(street_polarity("turn"), 6),
+            "river_polarity": round(street_polarity("river"), 6),
+            "street_actions": {
+                street: dict(counts) for street, counts in self.street_actions.items()
+            },
+            "match_result": {
+                "hero_wins": self.hero_wins,
+                "opponent_wins": self.opponent_wins,
+                "hero_net_earned": self.net_earned,
+            },
+            "recent_hands": [dict(item) for item in self._recent_hands],
+        }
 
 
 def _resolve_seat(name: str, seat: str) -> str:
@@ -200,21 +687,179 @@ def _resolve_seat(name: str, seat: str) -> str:
     return "unknown"
 
 
+def _strategy_worker_candidate(raw_value):
+    """Normalize one refinement yield without imposing a strategy framework."""
+    metadata = {}
+    value = raw_value
+    if isinstance(raw_value, dict):
+        value = raw_value.get("action")
+        metadata = {
+            str(key): raw_value[key]
+            for key in ("sample_count", "confidence", "reason", "complete")
+            if key in raw_value
+            and isinstance(raw_value[key], (str, int, float, bool, type(None)))
+        }
+    elif isinstance(raw_value, (tuple, list)) and raw_value:
+        value = raw_value[0]
+        if len(raw_value) > 1 and isinstance(raw_value[1], dict):
+            metadata = {
+                str(key): item
+                for key, item in raw_value[1].items()
+                if isinstance(item, (str, int, float, bool, type(None)))
+            }
+    return value, metadata
+
+
+def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> None:
+    """Persistent, killable strategy runtime. It never owns the TCP socket."""
+    started = time.monotonic()
+    try:
+        if random_seed is not None:
+            random.seed(int(random_seed))
+        if bot_dir not in sys.path:
+            sys.path.insert(0, bot_dir)
+        # Standardized pure-fact precompute is loaded once per worker lifetime.
+        # Strategy modules may import and consume it without rebuilding tables per turn.
+        if os.path.isfile(os.path.join(bot_dir, "precompute.py")):
+            importlib.import_module("precompute")
+        strategy_module = importlib.import_module("strategy")
+        main_module = importlib.import_module("main")
+        state_module = importlib.import_module("state")
+        get_action = getattr(strategy_module, "get_action")
+        get_baseline_action = getattr(strategy_module, "get_baseline_action", None)
+        iter_refinements = getattr(strategy_module, "iter_refinements", None)
+        refine_action = getattr(strategy_module, "refine_action", None)
+        sanitize_action = getattr(main_module, "sanitize_action")
+        reconstruct_state = getattr(state_module, "reconstruct_state")
+        connection.send({
+            "kind": "ready",
+            "import_elapsed_ms": round((time.monotonic() - started) * 1000.0, 3),
+            "pid": os.getpid(),
+            "has_baseline": callable(get_baseline_action),
+            "has_iterator": callable(iter_refinements),
+            "has_refine_action": callable(refine_action),
+            "random_seed": random_seed,
+        })
+    except BaseException as exc:
+        try:
+            connection.send({
+                "kind": "startup_error",
+                "error": f"{type(exc).__name__}:{str(exc)[:400]}",
+                "pid": os.getpid(),
+            })
+        except BaseException:
+            pass
+        return
+
+    while True:
+        try:
+            job = connection.recv()
+        except (EOFError, OSError):
+            return
+        if not isinstance(job, dict):
+            continue
+        if job.get("kind") == "stop":
+            return
+        if job.get("kind") != "decide":
+            continue
+        decision_id = int(job.get("decision_id") or 0)
+        req = job.get("request") or {}
+        current_view = tuple(job.get("current_request_view") or (req,))
+        deadline = float(job.get("deadline_monotonic") or time.monotonic())
+        fallback = int(job.get("fallback_action") or 0)
+        sequence = 0
+        try:
+            state = reconstruct_state(req)
+
+            def publish(phase: str, raw_action, metadata=None) -> int:
+                nonlocal sequence
+                sanitized = int(sanitize_action(raw_action, state, int(req.get("my_chips", 0))))
+                sequence += 1
+                connection.send({
+                    "kind": "candidate",
+                    "decision_id": decision_id,
+                    "phase": phase,
+                    "sequence": sequence,
+                    "action": sanitized,
+                    "published_monotonic": time.monotonic(),
+                    "metadata": dict(metadata or {}),
+                })
+                return sanitized
+
+            baseline = fallback
+            if callable(get_baseline_action):
+                baseline = publish(
+                    "baseline",
+                    get_baseline_action(req, current_view),
+                    {"source": "get_baseline_action"},
+                )
+            elif time.monotonic() < deadline:
+                baseline = publish(
+                    "baseline",
+                    get_action(req, current_view),
+                    {"source": "legacy_get_action"},
+                )
+
+            if callable(iter_refinements) and time.monotonic() < deadline:
+                iterator = iter_refinements(req, current_view, baseline, deadline)
+                for raw_candidate in iterator:
+                    if sequence >= MAX_REFINEMENT_MESSAGES or time.monotonic() >= deadline:
+                        break
+                    candidate, metadata = _strategy_worker_candidate(raw_candidate)
+                    baseline = publish("refinement", candidate, metadata)
+                    if metadata.get("complete") is True:
+                        break
+            elif callable(refine_action) and time.monotonic() < deadline:
+                baseline = publish(
+                    "refinement",
+                    refine_action(req, current_view, baseline, deadline),
+                    {"source": "refine_action"},
+                )
+            connection.send({
+                "kind": "done",
+                "decision_id": decision_id,
+                "sequence": sequence,
+                "action": baseline,
+                "completed_monotonic": time.monotonic(),
+            })
+        except BaseException as exc:
+            try:
+                connection.send({
+                    "kind": "decision_error",
+                    "decision_id": decision_id,
+                    "sequence": sequence,
+                    "error": f"{type(exc).__name__}:{str(exc)[:400]}",
+                })
+            except BaseException:
+                return
+
+
 class NativeNationalBot:
     def __init__(self, name: str, seat: str = "auto"):
         self.name = name
         self.seat = _resolve_seat(name, seat)
-        from main import sanitize_action
-        from state import infer_remaining_hands_from_requests, reconstruct_state
-        from strategy import get_action
-
-        self.get_action = get_action
-        self.reconstruct_state = reconstruct_state
-        self.infer_remaining_hands = infer_remaining_hands_from_requests
-        self.sanitize_action = sanitize_action
         self._official_action_delay_sec = _official_action_delay_sec()
+        (
+            self._decision_hard_deadline_sec,
+            self._decision_baseline_target_sec,
+            self._decision_refinement_budget_sec,
+        ) = _decision_runtime_limits()
         self._last_platform_message_at = 0.0
         self._reset_match()
+        self._mp_context = _decision_process_context()
+        self._strategy_process = None
+        self._strategy_connection = None
+        self._strategy_worker_generation = 0
+        try:
+            self._strategy_base_seed = int(os.environ["POK_NATIVE_BOT_SEED"])
+        except (KeyError, TypeError, ValueError):
+            self._strategy_base_seed = None
+        self._strategy_worker_seed = None
+        self._decision_serial = 0
+        self._retired_strategy_processes = []
+        self._last_stopped_worker_pid = None
+        self._last_stopped_worker_exitcode = None
+        self._last_stopped_worker_termination_requested = False
 
     def _reset_match(self) -> None:
         self._buf = ""
@@ -240,6 +885,11 @@ class NativeNationalBot:
         self._total_win_games = [0, 0]
         self._last_earned = 0
         self._showdowns: list[dict] = []
+        self._showdown_by_hand: dict[int, dict] = {}
+        self._earned_by_hand: dict[int, int] = {}
+        self._opponent_tracker = OpponentTracker()
+        self._last_decision_source = "uninitialized"
+        self._last_decision_metrics = {}
 
     def _acts_first_postflop(self) -> bool:
         return not self._is_sb
@@ -281,27 +931,327 @@ class NativeNationalBot:
             "max_hand": TOTAL_HANDS,
             "total_win_chips": list(self._total_win_chips),
             "total_win_games": list(self._total_win_games),
-            "opponent_showdowns": list(self._showdowns),
+            # Cross-hand opponent evidence is available through the bounded
+            # incremental opponent_runtime snapshot. Do not expose the full
+            # showdown list to decision code and reintroduce batch rescans.
+            "opponent_showdowns": [],
+            "opponent_runtime": self._opponent_tracker.snapshot(),
             **self._betting_snapshot(),
         }
-        if "remaining_hands" not in req:
-            req["remaining_hands"] = self.infer_remaining_hands(self._requests + [req])
+        req["remaining_hands"] = max(1, TOTAL_HANDS - int(req["hand"]))
         return req
 
+    def _socket_safe_fallback_action(self) -> int:
+        """Choose a zero-strategy-risk action from socket-owned betting state."""
+        return -1 if self._opponent_stage_bet > self._my_stage_bet else 0
+
+    def _sanitize_worker_action(self, raw_action, fallback: int) -> int:
+        """Keep untrusted strategy output inside the integer action domain."""
+        try:
+            action = int(raw_action)
+        except (TypeError, ValueError, OverflowError):
+            return int(fallback)
+        if action in {-2, -1, 0} or action > 0:
+            return action
+        return int(fallback)
+
+    def _strategy_worker_alive(self) -> bool:
+        return bool(self._strategy_process is not None and self._strategy_process.is_alive())
+
+    def _reap_retired_strategy_workers(self, *, wait: bool) -> None:
+        """Reap workers terminated on a decision deadline at a safe point."""
+        remaining = []
+        for process in self._retired_strategy_processes:
+            try:
+                process.join(timeout=STRATEGY_WORKER_STOP_GRACE_SEC if wait else 0)
+                if process.is_alive() and wait:
+                    process.terminate()
+                    process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
+                if process.is_alive() and wait and hasattr(process, "kill"):
+                    process.kill()
+                    process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
+                if process.is_alive():
+                    remaining.append(process)
+            except (AssertionError, OSError, ValueError):
+                if process.is_alive():
+                    remaining.append(process)
+        self._retired_strategy_processes = remaining
+
+    def _stop_strategy_worker(self, reason: str, *, wait: bool = True) -> None:
+        process = self._strategy_process
+        connection = self._strategy_connection
+        termination_requested = False
+        if connection is not None and wait:
+            try:
+                connection.send({"kind": "stop", "reason": reason})
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+        if process is not None:
+            stopped_pid = process.pid
+            if wait:
+                process.join(timeout=STRATEGY_WORKER_STOP_GRACE_SEC)
+                if process.is_alive():
+                    process.terminate()
+                    termination_requested = True
+                    process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
+                if process.is_alive() and hasattr(process, "kill"):
+                    process.kill()
+                    termination_requested = True
+                    process.join(timeout=STRATEGY_WORKER_KILL_GRACE_SEC)
+            else:
+                # The socket deadline owns this path. Request termination but
+                # never spend the remaining send budget waiting for process
+                # teardown; reap it before a later decision or at client close.
+                try:
+                    if process.is_alive():
+                        process.terminate()
+                        termination_requested = True
+                    process.join(timeout=0)
+                except (AssertionError, OSError, ValueError):
+                    termination_requested = True
+                if process.is_alive():
+                    self._retired_strategy_processes.append(process)
+            _log(
+                f"DECISION_WORKER stop reason={reason} pid={process.pid} "
+                f"alive={process.is_alive()} exitcode={process.exitcode} wait={wait}"
+            )
+            self._last_stopped_worker_pid = stopped_pid
+            self._last_stopped_worker_exitcode = process.exitcode
+            self._last_stopped_worker_termination_requested = termination_requested
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
+        self._strategy_process = None
+        self._strategy_connection = None
+
+    def _ensure_strategy_worker(self) -> bool:
+        self._reap_retired_strategy_workers(wait=False)
+        if self._strategy_worker_alive() and self._strategy_connection is not None:
+            return True
+        self._stop_strategy_worker("replace_dead_worker")
+        parent_connection, child_connection = self._mp_context.Pipe(duplex=True)
+        next_generation = self._strategy_worker_generation + 1
+        worker_seed = (
+            None
+            if self._strategy_base_seed is None
+            else self._strategy_base_seed + next_generation - 1
+        )
+        process = self._mp_context.Process(
+            target=_strategy_worker_main,
+            args=(child_connection, BOT_DIR, worker_seed),
+            name=f"national-strategy-{next_generation}",
+            daemon=True,
+        )
+        try:
+            process.start()
+        except BaseException as exc:
+            parent_connection.close()
+            child_connection.close()
+            _log(f"DECISION_WORKER start_error={type(exc).__name__}:{str(exc)[:240]}")
+            return False
+        child_connection.close()
+        self._strategy_worker_generation += 1
+        self._strategy_worker_seed = worker_seed
+        self._strategy_process = process
+        self._strategy_connection = parent_connection
+        _log(
+            f"DECISION_WORKER started pid={process.pid} "
+            f"generation={self._strategy_worker_generation} seed={worker_seed}"
+        )
+        return True
+
+    def close(self) -> None:
+        self._stop_strategy_worker("client_close")
+        self._reap_retired_strategy_workers(wait=True)
+
     def _strategy_action(self) -> int:
-        req = self._request()
+        started = time.monotonic()
+        hard_deadline = started + self._decision_hard_deadline_sec
+        baseline_target = started + self._decision_baseline_target_sec
+        refinement_deadline = started + self._decision_refinement_budget_sec
+        # Facing a bet, action 0 would become a call. The socket-owned fallback
+        # therefore folds to positive to_call and passes only at zero to_call.
+        baseline = self._socket_safe_fallback_action()
+        self._last_decision_source = "socket_baseline"
+        try:
+            req = self._request()
+        except BaseException as exc:
+            _log(
+                f"DECIDE request_error={type(exc).__name__}:{str(exc)[:160]!r} "
+                f"fallback={baseline}"
+            )
+            self._last_decision_source = "request_error_baseline"
+            return baseline
+        self._decision_serial += 1
+        decision_id = self._decision_serial
+        decision_metrics = {
+            "runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+            "decision_id": decision_id,
+            "socket_fallback_action": baseline,
+            "socket_fallback_ready_ms": round((time.monotonic() - started) * 1000.0, 3),
+            "baseline_published_ms": None,
+            "baseline_target_met": False,
+            "refinement_messages": 0,
+            "latest_sequence": 0,
+            "timed_out": False,
+            "worker_terminated": False,
+            "worker_generation": None,
+            "worker_pid": None,
+            "completed": False,
+        }
+        self._last_decision_metrics = decision_metrics
+        req["decision_runtime_version"] = NATIONAL_DECISION_RUNTIME_VERSION
+        req["decision_id"] = decision_id
+        req["decision_hard_deadline_ms"] = int(self._decision_hard_deadline_sec * 1000)
+        req["decision_baseline_target_ms"] = int(self._decision_baseline_target_sec * 1000)
+        req["decision_refinement_budget_ms"] = int(self._decision_refinement_budget_sec * 1000)
+        req["decision_hard_deadline_monotonic"] = hard_deadline
+        req["decision_refinement_deadline_monotonic"] = refinement_deadline
+        req["decision_baseline_action"] = baseline
         self._requests.append(req)
-        action = self.get_action(req, list(self._requests))
+        if not self._ensure_strategy_worker():
+            self._last_decision_source = "worker_start_error_baseline"
+            return baseline
+        decision_metrics["worker_generation"] = self._strategy_worker_generation
+        decision_metrics["worker_pid"] = self._strategy_process.pid
+        decision_metrics["worker_seed"] = self._strategy_worker_seed
+        connection = self._strategy_connection
         try:
-            state = self.reconstruct_state(req)
-            action = self.sanitize_action(action, state, req["my_chips"])
-        except Exception:
-            traceback.print_exc(file=sys.stderr)
-            return 0
-        try:
-            return int(action)
-        except (TypeError, ValueError):
-            return 0
+            connection.send({
+                "kind": "decide",
+                "decision_id": decision_id,
+                "request": req,
+                # Bounded current-hand compatibility view; never full match history.
+                "current_request_view": (req,),
+                "fallback_action": baseline,
+                "deadline_monotonic": refinement_deadline,
+            })
+        except (BrokenPipeError, EOFError, OSError) as exc:
+            _log(f"DECIDE worker_send_error={type(exc).__name__}:{str(exc)[:160]}")
+            self._stop_strategy_worker("send_error")
+            self._last_decision_source = "worker_send_error_baseline"
+            return baseline
+
+        baseline_target_logged = False
+        latest_sequence = 0
+        while True:
+            now = time.monotonic()
+            if not baseline_target_logged and now >= baseline_target:
+                baseline_target_logged = True
+                _log(
+                    f"DECIDE baseline_target_missed decision_id={decision_id} "
+                    f"target={self._decision_baseline_target_sec:.3f}s safe_action={baseline}"
+                )
+            remaining = min(refinement_deadline, hard_deadline) - now
+            if remaining <= 0:
+                timed_out_pid = self._strategy_process.pid if self._strategy_process else None
+                self._stop_strategy_worker("decision_deadline", wait=False)
+                decision_metrics["timed_out"] = True
+                decision_metrics["worker_terminated"] = (
+                    timed_out_pid is not None
+                    and self._last_stopped_worker_pid == timed_out_pid
+                    and (
+                        self._last_stopped_worker_exitcode is not None
+                        or self._last_stopped_worker_termination_requested
+                    )
+                )
+                self._last_decision_source = "refinement_deadline_latest_safe"
+                _log(
+                    f"DECIDE refinement_deadline decision_id={decision_id} "
+                    f"latest_safe={baseline} sequence={latest_sequence} "
+                    f"refinement_budget={self._decision_refinement_budget_sec:.3f}s "
+                    f"hard_deadline={self._decision_hard_deadline_sec:.3f}s"
+                )
+                return baseline
+            if not self._strategy_worker_alive():
+                self._stop_strategy_worker("worker_exited")
+                self._last_decision_source = "worker_exited_latest_safe"
+                return baseline
+            wait_for = min(remaining, 0.25)
+            if not baseline_target_logged:
+                wait_for = min(wait_for, max(0.001, baseline_target - now))
+            try:
+                if not connection.poll(wait_for):
+                    continue
+                message = connection.recv()
+            except (BrokenPipeError, EOFError, OSError) as exc:
+                _log(f"DECIDE worker_recv_error={type(exc).__name__}:{str(exc)[:160]}")
+                self._stop_strategy_worker("recv_error")
+                self._last_decision_source = "worker_recv_error_latest_safe"
+                return baseline
+            if not isinstance(message, dict):
+                continue
+            kind = message.get("kind")
+            if kind == "ready":
+                _log(
+                    f"DECISION_WORKER ready pid={message.get('pid')} "
+                    f"import_ms={message.get('import_elapsed_ms')} "
+                    f"baseline={message.get('has_baseline')} iterator={message.get('has_iterator')}"
+                )
+                continue
+            if kind == "startup_error":
+                _log(f"DECIDE worker_startup_error={message.get('error')!r}")
+                self._stop_strategy_worker("startup_error")
+                self._last_decision_source = "worker_startup_error_baseline"
+                return baseline
+            if int(message.get("decision_id") or -1) != decision_id:
+                _log(
+                    f"DECIDE stale_worker_message expected={decision_id} "
+                    f"actual={message.get('decision_id')} kind={kind}"
+                )
+                continue
+            result_at = time.monotonic()
+            if result_at >= hard_deadline:
+                self._stop_strategy_worker("hard_deadline", wait=False)
+                self._last_decision_source = "hard_deadline_latest_safe"
+                return baseline
+            if kind == "candidate":
+                sequence = int(message.get("sequence") or 0)
+                if sequence <= latest_sequence:
+                    continue
+                latest_sequence = sequence
+                decision_metrics["latest_sequence"] = sequence
+                baseline = self._sanitize_worker_action(message.get("action"), baseline)
+                phase = str(message.get("phase") or "refinement")
+                req["decision_baseline_action"] = baseline
+                elapsed = result_at - started
+                metadata = message.get("metadata") or {}
+                if phase == "baseline":
+                    decision_metrics["baseline_published_ms"] = round(elapsed * 1000.0, 3)
+                    decision_metrics["baseline_target_met"] = (
+                        elapsed <= self._decision_baseline_target_sec
+                    )
+                    self._last_decision_source = "strategy_baseline"
+                    _log(
+                        f"DECIDE baseline decision_id={decision_id} action={baseline} "
+                        f"elapsed={elapsed:.3f}s "
+                        f"target_met={elapsed <= self._decision_baseline_target_sec}"
+                    )
+                else:
+                    decision_metrics["refinement_messages"] += 1
+                    self._last_decision_source = "incremental_refinement"
+                    _log(
+                        f"DECIDE refinement decision_id={decision_id} sequence={sequence} "
+                        f"action={baseline} elapsed={elapsed:.3f}s "
+                        f"samples={metadata.get('sample_count')} confidence={metadata.get('confidence')}"
+                    )
+                continue
+            if kind == "done":
+                decision_metrics["completed"] = True
+                _log(
+                    f"DECIDE worker_done decision_id={decision_id} sequence={latest_sequence} "
+                    f"latest_safe={baseline} elapsed={result_at - started:.3f}s"
+                )
+                return baseline
+            if kind == "decision_error":
+                _log(
+                    f"DECIDE strategy_error decision_id={decision_id} "
+                    f"error={message.get('error')!r} latest_safe={baseline}"
+                )
+                self._last_decision_source = "strategy_error_latest_safe"
+                return baseline
 
     def _current_round_has_allin(self) -> bool:
         round_num = self._round_num()
@@ -338,6 +1288,12 @@ class NativeNationalBot:
                 entry["chips_after"] = self._opponent_chips
             entry["committed"] = committed
         self._history.append(entry)
+        self._opponent_tracker.observe_action(
+            "hero" if player_id == self._my_id else "opponent",
+            self._stage,
+            action_type,
+            amount=entry.get("stage_bet", amount),
+        )
 
     def _last_raise_total(self) -> int | None:
         round_num = self._round_num()
@@ -465,7 +1421,10 @@ class NativeNationalBot:
             _log("DECIDE exception -> fold")
             action = -1
         elapsed = time.perf_counter() - t0
-        _log(f"DECIDE done action={action!r} elapsed={elapsed:.3f}s")
+        _log(
+            f"DECIDE done action={action!r} source={self._last_decision_source} "
+            f"elapsed={elapsed:.3f}s"
+        )
         self._responses.append(int(action))
         msg, action_type, amount = self._action_to_tcp(int(action))
         self._send_wire_action(sock, msg)
@@ -486,6 +1445,7 @@ class NativeNationalBot:
         if line.startswith("name"):
             sock.sendall(self.name.encode("utf-8"))
             _log(f"SEND name_handshake name={self.name!r}")
+            self._ensure_strategy_worker()
             return
         if line.startswith("preflop"):
             parts = line.split("|", 2)
@@ -512,6 +1472,10 @@ class NativeNationalBot:
                 self._opponent_chips -= SMALL_BLIND
                 self._opponent_stage_bet = SMALL_BLIND
             self._dealer_id = 0 if self._is_sb else 1
+            self._opponent_tracker.begin_hand(
+                self._hand_num,
+                opponent_is_sb=not self._is_sb,
+            )
             if self._is_sb:
                 self._send_decision(sock)
             return
@@ -522,29 +1486,55 @@ class NativeNationalBot:
             self._my_action_count = 0
             self._my_stage_bet = 0
             self._opponent_stage_bet = 0
+            self._opponent_tracker.begin_street()
             if not self._in_allin_runout and self._acts_first_postflop():
                 self._send_decision(sock)
             return
         if line.startswith("earnChips"):
             earned = int(line.split()[1])
             self._last_earned = earned
+            self._earned_by_hand[self._hand_num] = earned
             self._total_win_chips[self._my_id] += earned
             self._total_win_chips[self._opponent_id] -= earned
             if earned > 0:
                 self._total_win_games[self._my_id] += 1
             elif earned < 0:
                 self._total_win_games[self._opponent_id] += 1
+            showdown = self._showdown_by_hand.get(self._hand_num)
+            if showdown is not None:
+                showdown["earned"] = earned
+            self._opponent_tracker.observe_settlement(
+                self._hand_num,
+                hero_earned=earned,
+            )
+            _log(
+                "OPPONENT_TRACKER "
+                + json.dumps(
+                    self._opponent_tracker.snapshot(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             self._in_allin_runout = False
             return
         if line.startswith("oppo_hands|"):
-            self._showdowns.append({
-                "hand": self._hand_num,
-                "opponent_cards": _parse_cards(line.split("|", 1)[1]),
-                "my_cards": list(self._my_cards),
-                "public_cards": list(self._public_cards),
-                "history": list(self._history),
-                "earned": self._last_earned,
-            })
+            record = self._showdown_by_hand.get(self._hand_num)
+            if record is None:
+                record = {
+                    "hand": self._hand_num,
+                    "opponent_cards": _parse_cards(line.split("|", 1)[1]),
+                    "my_cards": list(self._my_cards),
+                    "public_cards": list(self._public_cards),
+                    "history": list(self._history),
+                    "earned": self._earned_by_hand.get(self._hand_num),
+                }
+                self._showdown_by_hand[self._hand_num] = record
+                self._showdowns.append(record)
+            self._opponent_tracker.observe_showdown(
+                self._hand_num,
+                record["opponent_cards"],
+                record["public_cards"],
+            )
             return
 
         action_type, amount = _parse_action(line)
@@ -563,28 +1553,39 @@ def run_client(host: str, port: int, name: str, log_path: str = "", seat: str = 
     _log_open(log_path)
     bot = NativeNationalBot(name, seat)
     _log(f"START name={name} seat={bot.seat} host={host} port={port} log={log_path or '-'}")
-    with socket.create_connection((host, port), timeout=30) as sock:
-        sock.settimeout(180)
-        buffer = ""
-        while True:
-            try:
-                data = sock.recv(4096)
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as exc:
-                _log(f"RECV closed_by_server exception={type(exc).__name__}: {exc}")
-                return 0
-            if not data:
-                _log("RECV empty -> server closed")
-                return 0
-            chunk = data.decode("utf-8", "replace")
-            buffer += chunk
-            _log(f"RECV raw={chunk!r} buffer={buffer!r}")
-            messages, buffer = _split_messages(buffer)
-            for line in messages:
-                _log(f"DISPATCH line={line!r}")
-                bot.handle(line, sock)
+    try:
+        with socket.create_connection((host, port), timeout=30) as sock:
+            sock.settimeout(180)
+            decoder = NationalStreamDecoder()
+            while True:
+                try:
+                    data = sock.recv(4096)
+                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as exc:
+                    _log(f"RECV closed_by_server exception={type(exc).__name__}: {exc}")
+                    return 0
+                if not data:
+                    _log("RECV empty -> server closed")
+                    return 0
+                chunk = data.decode("utf-8", "replace")
+                messages = decoder.feed(chunk)
+                _log(f"RECV raw={chunk!r} buffer={decoder.buffer!r}")
+                for line in messages:
+                    _log(f"DISPATCH line={line!r}")
+                    bot.handle(line, sock)
+                if decoder.has_pending_numeric:
+                    readable, _, _ = select.select([sock], [], [], _stream_idle_flush_sec())
+                    if not readable:
+                        messages = decoder.flush_idle()
+                        _log(f"RECV idle_flush buffer={decoder.buffer!r}")
+                        for line in messages:
+                            _log(f"DISPATCH line={line!r}")
+                            bot.handle(line, sock)
+    finally:
+        bot.close()
 
 
 def main() -> int:
+    mp.freeze_support()
     parser = argparse.ArgumentParser(description="Native national TCP bot")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=10001)
@@ -603,6 +1604,84 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 '''
+NATIVE_BOT_TEMPLATE = NATIVE_BOT_TEMPLATE.replace(
+    "__POK_DECISION_RUNTIME_VERSION__",
+    str(NATIONAL_DECISION_RUNTIME_VERSION),
+)
+
+
+NATIVE_PRECOMPUTE_TEMPLATE = r'''"""Bounded pure poker facts built once before live decisions."""
+
+from __future__ import annotations
+
+import hashlib
+import itertools
+import json
+
+
+PRECOMPUTE_SCHEMA_VERSION = 1
+CARD_ENCODING = "judge_int:rank=card//4+2,suit=card%4"
+GENERATOR_VERSION = "national-precompute-v1"
+FIVE_OF_SEVEN_INDICES = tuple(itertools.combinations(range(7), 5))
+
+
+def _hole_fact(card_a: int, card_b: int) -> tuple[int, int, bool, bool, int]:
+    rank_a, rank_b = card_a // 4 + 2, card_b // 4 + 2
+    high, low = max(rank_a, rank_b), min(rank_a, rank_b)
+    return high, low, card_a % 4 == card_b % 4, high == low, high - low
+
+
+def _straight_high(rank_mask: int) -> int:
+    mask = int(rank_mask) & 0x1FFF
+    for high_index in range(12, 3, -1):
+        window = 0b11111 << (high_index - 4)
+        if mask & window == window:
+            return high_index + 2
+    wheel = (1 << 12) | 0b1111
+    return 5 if mask & wheel == wheel else 0
+
+
+HOLE_COMBO_FACTS = {
+    (card_a, card_b): _hole_fact(card_a, card_b)
+    for card_a in range(52)
+    for card_b in range(card_a + 1, 52)
+}
+STRAIGHT_HIGH_BY_MASK = {
+    rank_mask: _straight_high(rank_mask)
+    for rank_mask in range(1 << 13)
+}
+
+
+def _content_digest() -> str:
+    payload = {
+        "five_of_seven": FIVE_OF_SEVEN_INDICES,
+        "hole_combo_facts": sorted((list(key), list(value)) for key, value in HOLE_COMBO_FACTS.items()),
+        "straight_high": [STRAIGHT_HIGH_BY_MASK[index] for index in range(1 << 13)],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("ascii")
+    ).hexdigest()
+
+
+PRECOMPUTE_MANIFEST = {
+    "schema_version": PRECOMPUTE_SCHEMA_VERSION,
+    "generator_version": GENERATOR_VERSION,
+    "card_encoding": CARD_ENCODING,
+    "hole_combo_entries": len(HOLE_COMBO_FACTS),
+    "straight_mask_entries": len(STRAIGHT_HIGH_BY_MASK),
+    "five_of_seven_entries": len(FIVE_OF_SEVEN_INDICES),
+    "content_digest": _content_digest(),
+}
+
+
+def hole_combo_fact(card_a: int, card_b: int):
+    key = (card_a, card_b) if card_a < card_b else (card_b, card_a)
+    return HOLE_COMBO_FACTS.get(key)
+
+
+def straight_high(rank_mask: int) -> int:
+    return STRAIGHT_HIGH_BY_MASK.get(int(rank_mask) & 0x1FFF, 0)
+'''
 
 
 @dataclass(frozen=True)
@@ -614,188 +1693,145 @@ class NativeBotSpec:
     wrapper_used: bool = False
 
 
-class _TCPClient:
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        self.reader = reader
-        self.writer = writer
-        self.name = ""
-        self._buffer = ""
-        self.closed = False
-
-    async def send_line(self, msg: str) -> None:
-        if self.closed:
-            return
-        self.writer.write((msg + "\n").encode("utf-8"))
-        await self.writer.drain()
-
-    async def recv_line(self, timeout: float) -> str | None:
-        if self.closed:
-            return None
-        try:
-            async with asyncio.timeout(timeout):
-                while True:
-                    msg = self._take_client_message()
-                    if msg is not None:
-                        return msg
-                    chunk = await self.reader.read(4096)
-                    if not chunk:
-                        self.closed = True
-                        return None
-                    self._buffer += chunk.decode("utf-8")
-        except (asyncio.TimeoutError, ConnectionError, OSError):
-            return None
-
-    def _take_client_message(self) -> str | None:
-        self._buffer = self._buffer.lstrip("\r\n\t ")
-        if not self._buffer:
-            return None
-        if "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            line = line.strip()
-            if line:
-                return line
-            return None
-        for token in ("allin", "check", "call", "fold"):
-            if self._buffer.startswith(token):
-                self._buffer = self._buffer[len(token):]
-                return token
-        if self._buffer.startswith("raise "):
-            pos = len("raise ")
-            while pos < len(self._buffer) and self._buffer[pos].isdigit():
-                pos += 1
-            if pos > len("raise "):
-                msg = self._buffer[:pos]
-                self._buffer = self._buffer[pos:]
-                return msg
-            return None
-        if self._buffer.startswith("bet "):
-            pos = len("bet ")
-            while pos < len(self._buffer) and self._buffer[pos].isdigit():
-                pos += 1
-            if pos > len("bet "):
-                msg = "raise " + self._buffer[len("bet "):pos]
-                self._buffer = self._buffer[pos:]
-                return msg
-            return None
-        # Name handshake: official clients send a short raw team name with no
-        # delimiter. In local tests the whole write normally arrives in one read;
-        # after this point there is no protocol-level marker to wait for.
-        if self._buffer and not self._buffer.startswith(("raise", "bet")):
-            msg = self._buffer.strip()
-            self._buffer = ""
-            return msg
-        return None
-
-    async def close(self, timeout: float = 1.0) -> None:
-        self.closed = True
-        self.writer.close()
-        try:
-            await asyncio.wait_for(self.writer.wait_closed(), timeout=timeout)
-        except (asyncio.TimeoutError, OSError, ConnectionError):
-            pass
-
-
-def _import_sever_modules():
-    prefixes = ("server", "engine")
-    saved = {
-        name: module
-        for name, module in list(sys.modules.items())
-        if name in prefixes or name.startswith("server.") or name.startswith("engine.")
-    }
-    for name in saved:
-        sys.modules.pop(name, None)
-
-    inserted: list[str] = []
-    for idx, path in ((0, str(SEVER_DIR)), (1, str(ROOT))):
-        if path not in sys.path:
-            sys.path.insert(idx, path)
-            inserted.append(path)
-    try:
-        server_init = SEVER_DIR / "server" / "__init__.py"
-        server_spec = importlib.util.spec_from_file_location(
-            "server",
-            server_init,
-            submodule_search_locations=[str(SEVER_DIR / "server")],
-        )
-        if server_spec is not None and server_spec.loader is not None:
-            server_module = importlib.util.module_from_spec(server_spec)
-            sys.modules["server"] = server_module
-            server_spec.loader.exec_module(server_module)
-        importlib.invalidate_caches()
-        from engine.deck import Deck as _Deck  # noqa: E402
-        from engine.game import GameEngine as _GameEngine  # noqa: E402
-        from engine.thp_recorder import THPRecorder as _THPRecorder  # noqa: E402
-        return _GameEngine, _THPRecorder, _Deck
-    finally:
-        for name in list(sys.modules):
-            if name in prefixes or name.startswith("server.") or name.startswith("engine."):
-                sys.modules.pop(name, None)
-        sys.modules.update(saved)
-        for path in inserted:
-            try:
-                sys.path.remove(path)
-            except ValueError:
-                pass
-
-
-GameEngine, THPRecorder, Deck = _import_sever_modules()
-
-
-class _LimitedTCPGameEngine(GameEngine):
-    def __init__(
-        self,
-        clients: list[_TCPClient],
-        events: list[dict[str, Any]],
-        deck_seed_base: int | None = None,
-        action_timeout_sec: float = 60.0,
-    ):
-        self._clients = clients
-        self.events = events
-        self.action_timeout_sec = float(action_timeout_sec)
-        deck_factory = None
-        if deck_seed_base is not None:
-            deck_factory = lambda hand_num: Deck(seed=deck_seed_base + hand_num)
-        super().__init__(
-            send_func=self._send_to_client,
-            broadcast_func=self._record_event,
-            recorder=THPRecorder(clients[0].name or "A", clients[1].name or "B"),
-            deck_factory=deck_factory,
-        )
-
-    async def _send_to_client(self, player_idx: int, message: str):
-        await self._clients[player_idx].send_line(message)
-
-    async def _recv_action(self, player_idx: int) -> str | None:
-        return await self._clients[player_idx].recv_line(timeout=self.action_timeout_sec)
-
-    async def _record_event(self, event: dict[str, Any]):
-        self.events.append(dict(event))
-
-    async def run_limited_match(self, name1: str, name2: str, hands: int):
-        self.players[0].name = name1
-        self.players[1].name = name2
-        self.total_earnings = [0, 0]
-        self.match_over = False
-        for hand_num in range(1, hands + 1):
-            self.hand_num = hand_num
-            result = await self._run_hand(hand_num)
-            if result is None:
-                break
-            self.total_earnings[0] += result.earnings[0]
-            self.total_earnings[1] += result.earnings[1]
-            if self.match_over:
-                break
-
-
 def ensure_native_entry(bot_dir: str | Path, *, overwrite: bool = False) -> Path:
     bot_dir = Path(bot_dir)
     entry = bot_dir / NATIVE_ENTRY
     if overwrite or not entry.exists():
         entry.write_text(NATIVE_BOT_TEMPLATE, encoding="utf-8")
+    precompute = bot_dir / PRECOMPUTE_ENTRY
+    if not precompute.exists():
+        precompute.write_text(NATIVE_PRECOMPUTE_TEMPLATE, encoding="utf-8")
     return entry
 
 
-def check_native_contract(bot_dir: str | Path) -> list[str]:
+_NATIVE_STREAM_PROBE_SCRIPT = r'''
+import contextlib
+import io
+import json
+import runpy
+import sys
+
+entry = sys.argv[1]
+captured = io.StringIO()
+errors = []
+try:
+    with contextlib.redirect_stdout(captured):
+        namespace = runpy.run_path(entry, run_name="_national_stream_contract_probe")
+except BaseException as exc:
+    errors.append(f"entry_load:{type(exc).__name__}:{exc}")
+    namespace = {}
+if captured.getvalue():
+    errors.append(f"stdout_pollution:{captured.getvalue()[:160]!r}")
+
+decoder_class = namespace.get("NationalStreamDecoder")
+cases = (
+    ("raise 200", ["raise 200"]),
+    ("earnChips -100", ["earnChips -100"]),
+    ("raise 200call", ["raise 200", "call"]),
+    ("raise 200earnChips -100", ["raise 200", "earnChips -100"]),
+    (
+        "earnChips -100preflop|SMALLBLIND|<0,3><1,3>",
+        ["earnChips -100", "preflop|SMALLBLIND|<0,3><1,3>"],
+    ),
+    ("allinriver|<3,12>", ["allin", "river|<3,12>"]),
+)
+
+def decode(chunks):
+    decoder = decoder_class()
+    emitted = []
+    for chunk in chunks:
+        emitted.extend(decoder.feed(chunk))
+    emitted.extend(decoder.flush_idle())
+    return emitted, decoder.buffer
+
+if decoder_class is None:
+    errors.append("missing_decoder_class")
+else:
+    for raw, expected in cases:
+        chunkings = [(raw,)]
+        chunkings.extend((raw[:split], raw[split:]) for split in range(1, len(raw)))
+        chunkings.append(tuple(raw))
+        for chunks in chunkings:
+            try:
+                actual, remainder = decode(chunks)
+            except BaseException as exc:
+                errors.append(
+                    f"decode_exception:{raw!r}:{type(exc).__name__}:{exc}"
+                )
+                break
+            if actual != expected or remainder:
+                errors.append(
+                    f"decode_mismatch:{raw!r}:chunks={chunks!r}:"
+                    f"actual={actual!r}:remainder={remainder!r}"
+                )
+                break
+
+print(json.dumps({"errors": errors[:20]}, ensure_ascii=True))
+'''
+
+
+def check_native_stream_decoder(bot_dir: str | Path) -> list[str]:
+    """Behaviorally verify the current delimiter-free stream decoder contract."""
+
+    bot_dir = Path(bot_dir)
+    entry = bot_dir / NATIVE_ENTRY
+    if not entry.exists():
+        return [f"{NATIVE_ENTRY} missing; cannot verify stream decoder"]
+    try:
+        text = entry.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"{NATIVE_ENTRY} unreadable: {exc}"]
+
+    required_tokens = (
+        "NATIONAL_STREAM_DECODER_VERSION = 2",
+        "class NationalStreamDecoder",
+        "has_pending_numeric",
+        "flush_idle",
+        "select.select",
+    )
+    missing = [token for token in required_tokens if token not in text]
+    if missing:
+        return [
+            f"{NATIVE_ENTRY}: missing stream decoder v2 token {token!r}; "
+            "new candidates must defer terminal numeric messages until a following token or idle flush"
+            for token in missing
+        ]
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-I", "-c", _NATIVE_STREAM_PROBE_SCRIPT, str(entry.resolve())],
+            cwd=str(bot_dir),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [f"{NATIVE_ENTRY}: stream decoder behavior probe failed: {type(exc).__name__}: {exc}"]
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "no output")[-500:].strip()
+        return [
+            f"{NATIVE_ENTRY}: stream decoder behavior probe exited {proc.returncode}: {detail}"
+        ]
+    try:
+        payload = json.loads(proc.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        return [
+            f"{NATIVE_ENTRY}: stream decoder behavior probe returned invalid JSON: "
+            f"{type(exc).__name__}: {proc.stdout[-300:]!r}"
+        ]
+    return [
+        f"{NATIVE_ENTRY}: stream decoder behavior violation: {item}"
+        for item in (payload.get("errors") or [])[:20]
+    ]
+
+
+def check_native_contract(
+    bot_dir: str | Path,
+    *,
+    require_current_stream_decoder: bool = False,
+    require_current_decision_runtime: bool = False,
+) -> list[str]:
     bot_dir = Path(bot_dir)
     entry = bot_dir / NATIVE_ENTRY
     errors: list[str] = []
@@ -865,6 +1901,32 @@ def check_native_contract(bot_dir: str | Path) -> list[str]:
         errors.append(
             f"{NATIVE_ENTRY}: _strategy_action must not continue with raw action after sanitizer failure"
         )
+    if require_current_stream_decoder:
+        errors.extend(check_native_stream_decoder(bot_dir))
+    if require_current_decision_runtime:
+        runtime_tokens = (
+            f"NATIONAL_DECISION_RUNTIME_VERSION = {NATIONAL_DECISION_RUNTIME_VERSION}",
+            "decision_hard_deadline_monotonic",
+            "decision_refinement_deadline_monotonic",
+            "decision_baseline_target_ms",
+            "mp.get_context(\"spawn\")",
+            "def _strategy_worker_main",
+            'os.environ["POK_NATIVE_BOT_SEED"]',
+            "random.seed(int(random_seed))",
+            "iter_refinements",
+            "decision_id",
+            "process.terminate()",
+            "process.kill()",
+            "def _reap_retired_strategy_workers",
+            '_stop_strategy_worker("decision_deadline", wait=False)',
+            "def _socket_safe_fallback_action",
+            "return -1 if self._opponent_stage_bet > self._my_stage_bet else 0",
+        )
+        for token in runtime_tokens:
+            if token not in text:
+                errors.append(
+                    f"{NATIVE_ENTRY}: missing current bounded decision runtime token {token!r}"
+                )
     return errors
 
 
@@ -929,11 +1991,15 @@ def resolve_bot(token: str | Path) -> tuple[str, Path]:
     if token_str.startswith(ACTIVE_BOT_PREFIX) or token_str.startswith("claude_v") or token_str.startswith("bot"):
         candidates.append(ROOT / "bots" / token_str)
     for path in candidates:
-        if path.is_dir() and (path / "main.py").exists():
+        if path.is_dir() and (
+            (path / NATIVE_ENTRY).is_file() or (path / "main.py").is_file()
+        ):
             return path.name, path.resolve()
-        if path.is_file():
-            return path.parent.name if path.name == "main.py" else path.stem, path.resolve().parent
-    raise ValueError(f"bot not found or missing main.py: {token_str}")
+        if path.is_file() and path.name in {NATIVE_ENTRY, "main.py"}:
+            return path.parent.name, path.resolve().parent
+    raise ValueError(
+        f"bot not found or missing {NATIVE_ENTRY}/main.py entry: {token_str}"
+    )
 
 
 def _completed_active_bots() -> list[tuple[str, Path]]:
@@ -942,7 +2008,7 @@ def _completed_active_bots() -> list[tuple[str, Path]]:
     specs: list[tuple[str, Path]] = []
     for name in get_active_bots():
         path = ROOT / "bots" / name
-        if path.is_dir() and (path / "main.py").exists():
+        if path.is_dir() and (path / NATIVE_ENTRY).is_file():
             specs.append((name, path.resolve()))
     return sorted(specs, key=lambda item: version_sort_key(item[0]), reverse=True)
 
@@ -1029,14 +2095,6 @@ def _parse_decision_trace(stderr_text: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _native_entry_supports_log_arg(entry: Path) -> bool:
-    try:
-        text = entry.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return "--log" in text and ("add_argument(\"--log\"" in text or "add_argument('--log'" in text)
-
-
 def _safe_label_fragment(label: str) -> str:
     safe = "".join(
         char if char.isascii() and (char.isalnum() or char in "_.-") else "_"
@@ -1054,7 +2112,7 @@ async def _run_tcp_server_with_processes(
     deck_seed_base: int | None,
     bot_seed_base: int | None = None,
 ) -> dict[str, Any]:
-    clients: list[_TCPClient] = []
+    clients: list[NationalTCPClient] = []
     connected = asyncio.Event()
     events: list[dict[str, Any]] = []
 
@@ -1063,7 +2121,7 @@ async def _run_tcp_server_with_processes(
             writer.close()
             await writer.wait_closed()
             return
-        clients.append(_TCPClient(reader, writer))
+        clients.append(NationalTCPClient(reader, writer, idle_flush_sec=0.003))
         if len(clients) == 2:
             connected.set()
 
@@ -1086,52 +2144,58 @@ async def _run_tcp_server_with_processes(
     bot_seeds: dict[str, int | None] = {}
     try:
         for idx, (spec, label) in enumerate(zip((bot_a, bot_b), run_labels)):
-            env = os.environ.copy()
-            env["POK_OFFICIAL_ACTION_DELAY"] = os.environ.get("POK_NATIVE_LOCAL_ACTION_DELAY", "0")
-            env["PYTHONPATH"] = str(spec.path) + os.pathsep + env.get("PYTHONPATH", "")
+            action_delay = os.environ.get("POK_NATIVE_LOCAL_ACTION_DELAY", "0")
+            local_hard_deadline_raw = os.environ.get(
+                "POK_NATIVE_DECISION_HARD_DEADLINE_SEC",
+                str(max(0.05, min(55.0, action_timeout - 0.25))),
+            )
+            try:
+                local_hard_deadline_value = max(
+                    0.05,
+                    min(55.0, float(local_hard_deadline_raw)),
+                )
+            except (TypeError, ValueError):
+                local_hard_deadline_value = max(0.05, min(55.0, action_timeout - 0.25))
+            refinement_budget = os.environ.get(
+                "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC",
+                str(max(0.04, local_hard_deadline_value - 0.10)),
+            )
+            baseline_target = os.environ.get(
+                "POK_NATIVE_DECISION_BASELINE_TARGET_SEC",
+                str(min(0.25, max(0.01, local_hard_deadline_value * 0.25))),
+            )
             seed = _native_bot_seed(bot_seed_base, idx)
             bot_seeds[label] = seed
-            if seed is None:
-                cmd = [
-                    sys.executable,
-                    str(spec.entry),
-                    "--host",
-                    str(host),
-                    "--port",
-                    str(port),
-                    "--name",
-                    label,
-                ]
-            else:
-                env["POK_NATIVE_ENTRY"] = str(spec.entry)
-                env["POK_NATIVE_BOT_SEED"] = str(seed)
-                env["PYTHONHASHSEED"] = str(seed % 4_294_967_295)
-                cmd = [
-                    sys.executable,
-                    "-c",
-                    SEEDED_NATIVE_LAUNCHER,
-                    "--host",
-                    str(host),
-                    "--port",
-                    str(port),
-                    "--name",
-                    label,
-                ]
-            if _native_entry_supports_log_arg(spec.entry):
+            log_path = None
+            if native_entry_supports_log_arg(spec.entry):
                 log_path = log_temp_root / f"{idx}_{_safe_label_fragment(label)}.log"
-                cmd.extend(["--log", str(log_path)])
                 bot_log_paths[label] = log_path
+            launch = build_native_bot_launch(
+                bot_dir=spec.path,
+                entry=spec.entry,
+                label=label,
+                host=str(host),
+                port=int(port),
+                action_delay=float(action_delay),
+                hard_deadline=local_hard_deadline_value,
+                refinement_budget=float(refinement_budget),
+                baseline_target=float(baseline_target),
+                decision_log=log_path,
+                seed=seed,
+                base_environment=os.environ,
+                inherit_all_environment=True,
+            )
             stdout_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
             stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
             try:
                 proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(spec.path),
+                    list(launch.command),
+                    cwd=str(launch.cwd),
                     stdin=subprocess.DEVNULL,
                     stdout=stdout_file,
                     stderr=stderr_file,
                     text=True,
-                    env=env,
+                    env=launch.environment,
                 )
             except Exception:
                 stdout_file.close()
@@ -1142,8 +2206,8 @@ async def _run_tcp_server_with_processes(
         await asyncio.wait_for(connected.wait(), timeout=connect_timeout)
         await clients[0].send_line("name")
         await clients[1].send_line("name")
-        name0 = await clients[0].recv_line(timeout=name_timeout)
-        name1 = await clients[1].recv_line(timeout=name_timeout)
+        name0 = await clients[0].recv_name(timeout=name_timeout)
+        name1 = await clients[1].recv_name(timeout=name_timeout)
         if not name0 or not name1:
             raise RuntimeError("native TCP bot name handshake failed")
         clients[0].name = name0
@@ -1158,7 +2222,7 @@ async def _run_tcp_server_with_processes(
                     "order": list(run_labels),
                     "connection_order": [name0, name1],
                 })
-        engine = _LimitedTCPGameEngine(
+        engine = NationalTCPGameEngine(
             ordered_clients,
             events,
             deck_seed_base=deck_seed_base,
@@ -1286,14 +2350,18 @@ async def _run_tcp_server_with_processes(
                 "postflop_pass_conversions": 0,
             },
         }
+        player_issues = []
         if illegal[idx]:
-            issues.append(f"{label}: illegal_actions={illegal[idx]}")
+            player_issues.append(f"{label}: illegal_actions={illegal[idx]}")
         if timeouts[idx]:
-            issues.append(f"{label}: timeouts={timeouts[idx]}")
+            player_issues.append(f"{label}: timeouts={timeouts[idx]}")
         if proc_failed:
-            issues.append(f"{label}: native_process_returncode={proc_info.get('returncode')}")
+            player_issues.append(f"{label}: native_process_returncode={proc_info.get('returncode')}")
         if per_player[label]["native"]["json_response_stdout"]:
-            issues.append(f"{label}: json_response_stdout")
+            player_issues.append(f"{label}: json_response_stdout")
+        per_player[label]["compliance_issues"] = player_issues
+        per_player[label]["passed_compliance"] = not player_issues
+        issues.extend(player_issues)
     if hands_played != hands:
         issues.append(f"hands_played={hands_played}, expected={hands}")
     return {
@@ -1391,6 +2459,10 @@ async def _run_native_tcp_pair(
 ) -> dict[str, Any]:
     label_a, dir_a = resolve_bot(bot_a_token)
     label_b, dir_b = resolve_bot(bot_b_token)
+    capacity_owner = (
+        f"native_tcp:{label_a}:{label_b}:{os.getpid()}:{time.monotonic_ns()}"
+    )
+    capacity_lease = await acquire_match_slots_async(capacity_owner, count=1)
     specs: list[NativeBotSpec] = []
     try:
         specs.append(_prepare_native_spec(
@@ -1403,13 +2475,9 @@ async def _run_native_tcp_pair(
             dir_b,
             allow_legacy_wrapper=allow_legacy_wrappers,
         ))
-    except Exception:
-        _cleanup_specs(specs)
-        raise
-    hands = max(1, min(70, int(hands)))
-    if timeout_sec is None:
-        timeout_sec = max(90.0, hands * 4.0)
-    try:
+        hands = max(1, min(70, int(hands)))
+        if timeout_sec is None:
+            timeout_sec = max(90.0, hands * 4.0)
         return await _run_tcp_server_with_processes(
             specs[0],
             specs[1],
@@ -1420,6 +2488,7 @@ async def _run_native_tcp_pair(
         )
     finally:
         _cleanup_specs(specs)
+        capacity_lease.release()
 
 
 async def run_native_tcp_smoke(
@@ -1441,6 +2510,8 @@ async def run_native_tcp_smoke(
             "wrapper_used": False,
             "hands": hands,
             "issues": [f"native_smoke_candidate_error={type(exc).__name__}: {str(exc)[:300]}"],
+            "outcome": "candidate_failure",
+            "failure_side": "candidate",
         }
 
     if opponent_token is not None:
@@ -1454,6 +2525,8 @@ async def run_native_tcp_smoke(
                 "wrapper_used": False,
                 "hands": hands,
                 "issues": [f"native_smoke_opponent_error={type(exc).__name__}: {str(exc)[:300]}"],
+                "outcome": "infrastructure_failure",
+                "failure_side": "opponent",
             }
     else:
         opponents = select_acceptance_opponents(candidate_label, source_v, limit=1)
@@ -1466,6 +2539,8 @@ async def run_native_tcp_smoke(
             "wrapper_used": False,
             "hands": hands,
             "issues": ["native_smoke_no_opponent"],
+            "outcome": "infrastructure_failure",
+            "failure_side": "opponent",
         }
 
     opponent_label, opponent_dir = opponents[0]
@@ -1487,12 +2562,29 @@ async def run_native_tcp_smoke(
             "wrapper_used": False,
             "hands": hands,
             "issues": [f"native_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
+            "outcome": "infrastructure_failure",
+            "failure_side": "harness",
         }
 
-    issues = list(result.get("issues") or [])
-    if not result.get("passed_compliance") and not issues:
-        issues.append("native_smoke_compliance_failed")
-    passed = bool(result.get("passed_compliance")) and not issues
+    candidate_row = (result.get("per_player") or {}).get(candidate_label) or {}
+    opponent_row = (result.get("per_player") or {}).get(opponent_label) or {}
+    candidate_issues = list(candidate_row.get("compliance_issues") or [])
+    opponent_issues = list(opponent_row.get("compliance_issues") or [])
+    attributed = set(candidate_issues + opponent_issues)
+    unscoped_issues = [
+        str(item) for item in result.get("issues") or []
+        if str(item) not in attributed
+    ]
+    if candidate_issues:
+        outcome, failure_side, issues = "candidate_failure", "candidate", candidate_issues
+    elif opponent_issues or unscoped_issues:
+        outcome, failure_side = "infrastructure_failure", (
+            "opponent" if opponent_issues and not unscoped_issues else "harness"
+        )
+        issues = opponent_issues + unscoped_issues
+    else:
+        outcome, failure_side, issues = "passed", "", []
+    passed = outcome == "passed"
     return {
         "candidate": candidate_label,
         "opponent": opponent_label,
@@ -1501,6 +2593,8 @@ async def run_native_tcp_smoke(
         "wrapper_used": bool(result.get("wrapper_used")),
         "hands": hands,
         "issues": issues,
+        "outcome": outcome,
+        "failure_side": failure_side,
         "result": result,
     }
 
@@ -1539,7 +2633,10 @@ def _summary_from_results(bots: list[tuple[str, Path]], results: list[dict[str, 
             row["native_process_failures"] += int(native.get("process_failures", 0) or 0)
             row["json_response_stdout"] += int(native.get("json_response_stdout", 0) or 0)
             row["wrapper_used"] = row["wrapper_used"] or bool(pdata.get("wrapper_used"))
-            row["passed_compliance"] = row["passed_compliance"] and result.get("passed_compliance", False)
+            row["passed_compliance"] = (
+                row["passed_compliance"]
+                and bool(pdata.get("passed_compliance", result.get("passed_compliance", False)))
+            )
     for label, rows in runtime_rows.items():
         if label in summary:
             summary[label]["runtime_telemetry"] = _merge_runtime_telemetry(rows)
@@ -1567,6 +2664,8 @@ async def run_native_acceptance_for_candidate(
             opponents=[],
             hands_per_pair=hands,
             passed=False,
+            outcome="infrastructure_failure",
+            failure_side="opponent",
             issues=["need at least one opponent for native national acceptance"],
             summary={"wrapper_used": False, "passed_compliance": False},
             report={"execution_mode": "native_tcp", "wrapper_used": False},
@@ -1577,8 +2676,9 @@ async def run_native_acceptance_for_candidate(
 
     results: list[dict[str, Any]] = []
     try:
-        for i, j in pair_indices:
-            pair_seed = None
+        for pair_index, (i, j) in enumerate(pair_indices):
+            pair_seed = 71_000 + pair_index * 1_000
+            bot_seed = 171_000 + pair_index * 1_000
             results.append(await run_native_tcp_pair(
                 bots[i][1],
                 bots[j][1],
@@ -1586,6 +2686,7 @@ async def run_native_acceptance_for_candidate(
                 require_native_a=True,
                 require_native_b=True,
                 deck_seed_base=pair_seed,
+                bot_seed_base=bot_seed,
                 timeout_sec=timeout_sec,
             ))
     except TimeoutError:
@@ -1595,6 +2696,8 @@ async def run_native_acceptance_for_candidate(
             opponents=[opp[0] for opp in bots[1:]],
             hands_per_pair=hands,
             passed=False,
+            outcome="infrastructure_failure",
+            failure_side="harness",
             issues=[issue],
             summary={
                 "matches": 0,
@@ -1647,15 +2750,34 @@ async def run_native_acceptance_for_candidate(
         "timeout_sec": timeout_sec,
     }
     candidate_summary = summary.get(candidate[0], {})
-    issues: list[str] = []
+    candidate_issues: list[str] = []
+    opponent_issues: list[str] = []
+    unscoped_issues: list[str] = []
     for result in results:
-        if result["bot_a"] == candidate[0] or result["bot_b"] == candidate[0]:
-            issues.extend(result.get("issues", []))
+        rows = result.get("per_player") or {}
+        candidate_issues.extend((rows.get(candidate[0]) or {}).get("compliance_issues") or [])
+        for opponent in bots[1:]:
+            opponent_issues.extend((rows.get(opponent[0]) or {}).get("compliance_issues") or [])
+        attributed = set(candidate_issues + opponent_issues)
+        unscoped_issues.extend(
+            str(item) for item in result.get("issues") or []
+            if str(item) not in attributed
+        )
+    if candidate_issues:
+        outcome, failure_side, issues = "candidate_failure", "candidate", candidate_issues
+    elif opponent_issues or unscoped_issues:
+        outcome = "infrastructure_failure"
+        failure_side = "opponent" if opponent_issues and not unscoped_issues else "harness"
+        issues = opponent_issues + unscoped_issues
+    else:
+        outcome, failure_side, issues = "passed", "", []
     return NationalAcceptanceResult(
         candidate=candidate[0],
         opponents=[opp[0] for opp in bots[1:]],
         hands_per_pair=hands,
-        passed=bool(candidate_summary.get("passed_compliance")) and not issues,
+        passed=outcome == "passed" and bool(candidate_summary.get("passed_compliance")),
+        outcome=outcome,
+        failure_side=failure_side,
         issues=issues,
         summary=candidate_summary,
         matrix=matrix.get(candidate[0], {}),
@@ -1685,6 +2807,7 @@ async def run_native_precommit(
     matches_per_opponent: int = 1,
     parent_label: str = "",
     deck_seed_base: int | None = 91_000,
+    sample_plan: list[dict[str, Any]] | None = None,
     parent_loss_threshold: float = -2000,
     aggregate_loss_threshold: float = -2000,
 ) -> dict[str, Any]:
@@ -1696,6 +2819,21 @@ async def run_native_precommit(
     aggregate_net_chips: list[int] = []
     total_wins = total_losses = total_draws = 0
     resolved_opponents: list[dict[str, Any]] = []
+    frozen_samples: dict[tuple[str, int], dict[str, Any]] = {}
+    if sample_plan is not None:
+        for row in sample_plan:
+            if not isinstance(row, dict):
+                raise ValueError("native precommit sample plan contains a non-object row")
+            key = (str(row.get("opponent") or ""), int(row.get("repeat") or 0))
+            if not key[0] or key[1] < 1 or key in frozen_samples:
+                raise ValueError("native precommit sample plan has an invalid or duplicate key")
+            frozen_samples[key] = dict(row)
+        expected_rows = len(opponents) * matches_per_opponent
+        if len(frozen_samples) != expected_rows:
+            raise ValueError(
+                f"native precommit sample plan has {len(frozen_samples)} rows; "
+                f"expected {expected_rows}"
+            )
     if not opponents:
         blockers.append({"reason": "native_no_opponents", "details": "Native precommit requires at least one opponent."})
     for opp_index, item in enumerate(opponents):
@@ -1709,7 +2847,26 @@ async def run_native_precommit(
         opponent_issues: list[str] = []
         hands_played_total = 0
         for repeat in range(matches_per_opponent):
-            seed = None if deck_seed_base is None else int(deck_seed_base) + (opp_index * 100_000) + (repeat * 1_000)
+            sample_key = (str(item.get("name") or opponent[0]), repeat + 1)
+            frozen = frozen_samples.get(sample_key) if sample_plan is not None else None
+            if sample_plan is not None and frozen is None:
+                raise ValueError(
+                    f"native precommit sample plan is missing {sample_key[0]} repeat {sample_key[1]}"
+                )
+            seed = (
+                frozen.get("deck_seed_base")
+                if frozen is not None
+                else (
+                    None
+                    if deck_seed_base is None
+                    else int(deck_seed_base) + (opp_index * 100_000) + (repeat * 1_000)
+                )
+            )
+            bot_seed = (
+                frozen.get("bot_seed_base")
+                if frozen is not None
+                else (None if seed is None else int(seed) + 1_000_000_000)
+            )
             result = await run_native_tcp_pair(
                 candidate[1],
                 opponent[1],
@@ -1717,6 +2874,7 @@ async def run_native_precommit(
                 require_native_a=True,
                 require_native_b=True,
                 deck_seed_base=seed,
+                bot_seed_base=bot_seed,
             )
             net = int(result.get("net_chips_a", 0) or 0)
             samples.append(net)
@@ -1738,6 +2896,7 @@ async def run_native_precommit(
             repeats.append({
                 "repeat": repeat + 1,
                 "deck_seed_base": seed,
+                "bot_seed_base": bot_seed,
                 "hands_played": hands_played,
                 "net_chips": net,
                 "candidate_issues": c_issues,
@@ -1776,14 +2935,32 @@ async def run_native_precommit(
             blockers.append({"reason": "native_candidate_compliance", "opponent": matchup["opponent"], "details": "; ".join(candidate_issues[:5])})
         if hands_played_total < hands * matches_per_opponent:
             blockers.append({"reason": "native_incomplete_match", "opponent": matchup["opponent"], "details": f"{hands_played_total}/{hands * matches_per_opponent} hands completed"})
-        if parent_label and matchup["opponent"] == parent_label and mean is not None and mean < parent_loss_threshold:
-            blockers.append({"reason": "lost_to_parent", "opponent": matchup["opponent"], "details": f"Native national mean net chips {mean:.0f} below {parent_loss_threshold:.0f}; samples={samples}"})
+        if (
+            parent_label
+            and matchup["opponent"] == parent_label
+            and ci_hi is not None
+            and ci_hi < parent_loss_threshold
+        ):
+            blockers.append({
+                "reason": "lost_to_parent",
+                "opponent": matchup["opponent"],
+                "details": (
+                    f"Native national bootstrap CI upper {ci_hi:.0f} below "
+                    f"{parent_loss_threshold:.0f}; samples={samples}"
+                ),
+            })
     agg_mean = _mean(aggregate_net_chips)
     agg_ci_lower, agg_ci_upper = _ci(aggregate_net_chips)
     if not aggregate_net_chips:
         blockers.append({"reason": "native_no_samples", "details": "Native precommit produced zero completed match samples."})
-    if agg_mean is not None and agg_mean < aggregate_loss_threshold:
-        blockers.append({"reason": "aggregate_native_regression", "details": f"Aggregate native national mean net chips {agg_mean:.0f} below {aggregate_loss_threshold:.0f}; samples={len(aggregate_net_chips)}"})
+    if agg_ci_upper is not None and agg_ci_upper < aggregate_loss_threshold:
+        blockers.append({
+            "reason": "aggregate_native_regression",
+            "details": (
+                f"Aggregate native bootstrap CI upper {agg_ci_upper:.0f} below "
+                f"{aggregate_loss_threshold:.0f}; samples={len(aggregate_net_chips)}"
+            ),
+        })
     paired_payload = {
         "protocol": "national_native_tcp",
         "hands_per_match": hands,
@@ -1791,8 +2968,8 @@ async def run_native_precommit(
         "aggregate_ci_lower": _rounded(agg_ci_lower),
         "aggregate_ci_upper": _rounded(agg_ci_upper),
         "aggregate_threshold": aggregate_loss_threshold,
-        "aggregate_gate_bound": _rounded(agg_mean),
-        "aggregate_gate_rule": "block_if_mean_below_threshold",
+        "aggregate_gate_bound": _rounded(agg_ci_upper),
+        "aggregate_gate_rule": "block_if_ci_upper_below_threshold",
         "net_chips_samples": len(aggregate_net_chips),
         "gate_degraded": len(aggregate_net_chips) < 2,
         "net_chips_mean": _rounded(agg_mean),
@@ -1811,6 +2988,7 @@ async def run_native_precommit(
         "total_losses": total_losses,
         "total_draws": total_draws,
         "aggregate_net_chips": aggregate_net_chips,
+        "sample_plan": list(sample_plan or []),
         "paired_bootstrap": paired_payload,
         "wrapper_used": any(bool(matchup.get("wrapper_used")) for matchup in matchups),
         "blockers": blockers,

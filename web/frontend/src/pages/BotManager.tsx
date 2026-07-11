@@ -283,6 +283,11 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
         </div>
         <div className="flex items-center gap-4 text-sm text-gray-500">
           <span className="text-xs text-gray-500">选择分 {strength}</span>
+          {bot.secondary_net_chips_mean != null && (
+            <span className="text-xs text-gray-500 tabular-nums">
+              净筹码/70手 {bot.secondary_net_chips_mean >= 0 ? "+" : ""}{bot.secondary_net_chips_mean.toFixed(0)}
+            </span>
+          )}
           <span className="text-xs text-gray-400">{strengthConfidenceText(bot.strength_confidence)}</span>
           {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} h2hWr={bot.h2h_avg_wr} games={bot.games} />}
           <span className="text-xs text-gray-400">{bot.total_lines} 行</span>

@@ -120,13 +120,47 @@ def test_game_engine_action_event_records_server_wait_and_timeout_budget():
 
         engine._recv_action = recv_action
         await engine._run_hand(1)
-        return next(event for event in events if event.get("type") == "action")
+        return events
 
-    event = asyncio.run(run())
+    events = asyncio.run(run())
+    request = next(event for event in events if event.get("type") == "action_requested")
+    event = next(event for event in events if event.get("type") == "action")
 
+    assert request["player_idx"] == 0
+    assert request["deadline_epoch_ms"] > 0
+    assert request["timeout_budget_sec"] == 60.0
     assert event["action"] == "fold"
     assert event["decision_wait_sec"] >= 0.0
     assert event["timeout_budget_sec"] == 60.0
+
+
+def test_game_engine_observer_hole_cards_do_not_change_tcp_payloads():
+    async def run():
+        sent = []
+        events = []
+
+        async def send(player_idx, message):
+            sent.append((player_idx, message))
+
+        async def broadcast(event):
+            events.append(event)
+
+        engine = GameEngine(send_func=send, broadcast_func=broadcast)
+        engine.players[0].name = "A"
+        engine.players[1].name = "B"
+
+        async def recv_action(_player_idx):
+            return "fold"
+
+        engine._recv_action = recv_action
+        await engine._run_hand(1)
+        cards = next(event for event in events if event.get("type") == "cards_dealt")
+        return sent, cards
+
+    sent, cards = asyncio.run(run())
+    assert len(cards["hole_cards"]) == 2
+    assert all(len(hand) == 2 for hand in cards["hole_cards"])
+    assert all("hole_cards" not in message for _idx, message in sent)
 
 
 def test_allin_runout_records_public_cards_in_thp():

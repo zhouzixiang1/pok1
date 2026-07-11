@@ -5,8 +5,10 @@ from types import SimpleNamespace
 
 import elo_daemon
 import national_native
+import runtime_capacity
 import tool_eval
 from national_eval import run_national_precommit
+from precommit_eval_contract import build_sample_plan
 from workflow_profiles import get_workflow_profile
 
 
@@ -18,6 +20,32 @@ def _write_call_bot(bot_dir: Path):
         "    print(json.dumps({'response': 0}), flush=True)\n",
         encoding="utf-8",
     )
+
+
+def _backend_plan(opponents, *, hands=2, matches=8):
+    normalized = [
+        {
+            "name": item["name"],
+            "reason": item.get("reason", "precommit"),
+            "path": item.get("path", ""),
+        }
+        for item in opponents
+    ]
+    return {
+        "plan_digest": "test-plan",
+        "opponents": normalized,
+        "settings": {
+            "hands_per_match": hands,
+            "matches_per_opponent": matches,
+            "parent_loss_threshold": -2000.0,
+            "aggregate_loss_threshold": -2000.0,
+        },
+        "sample_plan": build_sample_plan(normalized, matches),
+    }
+
+
+def _backend_evaluation_contract():
+    return {"contract_digest": "test-contract"}
 
 
 def test_national_primary_profile_selects_national_protocol():
@@ -182,6 +210,25 @@ def test_daemon_defaults_to_native_national_rating_backend(monkeypatch):
     assert result == ("A", "B", 1, 0, 0, 1, None, [100])
     assert calls["national"][4]["protocol"] == "national"
     assert calls["national"][4]["national_execution_mode"] == "native_tcp"
+
+
+def test_daemon_does_not_nest_capacity_around_native_runner(monkeypatch):
+    monkeypatch.delenv("POK_WORKFLOW_PROFILE", raising=False)
+    monkeypatch.delenv("POK_RATING_PROTOCOL", raising=False)
+
+    def forbidden_outer_lease(*_args, **_kwargs):
+        raise AssertionError("native runner must own the only capacity lease")
+
+    monkeypatch.setattr(runtime_capacity, "acquire_match_slots", forbidden_outer_lease)
+    monkeypatch.setattr(
+        elo_daemon,
+        "_run_national_rating_match",
+        lambda a, b, *_args: (a, b, 1, 0, 0, 1, None, [100]),
+    )
+
+    result = elo_daemon.run_single_match(("A", "B", "/a", "/b", 1))
+
+    assert result[:6] == ("A", "B", 1, 0, 0, 1)
 
 
 def test_daemon_native_rating_requires_existing_native_entries_for_both_players(monkeypatch):
@@ -349,6 +396,7 @@ def test_tool_eval_national_backend_returns_precommit_shape(tmp_path, monkeypatc
     monkeypatch.setattr(tool_eval, "_record_gate", fake_record_gate)
     monkeypatch.setattr(tool_eval, "append_candidate_event", None)
 
+    opponents = [{"name": "CallB", "path": str(bot_b), "reason": "parent"}]
     wrapped = asyncio.run(tool_eval._run_national_precommit_backend(
         v=10,
         source_v=9,
@@ -359,11 +407,13 @@ def test_tool_eval_national_backend_returns_precommit_shape(tmp_path, monkeypatc
         code_fingerprint="abc",
         workflow_profile=profile,
         candidate_id="CallA_from_9",
-        opponents=[{"name": "CallB", "path": str(bot_b), "reason": "parent"}],
+        opponents=opponents,
         all_opponents=[{"name": "CallB", "reason": "parent"}],
         precommit_attempt=1,
         initial_blockers=[],
         started_at=0.0,
+        precommit_plan=_backend_plan(opponents),
+        evaluation_contract=_backend_evaluation_contract(),
     ))
     result = json.loads(wrapped["content"][0]["text"])
 
@@ -386,22 +436,35 @@ def test_tool_eval_native_precommit_uses_official_compliance_defaults(tmp_path, 
     profile.national_precommit_hands = 2
 
     calls = []
+    native_calls = []
 
     async def fake_native_precommit(*args, **kwargs):
+        native_calls.append(kwargs)
+        repeats = [
+            {
+                "repeat": row["repeat"],
+                "deck_seed_base": row["deck_seed_base"],
+                "bot_seed_base": row["bot_seed_base"],
+            }
+            for row in kwargs["sample_plan"]
+        ]
         return {
             "evaluation_protocol": "national_native_tcp",
             "candidate": "CallA",
             "opponents": [{"name": "CallB", "path": str(bot_b), "reason": "parent"}],
-            "matchups": [],
+            "matchups": [{"opponent": "CallB", "repeats": repeats}],
             "total_wins": 1,
             "total_losses": 0,
             "total_draws": 0,
             "paired_bootstrap": {
                 "protocol": "national_native_tcp",
                 "hands_per_match": 2,
-                "matches_per_opponent": 1,
-                "net_chips_samples": 1,
+                "matches_per_opponent": 8,
+                "net_chips_samples": 8,
                 "net_chips_mean": 100.0,
+                "aggregate_ci_lower": 25.0,
+                "aggregate_ci_upper": 175.0,
+                "gate_degraded": False,
             },
             "blockers": [],
             "passed": True,
@@ -410,6 +473,7 @@ def test_tool_eval_native_precommit_uses_official_compliance_defaults(tmp_path, 
     fake_national_native = ModuleType("national_native")
     fake_national_native.run_native_precommit = fake_native_precommit
     fake_official_certification = ModuleType("official_certification")
+    fake_official_job = ModuleType("official_certification_job")
     fake_official_certification.STATUS_COMPLIANCE_PASS = "official-compliance-pass"
     fake_official_certification.STATUS_CERTIFIED = "official-certified"
     fake_official_certification.STATUS_FAILED = "official-failed"
@@ -452,23 +516,43 @@ def test_tool_eval_native_precommit_uses_official_compliance_defaults(tmp_path, 
             "classification": "passed_or_pending",
         }
 
+    def fake_select_official_opponent(candidate, active_bots, **_kwargs):
+        return {
+            "selected": True,
+            "candidate": str(candidate),
+            "opponent": {
+                "bot": bot_b.name,
+                "path": str(bot_b),
+                "eligible": True,
+                "reason": "official_certified",
+            },
+            "considered": [],
+        }
+
     fake_official_certification.build_spec = fake_build_spec
     fake_official_certification.read_status = fake_read_status
     fake_official_certification.enqueue_certification = fake_enqueue_certification
     fake_official_certification.official_compliance_verdict = fake_official_compliance_verdict
+    fake_official_certification.select_official_opponent = fake_select_official_opponent
+    fake_official_job.start_or_poll_job = lambda _spec, **_kwargs: {
+        "state": "queued",
+        "pending": True,
+        "job_id": "official-job-test",
+        "issues": [],
+    }
 
     monkeypatch.setenv("POK_OFFICIAL_REQUIRED", "1")
     monkeypatch.setenv("POK_OFFICIAL_OPPONENT", str(bot_b))
-    monkeypatch.setenv("POK_OFFICIAL_SELF_PLAY_ROUNDS", "5")
-    monkeypatch.setenv("POK_OFFICIAL_OPPONENT_ROUNDS", "3")
     monkeypatch.delenv("POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS", raising=False)
     monkeypatch.delenv("POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS", raising=False)
     monkeypatch.delenv("POK_OFFICIAL_PRECOMMIT_TARGET_HANDS", raising=False)
     monkeypatch.setitem(sys.modules, "national_native", fake_national_native)
     monkeypatch.setitem(sys.modules, "official_certification", fake_official_certification)
+    monkeypatch.setitem(sys.modules, "official_certification_job", fake_official_job)
     monkeypatch.setattr(tool_eval, "_record_gate", lambda *args, **kwargs: True)
     monkeypatch.setattr(tool_eval, "append_candidate_event", None)
 
+    opponents = [{"name": "CallB", "path": str(bot_b), "reason": "parent"}]
     wrapped = asyncio.run(tool_eval._run_national_precommit_backend(
         v=10,
         source_v=9,
@@ -479,15 +563,18 @@ def test_tool_eval_native_precommit_uses_official_compliance_defaults(tmp_path, 
         code_fingerprint="abc",
         workflow_profile=profile,
         candidate_id="CallA_from_9",
-        opponents=[{"name": "CallB", "path": str(bot_b), "reason": "parent"}],
+        opponents=opponents,
         all_opponents=[{"name": "CallB", "reason": "parent"}],
         precommit_attempt=1,
         initial_blockers=[],
         started_at=0.0,
+        precommit_plan=_backend_plan(opponents),
+        evaluation_contract=_backend_evaluation_contract(),
     ))
     result = json.loads(wrapped["content"][0]["text"])
 
     assert calls == [("compliance", str(bot_a), str(bot_b), 1, 1, 10)]
+    assert native_calls[0]["matches_per_opponent"] == 8
     assert result["passed"] is True
     assert result["official_platform"]["status"] == "official-pending"
     assert result["official_platform"]["mode"] == "compliance"
@@ -539,6 +626,8 @@ def test_tool_eval_national_backend_blocks_without_samples(tmp_path, monkeypatch
         precommit_attempt=1,
         initial_blockers=[],
         started_at=0.0,
+        precommit_plan=_backend_plan([], hands=2, matches=8),
+        evaluation_contract=_backend_evaluation_contract(),
     ))
     result = json.loads(wrapped["content"][0]["text"])
 

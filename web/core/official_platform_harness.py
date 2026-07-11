@@ -14,7 +14,7 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,6 +29,18 @@ import time
 from typing import Any, Callable
 
 from pipeline_schema import NationalAcceptanceResult
+from official_attribution import round_topology
+from official_bot_sandbox import (
+    SealedBotArtifact,
+    build_sandboxed_bot_command,
+    seal_bot_artifact,
+)
+from official_execution_profile import (
+    execution_profile_identity,
+    validate_execution_profile,
+)
+from blocking_runtime import run_blocking_isolated
+from official_platform_resource import acquire_official_platform
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -113,10 +125,13 @@ class BotLaunchConfig:
     path: Path
     name: str
     seat: str = "auto"
+    role: str = ""
+    instance_id: str = ""
     python: str = sys.executable
     supports_log: bool = True
     supports_seat: bool = True
     extra_args: tuple[str, ...] = ()
+    sealed_artifact: SealedBotArtifact | None = None
 
 
 @dataclass
@@ -293,7 +308,11 @@ def summarize_round_logs(log_a: Path, log_b: Path) -> dict[str, Any]:
     }
 
 
-def check_environment(config: OfficialPlatformConfig | None = None) -> dict[str, Any]:
+def check_environment(
+    config: OfficialPlatformConfig | None = None,
+    *,
+    require_formal_sandbox: bool = False,
+) -> dict[str, Any]:
     cfg = config or OfficialPlatformConfig()
     required = ("wine", "Xvfb", "xdotool")
     missing = [tool for tool in required if not shutil.which(tool)]
@@ -311,11 +330,19 @@ def check_environment(config: OfficialPlatformConfig | None = None) -> dict[str,
         warnings.append(f"optional_tools_missing: {', '.join(optional_missing)}")
     if not font_file.exists():
         warnings.append("source_han_chinese_font_not_found_in_wineprefix")
+    execution_profile = None
+    if require_formal_sandbox:
+        execution_profile = validate_execution_profile(
+            cfg.exe_path,
+            probe_sandbox=True,
+        )
+        issues.extend(execution_profile.get("issues") or [])
     return {
         "ok": not issues,
         "issues": issues,
         "warnings": warnings,
         "config": _jsonable(cfg),
+        "execution_profile": execution_profile,
     }
 
 
@@ -353,6 +380,7 @@ def _popen(
     stdout,
     stderr,
 ) -> subprocess.Popen:
+    managed_group = env.get("POK_OFFICIAL_JOB_PROCESS_GROUP") == "1"
     return subprocess.Popen(
         cmd,
         cwd=str(cwd) if cwd is not None else None,
@@ -360,30 +388,40 @@ def _popen(
         stdout=stdout,
         stderr=stderr,
         text=False,
-        start_new_session=True,
+        # Durable certification jobs own one outer process group so cancellation
+        # can reap Wine, Xvfb and both bots together. Standalone/manual rounds
+        # retain their per-child groups for the existing cleanup path.
+        start_new_session=not managed_group,
     )
 
 
 def _terminate_process(proc: subprocess.Popen | None, *, grace_sec: float = 3.0) -> None:
     if proc is None or proc.poll() is not None:
         return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    except Exception:
+    managed_group = os.environ.get("POK_OFFICIAL_JOB_PROCESS_GROUP") == "1"
+    if managed_group:
         proc.terminate()
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except Exception:
+            proc.terminate()
     try:
         proc.wait(timeout=grace_sec)
         return
     except subprocess.TimeoutExpired:
         pass
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
-    except Exception:
+    if managed_group:
         proc.kill()
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except Exception:
+            proc.kill()
     try:
         proc.wait(timeout=grace_sec)
     except subprocess.TimeoutExpired:
@@ -548,9 +586,28 @@ def _launch_bot(
     entry = resolve_bot_entry(bot.path)
     stdout = stdout_path.open("wb")
     stderr = stderr_path.open("wb")
-    cmd = build_bot_command(bot, host=config.host, port=config.port if port is None else int(port), log_path=log_path)
-    cwd = entry.parent
-    proc = _popen(cmd, cwd=cwd, env=env, stdout=stdout, stderr=stderr)
+    if bot.sealed_artifact is not None:
+        cmd, bot_env = build_sandboxed_bot_command(
+            bot.sealed_artifact,
+            host=config.host,
+            port=config.port if port is None else int(port),
+            name=bot.name,
+            seat=bot.seat if bot.supports_seat else None,
+            log_path=log_path,
+            supports_log=bot.supports_log,
+            extra_args=bot.extra_args,
+        )
+        cwd = None
+    else:
+        cmd = build_bot_command(
+            bot,
+            host=config.host,
+            port=config.port if port is None else int(port),
+            log_path=log_path,
+        )
+        cwd = entry.parent
+        bot_env = env
+    proc = _popen(cmd, cwd=cwd, env=bot_env, stdout=stdout, stderr=stderr)
     proc._pok_stdout = stdout  # type: ignore[attr-defined]
     proc._pok_stderr = stderr  # type: ignore[attr-defined]
     return proc
@@ -575,7 +632,11 @@ def _read_issue_file(path: Path, patterns: tuple[str, ...] = CRITICAL_LOG_PATTER
     issues = []
     for line in text.splitlines():
         lower_line = line.lower()
-        if any(pattern.lower() in lower_line for pattern in patterns):
+        terminal_exception = re.match(
+            r"^\s*[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\s*:",
+            line,
+        )
+        if any(pattern.lower() in lower_line for pattern in patterns) or terminal_exception:
             issues.append(f"{path.name}: {line[:300]}")
     return issues
 
@@ -609,6 +670,9 @@ class OfficialWireCapture:
         self.issues: list[str] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._stop_requested = threading.Event()
+        self._startup_error = ""
 
     @property
     def wire_events_path(self) -> Path:
@@ -630,15 +694,19 @@ class OfficialWireCapture:
                 platform_port=self.config.port,
                 recorder=self.recorder,
             )
-            self._loop = asyncio.new_event_loop()
+            self._ready.clear()
+            self._stop_requested.clear()
+            self._startup_error = ""
             self._thread = threading.Thread(
                 target=self._run_loop,
                 name="official-wire-probe",
                 daemon=True,
             )
             self._thread.start()
-            future = asyncio.run_coroutine_threadsafe(self.proxy.start(self.config.host), self._loop)
-            self.proxy_ports = dict(future.result(timeout=8.0))
+            if not self._ready.wait(timeout=8.0):
+                raise TimeoutError("wire probe event loop startup timed out")
+            if self._startup_error:
+                raise RuntimeError(self._startup_error)
             return self.proxy_ports
         except Exception as exc:
             self.issues.append(f"wire_probe_start_error: {type(exc).__name__}: {str(exc)[:300]}")
@@ -646,9 +714,43 @@ class OfficialWireCapture:
             return {}
 
     def _run_loop(self) -> None:
-        assert self._loop is not None
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+
+        async def lifecycle() -> None:
+            assert self.proxy is not None
+            try:
+                self.proxy_ports = dict(await self.proxy.start(self.config.host))
+            except Exception as exc:
+                self._startup_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+                try:
+                    await self.proxy.stop()
+                except Exception:
+                    pass
+                return
+            finally:
+                self._ready.set()
+            while not self._stop_requested.is_set():
+                await asyncio.sleep(0.05)
+            await self.proxy.stop()
+
+        try:
+            loop.run_until_complete(lifecycle())
+        except Exception as exc:
+            if not self._ready.is_set():
+                self._startup_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+            else:
+                self.issues.append(
+                    f"wire_probe_loop_error: {type(exc).__name__}: {str(exc)[:300]}"
+                )
+        finally:
+            self._ready.set()
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            loop.close()
 
     def summary(self) -> dict[str, Any]:
         if not self.enabled or self.recorder is None:
@@ -673,27 +775,14 @@ class OfficialWireCapture:
         return summary
 
     def stop(self) -> None:
-        if self.proxy is not None and self._loop is not None and self._loop.is_running():
-            try:
-                future = asyncio.run_coroutine_threadsafe(self.proxy.stop(), self._loop)
-                future.result(timeout=5.0)
-            except Exception as exc:
-                self.issues.append(f"wire_probe_stop_error: {type(exc).__name__}: {str(exc)[:300]}")
+        self._stop_requested.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+            if self._thread.is_alive():
+                self.issues.append("wire_probe_stop_error: event loop thread did not stop")
         if self.recorder is not None:
             try:
                 self.recorder.close()
-            except Exception:
-                pass
-        if self._loop is not None:
-            try:
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            except Exception:
-                pass
-        if self._thread is not None:
-            self._thread.join(timeout=5.0)
-        if self._loop is not None:
-            try:
-                self._loop.close()
             except Exception:
                 pass
         self._loop = None
@@ -762,26 +851,12 @@ def _copy_config(cfg: OfficialPlatformConfig, **overrides: Any) -> OfficialPlatf
 
 @contextmanager
 def _official_platform_lock(config: OfficialPlatformConfig):
-    config.lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with config.lock_path.open("w", encoding="utf-8") as lock_fp:
-        deadline = time.time() + max(0.0, config.lock_timeout_sec)
-        while True:
-            try:
-                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                lock_fp.write(f"pid={os.getpid()} acquired_at={datetime.now().isoformat(timespec='seconds')}\n")
-                lock_fp.flush()
-                break
-            except BlockingIOError as exc:
-                if time.time() >= deadline:
-                    raise TimeoutError(
-                        f"official_platform_lock_timeout: {config.lock_path} "
-                        f"after {config.lock_timeout_sec:g}s"
-                    ) from exc
-                time.sleep(0.5)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+    with acquire_official_platform(
+        config.lock_path,
+        owner="official-exe-suite",
+        timeout=config.lock_timeout_sec,
+    ):
+        yield
 
 
 def _platform_thp_dirs(exe_path: Path) -> list[Path]:
@@ -886,6 +961,7 @@ def _summarize_thp_files(paths: list[str]) -> list[dict[str, Any]]:
             try:
                 raw = path.read_bytes()
                 summary["bytes"] = len(raw)
+                summary["sha256"] = hashlib.sha256(raw).hexdigest()
                 text = raw.decode("gb2312", errors="replace")
                 summary["hand_records"] = len(THP_HAND_RE.findall(text))
             except OSError as exc:
@@ -894,6 +970,59 @@ def _summarize_thp_files(paths: list[str]) -> list[dict[str, Any]]:
                 summary["issue"] = f"thp_parse_error: {type(exc).__name__}: {exc}"
         summaries.append(summary)
     return summaries
+
+
+def _canonical_thp_evidence(
+    summaries: list[dict[str, Any]],
+    *,
+    expected_hands: int,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Select one content identity and require an exact official match length."""
+    issues: list[str] = []
+    readable = [
+        item
+        for item in summaries
+        if isinstance(item, dict)
+        and item.get("exists") is True
+        and not item.get("issue")
+    ]
+    if not readable:
+        return None, ["thp_missing_for_full_70_hand_round"]
+    if any(not item.get("sha256") for item in readable):
+        issues.append("thp_digest_missing")
+    content_digests = {
+        str(item.get("sha256"))
+        for item in readable
+        if item.get("sha256")
+    }
+    if len(content_digests) != 1:
+        issues.append(
+            "thp_ambiguous_multiple_outputs: "
+            f"files={len(readable)} unique_contents={len(content_digests)}"
+        )
+        return None, issues
+    selected = min(readable, key=lambda item: str(item.get("path") or ""))
+    try:
+        hand_records = int(selected.get("hand_records", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        hand_records = 0
+    if hand_records != expected_hands:
+        issues.append(
+            "thp_hand_count_mismatch: "
+            f"hands={hand_records} expected={expected_hands}"
+        )
+    canonical = {
+        "path": str(selected.get("path") or ""),
+        "sha256": str(selected.get("sha256") or ""),
+        "bytes": int(selected.get("bytes", 0) or 0),
+        "hand_records": hand_records,
+        "duplicate_paths": sorted(
+            str(item.get("path") or "")
+            for item in readable
+            if item is not selected
+        ),
+    }
+    return canonical, issues
 
 
 def run_official_round(
@@ -905,11 +1034,16 @@ def run_official_round(
     round_index: int = 1,
     config: OfficialPlatformConfig | None = None,
     out_dir: Path | None = None,
+    job_envelope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one official-platform round and return an evidence receipt."""
     cfg = config or OfficialPlatformConfig()
     target_hands = max(1, min(70, int(target_hands)))
-    environment = check_environment(cfg)
+    formal_sandbox = bot_a.sealed_artifact is not None or bot_b.sealed_artifact is not None
+    environment = check_environment(
+        cfg,
+        require_formal_sandbox=formal_sandbox,
+    )
     started_at = time.time()
     round_id = f"{round_kind}_{round_index:02d}_{_now_id()}"
     round_dir = (out_dir or (cfg.results_dir / round_id)).resolve()
@@ -928,7 +1062,27 @@ def run_official_round(
         "artifacts": {},
         "issues": [],
         "passed": False,
+        "job_envelope": job_envelope,
+        "formal_execution": {
+            "sandboxed": formal_sandbox,
+            **execution_profile_identity(),
+            "bot_a_artifact_hash": (
+                bot_a.sealed_artifact.artifact_hash
+                if bot_a.sealed_artifact is not None
+                else None
+            ),
+            "bot_b_artifact_hash": (
+                bot_b.sealed_artifact.artifact_hash
+                if bot_b.sealed_artifact is not None
+                else None
+            ),
+        },
     }
+    if job_envelope is not None:
+        from official_job_envelope import job_envelope_issues
+
+        receipt["issues"].extend(job_envelope_issues(job_envelope))
+    receipt["topology"] = round_topology(receipt)
     if not environment["ok"]:
         receipt["issues"].extend(environment["issues"])
         _write_json(round_dir / "receipt.json", receipt)
@@ -1051,15 +1205,46 @@ def run_official_round(
                 if wire_issues:
                     receipt["issues"].extend(wire_issues)
                     break
-                if bot_a_proc.poll() is not None and not _target_reached(summary, target_hands):
-                    receipt["issues"].append(f"{bot_a.name}_exited_early: rc={bot_a_proc.returncode}")
-                    break
-                if bot_b_proc.poll() is not None and not _target_reached(summary, target_hands):
-                    receipt["issues"].append(f"{bot_b.name}_exited_early: rc={bot_b_proc.returncode}")
-                    break
-                if wine_proc.poll() is not None and not _target_reached(summary, target_hands):
-                    receipt["issues"].append(f"platform_exited_early: rc={wine_proc.returncode}")
-                    break
+                if not _target_reached(summary, target_hands):
+                    # Observe all processes in one poll and attribute the EXE
+                    # first. A normal bot exit after the platform closes its
+                    # sockets must not be rewritten as a candidate crash.
+                    platform_rc = wine_proc.poll()
+                    bot_a_rc = bot_a_proc.poll()
+                    bot_b_rc = bot_b_proc.poll()
+                    if platform_rc is not None:
+                        receipt["observed_exit"] = {
+                            "subject_domain": "platform",
+                            "subject_instance_id": "official_exe",
+                            "returncode": platform_rc,
+                            "observed_at": datetime.now().isoformat(timespec="milliseconds"),
+                            "bot_a_returncode": bot_a_rc,
+                            "bot_b_returncode": bot_b_rc,
+                        }
+                        receipt["issues"].append(f"platform_exited_early: rc={platform_rc}")
+                        break
+                    if bot_a_rc is not None:
+                        subject = receipt["topology"]["connections"]["A"]
+                        receipt["observed_exit"] = {
+                            "subject_domain": subject["role"],
+                            "subject_instance_id": subject["instance_id"],
+                            "connection": "A",
+                            "returncode": bot_a_rc,
+                            "observed_at": datetime.now().isoformat(timespec="milliseconds"),
+                        }
+                        receipt["issues"].append(f"{bot_a.name}_exited_early: rc={bot_a_rc}")
+                        break
+                    if bot_b_rc is not None:
+                        subject = receipt["topology"]["connections"]["B"]
+                        receipt["observed_exit"] = {
+                            "subject_domain": subject["role"],
+                            "subject_instance_id": subject["instance_id"],
+                            "connection": "B",
+                            "returncode": bot_b_rc,
+                            "observed_at": datetime.now().isoformat(timespec="milliseconds"),
+                        }
+                        receipt["issues"].append(f"{bot_b.name}_exited_early: rc={bot_b_rc}")
+                        break
                 if _combined_target_reached(summary, wire_summary, target_hands):
                     if target_reached_at is None:
                         target_reached_at = time.time()
@@ -1136,12 +1321,13 @@ def run_official_round(
         wait_sec=artifact_wait_sec,
     )
     thp_summaries = _summarize_thp_files(thp_artifacts)
+    canonical_thp: dict[str, Any] | None = None
     if target_hands >= 70:
-        max_thp_hands = max((int(item.get("hand_records", 0) or 0) for item in thp_summaries), default=0)
-        if not thp_artifacts:
-            receipt["issues"].append("thp_missing_for_full_70_hand_round")
-        elif max_thp_hands < target_hands:
-            receipt["issues"].append(f"thp_incomplete_for_full_round: hands={max_thp_hands} target={target_hands}")
+        canonical_thp, thp_issues = _canonical_thp_evidence(
+            thp_summaries,
+            expected_hands=target_hands,
+        )
+        receipt["issues"].extend(thp_issues)
 
     receipt["duration_sec"] = round(time.time() - started_at, 2)
     receipt["bot_returncodes"] = {
@@ -1163,6 +1349,7 @@ def run_official_round(
         "platform_thp_dirs": [str(path) for path in platform_thp_dirs],
         "thp_files": thp_artifacts,
         "thp_summaries": thp_summaries,
+        "canonical_thp": canonical_thp,
     }
     if wire_capture.enabled:
         receipt["artifacts"]["wire_events"] = str(wire_capture.wire_events_path)
@@ -1191,6 +1378,139 @@ def run_official_round(
 
 
 RoundRunner = Callable[..., dict[str, Any]]
+_PRODUCTION_ROUND_RUNNER = run_official_round
+
+
+def _same_launch_path(actual: Any, expected: Path) -> bool:
+    try:
+        return Path(str(actual)).expanduser().resolve() == expected.resolve()
+    except Exception:
+        return False
+
+
+def _load_reusable_round(
+    round_dir: Path,
+    bot_a: BotLaunchConfig,
+    bot_b: BotLaunchConfig,
+    *,
+    target_hands: int,
+    round_kind: str,
+    round_index: int,
+    job_envelope: dict[str, Any] | None = None,
+    allow_passed_receipt: bool = True,
+) -> dict[str, Any] | None:
+    """Return an identity-bound terminal receipt that is safe to resume from.
+
+    A worker restart is process recovery, not a semantic retry. Completed failed
+    or inconclusive rounds must remain in the same suite; otherwise retaining
+    successful rounds while rerunning failed ones would cherry-pick a pass.
+    Explicit terminal retries use a new suite attempt and rerun all rounds.
+    """
+    path = round_dir / "receipt.json"
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    if (
+        receipt.get("duration_sec") is None
+        or receipt.get("round_kind") != round_kind
+        or int(receipt.get("round_index", 0) or 0) != round_index
+        or int(receipt.get("target_hands", 0) or 0) != target_hands
+    ):
+        return None
+    if receipt.get("job_envelope") != job_envelope:
+        return None
+    actual_a = receipt.get("bot_a") if isinstance(receipt.get("bot_a"), dict) else {}
+    actual_b = receipt.get("bot_b") if isinstance(receipt.get("bot_b"), dict) else {}
+    if not _same_launch_path(actual_a.get("path"), bot_a.path):
+        return None
+    if not _same_launch_path(actual_b.get("path"), bot_b.path):
+        return None
+    if actual_a.get("role") != bot_a.role or actual_b.get("role") != bot_b.role:
+        return None
+    if receipt.get("passed") is not True:
+        return receipt
+    # A formal pass cannot inherit authority from JSON writable by the same
+    # operator account. Formal jobs rerun passed slots; only a retained failure
+    # may be reused because it can deny certification but cannot create a pass.
+    if not allow_passed_receipt:
+        return None
+    if receipt.get("issues"):
+        return None
+    if not _target_reached(receipt.get("log_summary") or {}, target_hands):
+        return None
+    artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
+    required = (
+        "receipt",
+        "platform_log",
+        "bot_a_log",
+        "bot_b_log",
+        "bot_a_stdout",
+        "bot_a_stderr",
+        "bot_b_stdout",
+        "bot_b_stderr",
+    )
+    try:
+        if any(
+            not Path(str(artifacts.get(key) or "")).is_file()
+            or Path(str(artifacts.get(key) or "")).is_symlink()
+            for key in required
+        ):
+            return None
+    except Exception:
+        return None
+    if target_hands >= 70:
+        canonical = artifacts.get("canonical_thp")
+        if not isinstance(canonical, dict):
+            return None
+        try:
+            if int(canonical.get("hand_records", 0) or 0) != target_hands:
+                return None
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if len(str(canonical.get("sha256") or "")) != 64:
+            return None
+    return receipt
+
+
+def _fresh_formal_execution_dir(round_slot: Path) -> Path:
+    execution_dir = round_slot / "executions" / f"run_{time.time_ns()}_{os.getpid()}"
+    execution_dir.mkdir(parents=True, exist_ok=False)
+    return execution_dir
+
+
+def _record_formal_slot_receipt(round_slot: Path, receipt: dict[str, Any]) -> None:
+    round_slot.mkdir(parents=True, exist_ok=True)
+    _write_json(round_slot / "receipt.json", receipt)
+
+
+def _write_suite_progress(
+    suite_dir: Path,
+    *,
+    rounds: list[dict[str, Any]],
+    rounds_requested: int,
+    resumed_rounds: int,
+) -> None:
+    _write_json(suite_dir / "progress.json", {
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "rounds_requested": rounds_requested,
+        "rounds_completed": len(rounds),
+        "rounds_passed": sum(1 for item in rounds if item.get("passed")),
+        "resumed_rounds": resumed_rounds,
+        "latest_round": (
+            {
+                "round_kind": rounds[-1].get("round_kind"),
+                "round_index": rounds[-1].get("round_index"),
+                "passed": rounds[-1].get("passed"),
+            }
+            if rounds
+            else None
+        ),
+    })
 
 
 def run_official_acceptance_sync(
@@ -1202,7 +1522,9 @@ def run_official_acceptance_sync(
     target_hands: int = 70,
     config: OfficialPlatformConfig | None = None,
     results_dir: Path | None = None,
+    suite_dir: Path | None = None,
     round_runner: RoundRunner = run_official_round,
+    job_envelope: dict[str, Any] | None = None,
 ) -> NationalAcceptanceResult:
     """Run official EXE compliance rounds.
 
@@ -1214,7 +1536,11 @@ def run_official_acceptance_sync(
     cfg = config or OfficialPlatformConfig()
     if results_dir is not None:
         cfg = _copy_config(cfg, results_dir=Path(results_dir))
-    suite_dir = cfg.results_dir / f"acceptance_{_now_id()}"
+    suite_dir = (
+        Path(suite_dir).expanduser().resolve()
+        if suite_dir is not None
+        else cfg.results_dir / f"acceptance_{_now_id()}"
+    )
     suite_dir.mkdir(parents=True, exist_ok=True)
     candidate_path = Path(candidate).expanduser().resolve()
     opponent_path = Path(opponent).expanduser().resolve() if opponent else None
@@ -1223,21 +1549,98 @@ def run_official_acceptance_sync(
     target_hands = max(1, min(70, int(target_hands)))
     issues: list[str] = []
     rounds: list[dict[str, Any]] = []
+    resumed_rounds = 0
+    rounds_requested = self_play_rounds + opponent_rounds
+    candidate_sealed: SealedBotArtifact | None = None
+    opponent_sealed: SealedBotArtifact | None = None
+    formal_execution: dict[str, Any] | None = None
 
     try:
+        formal_requested = job_envelope is not None and target_hands == 70
+        formal_job = formal_requested and round_runner is _PRODUCTION_ROUND_RUNNER
+        if formal_requested and not formal_job:
+            raise RuntimeError("formal official job cannot replace the production round runner")
+        if formal_job:
+            formal_execution = validate_execution_profile(
+                cfg.exe_path,
+                probe_sandbox=True,
+            )
+            if not formal_execution.get("ok"):
+                raise RuntimeError(
+                    "official_formal_execution_unavailable: "
+                    + "; ".join(formal_execution.get("issues") or [])
+                )
+            candidate_sealed = seal_bot_artifact(
+                candidate_path,
+                suite_dir / "sealed_artifacts" / "candidate",
+                expected_hash=str(job_envelope.get("candidate_hash") or ""),
+            )
+            if opponent_path is not None:
+                opponent_sealed = seal_bot_artifact(
+                    opponent_path,
+                    suite_dir / "sealed_artifacts" / "opponent",
+                    expected_hash=str(job_envelope.get("opponent_hash") or ""),
+                )
         with _official_platform_lock(cfg):
             for index in range(1, self_play_rounds + 1):
                 round_dir = suite_dir / f"self_play_{index:02d}"
-                receipt = round_runner(
-                    BotLaunchConfig(candidate_path, name="BotA", seat="upper"),
-                    BotLaunchConfig(candidate_path, name="BotB", seat="lower"),
+                bot_a = BotLaunchConfig(
+                    candidate_path,
+                    name="BotA",
+                    seat="upper",
+                    role="candidate",
+                    instance_id="candidate_a",
+                    sealed_artifact=candidate_sealed,
+                )
+                bot_b = BotLaunchConfig(
+                    candidate_path,
+                    name="BotB",
+                    seat="lower",
+                    role="candidate",
+                    instance_id="candidate_b",
+                    sealed_artifact=candidate_sealed,
+                )
+                receipt = _load_reusable_round(
+                    round_dir,
+                    bot_a,
+                    bot_b,
                     target_hands=target_hands,
                     round_kind="self_play",
                     round_index=index,
-                    config=cfg,
-                    out_dir=round_dir,
+                    job_envelope=job_envelope,
+                    allow_passed_receipt=not formal_job,
                 )
+                if receipt is None:
+                    execution_dir = (
+                        _fresh_formal_execution_dir(round_dir)
+                        if formal_job
+                        else round_dir
+                    )
+                    round_kwargs = {
+                        "target_hands": target_hands,
+                        "round_kind": "self_play",
+                        "round_index": index,
+                        "config": cfg,
+                        "out_dir": execution_dir,
+                    }
+                    if job_envelope is not None:
+                        round_kwargs["job_envelope"] = job_envelope
+                    receipt = round_runner(
+                        bot_a,
+                        bot_b,
+                        **round_kwargs,
+                    )
+                    if formal_job:
+                        _record_formal_slot_receipt(round_dir, receipt)
+                else:
+                    resumed_rounds += 1
                 rounds.append(receipt)
+                _write_suite_progress(
+                    suite_dir,
+                    rounds=rounds,
+                    rounds_requested=rounds_requested,
+                    resumed_rounds=resumed_rounds,
+                )
                 if not receipt.get("passed"):
                     issues.extend(f"self_play_{index}: {issue}" for issue in receipt.get("issues", []) or ["failed"])
 
@@ -1247,16 +1650,66 @@ def run_official_acceptance_sync(
                 if opponent_path is None:
                     break
                 round_dir = suite_dir / f"opponent_{index:02d}"
-                receipt = round_runner(
-                    BotLaunchConfig(candidate_path, name="Candidate", seat="upper"),
-                    BotLaunchConfig(opponent_path, name="Opponent", seat="lower"),
+                candidate_first = index % 2 == 1
+                candidate_launch = BotLaunchConfig(
+                    candidate_path,
+                    name="Candidate",
+                    seat="upper" if candidate_first else "lower",
+                    role="candidate",
+                    instance_id="candidate",
+                    sealed_artifact=candidate_sealed,
+                )
+                opponent_launch = BotLaunchConfig(
+                    opponent_path,
+                    name="Opponent",
+                    seat="lower" if candidate_first else "upper",
+                    role="opponent",
+                    instance_id="opponent",
+                    sealed_artifact=opponent_sealed,
+                )
+                bot_a = candidate_launch if candidate_first else opponent_launch
+                bot_b = opponent_launch if candidate_first else candidate_launch
+                receipt = _load_reusable_round(
+                    round_dir,
+                    bot_a,
+                    bot_b,
                     target_hands=target_hands,
                     round_kind="opponent",
                     round_index=index,
-                    config=cfg,
-                    out_dir=round_dir,
+                    job_envelope=job_envelope,
+                    allow_passed_receipt=not formal_job,
                 )
+                if receipt is None:
+                    execution_dir = (
+                        _fresh_formal_execution_dir(round_dir)
+                        if formal_job
+                        else round_dir
+                    )
+                    round_kwargs = {
+                        "target_hands": target_hands,
+                        "round_kind": "opponent",
+                        "round_index": index,
+                        "config": cfg,
+                        "out_dir": execution_dir,
+                    }
+                    if job_envelope is not None:
+                        round_kwargs["job_envelope"] = job_envelope
+                    receipt = round_runner(
+                        bot_a,
+                        bot_b,
+                        **round_kwargs,
+                    )
+                    if formal_job:
+                        _record_formal_slot_receipt(round_dir, receipt)
+                else:
+                    resumed_rounds += 1
                 rounds.append(receipt)
+                _write_suite_progress(
+                    suite_dir,
+                    rounds=rounds,
+                    rounds_requested=rounds_requested,
+                    resumed_rounds=resumed_rounds,
+                )
                 if not receipt.get("passed"):
                     issues.extend(f"opponent_{index}: {issue}" for issue in receipt.get("issues", []) or ["failed"])
     except Exception as exc:
@@ -1264,6 +1717,19 @@ def run_official_acceptance_sync(
 
     passed_rounds = sum(1 for receipt in rounds if receipt.get("passed"))
     failed_rounds = len(rounds) - passed_rounds
+    from official_attribution import attribute_suite
+
+    attribution = attribute_suite(rounds)
+    suite_passed = not issues and len(rounds) == self_play_rounds + opponent_rounds
+    if suite_passed:
+        outcome = "passed"
+        failure_side = ""
+    elif attribution.get("candidate_blocking"):
+        outcome = "candidate_failure"
+        failure_side = "candidate"
+    else:
+        outcome = "infrastructure_failure"
+        failure_side = "official_platform_or_harness"
     summary = {
         "suite_dir": str(suite_dir),
         "self_play_rounds": self_play_rounds,
@@ -1273,7 +1739,10 @@ def run_official_acceptance_sync(
         "rounds_run": len(rounds),
         "passed_rounds": passed_rounds,
         "failed_rounds": failed_rounds,
+        "resumed_rounds": resumed_rounds,
         "official_platform": True,
+        "attribution": attribution,
+        "formal_execution": formal_execution,
     }
     report = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -1283,13 +1752,17 @@ def run_official_acceptance_sync(
         "summary": summary,
         "rounds": rounds,
         "issues": issues,
+        "job_envelope": job_envelope,
+        "formal_execution": formal_execution,
     }
     _write_json(suite_dir / "summary.json", report)
     return NationalAcceptanceResult(
         candidate=candidate_path.name,
         opponents=[opponent_path.name] if opponent_path else [],
         hands_per_pair=target_hands,
-        passed=not issues and len(rounds) == self_play_rounds + opponent_rounds,
+        passed=suite_passed,
+        outcome=outcome,
+        failure_side=failure_side,
         issues=issues[:20],
         summary=summary,
         matrix={},
@@ -1306,16 +1779,19 @@ async def run_official_acceptance(
     target_hands: int = 70,
     config: OfficialPlatformConfig | None = None,
     results_dir: Path | None = None,
+    job_envelope: dict[str, Any] | None = None,
 ) -> NationalAcceptanceResult:
-    return await asyncio.to_thread(
+    return await run_blocking_isolated(
         run_official_acceptance_sync,
         candidate,
+        thread_name_prefix="official-exe",
         opponent=opponent,
         self_play_rounds=self_play_rounds,
         opponent_rounds=opponent_rounds,
         target_hands=target_hands,
         config=config,
         results_dir=results_dir,
+        job_envelope=job_envelope,
     )
 
 

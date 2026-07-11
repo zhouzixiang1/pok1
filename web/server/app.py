@@ -19,10 +19,13 @@ sys.path.insert(0, str(WEB_DIR / "core"))
 from web_ui import EventBroadcaster, WebUI
 from server.state import app_state
 from system_log import set_ui as _set_system_log_ui
+from national_arena.manager import NationalArenaManager
+from blocking_runtime import run_blocking_isolated
 
 broadcaster = EventBroadcaster(buffer_size=500)
 web_ui = WebUI(broadcaster)
 _set_system_log_ui(web_ui)
+arena_manager = NationalArenaManager()
 
 from logging_config import configure_logging
 
@@ -43,37 +46,17 @@ async def lifespan(app: FastAPI):
     from shutdown_manager import ShutdownManager
     shutdown_mgr = ShutdownManager(grace_period=15.0)
     app_state.set_shutdown_mgr(shutdown_mgr)
+    await arena_manager.startup()
+    app.state.national_arena_manager = arena_manager
     try:
         from llm_query import set_shutdown_manager
         set_shutdown_manager(shutdown_mgr)
     except Exception:
         pass
 
-    if view_only:
-        web_ui.log_history("Dashboard started in view-only mode; evolution loop is not running.", "info")
-        yield
-        web_ui.log_history("Dashboard stopped.", "info")
-        return
+    orchestrator_owned = False
 
-    if not app_state.try_set_running(True):
-        web_ui.log_history("Orchestrator already running", "warn")
-        yield
-        return
-    try:
-        from orchestrator import orchestrator_loop
-        _task = asyncio.create_task(orchestrator_loop(
-            web_ui, shutdown_mgr=shutdown_mgr,
-            no_daemon=not daemon_enabled,
-            daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"]))
-        app_state.set_task(_task)
-        web_ui.log_history("🔥 Orchestrator started (LLM-driven mode)", "success")
-    except Exception:
-        app_state.set_running(False)
-        raise
-
-    yield
-
-    # On shutdown: stop orchestrator + daemon in parallel for fast exit
+    # On shutdown: stop orchestrator + daemon in parallel for fast exit.
     async def _stop_orchestrator():
         """Cancel orchestrator task with reduced timeout."""
         task = app_state.stop_running()
@@ -98,19 +81,57 @@ async def lifespan(app: FastAPI):
             pass
         try:
             from daemon_management import stop_daemon
-            await asyncio.to_thread(stop_daemon)
+            await run_blocking_isolated(
+                stop_daemon,
+                thread_name_prefix="daemon-shutdown",
+            )
         except Exception:
             pass
 
-    # Run both in parallel — total time = max(orchestrator, daemon), not sum
     try:
-        await asyncio.wait_for(
-            asyncio.gather(_stop_orchestrator(), _stop_daemon_async(), return_exceptions=True),
-            timeout=18  # 10+3 orchestrator + 5s margin, < pokctl.sh 30s budget
-        )
-    except (asyncio.CancelledError, asyncio.TimeoutError):
-        pass
-    web_ui.log_history("Evolution stopped.", "info")
+        if view_only:
+            web_ui.log_history(
+                "Dashboard started in view-only mode; evolution loop is not running.",
+                "info",
+            )
+        elif not app_state.try_set_running(True):
+            web_ui.log_history("Orchestrator already running", "warn")
+        else:
+            try:
+                from orchestrator import orchestrator_loop
+
+                task = asyncio.create_task(orchestrator_loop(
+                    web_ui,
+                    shutdown_mgr=shutdown_mgr,
+                    no_daemon=not daemon_enabled,
+                    daemon_workers=config["daemon_workers"],
+                    daemon_pairs=config["daemon_pairs"],
+                ))
+                app_state.set_task(task)
+                orchestrator_owned = True
+                web_ui.log_history("🔥 Orchestrator started (LLM-driven mode)", "success")
+            except Exception:
+                app_state.set_running(False)
+                raise
+        yield
+    finally:
+        if orchestrator_owned:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        _stop_orchestrator(),
+                        _stop_daemon_async(),
+                        return_exceptions=True,
+                    ),
+                    timeout=18,
+                )
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        await arena_manager.shutdown()
+        if view_only:
+            web_ui.log_history("Dashboard stopped.", "info")
+        elif orchestrator_owned:
+            web_ui.log_history("Evolution stopped.", "info")
 
 
 app = FastAPI(title="Poker Evolution Unified API", version="1.0", lifespan=lifespan)
@@ -135,6 +156,7 @@ from server.routes.pipeline import router as pipeline_router
 from server.routes.prompts import router as prompts_router
 from server.routes.data_stream import router as data_stream_router
 from server.routes.scheduler import router as scheduler_router
+from server.routes.national_arena import router as national_arena_router
 
 app.include_router(ratings_router)
 app.include_router(matches_router)
@@ -147,6 +169,7 @@ app.include_router(pipeline_router)
 app.include_router(prompts_router)
 app.include_router(data_stream_router)
 app.include_router(scheduler_router)
+app.include_router(national_arena_router)
 
 def _install_static_spa_routes(target_app: FastAPI, static_dir: Path) -> None:
     """Serve the built React app without swallowing unknown API/static paths."""

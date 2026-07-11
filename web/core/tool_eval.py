@@ -35,6 +35,7 @@ from tool_helpers import (
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
     _select_precommit_opponents, _bot_main, _resolve_version_args,
     _set_pipeline_status,
+    _prepare_official_profile_refresh,
 )
 from evolution_infra import write_pipeline_checkpoint, MAX_PRECOMMIT_RETRIES
 from system_log import log_system_event
@@ -43,6 +44,15 @@ from pipeline_schema import GateResult, ScoreCard
 from workflow_profiles import get_workflow_profile
 from failure_classification import INFRA_BLOCKER_REASONS, is_infra_blocker
 from pipeline_intents import make_intent
+from blocking_runtime import run_blocking_isolated
+from precommit_eval_contract import (
+    PrecommitEvalContractError,
+    build_evaluation_contract,
+    create_precommit_plan,
+    opponents_from_plan,
+    validate_evaluation_contract,
+    validate_precommit_plan,
+)
 
 try:
     from candidate_store import append_candidate_event
@@ -60,12 +70,10 @@ log = get_logger("tool_eval")
 _NONBLOCKING_REASONS = {"nemesis_probe", "psro_meta_opponent"}
 
 # H1 (2026-06-29): thread-safe shutdown flag for precommit-eval cancellation.
-# `loop.run_in_executor` submits mirror battles to the default ThreadPool; once
-# running, the executor Future cannot be cancelled and the in-thread subprocess
-# keeps spawning battles for up to per_game_timeout (observed: 49 stale battle
-# procs, 5h daemon stall after CYCLE_TIMEOUT). This Event is checked between
-# mirror games inside the drain functions (thread-safe `is_set()`) so an
-# orchestrator CYCLE_TIMEOUT can abort the in-flight precommit promptly.
+# Blocking mirror battles run in short-lived owned executors. A running Python
+# thread still cannot be force-cancelled and can keep spawning battles after an
+# outer timeout, so this Event is checked between mirror games to let an
+# orchestrator CYCLE_TIMEOUT abort the drain promptly.
 # Set by orchestrator via set_precommit_shutdown() on timeout/cancel.
 _PRECOMMIT_SHUTDOWN = threading.Event()
 
@@ -166,11 +174,154 @@ def _official_bot_token(value) -> str:
     return str(path)
 
 
+def _request_official_precommit_status(
+    *,
+    candidate,
+    self_play_rounds: int,
+    opponent_rounds: int,
+    target_hands: int,
+) -> dict:
+    """Queue compliance evidence without bypassing opponent eligibility."""
+    from official_certification import (
+        STATUS_INCONCLUSIVE,
+        STATUS_PENDING,
+        build_spec,
+        official_compliance_verdict,
+        select_official_opponent,
+    )
+    from official_certification_job import start_or_poll_job
+
+    candidate_token = _official_bot_token(candidate)
+    selection = None
+    opponent = None
+    if opponent_rounds > 0:
+        selection = select_official_opponent(
+            candidate_token,
+            get_active_bots(),
+            preferred=os.environ.get("POK_OFFICIAL_OPPONENT", "").strip() or None,
+            allow_bootstrap_grandfather=False,
+        )
+        if not selection.get("selected"):
+            return {
+                "status": STATUS_INCONCLUSIVE,
+                "mode": "compliance",
+                "passed": False,
+                "blocking": False,
+                "inconclusive": True,
+                "classification": "inconclusive",
+                "issues": ["official_precommit_no_eligible_opponent"],
+                "opponent_selection": selection,
+            }
+        opponent = selection["opponent"]["path"]
+
+    spec = build_spec(
+        "compliance",
+        candidate_token,
+        opponent=opponent,
+        self_play_rounds=self_play_rounds,
+        opponent_rounds=opponent_rounds,
+        target_hands=target_hands,
+    )
+    job = start_or_poll_job(spec, opponent_selection=selection)
+    status = (
+        job.get("status")
+        if job.get("state") == "completed" and isinstance(job.get("status"), dict)
+        else {
+            "status": STATUS_PENDING,
+            "mode": "compliance",
+            "pending": bool(job.get("pending")),
+            "queued": job.get("state") == "queued",
+            "issues": list(job.get("issues") or []),
+            "official_job": job,
+            "summary": {
+                "self_play_rounds": self_play_rounds,
+                "opponent_rounds": opponent_rounds,
+                "target_hands": target_hands,
+            },
+        }
+    )
+    verdict = official_compliance_verdict(status)
+    return {
+        **status,
+        "blocking": False,
+        "inconclusive": bool(verdict.get("inconclusive")),
+        "classification": verdict.get("classification"),
+        "opponent_selection": status.get("opponent_selection") or selection,
+        "request_opponent_selection": selection,
+        "official_job": job,
+    }
+
+
+def _national_sample_contract_blockers(
+    paired_bootstrap: dict,
+    *,
+    expected_samples: int,
+) -> list[dict]:
+    sample_count = int(paired_bootstrap.get("net_chips_samples", 0) or 0)
+    blockers: list[dict] = []
+    if sample_count > 0 and sample_count < expected_samples:
+        blockers.append({
+            "reason": "national_sample_shortfall",
+            "details": (
+                f"National precommit completed {sample_count}/{expected_samples} "
+                "required full-match samples."
+            ),
+        })
+    if sample_count >= 2 and (
+        paired_bootstrap.get("aggregate_ci_lower") is None
+        or paired_bootstrap.get("aggregate_ci_upper") is None
+    ):
+        blockers.append({
+            "reason": "national_confidence_interval_missing",
+            "details": "National precommit did not produce a paired bootstrap confidence interval.",
+        })
+    if sample_count >= 2 and paired_bootstrap.get("gate_degraded") is True:
+        blockers.append({
+            "reason": "national_confidence_gate_degraded",
+            "details": "National precommit reported a degraded statistical gate.",
+        })
+    return blockers
+
+
+def _national_precommit_shape(workflow_profile, sample_target: int) -> tuple[int, int]:
+    hands = int(os.environ.get(
+        "POK_NATIONAL_PRECOMMIT_HANDS",
+        str(getattr(workflow_profile, "national_precommit_hands", 70)),
+    ))
+    configured_matches = int(os.environ.get(
+        "POK_NATIONAL_PRECOMMIT_MATCHES",
+        str(getattr(workflow_profile, "national_precommit_matches", 1)),
+    ))
+    return (
+        max(1, min(70, hands)),
+        max(
+            2,
+            configured_matches,
+            min(PRECOMMIT_MAX_N_GAMES, max(PRECOMMIT_MIN_N_GAMES, sample_target)),
+        ),
+    )
+
+
+def _observed_native_sample_plan(result: dict) -> list[dict]:
+    rows: list[dict] = []
+    for opponent_index, matchup in enumerate(result.get("matchups") or []):
+        for repeat in matchup.get("repeats") or []:
+            rows.append({
+                "opponent": str(matchup.get("opponent") or ""),
+                "opponent_index": opponent_index,
+                "repeat": int(repeat.get("repeat") or 0),
+                "deck_seed_base": repeat.get("deck_seed_base"),
+                "bot_seed_base": repeat.get("bot_seed_base"),
+            })
+    return rows
+
+
 async def _run_national_precommit_backend(
     *,
     v: int,
     source_v: int,
     requested_n_games: int,
+    effective_n_games: int | None = None,
     candidate_name: str,
     parent_name: str,
     candidate_main,
@@ -182,6 +333,8 @@ async def _run_national_precommit_backend(
     precommit_attempt: int,
     initial_blockers: list,
     started_at: float,
+    precommit_plan: dict,
+    evaluation_contract: dict,
 ):
     """National-primary precommit implementation.
 
@@ -191,28 +344,25 @@ async def _run_national_precommit_backend(
     the match is run through native TCP bot clients; in national_primary it uses
     the legacy adapter backend.
     """
-    national_hands = int(os.environ.get(
-        "POK_NATIONAL_PRECOMMIT_HANDS",
-        str(getattr(workflow_profile, "national_precommit_hands", 70)),
-    ))
-    national_matches = int(os.environ.get(
-        "POK_NATIONAL_PRECOMMIT_MATCHES",
-        str(getattr(workflow_profile, "national_precommit_matches", 1)),
-    ))
-    national_hands = max(1, min(70, national_hands))
-    national_matches = max(1, national_matches)
+    settings = precommit_plan.get("settings") or {}
+    national_hands = int(settings.get("hands_per_match") or 0)
+    national_matches = int(settings.get("matches_per_opponent") or 0)
 
+    native_tcp_mode = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
     opponents_with_paths = []
     for item in opponents:
         copied = dict(item)
         try:
-            copied["path"] = str(_bot_main(item["name"]))
+            copied["path"] = str(
+                get_bot_dir(parse_bot_version(item["name"]))
+                if native_tcp_mode
+                else _bot_main(item["name"])
+            )
         except Exception:
             pass
         opponents_with_paths.append(copied)
 
     blockers = list(initial_blockers or [])
-    native_tcp_mode = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
     execution_protocol = "national_native_tcp" if native_tcp_mode else "national"
     if not blockers and opponents_with_paths:
         try:
@@ -224,6 +374,9 @@ async def _run_national_precommit_backend(
                     hands=national_hands,
                     matches_per_opponent=national_matches,
                     parent_label=parent_name,
+                    sample_plan=list(precommit_plan.get("sample_plan") or []),
+                    parent_loss_threshold=float(settings.get("parent_loss_threshold")),
+                    aggregate_loss_threshold=float(settings.get("aggregate_loss_threshold")),
                 )
             else:
                 from national_eval import run_national_precommit
@@ -236,6 +389,13 @@ async def _run_national_precommit_backend(
                     parent_label=parent_name,
                 )
             blockers.extend(national_result.get("blockers") or [])
+            if native_tcp_mode and _observed_native_sample_plan(national_result) != list(
+                precommit_plan.get("sample_plan") or []
+            ):
+                blockers.append({
+                    "reason": "native_precommit_sample_plan_mismatch",
+                    "details": "Native precommit did not execute the frozen deck/bot seed schedule.",
+                })
         except Exception as exc:
             national_result = {
                 "evaluation_protocol": execution_protocol,
@@ -288,47 +448,13 @@ async def _run_national_precommit_backend(
         official_self_rounds = max(0, _env_int("POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS", 1))
         official_opponent_rounds = max(0, _env_int("POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS", 1))
         official_hands = max(1, min(70, _env_int("POK_OFFICIAL_PRECOMMIT_TARGET_HANDS", 10)))
-        official_opponent = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
-        if not official_opponent and opponents_with_paths:
-            official_opponent = _official_bot_token(opponents_with_paths[0].get("path") or opponents_with_paths[0].get("name"))
         try:
-            from official_certification import (
-                STATUS_COMPLIANCE_PASS,
-                STATUS_CERTIFIED,
-                STATUS_FAILED,
-                STATUS_INCONCLUSIVE,
-                STATUS_PENDING,
-                build_spec,
-                enqueue_certification,
-                official_compliance_verdict,
-                read_status,
-            )
-            candidate_token = _official_bot_token(candidate_main)
-            _spec = build_spec(
-                "compliance",
-                candidate_token,
-                opponent=official_opponent or None,
+            official_platform_result = _request_official_precommit_status(
+                candidate=candidate_main,
                 self_play_rounds=official_self_rounds,
                 opponent_rounds=official_opponent_rounds,
                 target_hands=official_hands,
             )
-            current = read_status(candidate_token)
-            current_status = current.get("status")
-            current_mode = current.get("mode")
-            if (
-                current_status == STATUS_CERTIFIED
-                or current_status == STATUS_COMPLIANCE_PASS
-                or current_status == STATUS_FAILED
-                or current_status == STATUS_INCONCLUSIVE
-                or (current_status == STATUS_PENDING and current_mode in {"compliance", "full"})
-            ):
-                official_platform_result = current
-            else:
-                official_platform_result = enqueue_certification(_spec, reason="precommit_compliance")
-            official_platform_result.update({
-                "blocking": False,
-                "classification": official_compliance_verdict(official_platform_result).get("classification"),
-            })
             national_result["official_platform"] = official_platform_result
         except Exception as exc:
             official_platform_result = {
@@ -343,13 +469,33 @@ async def _run_national_precommit_backend(
     total_draws = int(national_result.get("total_draws", 0) or 0)
     matchups = list(national_result.get("matchups") or [])
     paired_bootstrap_payload = dict(national_result.get("paired_bootstrap") or {})
+    from strength_order import summarize_70_hand_net_chips
+
+    strength_samples = [
+        int(value)
+        for matchup in matchups
+        for value in (matchup.get("net_chips") or [])
+    ]
+    strength_order = summarize_70_hand_net_chips(strength_samples)
     sample_count = int(paired_bootstrap_payload.get("net_chips_samples", 0) or 0)
+    expected_samples = national_matches * len(opponents_with_paths)
     if sample_count <= 0 and not blockers:
         blockers.append({
             "reason": "national_no_samples",
             "details": "National precommit produced zero completed match samples.",
         })
-    passed = bool(national_result.get("passed")) and len(blockers) == 0 and sample_count > 0
+    blockers.extend(
+        _national_sample_contract_blockers(
+            paired_bootstrap_payload,
+            expected_samples=expected_samples,
+        )
+    )
+    passed = (
+        bool(national_result.get("passed"))
+        and len(blockers) == 0
+        and sample_count == expected_samples
+        and sample_count >= 2
+    )
 
     try:
         log_system_event(
@@ -384,6 +530,7 @@ async def _run_national_precommit_backend(
         "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
         "hands_per_match": national_hands,
         "matches_per_opponent": national_matches,
+        "expected_net_chips_samples": expected_samples,
         "opponents": all_opponents,
         "matchups": matchups,
         "total_wins": total_wins,
@@ -392,9 +539,16 @@ async def _run_national_precommit_backend(
         "passed": passed,
         "blockers": blockers,
         "paired_bootstrap": paired_bootstrap_payload,
+        "strength_order": strength_order,
+        "primary_70_hand_match_score": strength_order.get("primary_match_score"),
+        "secondary_net_chips_total": strength_order.get("secondary_net_chips_total"),
+        "secondary_net_chips_mean": strength_order.get("secondary_net_chips_mean"),
         "national": national_result,
         "official_platform": official_platform_result,
         "code_fingerprint": code_fingerprint,
+        "precommit_eval_plan": precommit_plan,
+        "precommit_eval_contract": evaluation_contract,
+        "precommit_eval_contract_digest": evaluation_contract.get("contract_digest"),
     }
 
     scorecard = ScoreCard(
@@ -409,6 +563,8 @@ async def _run_national_precommit_backend(
             "n_opponents": len(all_opponents),
             "hands_per_match": national_hands,
             "matches_per_opponent": national_matches,
+            "primary_70_hand_match_score": strength_order.get("primary_match_score"),
+            "secondary_net_chips_mean": strength_order.get("secondary_net_chips_mean"),
         },
     )
     scorecard.add(GateResult.from_bool(
@@ -732,16 +888,16 @@ def _admission_strength_blockers(
 class BattleSchedulerClient:
     """Async wrapper around the file-based battle_scheduler module.
 
-    All blocking file operations are run in the default executor so that
-    the event loop stays responsive.
+    Every blocking file operation owns a short-lived executor. Scheduler I/O
+    must never couple Web shutdown to the event loop's shared default executor.
     """
-
-    def __init__(self):
-        self._loop = asyncio.get_running_loop()
 
     async def is_available(self) -> bool:
         """Return True if the daemon was started with scheduler capability."""
-        return await self._loop.run_in_executor(None, is_daemon_scheduler_capable)
+        return await run_blocking_isolated(
+            is_daemon_scheduler_capable,
+            thread_name_prefix="pok-precommit-scheduler-capability",
+        )
 
     async def submit(self, jobs: list) -> list[str]:
         """Submit battle jobs to the scheduler queue.
@@ -749,8 +905,10 @@ class BattleSchedulerClient:
         Returns the list of job_ids that were accepted.
         """
         import battle_scheduler
-        return await self._loop.run_in_executor(
-            None, lambda: battle_scheduler.submit_jobs(jobs)
+        return await run_blocking_isolated(
+            battle_scheduler.submit_jobs,
+            jobs,
+            thread_name_prefix="pok-precommit-scheduler-submit",
         )
 
     async def collect(self, job_ids: list[str]) -> dict[str, dict]:
@@ -759,15 +917,19 @@ class BattleSchedulerClient:
         Returns a dict mapping job_id -> result dict.
         """
         import battle_scheduler
-        return await self._loop.run_in_executor(
-            None, lambda: battle_scheduler.collect_results(job_ids)
+        return await run_blocking_isolated(
+            battle_scheduler.collect_results,
+            job_ids,
+            thread_name_prefix="pok-precommit-scheduler-collect",
         )
 
     async def status(self, job_ids: list[str]) -> dict:
         """Peek scheduler queue state for the given job_ids without consuming results."""
         import battle_scheduler
-        return await self._loop.run_in_executor(
-            None, lambda: battle_scheduler.get_job_status(job_ids)
+        return await run_blocking_isolated(
+            battle_scheduler.get_job_status,
+            job_ids,
+            thread_name_prefix="pok-precommit-scheduler-status",
         )
 
 
@@ -975,30 +1137,9 @@ async def run_precommit_eval(args):
     requested = int(args.get("n_games", PRECOMMIT_DEFAULT_N_GAMES) or PRECOMMIT_DEFAULT_N_GAMES)
     n_games = min(max(PRECOMMIT_MIN_N_GAMES, requested), PRECOMMIT_MAX_N_GAMES)
 
-    # A4: infra-aware n_games auto-reduction. If the previous precommit attempt
-    # for this (v, source_v) timed out (infra blocker), halve n_games this
-    # attempt so the mirror battle fits within the per_game_timeout window.
-    # Floor at 4 so the paired-bootstrap CI still has >=4 observations. The
-    # MAX_PRECOMMIT_RETRIES hard cap still bounds total attempts.
-    _prev_ckpt_for_n = _matching_checkpoint(v, source_v)
-    if _prev_ckpt_for_n:
-        _prev_gate = _prev_ckpt_for_n.get("gate_results", {}).get("precommit_eval", {})
-        _prev_had_timeout = any(
-            _is_infra_blocker(b.get("reason"))
-            for b in (_prev_gate.get("blockers") or [])
-            if isinstance(b, dict)
-        )
-        if _prev_had_timeout and n_games > 4:
-            n_games = max(4, n_games // 2)
-            log.info(
-                "v%s: previous precommit had infra timeout, auto-reducing n_games %d->%d",
-                v, requested, n_games,
-            )
-
     candidate_name = active_bot_name(v)
     parent_name = active_bot_name(source_v)
     candidate_dir = get_bot_dir(v)
-    candidate_main = _bot_main(candidate_name)
     try:
         from tool_gates import _bot_code_fingerprint
         code_fingerprint = _bot_code_fingerprint(candidate_dir)
@@ -1008,10 +1149,50 @@ async def run_precommit_eval(args):
     workflow_profile = get_workflow_profile()
     native_tcp_mode = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
     expected_execution_mode = "native_tcp" if native_tcp_mode else "adapter"
+    evaluation_protocol = str(getattr(workflow_profile, "evaluation_protocol", "local_json"))
+    national_evaluation = evaluation_protocol == "national"
+    candidate_main = (
+        candidate_dir / "national_bot.py"
+        if native_tcp_mode
+        else _bot_main(candidate_name)
+    )
 
     # Idempotency guard: skip if precommit eval already passed for the same code snapshot
     # under the same workflow profile and national execution mode.
     _precommit_ckpt = _matching_checkpoint(v, source_v)
+    stored_plan = (
+        ((_precommit_ckpt.get("audit_context") or {}).get("precommit_eval_plan"))
+        if _precommit_ckpt
+        else None
+    )
+    stored_plan_issues = (
+        validate_precommit_plan(
+            stored_plan,
+            candidate_version=v,
+            source_version=source_v,
+            profile_id=workflow_profile.profile_id,
+            execution_mode=expected_execution_mode,
+            evaluation_protocol=evaluation_protocol,
+        )
+        if national_evaluation and stored_plan is not None
+        else []
+    )
+    current_evaluation_contract = (
+        build_evaluation_contract(
+            stored_plan,
+            candidate_code_fingerprint=code_fingerprint,
+        )
+        if national_evaluation and stored_plan is not None and not stored_plan_issues
+        else None
+    )
+    profile_refresh = _prepare_official_profile_refresh(_precommit_ckpt, "run_precommit_eval")
+    if not profile_refresh.get("ok"):
+        return _state_blocked(
+            str(profile_refresh.get("error") or "official profile refresh preparation failed"),
+            v,
+            source_v,
+            _precommit_ckpt,
+        )
     if _precommit_ckpt and _precommit_ckpt.get("stage") in (
         "verified", "archived"
     ):
@@ -1019,6 +1200,7 @@ async def run_precommit_eval(args):
         cached_fingerprint = precommit_gate.get("code_fingerprint")
         cached_profile_id = str(precommit_gate.get("workflow_profile_id") or precommit_gate.get("profile_id") or "")
         cached_execution_mode = str(precommit_gate.get("national_execution_mode") or "")
+        cached_contract = precommit_gate.get("precommit_eval_contract")
         if workflow_profile.profile_id == "default":
             cache_profile_matches = (
                 cached_profile_id in {"", "default"}
@@ -1029,7 +1211,23 @@ async def run_precommit_eval(args):
                 cached_profile_id == workflow_profile.profile_id
                 and cached_execution_mode == expected_execution_mode
             )
-        if precommit_gate.get("passed") is True and cached_fingerprint == code_fingerprint and cache_profile_matches:
+        contract_matches = (
+            not national_evaluation
+            or (
+                current_evaluation_contract is not None
+                and not validate_evaluation_contract(
+                    cached_contract,
+                    stored_plan,
+                    candidate_code_fingerprint=code_fingerprint,
+                )
+            )
+        )
+        if (
+            precommit_gate.get("passed") is True
+            and cached_fingerprint == code_fingerprint
+            and cache_profile_matches
+            and contract_matches
+        ):
             precommit_gate["idempotent_cache"] = True
             precommit_gate["directive"] = (
                 "Precommit eval ALREADY PASSED. Do NOT re-run. "
@@ -1050,6 +1248,13 @@ async def run_precommit_eval(args):
                     "active_workflow_profile_id": workflow_profile.profile_id,
                     "cached_execution_mode": cached_execution_mode,
                     "active_execution_mode": expected_execution_mode,
+                    "precommit_plan_issues": stored_plan_issues,
+                    "cached_contract_digest": precommit_gate.get("precommit_eval_contract_digest"),
+                    "active_contract_digest": (
+                        current_evaluation_contract.get("contract_digest")
+                        if current_evaluation_contract
+                        else None
+                    ),
                 },
             )
 
@@ -1079,7 +1284,7 @@ async def run_precommit_eval(args):
     ckpt = _matching_checkpoint(v, source_v)
     if not _quality_gate_ok(ckpt) or not _review_gate_ok(ckpt) or not _critic_gate_ok(ckpt):
         return _state_blocked(
-            "run_precommit_eval requires passing quality, reviewer, and critic gates for the same version/source_v.",
+            "run_precommit_eval requires passing quality/reviewer gates and a completed advisory critic role for the same version/source_v.",
             v,
             source_v,
             ckpt,
@@ -1102,12 +1307,41 @@ async def run_precommit_eval(args):
 
     # compile/smoke already verified by quality gates (required by _quality_gate_ok above)
 
-    opponents = _select_precommit_opponents(v, source_v)
+    if national_evaluation and stored_plan is not None:
+        if stored_plan_issues:
+            return _json_tool_result({
+                "error": "PRECOMMIT CONTRACT DRIFT: restart the generation from a fresh repository baseline.",
+                "version": v,
+                "source_v": source_v,
+                "passed": False,
+                "blockers": [{
+                    "reason": "precommit_contract_drift",
+                    "details": "; ".join(stored_plan_issues[:12]),
+                }],
+                "precommit_eval_plan": stored_plan,
+                "failure_class": "infrastructure",
+                "intent": make_intent(
+                    "pause",
+                    failure_class="infrastructure",
+                    authority="tool:precommit_eval",
+                    safe_to_auto_execute=False,
+                    reason="precommit_contract_drift",
+                ),
+            })
+        opponents = opponents_from_plan(stored_plan)
+        frozen_settings = stored_plan.get("settings") or {}
+        n_games = int(frozen_settings.get("matches_per_opponent") or n_games)
+    else:
+        opponents = _select_precommit_opponents(v, source_v)
     # Add crossover parent_b if applicable
-    if ckpt and ckpt.get("parent2_v"):
+    if stored_plan is None and ckpt and ckpt.get("parent2_v"):
         parent2_name = active_bot_name(ckpt["parent2_v"])
-        parent2_main = _bot_main(parent2_name)
-        if parent2_main.exists() and not any(o["name"] == parent2_name for o in opponents):
+        parent2_path = (
+            get_bot_dir(parse_bot_version(parent2_name))
+            if native_tcp_mode
+            else _bot_main(parent2_name)
+        )
+        if parent2_path.exists() and not any(o["name"] == parent2_name for o in opponents):
             opponents.append({"name": parent2_name, "reason": "crossover_parent_b"})
 
     # Phase 4: PSRO MixtureBot meta-opponent (FEATURE FLAG, default OFF).
@@ -1122,7 +1356,7 @@ async def run_precommit_eval(args):
         from evolution_infra import PSRO_ENABLED
     except Exception:
         PSRO_ENABLED = False
-    if PSRO_ENABLED:
+    if stored_plan is None and PSRO_ENABLED and not native_tcp_mode:
         _mixture_opp = _maybe_add_mixture_opponent(v, source_v)
         if _mixture_opp is not None:
             opponents.append(_mixture_opp)
@@ -1130,6 +1364,92 @@ async def run_precommit_eval(args):
     if not opponents:
         blockers.append({"reason": "no_opponents", "details": "No parent/top/H2H opponents with main.py found."})
     all_opponents = list(opponents)  # preserve full list for result reporting
+
+    precommit_plan = stored_plan
+    evaluation_contract = current_evaluation_contract
+    if national_evaluation and precommit_plan is None and opponents:
+        national_hands, national_matches = _national_precommit_shape(workflow_profile, n_games)
+        try:
+            precommit_plan = create_precommit_plan(
+                candidate_version=v,
+                source_version=source_v,
+                profile_id=workflow_profile.profile_id,
+                execution_mode=expected_execution_mode,
+                evaluation_protocol=evaluation_protocol,
+                opponents=opponents,
+                hands_per_match=national_hands,
+                matches_per_opponent=national_matches,
+                parent_loss_threshold=PARENT_NET_CHIPS_LOSS_THRESHOLD,
+                aggregate_loss_threshold=AGGREGATE_NET_CHIPS_LOSS_THRESHOLD,
+                path_resolver=lambda item: (
+                    item.get("path")
+                    or (
+                        get_bot_dir(parse_bot_version(item["name"]))
+                        if native_tcp_mode
+                        else _bot_main(item["name"])
+                    )
+                ),
+                require_published_opponents=native_tcp_mode,
+            )
+        except PrecommitEvalContractError as exc:
+            return _json_tool_result({
+                "error": f"PRECOMMIT PLAN CREATION FAILED: {exc}",
+                "version": v,
+                "source_v": source_v,
+                "passed": False,
+                "blockers": [{
+                    "reason": "precommit_plan_creation_failed",
+                    "details": str(exc)[:800],
+                }],
+                "failure_class": "infrastructure",
+                "intent": make_intent(
+                    "pause",
+                    failure_class="infrastructure",
+                    authority="tool:precommit_eval",
+                    safe_to_auto_execute=False,
+                    reason="precommit_plan_creation_failed",
+                ),
+            })
+        current_stage = ckpt.get("stage", "critic_checked") if ckpt else "critic_checked"
+        if not write_pipeline_checkpoint(
+            v,
+            source_v,
+            current_stage,
+            audit_context={"precommit_eval_plan": precommit_plan},
+        ):
+            return _state_blocked(
+                "Failed to persist immutable precommit evaluation plan.",
+                v,
+                source_v,
+                ckpt,
+            )
+        evaluation_contract = build_evaluation_contract(
+            precommit_plan,
+            candidate_code_fingerprint=code_fingerprint,
+        )
+        opponents = opponents_from_plan(precommit_plan)
+        all_opponents = list(opponents)
+        n_games = int((precommit_plan.get("settings") or {}).get("matches_per_opponent") or n_games)
+
+    if national_evaluation and precommit_plan is None:
+        return _json_tool_result({
+            "error": "PRECOMMIT PLAN UNAVAILABLE: no immutable opponent set could be created.",
+            "version": v,
+            "source_v": source_v,
+            "passed": False,
+            "blockers": blockers or [{
+                "reason": "precommit_plan_unavailable",
+                "details": "No eligible national opponent was available.",
+            }],
+            "failure_class": "infrastructure",
+            "intent": make_intent(
+                "pause",
+                failure_class="infrastructure",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=False,
+                reason="precommit_plan_unavailable",
+            ),
+        })
 
     # Increment precommit_attempt only when a real precommit battle round is
     # about to start. Idempotent already-verified calls, missing prerequisite
@@ -1146,11 +1466,12 @@ async def run_precommit_eval(args):
             precommit_attempt=precommit_attempt,
         )
 
-    if getattr(workflow_profile, "evaluation_protocol", "local_json") == "national":
+    if national_evaluation:
         return await _run_national_precommit_backend(
             v=v,
             source_v=source_v,
             requested_n_games=requested,
+            effective_n_games=n_games,
             candidate_name=candidate_name,
             parent_name=parent_name,
             candidate_main=candidate_main,
@@ -1162,6 +1483,8 @@ async def run_precommit_eval(args):
             precommit_attempt=precommit_attempt,
             initial_blockers=blockers,
             started_at=_t0,
+            precommit_plan=precommit_plan,
+            evaluation_contract=evaluation_contract,
         )
 
     total_wins = 0
@@ -1545,8 +1868,6 @@ async def run_precommit_eval(args):
         _battle_sem = asyncio.Semaphore(max_concurrent)
 
         per_game_timeout = max(300, n_games * 120)
-        loop = asyncio.get_running_loop()
-
         async def _run_single_mirror_battle(item):
             """Run one mirror battle in executor with per-opponent timeout.
 
@@ -1668,7 +1989,10 @@ async def run_precommit_eval(args):
                             return local, last, False
 
                         battle_result = await asyncio.wait_for(
-                            loop.run_in_executor(None, _drain_parent),
+                            run_blocking_isolated(
+                                _drain_parent,
+                                thread_name_prefix="pok-precommit-parent",
+                            ),
                             timeout=per_game_timeout,
                         )
                         nc, cs_meta, early_stopped = battle_result
@@ -1691,7 +2015,10 @@ async def run_precommit_eval(args):
                             return local, None, False
 
                         battle_result = await asyncio.wait_for(
-                            loop.run_in_executor(None, _drain_full),
+                            run_blocking_isolated(
+                                _drain_full,
+                                thread_name_prefix="pok-precommit-opponent",
+                            ),
                             timeout=per_game_timeout,
                         )
                         nc, cs_meta, early_stopped = battle_result
@@ -1699,14 +2026,14 @@ async def run_precommit_eval(args):
                         # Zero-regression fallback: identical to the original
                         # fixed-collect mirror_battle implementation.
                         battle_result = await asyncio.wait_for(
-                            loop.run_in_executor(
-                                None,
+                            run_blocking_isolated(
                                 lambda _cm=str(candidate_main), _om=str(opponent_main): mirror_battle(
                                     _cm, _om,
                                     n_games=n_games,
                                     verbose=False,
                                     save_log=False,
                                 ),
+                                thread_name_prefix="pok-precommit-fixed",
                             ),
                             timeout=per_game_timeout,
                         )
@@ -2014,7 +2341,8 @@ async def run_precommit_eval(args):
     # Group A: classify blockers so the FAILED directive can distinguish
     # INFRASTRUCTURE timeouts from real bot regressions. `passed` semantics are
     # UNCHANGED (any blocker still fails the commit gate) — only the directive
-    # text + next-attempt n_games auto-reduction behave differently.
+    # text and retry routing differ. The workload is intentionally unchanged so
+    # a retry cannot silently use a weaker statistical contract.
     regression_blockers = [b for b in blockers if not _is_infra_blocker(b.get("reason"))]
     infra_blockers = [b for b in blockers if _is_infra_blocker(b.get("reason"))]
     infra_only_timeout = (not passed) and (not regression_blockers) and bool(infra_blockers)
@@ -2099,13 +2427,13 @@ async def run_precommit_eval(args):
         worst_wins, worst_losses = _worst_wins_losses(matchups, worst_opponent)
         if infra_only_timeout:
             # Infrastructure timeout (daemon/CPU/battle-MC), NOT a bot regression.
-            # Bot code is unchanged and unproven weak — retry precommit (A4
-            # auto-reduces n_games next call). Do NOT rework the bot or abandon.
+            # Bot code is unchanged and unproven weak. Retry the exact same
+            # evaluation contract; do not rework the bot or abandon.
             result["directive"] = (
                 f"Precommit TIMED OUT (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}) — "
                 f"this is an INFRASTRUCTURE failure (daemon/CPU/battle-MC), NOT a bot regression. "
                 f"The bot code is UNCHANGED and has NOT been proven weak. "
-                f"CALL run_precommit_eval AGAIN (it auto-reduces n_games). "
+                f"CALL run_precommit_eval AGAIN with the same n_games. "
                 f"Do NOT rework the bot or abandon the generation."
             )
             result["infra_retry"] = True
@@ -2121,7 +2449,7 @@ async def run_precommit_eval(args):
             log_system_event(
                 "pipeline.precommit_infra_timeout", "warn",
                 f"v{v}: precommit infra timeout (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}) "
-                f"— {len(infra_blockers)} infra blocker(s), 0 regression. Retry with lower n_games.",
+                f"— {len(infra_blockers)} infra blocker(s), 0 regression. Retry unchanged.",
                 {"version": v, "source_v": source_v,
                  "precommit_attempt": precommit_attempt,
                  "infra_blockers": [b.get("reason") for b in infra_blockers]},
@@ -2227,7 +2555,7 @@ async def run_precommit_eval(args):
 # Inline Eval
 # ──────────────────────────────────────────────
 
-@tool("run_inline_eval", "Run inline evaluation: battle the bot against all active opponents and update Glicko-2 ratings. Use when daemon is not running.", {"version": int, "n_games": int})
+@tool("run_inline_eval", "Run a non-authoritative diagnostic evaluation without modifying Glicko/H2H. The rating daemon is the only authoritative rating writer.", {"version": int, "n_games": int})
 async def run_inline_eval(args):
     _inline_eval_start = time.time()
     v, _source_v = _resolve_version_args(args)
@@ -2241,8 +2569,18 @@ async def run_inline_eval(args):
 
     bot_dir = get_bot_dir(v)
 
-    if not (bot_dir / "main.py").exists():
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"Bot v{v} main.py not found"})}]}
+    from workflow_profiles import get_workflow_profile
+
+    profile = get_workflow_profile()
+    expected_entry = (
+        bot_dir / "national_bot.py"
+        if getattr(profile, "national_execution_mode", "adapter") == "native_tcp"
+        else bot_dir / "main.py"
+    )
+    if not expected_entry.exists():
+        return {"content": [{"type": "text", "text": json.dumps({
+            "error": f"Bot v{v} entry not found: {expected_entry.name}"
+        })}]}
 
     # Guard: refuse to run while daemon is active (read-modify-write race on ratings)
     from daemon_management import daemon_proc, _daemon_lock
@@ -2260,6 +2598,33 @@ async def run_inline_eval(args):
     active_bots = get_active_bots()
     opponents = [b for b in active_bots if b != bot_name]
 
+    if getattr(profile, "national_execution_mode", "adapter") == "native_tcp":
+        from national_native import run_native_acceptance_for_candidate
+        from evolution_infra import RESULTS_DIR
+        from evaluation_data_identity import current_evaluation_digest
+        from datetime import datetime as _dt
+
+        acceptance = await run_native_acceptance_for_candidate(
+            bot_dir,
+            opponent_tokens=[get_bot_dir(int(name.removeprefix("national_v"))) for name in opponents],
+            hands=70,
+            max_opponents=max(1, len(opponents)),
+        )
+        payload = acceptance.model_dump()
+        payload.update({
+            "authoritative": False,
+            "ratings_updated": False,
+            "h2h_updated": False,
+            "evaluation_identity_digest": current_evaluation_digest(RESULTS_DIR),
+            "source": "inline_native_diagnostic",
+        })
+        diagnostic_dir = RESULTS_DIR / "inline_eval_diagnostics"
+        diagnostic_dir.mkdir(parents=True, exist_ok=True)
+        diagnostic_path = diagnostic_dir / f"v{v}-{_dt.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+        diagnostic_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload["diagnostic_path"] = str(diagnostic_path)
+        return {"content": [{"type": "text", "text": json.dumps(payload, indent=2, ensure_ascii=False)}]}
+
     if bot_name not in ratings:
         ratings[bot_name] = Glicko2Player()
 
@@ -2268,20 +2633,22 @@ async def run_inline_eval(args):
 
     from evolution_infra import (
         RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, RESULTS_DIR,
-        locked_file, pair_key, read_locked_json, write_locked_json, update_h2h, update_bot_stats,
+        read_locked_json, update_h2h, update_bot_stats,
     )
+    from evaluation_data_identity import current_evaluation_digest
+
+    evaluation_identity_digest = current_evaluation_digest(RESULTS_DIR)
     h2h = read_locked_json(H2H_FILE, default={})
     bot_stats_data = read_locked_json(BOT_STATS_FILE, default={})
 
     for opp in opponents:
         if opp not in ratings:
             ratings[opp] = Glicko2Player()
-        loop = asyncio.get_running_loop()
-        battle_result = await loop.run_in_executor(
-            None,
+        battle_result = await run_blocking_isolated(
             lambda _b=str(_bot_main(bot_name)), _o=str(_bot_main(opp)): mirror_battle(
                 _b, _o, n_games=n_games, verbose=False, save_log=False,
             ),
+            thread_name_prefix="pok-inline-eval",
         )
         if len(battle_result) >= 5:
             match_wins, draws, n_played, _, _net_chips_list = battle_result
@@ -2298,23 +2665,6 @@ async def run_inline_eval(args):
         update_bot_stats(bot_stats_data, bot_name, w_a, w_b, draws=draws)
         update_bot_stats(bot_stats_data, opp, w_b, w_a, draws=draws)
 
-        # Append to match_history
-        try:
-            from datetime import datetime
-            summary = {
-                "id": f"inline_v{v}_vs_{opp}",
-                "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
-                "bot0": bot_name,
-                "bot1": opp,
-                "bot0_wins": w_a,
-                "bot1_wins": w_b,
-                "draws": draws,
-            }
-            with locked_file(MATCH_HISTORY_FILE, "a") as f:
-                f.write(json.dumps(summary) + "\n")
-        except Exception as e:
-            log.warning("Match history write failed: %s", e)
-
         for _ in range(w_a):
             all_results.append((ratings[opp], 1.0))
         for _ in range(w_b):
@@ -2325,37 +2675,11 @@ async def run_inline_eval(args):
     if all_results:
         ratings[bot_name] = update_rating_period(ratings[bot_name], all_results)
 
-    # Save updated ratings (atomic write — consistent with daemon)
+    # Persist diagnostics separately. Inline evaluation never mutates the
+    # daemon-owned ratings, H2H, bot stats, or match history.
     from datetime import datetime as _dt
-    data = {}
-    for name, p in ratings.items():
-        d = p.to_dict()
-        d["last_period"] = _dt.now().isoformat(timespec="seconds")
-        data[name] = d
-    write_locked_json(RATINGS_FILE, data)
-
-    # Append rating history snapshot (consistent with daemon save_ratings)
-    history_file = RESULTS_DIR / "rating_history.jsonl"
-    snapshot = {
-        "period": f"inline_v{v}",
-        "timestamp": _dt.now().isoformat(timespec="seconds"),
-        "ratings": {name: {"r": p.r, "rd": p.rd} for name, p in ratings.items()},
-        "source": "inline_eval",
-    }
-    with locked_file(history_file, "a") as f:
-        f.write(json.dumps(snapshot) + "\n")
-
-    # Save H2H with win_rate computed
-    h2h_out = {}
-    for k, h2h_entry in h2h.items():
-        entry = dict(h2h_entry)
-        g = entry.get("games", 0)
-        entry["win_rate"] = round((entry.get("a_wins", 0) + 0.5 * entry.get("draws", 0)) / g, 4) if g > 0 else 0.5
-        h2h_out[k] = entry
-    write_locked_json(H2H_FILE, h2h_out)
-
-    # Save bot_stats
-    write_locked_json(BOT_STATS_FILE, bot_stats_data)
+    diagnostic_dir = RESULTS_DIR / "inline_eval_diagnostics"
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         from system_log import log_system_event
@@ -2373,5 +2697,12 @@ async def run_inline_eval(args):
         "games_per_opponent": n_games,
         "results": results_summary,
         "updated_rating": {"r": round(ratings[bot_name].r, 1), "rd": round(ratings[bot_name].rd, 1)},
+        "authoritative": False,
+        "ratings_updated": False,
+        "h2h_updated": False,
+        "evaluation_identity_digest": evaluation_identity_digest,
     }
+    diagnostic_path = diagnostic_dir / f"v{v}-{_dt.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    diagnostic_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    result["diagnostic_path"] = str(diagnostic_path)
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}

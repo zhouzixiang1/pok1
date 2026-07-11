@@ -45,6 +45,7 @@ from shutdown_manager import ShutdownManager
 from system_log import log_system_event, set_ui as set_system_log_ui
 from failure_classification import INFRA_BLOCKER_REASONS
 from evaluation_contract import evaluate_head_drift
+from blocking_runtime import run_blocking_isolated
 import logging
 
 log = logging.getLogger("pok.orchestrator")
@@ -1868,6 +1869,25 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None, *, log_level: s
     data = _extract_tool_result_json(result)
     error = data.get("error")
     success = data.get("success")
+    if data.get("pending") and data.get("action") == "poll_commit_bot":
+        wait_sec = max(5.0, min(60.0, float(data.get("retry_after_sec", 30) or 30)))
+        try:
+            log_system_event(
+                "pipeline.deterministic_route_pending",
+                "info",
+                f"Durable official certification remains pending for v{next_v}; polling in {wait_sec:g}s",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "stage": stage,
+                    "next_tool": next_tool,
+                    "retry_after_sec": wait_sec,
+                },
+            )
+        except Exception:
+            pass
+        await asyncio.sleep(wait_sec)
+        return True
     if error:
         if next_tool == "execute_workers" and (
             _is_worker_circuit_breaker_result(data)
@@ -2935,7 +2955,10 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         if _runtime_hard_stop_event.is_set():
             try:
                 from daemon_management import stop_daemon
-                await asyncio.to_thread(stop_daemon)
+                await run_blocking_isolated(
+                    stop_daemon,
+                    thread_name_prefix="daemon-shutdown",
+                )
                 log_system_event(
                     "repo.runtime_branch_drift_cleanup",
                     "info",

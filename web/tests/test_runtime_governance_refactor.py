@@ -1080,7 +1080,8 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
                         {"name": "bots/neural_national_lab/versions/v058"},
                     ]
                 }
-            }
+            },
+            "official_job": {"opponent": "national_v142"},
         },
     )
     scope = evaluation_contract.classify_contract_paths(
@@ -1090,6 +1091,8 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
             "bots/national_v300/main.py",
             "bots/national_v299/main.py",
             "bots/national_v45/main.py",
+            "official_certificates/national_v45.json",
+            "official_certificates/national_v142.json",
             "bots/neural_national_lab/data/run.json",
             "sever/server/tcp_server.py",
             "sever/国赛平台/通信协议.docx",
@@ -1102,6 +1105,8 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
     assert "bots/national_v300/main.py" in scope["contract_paths"]
     assert "bots/national_v299/main.py" in scope["contract_paths"]
     assert "bots/national_v45/main.py" in scope["contract_paths"]
+    assert "official_certificates/national_v45.json" in scope["contract_paths"]
+    assert "official_certificates/national_v142.json" in scope["contract_paths"]
     assert "sever/server/tcp_server.py" in scope["contract_paths"]
     assert "web/core/replay_spotlight.py" in scope["external_paths"]
     assert "sever/国赛平台/通信协议.docx" in scope["external_paths"]
@@ -1496,6 +1501,43 @@ def test_evaluation_contract_always_tracks_guard_files_after_workers(monkeypatch
     assert allowed is False
     assert payload["head_contract_paths"] == ["web/core/evaluation_contract.py"]
     assert payload["head_external_paths"] == ["web/core/prompts/worker_prompt.md"]
+
+
+def test_evaluation_contract_tracks_shared_native_and_official_authority_files(monkeypatch):
+    import evaluation_contract
+
+    contract_paths = [
+        "web/core/national_transport.py",
+        "web/core/national_game_runtime.py",
+        "web/core/national_bot_launcher.py",
+        "web/core/national_runtime_telemetry.py",
+        "web/core/runtime_capacity.py",
+        "web/core/blocking_runtime.py",
+        "web/core/official_platform_resource.py",
+        "web/core/official_execution_profile.json",
+        "web/core/official_verdict_ledger.py",
+    ]
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: [
+            *contract_paths,
+            "web/server/routes/national_arena.py",
+        ],
+    )
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+        checkpoint={"stage": "master_planned", "next_v": 300, "source_v": 299},
+    )
+
+    assert allowed is False
+    assert payload["head_contract_paths"] == sorted(contract_paths)
+    assert payload["head_external_paths"] == ["web/server/routes/national_arena.py"]
 
 
 def test_worktree_scope_keeps_observability_nonblocking_but_gate_logic_blocking():

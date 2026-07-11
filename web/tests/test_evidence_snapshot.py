@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 
 class _UI:
@@ -68,6 +69,70 @@ def test_generation_h2h_snapshot_freezes_live_file(monkeypatch, tmp_path):
     assert frozen["national_v17 vs national_v20"]["games"] == 45
     assert frozen["national_v17 vs national_v20"]["a_wins"] == 29
     assert frozen["national_v17 vs national_v20"]["b_wins"] == 16
+
+
+def test_generation_h2h_snapshot_rejects_payload_tampering(monkeypatch, tmp_path):
+    import evidence_snapshot
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v1 vs national_v2": {
+            "games": 10,
+            "a_wins": 6,
+            "b_wins": 4,
+            "draws": 0,
+        }
+    })
+    created = evidence_snapshot.ensure_generation_h2h_snapshot(3)
+    Path(created["h2h_path"]).write_text("{}", encoding="utf-8")
+
+    reused = evidence_snapshot.ensure_generation_h2h_snapshot(3)
+
+    assert reused["available"] is False
+    assert reused["reason"] == "snapshot_integrity_failure"
+    assert "snapshot_payload_digest_mismatch" in reused["issues"]
+    assert evidence_snapshot.load_generation_h2h_snapshot(3) == {}
+    contract = evidence_snapshot.h2h_snapshot_contract_text(3)
+    assert "Do not read live H2H" in contract
+
+
+def test_generation_h2h_snapshot_rejects_manifest_tampering(monkeypatch, tmp_path):
+    import evidence_snapshot
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {})
+    created = evidence_snapshot.ensure_generation_h2h_snapshot(4)
+    manifest_path = Path(created["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["entries"] = 99
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    reused = evidence_snapshot.ensure_generation_h2h_snapshot(4)
+
+    assert reused["available"] is False
+    assert "snapshot_manifest_digest_mismatch" in reused["issues"]
+
+
+def test_generation_h2h_snapshot_concurrent_creation_is_single_identity(
+    monkeypatch, tmp_path
+):
+    import evidence_snapshot
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v1 vs national_v2": {
+            "games": 2,
+            "a_wins": 1,
+            "b_wins": 1,
+            "draws": 0,
+        }
+    })
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        rows = list(executor.map(
+            lambda _index: evidence_snapshot.ensure_generation_h2h_snapshot(5),
+            range(4),
+        ))
+
+    assert all(row["available"] is True for row in rows)
+    assert len({row["manifest_digest"] for row in rows}) == 1
+    assert sum(row["reused"] is False for row in rows) == 1
 
 
 def test_h2h_citation_validation_uses_snapshot_not_live(monkeypatch, tmp_path):
@@ -341,3 +406,37 @@ def test_master_plan_audit_prompt_includes_snapshot_json(monkeypatch, tmp_path):
     assert "Stable H2H Snapshot Contract" in captured["prompt"]
     assert "national_v11 vs national_v20" in captured["prompt"]
     assert "live-file drift after snapshot creation is not" in captured["prompt"]
+
+
+def test_hard_critic_uses_generation_snapshot_not_live_h2h(monkeypatch, tmp_path):
+    import agent_review
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v11 vs national_v20": {
+            "games": 55,
+            "a_wins": 32,
+            "b_wins": 23,
+            "draws": 0,
+            "win_rate": 0.5818,
+        }
+    })
+    captured = {}
+
+    async def fake_run_claude_query(prompt, *_args, **_kwargs):
+        captured["prompt"] = prompt
+        return json.dumps({
+            "score": 7,
+            "approved": True,
+            "strategic_assessment": "snapshot-backed",
+            "feedback": "",
+            "local_optima_warning": False,
+        }), 0.0, {}
+
+    monkeypatch.setattr(agent_review, "run_claude_query", fake_run_claude_query)
+
+    result = asyncio.run(agent_review._run_critic(24, 20, "{}", _UI()))
+
+    assert result["approved"] is True
+    assert "Stable H2H Snapshot Contract" in captured["prompt"]
+    assert "national_v11 vs national_v20" in captured["prompt"]
+    assert "Do not read live `web/core/results/head_to_head.json`" in captured["prompt"]

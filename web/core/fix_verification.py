@@ -258,8 +258,8 @@ def _verify_total_hands(bot_dir: Path) -> dict:
     return {"ok": True, "reason": "no TOTAL_HANDS assignment found — contract skipped"}
 
 
-# Each verifier is wrapped so that ANY exception -> ok=True (never block on a
-# verifier crash; only a CONFIRMED invariant violation blocks).
+# Verifier crashes are infrastructure failures. They must not silently pass and
+# must not be presented as a confirmed candidate violation.
 _VERIFIERS = {
     "BOT-001a": _verify_wheel,
     "BOT-002a": _verify_min_raise,
@@ -276,7 +276,7 @@ def verify_fixes(bot_dir) -> dict:
 
     Returns:
         {fix_id: {"ok": bool, "reason": str}} for every verifier.
-        A verifier that raises returns ok=True (verifier FAILURE never blocks).
+        A verifier that raises returns outcome=infrastructure_failure.
     """
     bot_dir = Path(bot_dir)
     results: dict[str, dict] = {}
@@ -284,8 +284,18 @@ def verify_fixes(bot_dir) -> dict:
         try:
             res = fn(bot_dir)
             if not isinstance(res, dict) or "ok" not in res:
-                res = {"ok": True, "reason": f"verifier returned non-dict: {res!r}"}
-        except Exception as e:  # noqa: BLE001 — verifier failure must never block
-            res = {"ok": True, "reason": f"verifier raised {type(e).__name__}: {e}"}
+                res = {
+                    "ok": False,
+                    "outcome": "infrastructure_failure",
+                    "reason": f"verifier returned invalid result: {res!r}",
+                }
+        except Exception as e:  # noqa: BLE001 - converted to typed infra evidence
+            res = {
+                "ok": False,
+                "outcome": "infrastructure_failure",
+                "reason": f"verifier raised {type(e).__name__}: {e}",
+            }
+        else:
+            res.setdefault("outcome", "passed" if res.get("ok") else "candidate_failure")
         results[fix_id] = res
     return results

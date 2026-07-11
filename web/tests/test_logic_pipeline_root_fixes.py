@@ -1759,15 +1759,18 @@ def test_git_push_refs_reports_failure(monkeypatch):
 
     def fake_git(*args, **_kwargs):
         calls.append(args)
-        if args == ("push", "origin", "main"):
+        if args == ("push", "--atomic", "origin", "main", "national-bot-v999"):
             raise RuntimeError("push failed")
         return ""
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
 
     assert evolution_infra.git_push_refs("main", "national-bot-v999") is False
-    assert ("push", "origin", "main") in calls
-    assert ("push", "origin", "national-bot-v999") in calls
+    push_calls = [call for call in calls if call[:1] == ("push",)]
+    assert push_calls
+    assert set(push_calls) == {
+        ("push", "--atomic", "origin", "main", "national-bot-v999")
+    }
 
 
 def test_git_push_refs_reconciles_unrelated_remote_main(monkeypatch):
@@ -1779,12 +1782,13 @@ def test_git_push_refs_reconciles_unrelated_remote_main(monkeypatch):
 
     def fake_git(*args, **_kwargs):
         calls.append(args)
-        if args == ("push", "origin", "main") and not first_main_push["done"]:
+        if (
+            args == ("push", "--atomic", "origin", "main", "national-bot-v999")
+            and not first_main_push["done"]
+        ):
             first_main_push["done"] = True
             raise RuntimeError("fetch first")
-        if args[:3] == ("push", "origin", "main"):
-            return ""
-        if args[:3] == ("push", "origin", "national-bot-v999"):
+        if args == ("push", "--atomic", "origin", "main", "national-bot-v999"):
             return ""
         if args == ("fetch", "origin", "--prune", "--tags"):
             return ""
@@ -1810,7 +1814,7 @@ def test_git_push_refs_reconciles_unrelated_remote_main(monkeypatch):
 
     assert evolution_infra.git_push_refs("main", "national-bot-v999") is True
     assert any(call[:3] == ("merge", "--no-ff", "origin/main") for call in calls)
-    assert calls.count(("push", "origin", "main")) == 2
+    assert calls.count(("push", "--atomic", "origin", "main", "national-bot-v999")) == 2
 
 
 def test_git_push_refs_blocks_remote_contract_change(monkeypatch):
@@ -1821,10 +1825,8 @@ def test_git_push_refs_blocks_remote_contract_change(monkeypatch):
 
     def fake_git(*args, **_kwargs):
         calls.append(args)
-        if args == ("push", "origin", "main"):
+        if args == ("push", "--atomic", "origin", "main", "national-bot-v999"):
             raise RuntimeError("fetch first")
-        if args == ("push", "origin", "national-bot-v999"):
-            return ""
         if args == ("fetch", "origin", "--prune", "--tags"):
             return ""
         if args == ("rev-list", "--left-right", "--count", "HEAD...origin/main"):
@@ -1865,6 +1867,11 @@ def test_git_commit_bot_refuses_preexisting_blocking_staged_files(monkeypatch):
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
+    monkeypatch.setattr(
+        bot_artifact,
+        "validate_completion_tag",
+        lambda *_a, **_k: {"valid": True, "issues": []},
+    )
     monkeypatch.setattr(evolution_infra, "_require_national_epoch_registry_for_commit", lambda: None)
 
     with __import__("pytest").raises(RuntimeError, match="pre-existing blocking staged"):
@@ -1875,7 +1882,7 @@ def test_git_commit_bot_refuses_preexisting_blocking_staged_files(monkeypatch):
             official_certificate={
                 "certificate_digest": "cert-digest",
                 "candidate_hash": "candidate-hash",
-                "policy_id": "official-full-v2",
+                "policy_id": "official-full-v4",
             },
         )
 
@@ -1896,11 +1903,20 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
             return "main\n"
         if args == ("diff", "--cached", "--name-only"):
             return "\n".join(staged) + ("\n" if staged else "")
-        if args == ("add", "--", "bots/national_v999"):
-            staged.append("bots/national_v999/main.py")
+        if args == (
+            "add", "--", "bots/national_v999",
+            "official_certificates/national_v999.json",
+        ):
+            staged.extend([
+                "bots/national_v999/main.py",
+                "official_certificates/national_v999.json",
+            ])
             return ""
         if args[:2] == ("commit", "-m"):
-            assert args[-2:] == ("--", "bots/national_v999")
+            assert args[-3:] == (
+                "--", "bots/national_v999",
+                "official_certificates/national_v999.json",
+            )
             return ""
         if args == ("rev-parse", "HEAD"):
             return "abc123456789\n"
@@ -1915,7 +1931,19 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
+    monkeypatch.setattr(
+        bot_artifact,
+        "validate_completion_tag",
+        lambda *_a, **_k: {"valid": True, "issues": []},
+    )
     monkeypatch.setattr(evolution_infra, "_require_national_epoch_registry_for_commit", lambda: None)
+    monkeypatch.setattr(
+        "official_certification.publish_certificate_attestation",
+        lambda *_a, **_k: {
+            "certificate_digest": "cert-digest",
+            "relative_path": "official_certificates/national_v999.json",
+        },
+    )
     monkeypatch.setattr(
         evolution_infra,
         "_advance_national_epoch_high_water",
@@ -1929,12 +1957,15 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
         official_certificate={
             "certificate_digest": "cert-digest",
             "candidate_hash": "candidate-hash",
-            "policy_id": "official-full-v2",
+            "policy_id": "official-full-v4",
         },
     )
 
     assert push_ok is False
-    assert ("add", "--", "bots/national_v999") in calls
+    assert (
+        "add", "--", "bots/national_v999",
+        "official_certificates/national_v999.json",
+    ) in calls
     assert any(call[:1] == ("commit",) for call in calls)
     assert not any("docs/user-notes.md" in call for call in calls if call[:1] == ("commit",))
 
@@ -1952,8 +1983,14 @@ def test_git_commit_bot_binds_official_certificate_to_commit_and_tag(monkeypatch
             return "main\n"
         if args == ("diff", "--cached", "--name-only"):
             return "\n".join(staged) + ("\n" if staged else "")
-        if args == ("add", "--", "bots/national_v999"):
-            staged.append("bots/national_v999/main.py")
+        if args == (
+            "add", "--", "bots/national_v999",
+            "official_certificates/national_v999.json",
+        ):
+            staged.extend([
+                "bots/national_v999/main.py",
+                "official_certificates/national_v999.json",
+            ])
             return ""
         if args[:2] == ("commit", "-m"):
             assert "official-certificate: cert-digest" in args[2]
@@ -1968,13 +2005,25 @@ def test_git_commit_bot_binds_official_certificate_to_commit_and_tag(monkeypatch
             return ""
         if args[:3] == ("tag", "national-bot-v999", "-m"):
             assert "official-certificate: cert-digest" in args[3]
-            assert "official-policy: official-full-v2" in args[3]
+            assert "official-policy: official-full-v4" in args[3]
             return ""
         raise AssertionError(args)
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "candidate-hash")
+    monkeypatch.setattr(
+        bot_artifact,
+        "validate_completion_tag",
+        lambda *_a, **_k: {"valid": True, "issues": []},
+    )
     monkeypatch.setattr(evolution_infra, "_require_national_epoch_registry_for_commit", lambda: None)
+    monkeypatch.setattr(
+        "official_certification.publish_certificate_attestation",
+        lambda *_a, **_k: {
+            "certificate_digest": "cert-digest",
+            "relative_path": "official_certificates/national_v999.json",
+        },
+    )
     monkeypatch.setattr(
         evolution_infra,
         "_advance_national_epoch_high_water",
@@ -1989,7 +2038,7 @@ def test_git_commit_bot_binds_official_certificate_to_commit_and_tag(monkeypatch
         official_certificate={
             "certificate_digest": "cert-digest",
             "candidate_hash": "candidate-hash",
-            "policy_id": "official-full-v2",
+            "policy_id": "official-full-v4",
         },
     )
 

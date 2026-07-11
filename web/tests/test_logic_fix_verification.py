@@ -184,8 +184,7 @@ class TestExceptionSafety:
         for fix_id, r in results.items():
             assert r["ok"] is True, f"{fix_id} must not block on missing files: {r}"
 
-    def test_verifier_exception_returns_ok(self, fv, monkeypatch, make_bot):
-        """If a verifier raises, verify_fixes swallows it and returns ok=True."""
+    def test_verifier_exception_is_infrastructure_failure(self, fv, monkeypatch, make_bot):
         bot_dir = make_bot(constants="TOTAL_HANDS = 70\n")
 
         def boom(_bot_dir):
@@ -193,7 +192,8 @@ class TestExceptionSafety:
 
         monkeypatch.setitem(fv._VERIFIERS, "BOT-004", boom)
         r = fv.verify_fixes(bot_dir)["BOT-004"]
-        assert r["ok"] is True
+        assert r["ok"] is False
+        assert r["outcome"] == "infrastructure_failure"
         assert "RuntimeError" in r["reason"]
 
 
@@ -202,6 +202,6 @@ class TestResultShape:
         results = fv.verify_fixes(tmp_path)
         assert set(results) == {"BOT-001a", "BOT-002a", "BOT-004"}
         for r in results.values():
-            assert set(r) == {"ok", "reason"}
+            assert set(r) == {"ok", "reason", "outcome"}
             assert isinstance(r["ok"], bool)
             assert isinstance(r["reason"], str)

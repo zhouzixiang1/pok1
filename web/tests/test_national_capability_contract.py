@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from national_capability_contract import evaluate_national_capabilities, national_runtime_feedback_summary
+from national_capability_contract import (
+    NATIONAL_CAPABILITY_DETECTOR_VERSION,
+    evaluate_national_capabilities,
+    national_runtime_feedback_summary,
+)
+from national_native import NATIVE_BOT_TEMPLATE
 
 
 def _write_bot(root: Path, *, national_bot: str, opponent: str = "", strategy: str = "") -> Path:
@@ -8,6 +13,15 @@ def _write_bot(root: Path, *, national_bot: str, opponent: str = "", strategy: s
     (root / "national_bot.py").write_text(national_bot, encoding="utf-8")
     (root / "opponent.py").write_text(opponent, encoding="utf-8")
     (root / "strategy.py").write_text(strategy, encoding="utf-8")
+    (root / "main.py").write_text(
+        "def sanitize_action(action, state, chips): return int(action)\n",
+        encoding="utf-8",
+    )
+    (root / "state.py").write_text(
+        "def reconstruct_state(req): return req\n"
+        "def infer_remaining_hands_from_requests(requests): return 1\n",
+        encoding="utf-8",
+    )
     return root
 
 
@@ -79,39 +93,29 @@ def main():
 def test_capability_contract_detects_precompute_and_incremental_model(tmp_path):
     bot = _write_bot(
         tmp_path / "national_v3",
-        national_bot="""
-import argparse
-POK_OFFICIAL_ACTION_DELAY = 0.30
-class NativeNationalBot:
-    def __init__(self):
-        self._requests = []
-        self._history = []
-        self._showdowns = []
-    def _send_wire_action(self, action):
-        pass
-    def handle(self, msg):
-        if msg.startswith('earnChips') or msg.startswith('oppo_hands'):
-            self._history.append(msg)
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--log')
-""",
-        opponent="""
-class OpponentTracker:
-    def __init__(self):
-        self.match_profile = {}
-    def update_opponent(self, event):
-        self.match_profile['actions'] = self.match_profile.get('actions', 0) + 1
-""",
+        national_bot=NATIVE_BOT_TEMPLATE,
         strategy="""
 import time
-PREFLOP_LOOKUP_TABLE = {(12, 12): 1.0}
-BOARD_TEXTURE_CACHE = {}
+PREFLOP_LOOKUP_TABLE = {i: i / 31 for i in range(32)}
 MAX_DECISION_SAMPLES = 64
-def get_action(req, requests, runtime_ctx=None):
-    elapsed = time.monotonic()
-    opp_profile = (runtime_ctx or {}).get('opponent_tracker')
-    return 0 if opp_profile is None else 100
+def _choose(req):
+    opp_profile = req.get('opponent_runtime', {})
+    baseline = PREFLOP_LOOKUP_TABLE.get(12, 0.0)
+    adaptation = opp_profile.get('adaptation_weight', 0.0)
+    adjusted = baseline + (adaptation * 0.25)
+    deadline = time.monotonic() + 0.05
+    for sample in range(64):
+        if time.monotonic() >= deadline:
+            break
+        adjusted += (sample % 2) * 0.0001
+    return 400 if adjusted > 0.4 else 0
+def get_action(req, current_view):
+    return _choose(req)
+def get_baseline_action(req, current_view):
+    return _choose(req)
+def iter_refinements(req, current_view, baseline, deadline):
+    if time.monotonic() < deadline:
+        yield baseline
 """,
     )
 
@@ -120,6 +124,7 @@ def get_action(req, requests, runtime_ctx=None):
 
     assert result["ok"] is True
     assert checks["precompute_lookup_path"] is True
+    assert checks["persistent_match_memory"] is True
     assert checks["incremental_opponent_model"] is True
 
     feedback = national_runtime_feedback_summary(bot, source_label="national_v3")
@@ -156,7 +161,7 @@ def get_action(req, requests):
     total = 0
     for item in requests:
         total += 1
-    lookup = {i: i for i in range(100)}
+    lookup = {i: i for i in range(256)}
     return lookup.get(total, 0)
 """,
     )
@@ -286,7 +291,7 @@ def main():
 import time
 MAX_DECISION_SAMPLES = 64
 def build_lookup():
-    return {i: i for i in range(100)}
+    return {i: i for i in range(256)}
 def get_action(req, requests, runtime_ctx=None):
     start = time.monotonic()
     lookup = build_lookup()
@@ -300,3 +305,422 @@ def get_action(req, requests, runtime_ctx=None):
 
     assert "decision_path_no_large_runtime_tables" in warning_names
     assert any("strategy.py:get_action->strategy.py:build_lookup" in item for item in tables)
+
+
+def test_capability_contract_does_not_accept_keywords_or_empty_cache_as_precompute(tmp_path):
+    result_fields = ", ".join(f"{i!r}: {i}" for i in range(34))
+    bot = _write_bot(
+        tmp_path / "national_v8",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def _send_wire_action(self, action):
+        pass
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        opponent="""
+def match_profile():
+    return {'actions': 0}
+""",
+        strategy=f"""
+import time
+# A precompute lookup cache is desirable, but this comment is not an artifact.
+BOARD_TEXTURE_CACHE = {{}}
+MAX_DECISION_SAMPLES = 64
+def get_action(req, requests):
+    deadline = time.monotonic() + 0.1
+    result = {{{result_fields}}}
+    for action in req.get('history', []):
+        result[0] += 1
+    return result[0] if deadline else 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    checks = result["checks_by_id"]
+
+    assert checks["precompute_lookup_path"]["passed"] is False
+    assert checks["incremental_opponent_model"]["passed"] is False
+    assert checks["decision_path_no_full_history_scan"]["passed"] is True
+    assert checks["decision_path_no_large_runtime_tables"]["passed"] is True
+
+
+def test_template_tracker_requires_a_strategy_consumer(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v9",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+import time
+MAX_DECISION_SAMPLES = 64
+def get_action(req, requests):
+    deadline = time.monotonic() + 0.1
+    return 0 if deadline else -1
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    checks = result["checks_by_id"]
+
+    assert checks["persistent_match_memory"]["passed"] is True
+    assert checks["incremental_opponent_model"]["passed"] is False
+    assert result["incremental_model_evidence"]["provider_complete"] is True
+    assert result["incremental_model_evidence"]["consumed_by_decision"] is False
+
+
+def test_opaque_lru_cache_does_not_satisfy_measured_precompute_floor(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v10",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def _send_wire_action(self, action):
+        pass
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        strategy="""
+from functools import lru_cache
+import time
+@lru_cache(maxsize=4096)
+def equity_lookup(key):
+    return key / 100.0
+for _key in range(20):
+    equity_lookup(_key)
+def get_action(req, requests):
+    deadline = time.monotonic() + 0.1
+    return 100 if equity_lookup(50) > 0.4 and deadline else 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["checks_by_id"]["precompute_lookup_path"]["passed"] is False
+    dynamic_rows = result["precompute_evidence"]["dynamic_probe_artifacts"]
+    assert dynamic_rows[0]["issues"] == ["artifact_not_inspectable_mapping"]
+    assert result["precompute_evidence"]["consumed_artifacts"][0]["name"] == "equity_lookup"
+
+
+def test_capability_contract_emits_stable_structured_evidence(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v11",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def _send_wire_action(self, action):
+        pass
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        strategy="def get_action(req, requests): return 0\n",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["schema_version"] == 2
+    assert result["detector_version"] == NATIONAL_CAPABILITY_DETECTOR_VERSION
+    assert set(result["checks_by_id"]) == {item["check_id"] for item in result["checks"]}
+    for check in result["checks"]:
+        assert check["name"] == check["check_id"]
+        assert 0.0 <= check["confidence"] <= 1.0
+        assert set(check["evidence"]) == {"summary", "locations", "facts"}
+
+
+def test_noop_tracker_methods_do_not_prove_persistent_match_memory(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v12",
+        national_bot="""
+import argparse
+from collections import deque
+POK_OFFICIAL_ACTION_DELAY = 0.30
+OPPONENT_ADAPTATION_CAP = 0.65
+class OpponentTracker:
+    def __init__(self): self.recent = deque(maxlen=8)
+    def begin_hand(self, hand): pass
+    def observe_action(self, action): pass
+    def observe_settlement(self, earned): pass
+    def observe_showdown(self, cards): pass
+    def snapshot(self):
+        return {'confidence': 0.5, 'adaptation_weight': OPPONENT_ADAPTATION_CAP}
+class NativeNationalBot:
+    def __init__(self): self._opponent_tracker = OpponentTracker()
+    def _send_wire_action(self, action): pass
+    def request(self): return {'opponent_runtime': self._opponent_tracker.snapshot()}
+    def handle(self, msg):
+        self._opponent_tracker.begin_hand(1)
+        self._opponent_tracker.observe_action(msg)
+        self._opponent_tracker.observe_settlement(0)
+        self._opponent_tracker.observe_showdown([])
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        strategy="""
+def get_action(req, requests):
+    profile = req.get('opponent_runtime', {})
+    return 100 if profile.get('adaptation_weight', 0) else 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["checks_by_id"]["persistent_match_memory"]["passed"] is False
+    assert result["incremental_model_evidence"]["provider"]["action_updates"] is False
+
+
+def test_unused_opponent_runtime_read_does_not_prove_strategy_consumption(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def get_action(req, requests):
+    profile = req.get('opponent_runtime', {})
+    confidence = profile.get('confidence', 0.0)
+    return 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["checks_by_id"]["persistent_match_memory"]["passed"] is True
+    assert result["checks_by_id"]["incremental_opponent_model"]["passed"] is False
+
+
+def test_truthy_only_adaptation_does_not_prove_bounded_strategy_adjustment(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13b",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def get_action(req, requests):
+    profile = req.get('opponent_runtime', {})
+    if profile.get('adaptation_weight', 0.0):
+        return 100
+    return 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["checks_by_id"]["persistent_match_memory"]["passed"] is True
+    assert result["checks_by_id"]["incremental_opponent_model"]["passed"] is False
+    assert result["incremental_model_evidence"]["consumer_locations"] == []
+
+
+def test_numerically_noop_adaptation_fails_dynamic_action_influence(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13c",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def get_action(req, requests):
+    profile = req.get('opponent_runtime', {})
+    weight = profile.get('adaptation_weight', 0.0)
+    adjusted = weight * 0.000001
+    return int(adjusted)
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["incremental_model_evidence"]["consumer_locations"]
+    assert result["checks_by_id"]["incremental_opponent_model"]["passed"] is False
+    influence = result["dynamic_runtime_probe"]["strategy_influence"]
+    assert influence["changed_pairs"] == 0
+    assert "opponent_runtime_no_observable_sanitized_action_influence" in influence["issues"]
+
+
+def test_truthy_deadline_label_does_not_prove_bounded_decision_runtime(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v14",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def _send_wire_action(self, action): pass
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        strategy="""
+import time
+MAX_SAMPLES = 64
+def get_action(req, requests):
+    baseline = 0
+    deadline = time.monotonic() + 1.0
+    return baseline if deadline else -1
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["checks_by_id"]["decision_time_budget_visible"]["passed"] is False
+    assert result["decision_time_evidence"]["deadline_checks"] == []
+
+
+def test_cold_cache_or_discarded_table_read_is_not_precompute_evidence(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v15",
+        national_bot="""
+import argparse
+POK_OFFICIAL_ACTION_DELAY = 0.30
+class NativeNationalBot:
+    def _send_wire_action(self, action): pass
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log')
+""",
+        strategy="""
+from functools import lru_cache
+LOOKUP_TABLE = {i: i for i in range(32)}
+@lru_cache(maxsize=128)
+def cached_fact(key): return key * 2
+def get_action(req, requests):
+    LOOKUP_TABLE.get(3)
+    cached_fact(4)
+    return 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["checks_by_id"]["precompute_lookup_path"]["passed"] is False
+    assert result["precompute_evidence"]["consumed_artifacts"] == []
+
+
+def test_dead_branch_cache_warmup_does_not_prove_precompute(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v16",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+from functools import lru_cache
+@lru_cache(maxsize=128)
+def equity_lookup(key): return key / 100.0
+if False:
+    equity_lookup(50)
+def get_action(req, requests):
+    return 100 if equity_lookup(50) > 0.4 else 0
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    artifact = result["precompute_evidence"]["artifacts"][0]
+    assert artifact["built_before_first_decision"] is False
+    assert result["checks_by_id"]["precompute_lookup_path"]["passed"] is False
+
+
+def test_same_named_local_does_not_consume_foreign_precompute_artifact(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v17",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def get_action(req, requests):
+    PREFLOP_LOOKUP_TABLE = {i: i / 31 for i in range(32)}
+    return 100 if PREFLOP_LOOKUP_TABLE.get(12) else 0
+""",
+    )
+    (bot / "constants.py").write_text(
+        "PREFLOP_LOOKUP_TABLE = {i: i / 31 for i in range(32)}\n",
+        encoding="utf-8",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    foreign = next(
+        item for item in result["precompute_evidence"]["artifacts"]
+        if item["location"].startswith("constants.py:")
+    )
+    assert foreign["consumed_by_decision"] is False
+
+
+def test_full_match_alias_passed_to_helper_is_detected(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v18",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def summarize(events):
+    return len(events)
+def get_action(req, requests):
+    events = requests
+    return summarize(events)
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["checks_by_id"]["decision_path_no_full_history_scan"]["passed"] is False
+    assert any("full_match_argument" in item for item in result["decision_path_risks"]["history_scans"])
+
+
+def test_runtime_probe_infrastructure_is_inconclusive_not_candidate_debt(tmp_path, monkeypatch):
+    import national_runtime_probe
+
+    bot = _write_bot(
+        tmp_path / "national_v19",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="def get_action(req, requests): return 0\n",
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "run_national_runtime_probe",
+        lambda *_a, **_k: {
+            "schema_version": 1,
+            "ok": False,
+            "failure_class": "probe_infra",
+            "issues": ["bwrap unavailable"],
+            "artifacts": [],
+            "tracker": {"ok": False, "issues": ["not_run"]},
+            "strategy_influence": {"ok": False, "issues": ["not_run"]},
+        },
+    )
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["ok"] is False
+    assert result["conclusive"] is False
+    assert result["outcome"] == "infrastructure_failure"
+    assert result["required_failures"] == []
+    for check_id in (
+        "precompute_lookup_path",
+        "persistent_match_memory",
+        "incremental_opponent_model",
+    ):
+        assert result["checks_by_id"][check_id]["passed"] is None
+    assert not any(
+        item["check_id"] in {
+            "precompute_lookup_path",
+            "persistent_match_memory",
+            "incremental_opponent_model",
+        }
+        for item in result["advisory_warnings"]
+    )
+
+
+def test_capability_source_read_error_is_infrastructure_not_missing_code(
+    tmp_path, monkeypatch
+):
+    bot = _write_bot(
+        tmp_path / "national_v20",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="def get_action(req, requests): return 0\n",
+    )
+    target = (bot / "strategy.py").resolve()
+    original = Path.read_text
+
+    def fail_one(path, *args, **kwargs):
+        if path.resolve() == target:
+            raise OSError("simulated storage failure")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_one)
+    result = evaluate_national_capabilities(bot)
+
+    assert result["outcome"] == "infrastructure_failure"
+    assert result["conclusive"] is False
+    assert result["required_failures"] == []
+    assert result["infrastructure_failures"][0]["component"] == "capability_source_reader"

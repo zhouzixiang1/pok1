@@ -57,6 +57,7 @@ Most production-style bots and the local battle engine should stay stdlib-only f
 │   ├── core/                   # Evolution pipeline, daemon, MCP tools, ratings, prompts
 │   ├── server/                 # FastAPI app and route modules
 │   ├── frontend/               # React dashboard
+│   ├── core/national_arena/    # Local national TCP presentation/diagnostic sessions
 │   └── tests/                  # Backend and evolution regression tests
 ├── sever/                      # National competition TCP platform
 │   ├── 国赛平台/                # Original competition docs and Windows reference platform
@@ -182,6 +183,14 @@ python scripts/official_platform_acceptance.py \
   --self-play-rounds 1 \
   --opponent-rounds 1 \
   --target-hands 70
+
+# Local Web Arena. This is presentation/diagnostics only and never certifies a bot.
+python scripts/national_arena.py serve --view-only
+python scripts/national_arena.py run --mode managed \
+  --top-bot national_v141 --bottom-bot national_v142 --hands 70 --wait
+
+# Formal signed EXE certification required for every new bot before commit/tag.
+python scripts/official_certify.py full bots/national_v<N> --wait-if-busy
 ```
 
 ### Reinforcement Learning
@@ -307,6 +316,26 @@ THP records:
 - Earnings and players are also recorded in the hand's big-blind-first order, matching the hand-card order.
 - Export encoding is GB2312.
 
+The main Web application's `/arena` page is a local presentation and diagnostic
+surface over the shared national TCP transport and game runtime. Its result
+authority is permanently `diagnostic_only`: Arena events, local THP files,
+wire logs, and match completion never update Glicko, certify a bot, or satisfy
+an evolution gate. Every new bot must separately pass the signed official
+Windows EXE full policy: five 70-hand self-play rounds plus three 70-hand rounds
+against an eligible opponent. Historical content-bound grandfather grants are
+temporary migration eligibility and must never be displayed as an EXE pass.
+Arena and the official EXE share an exclusive lease for TCP port 10001; pending
+formal certification has priority, so use a different Arena port for concurrent
+local presentation work.
+
+National-native strength has a separate, explicit ordering contract. One
+strength sample is one complete 70-hand local native TCP match. The primary
+outcome is the sign of final net chips: positive is a win, negative is a loss,
+and zero is a draw. Glicko/H2H/`selection_score` are derived from those match
+outcomes and remain the primary ranking evidence. Final net-chip magnitude is
+secondary and may only break an equal primary score. Official EXE and Web Arena
+chip results have zero strength weight.
+
 ---
 
 ## Evolution System (`web/core/`)
@@ -333,8 +362,9 @@ Current generation stages are:
 7. review: `run_review`
 8. critic: `run_critic`
 9. verification: `run_precommit_eval`
-10. commit: `commit_bot`
-11. archivist: `run_archivist`
+10. official EXE full certification: `commit_bot` starts/polls the durable 5+3x70 job
+11. commit: `commit_bot` verifies and publishes the signed certificate with the bot/tag
+12. archivist: `run_archivist`
 
 Important current thresholds:
 
@@ -347,7 +377,9 @@ Important current thresholds:
 - Decision tests require pass rate at least 70 percent and no critical scenario failures.
 - `run_quality_gates` runs the national protocol regression shard that matches the active execution mode. `national_native` runs `sever/tests/test_national_platform_alignment.py` without importing the legacy adapter; adapter workflows still run `sever/tests/test_national_alignment.py`.
 - Worker concurrency is capped by `MAX_PARALLEL_WORKERS = 3`, with adaptive throttling under API pressure.
-- `run_precommit_eval` is the final regression gate; critic is advisory in the current orchestrator prompt.
+- Critic is advisory strategy evidence. A successful schema-valid Critic run is required, but its score does not schedule repair or decide acceptance; native TCP precommit is the local strategy gate.
+- `run_precommit_eval` is the final local strength/regression gate. It cannot replace official EXE compliance.
+- `commit_bot` cannot commit/tag a new national bot until a content-bound, signed full official EXE certificate validates.
 - Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only when they point to an active bot backed by normal completion discovery (`.completed` plus `national-bot-v{N}` tag); rejected suggestions are logged as `pipeline.source_selection_rejected`.
 
 The daemon writes live data under `web/core/results/`, including Glicko ratings, H2H matrix, match history, replays, scheduler files, costs, and system events. These files are runtime data and are gitignored.
@@ -362,14 +394,14 @@ Backend entry point:
 
 - `web/main.py` calls `uvicorn.run("server.app:app", ...)`.
 - `web/server/app.py` creates the FastAPI app, starts the orchestrator in lifespan, includes route modules, and serves the built React SPA.
-- Route modules currently include `ratings`, `matches`, `evolution`, `logs`, `control`, `bots`, `pipeline`, `prompts`, `data_stream`, and `scheduler`.
+- Route modules currently include `ratings`, `matches`, `evolution`, `logs`, `control`, `bots`, `pipeline`, `prompts`, `data_stream`, `scheduler`, `certification`, and `national_arena`.
 - SSE endpoints include `/api/data/stream` and `/api/evolution/stream`.
 - Shared cached reads use `web/server/cache.py` with a short TTL and `fcntl` locks.
 
 Frontend facts:
 
 - Source is under `web/frontend/src/`.
-- Routes: `/`, `/evolution`, `/matches`, `/rating-trends`, `/match-matrix`, `/logs`, `/control`, `/bots`, `/experience`, `/prompts`.
+- Routes: `/`, `/evolution`, `/matches`, `/rating-trends`, `/match-matrix`, `/logs`, `/control`, `/bots`, `/experience`, `/prompts`, `/arena`.
 - `DataProvider` uses `/api/data/stream`; `EvolutionMonitor` uses `/api/evolution/stream`.
 - The frontend is based on a TailAdmin template; package name is still `tailadmin-react`.
 - It imports routing APIs from `react-router` v7, not `react-router-dom`.
@@ -392,6 +424,7 @@ Evolution Glicko-2:
 
 - Defaults: `r=1500`, `rd=350`, `sigma=0.06`; the Glicko-2 volatility constant is `TAU=0.3` in `glicko2.py` (NOT 0.5).
 - Conservative rating is `r - 2 * rd`.
+- Each national strength sample is exactly one completed 70-hand native TCP match. Match-result sign is primary; net-chip magnitude is retained only as a secondary tie-breaker.
 - The daemon maintains H2H and bot statistics in addition to ratings.
 - Reaping sorts by conservative Glicko rating as the primary cull key. Reap events include `selection_key=conservative_glicko`, `conservative_rating`, `leaderboard_score`, and `h2h_avg_wr` so logs show both the actual decision key and contextual matchup metrics.
 
