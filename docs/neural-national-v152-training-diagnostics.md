@@ -1486,6 +1486,77 @@ running, and no restart was performed. Only that 75-pass atomic prefix is
 valid; formal scaling, selection, gate, candidate creation, and any strength
 claim remain prohibited until a complete 160/160 source exists.
 
+The directory also contains all six valid, duplicate-free pass-76 task files
+and corresponding appended row tails, but neither the pool snapshot nor the
+self-hashed collector state advanced to pass 76. Those files are therefore an
+interrupted, uncommitted transaction rather than part of the atomic completed
+prefix. The observed failure window coincides with another process replacing
+the live ratings file between the old collector's post-probe ratings reads.
+The strongest diagnosis is a transient missing-file read during that replace,
+not resource exhaustion. Main now freezes one ratings snapshot for each pass
+and validates persisted plans, but the stopped corpus binds the older collector
+code hash. Resuming it consequently requires explicit provenance handling and
+operator authorization; this work does not silently restart, upgrade, or
+discard it.
+
+## Candidate-Only Native V4 Ablation Contract
+
+Native joint-policy diagnostics now have four canonical modes: the complete v4
+policy, neural disabled, cross-hand history disabled, and outcome uncertainty
+plus match-outcome selection disabled. `native_tcp_evaluate.py` applies the
+selected diagnostic environment only to the candidate process in its current
+seat. It explicitly clears all three v4 ablation variables for the opponent,
+then reverses those mappings with the seats in the swapped leg. This prevents a
+parent shell setting from contaminating either side. The per-process mapping
+also clears legacy v3 ablations and explicitly binds or removes trace and
+force-action controls, so a parent-shell probe cannot disagree with the report.
+The legacy debug wrapper accepts the same cleanup mapping, while non-full modes
+reject that wrapper and any request to label the run as strength evidence.
+
+The outcome/uncertainty/match-off mode is a runtime component ablation, not a
+retrained headless architecture. It skips calibrated match-outcome inference
+and the formal win-first selector, removes match/tail lower-bound contribution,
+and uses the immediate-hand mean in place of its uncertainty lower bound before
+delegating to the existing value/response selector. Likewise, cross-hand-off
+zeros the runtime history input; it is not a substitute for training and
+calibrating the formal `cross_encoder=none` architecture. The modes cannot be
+combined, and every exception still falls back to the already sanitized rule
+action.
+
+`summarize_v4_native_ablations.py` accepts exactly one raw native report for
+each mode and discovers no ratings, role manifest, exposure ledger, or
+protected dataset. It requires identical stable candidate and opponent trees,
+the same deterministic non-overlapping deck and bot-seed plan, at least three
+seed blocks, one to four workers, two compliant native 70-hand legs per row,
+and zero wrapper, adapter, illegal-action, timeout, force-action, or process
+failures. Missing hands, changed artifacts, changed identities, duplicate rows,
+overlapping per-player bot-seed windows, or a candidate/opponent seat mismatch
+fail closed. Every raw report must also carry the evaluator's explicit strength
+result; a positive deployment, native-strength, protected-data, or
+official-acceptance claim is rejected rather than copied into the summary. The
+full-mode report alone may reuse a separately requested strength-compliance run
+when that request passed with no errors; the resulting ablation summary remains
+diagnostic and cannot inherit that status. All three non-full inputs must have
+unrequested, false, error-free strength fields.
+
+For every `(opponent, seed)` block, the forward and swapped legs remain together
+in all resamples. The primary diagnostic is the paired difference between full
+and ablated `net_chips > 0` indicators for the individual 70-hand legs. Both an
+ordinary complete-seed-block bootstrap and an equal-opponent-stratified version
+are emitted. Net-chip delta per hand and its corresponding intervals are
+secondary only and cannot change the primary direction or ordering. The
+self-hashed summary has an exact root schema and keeps diagnostic-only true and
+all protected-data, eligibility, deployment, native-strength, official-EXE,
+strength-evidence, and formal-release-evidence fields false. These diagnostics
+cannot be authoritatively validated from their self-hash alone: validation
+requires all four raw report byte streams and recomputes the entire identity,
+counts, bootstrap intervals, chip diagnostics, directions, and controls for
+exact equality. They can guide the eventual pass-160 architecture study;
+they cannot open `policy_selection` or `policy_gate`, create a Bot, or establish
+strength. After this diagnostic chain and its contamination hardening, the
+complete neural-lab suite passes 576 tests, the focused native workflow suite
+passes 86 tests, and all 33 national protocol tests pass.
+
 ## Literature Recheck And Search Direction
 
 The architecture decision is also constrained by established imperfect-

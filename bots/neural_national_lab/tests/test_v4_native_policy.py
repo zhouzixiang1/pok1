@@ -262,7 +262,7 @@ class _Runtime:
         lower = [0.0] * 6
         lower[3] = 10.0
         return {
-            field: {"lower": list(lower)}
+            field: {"mean": list(lower), "lower": list(lower)}
             for field in (
                 "delta_vs_rule",
                 "tail_delta_vs_rule",
@@ -295,15 +295,80 @@ class _Runtime:
         )
 
 
+class _DiagnosticValueSelector:
+    def __init__(self, runtime, *, fail: bool = False) -> None:
+        self.runtime = runtime
+        self.fail = fail
+
+    def select_candidate(self, values, candidates):
+        self.runtime.value_selection = {
+            "values": values,
+            "candidates": candidates,
+        }
+        if self.fail:
+            raise RuntimeError("diagnostic value selector failed")
+        selected = next(row for row in candidates if row["label_id"] == 3)
+        if values["delta_vs_rule"]["lower"][3] <= 0.0:
+            return None
+        return {
+            **selected,
+            "prediction": {"hand": values["delta_vs_rule"]["lower"][3]},
+        }
+
+
+class _DiagnosticAblationRuntime(_Runtime):
+    def __init__(self, *, fail_value_selector: bool = False) -> None:
+        super().__init__()
+        self.outcome_calls = 0
+        self.win_first_calls = 0
+        self.value_selection = None
+        self.raw_values = None
+        self.value_response = _DiagnosticValueSelector(
+            self, fail=fail_value_selector
+        )
+
+    def predict_values(self, **inputs):
+        self.value_inputs = inputs
+        hand_mean = [0.0] * 6
+        hand_mean[3] = 1_000.0
+        pessimistic = [0.0] * 6
+        pessimistic[3] = -500.0
+        self.raw_values = {
+            "delta_vs_rule": {
+                "mean": hand_mean,
+                "lower": list(pessimistic),
+            },
+            "tail_delta_vs_rule": {
+                "mean": [250.0] * 6,
+                "lower": list(pessimistic),
+            },
+            "match_delta_vs_rule": {
+                "mean": [500.0] * 6,
+                "lower": list(pessimistic),
+            },
+        }
+        return self.raw_values
+
+    def predict_match_outcomes(self, **inputs):
+        self.outcome_calls += 1
+        raise AssertionError("diagnostic ablation must skip outcome inference")
+
+    def select_candidate(self, *args, **kwargs):
+        self.win_first_calls += 1
+        raise AssertionError("diagnostic ablation must skip win-first selection")
+
+
 def test_native_v4_uses_shared_win_first_selector_and_exact_context() -> None:
     runtime = _Runtime()
     native = native_policy.NativeV4Policy(runtime)
+    request = _request()
+    request["cross_hand_sequence"] = [[0.1] * 15 + [-0.1]]
     captured = {
         "schema": v3_policy.STRATEGY_CONTEXT_SCHEMA,
         "features": [0.25] * 66,
     }
 
-    action = native.advise(_request(), _state(), 0, captured)
+    action = native.advise(request, _state(), 0, captured)
 
     assert action > _state()["round_bet"]
     assert runtime.value_inputs == runtime.outcome_inputs
@@ -312,8 +377,10 @@ def test_native_v4_uses_shared_win_first_selector_and_exact_context() -> None:
     assert len(runtime.value_inputs["rule_action"]) == 6
     assert len(runtime.value_inputs["strategy_context"]) == 66
     assert runtime.value_inputs["strategy_context"] == [0.0] * 66
+    assert len(runtime.value_inputs["cross_sequence"]) == 1
     assert runtime.selection["rule_label_id"] == 1
     assert native.last_decision["used"] is True
+    assert native.last_decision["ablation_mode"] == "full"
 
 
 def test_native_v4_inference_failure_returns_same_sanitized_rule() -> None:
@@ -358,6 +425,85 @@ def test_native_v4_disable_env_fails_closed(monkeypatch) -> None:
     monkeypatch.setenv("POK_V4_DISABLE", "1")
 
     assert native_policy.NativeV4Policy.load("missing.json") is None
+
+
+def test_native_v4_cross_hand_ablation_binds_canonical_mode(monkeypatch) -> None:
+    monkeypatch.setenv("POK_V4_DISABLE_CROSS_HAND", "1")
+    request = _request()
+    request["cross_hand_sequence"] = [[0.1] * 15 + [-0.1]]
+    runtime = _Runtime()
+    native = native_policy.NativeV4Policy(runtime)
+
+    assert native.advise(request, _state(), 0, {}) > 0
+    assert runtime.value_inputs["cross_sequence"] == []
+    assert runtime.outcome_inputs["cross_sequence"] == []
+    assert native.last_decision["ablation_mode"] == "cross_hand_off"
+
+
+def test_native_v4_outcome_uncertainty_match_ablation_uses_hand_mean(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        native_policy.OUTCOME_UNCERTAINTY_MATCH_ABLATION_ENV, "1"
+    )
+    monkeypatch.setattr(
+        native_policy,
+        "candidate_actions",
+        lambda request, state, safe: [{"label_id": 3, "action": 201}],
+    )
+    runtime = _DiagnosticAblationRuntime()
+    native = native_policy.NativeV4Policy(runtime)
+
+    assert native.advise(_request(), _state(), 0, {}) == 201
+    assert runtime.outcome_calls == 0
+    assert runtime.win_first_calls == 0
+    values = runtime.value_selection["values"]
+    assert values["delta_vs_rule"]["lower"] == values[
+        "delta_vs_rule"
+    ]["mean"]
+    assert values["delta_vs_rule"]["lower"][3] == 1_000.0
+    assert values["tail_delta_vs_rule"]["lower"] == [0.0] * 6
+    assert values["match_delta_vs_rule"]["lower"] == [0.0] * 6
+    assert runtime.raw_values["delta_vs_rule"]["lower"][3] == -500.0
+    assert runtime.raw_values["tail_delta_vs_rule"]["lower"][3] == -500.0
+    assert runtime.raw_values["match_delta_vs_rule"]["lower"][3] == -500.0
+    assert native.last_decision["ablation_mode"] == (
+        "outcome_uncertainty_match_off"
+    )
+
+
+def test_native_v4_diagnostic_ablation_exception_returns_same_rule(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        native_policy.OUTCOME_UNCERTAINTY_MATCH_ABLATION_ENV, "1"
+    )
+    monkeypatch.setattr(
+        native_policy,
+        "candidate_actions",
+        lambda request, state, safe: [{"label_id": 3, "action": 151}],
+    )
+    runtime = _DiagnosticAblationRuntime(fail_value_selector=True)
+    native = native_policy.NativeV4Policy(runtime)
+
+    assert native.advise(_request(), _state(), 201, {}) == 201
+    assert runtime.outcome_calls == 0
+    assert runtime.win_first_calls == 0
+    assert native.last_decision["rule_action"] == 201
+    assert native.last_decision["ablation_mode"] == (
+        "outcome_uncertainty_match_off"
+    )
+    assert "diagnostic value selector failed" in native.last_decision["error"]
+
+
+def test_native_v4_rejects_combined_component_ablations(monkeypatch) -> None:
+    monkeypatch.setenv("POK_V4_DISABLE_CROSS_HAND", "1")
+    monkeypatch.setenv(
+        native_policy.OUTCOME_UNCERTAINTY_MATCH_ABLATION_ENV, "1"
+    )
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        native_policy.NativeV4Policy(_Runtime())
 
 
 def test_native_v4_load_accepts_path_and_authorized_payload_snapshot(
