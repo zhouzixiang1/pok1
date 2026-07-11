@@ -1203,6 +1203,44 @@ tests pass. A complete independently collected role dataset, multi-seed
 selection, protected gate, and fresh native TCP matches remain mandatory before
 this head can influence a formal candidate.
 
+## Runtime Win-First Policy Contract
+
+`win_first_policy_v4.py` makes the user's strength priority executable rather
+than leaving it only in the post-hoc gate. Calibrated probabilities from each
+seed are aggregated as a mean plus/minus a configurable population-standard-
+deviation uncertainty radius. A candidate is ineligible unless its absolute
+70-hand positive-outcome probability lower bound is at least 50 percent, its
+lower bound strictly exceeds the rule action's probability upper bound by the
+global uplift margin, its immediate-hand LCB is nonnegative, and its weighted
+chip LCB exceeds a nonnegative margin. Per-opponent fields and weakened
+positive-probability floors are rejected by the exact policy schema.
+
+Among eligible actions, selection is lexicographic: candidate positive-
+probability LCB first, conservative probability uplift second, and chip LCB
+score third. A controlled test therefore selects a higher-win-probability
+action with a one-chip score over a lower-win-probability action with a
+thousand-chip score. This intentionally encodes “finish the 70-hand match
+positive first; maximize chips second” rather than blending both objectives
+into one scalar that chips can dominate.
+
+`opponent_multitask_ensemble_runtime_v4.py` validates every calibrated v4
+member and its canonical payload hash, requires all members to use the same
+model-calibration role, reuses the tested v3 value/response aggregation through
+an exact base-model projection, and adds the outcome uncertainty path. A
+calibration-only bundle cannot select an action; a selected policy must be
+hash-bound and carry false deployment/strength claims. Eight focused tests
+cover uncertainty arithmetic, lexicographic priority, rule-UCB comparison,
+threshold weakening, malformed outcome bounds, uncalibrated members, and
+member-binding drift. The full neural-lab suite now passes 340 tests, with all
+30 national protocol tests still passing.
+
+This runtime contract is not yet connected to protected v4 policy selection,
+policy gate, native candidate construction, or native TCP strength evaluation.
+No new bot version has been created. The next implementation step is to add
+Torch-side multi-seed outcome aggregation to the opponent-disjoint selection
+role and make that selector call this same shared scoring function; copying the
+old v3 scalar-value selector would reintroduce offline/runtime semantic drift.
+
 ## Literature Recheck And Search Direction
 
 The architecture decision is also constrained by established imperfect-
