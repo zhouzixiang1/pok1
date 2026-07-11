@@ -368,6 +368,7 @@ chip results have zero strength weight.
 
 - `evolution_infra.py` - constants, git helpers, file locks, checkpoints, ratings.
 - `generation_scheduler.py` - three-phase generation cycle.
+- `master_context_contract.py`, `plan_compiler.py`, `strategy_reference_pack.py` - digest-bound planning evidence, deterministic worker-contract compilation, and typed local strategy cards.
 - `orchestrator.py` - Claude agent loop with MCP tools.
 - `tools.py`, `tool_planning.py`, `tool_gates.py`, `tool_eval.py`, `tool_commit.py`, `tool_status.py`, `tool_bot_management.py` - MCP tools.
 - `agent_master.py`, `agent_workers.py`, `agent_review.py`, `audit_agents.py` - LLM roles and advisory audits.

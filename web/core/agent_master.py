@@ -293,6 +293,35 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         from llm_query import parse_json_output_with_mode
         data, _failure_mode = parse_json_output_with_mode(output)
         if data and "tasks" in data:
+            # The structured runtime contract and reference-card choice already
+            # determine a small set of literal execution anchors.  Bind those
+            # system-owned terms before Pydantic validation instead of asking a
+            # weaker planner model to reproduce them losslessly in free prose.
+            # Invalid contracts are intentionally left untouched and still fail
+            # the canonical schema gate below.
+            from plan_compiler import bind_system_owned_worker_contract_terms
+            data, _binding_meta = bind_system_owned_worker_contract_terms(data)
+            if _binding_meta.get("bound"):
+                ui.log_history(
+                    "Master plan contract compiler bound missing execution anchors "
+                    f"for {len(_binding_meta.get('bound_tasks', []))} worker task(s).",
+                    "info",
+                )
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "pipeline.master_contract_terms_bound",
+                        "info",
+                        f"Master v{next_v}: bound system-owned worker contract terms",
+                        {
+                            "next_v": next_v,
+                            "source_v": source_v,
+                            "attempt": attempt + 1,
+                            "binding": _binding_meta,
+                        },
+                    )
+                except Exception:
+                    pass
             # P0 修复：在 Pydantic 剥离 branch_from (extra='ignore') 之前，对原始 dict
             # 跑 Master 的 source-override 硬校验。MasterPlan 删除 branch_from 字段后，
             # model_validate 会静默丢弃该键，必须在丢弃前拦截。

@@ -655,7 +655,30 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
 
     try:
         from evolution_infra import write_pipeline_checkpoint
+        from master_context_contract import build_master_context
+
         parent2_v = parents[1] if parents and len(parents) > 1 else None
+        canonical_perf_text = perf_text
+        try:
+            # Guardian insights used to reach Master only when the outer LLM
+            # copied them out of its context.  Preserve that useful evidence in
+            # the system-owned handoff while removing the lossy transcription.
+            from orchestrator_context import _load_guardian_insights
+
+            guardian_text = _load_guardian_insights(max_entries=3)
+            if guardian_text:
+                canonical_perf_text = (
+                    (canonical_perf_text + "\n\n" + guardian_text).strip()
+                )
+        except Exception:
+            pass
+        master_context = build_master_context(
+            next_v=_final_next_v,
+            source_v=source_v,
+            stagnation_info=stagnation_text,
+            match_analysis=match_text,
+            performance_verification=canonical_perf_text,
+        )
         ok = write_pipeline_checkpoint(
             _final_next_v,
             source_v,
@@ -671,7 +694,11 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     "parent_b": parent2_v,
                     "h2h_snapshot_manifest_digest": h2h_snapshot.get("manifest_digest"),
                     "h2h_snapshot_sha256": h2h_snapshot.get("sha256"),
-                }
+                },
+                # System-owned exact handoff.  The outer orchestrator may show
+                # these strings to the user/model, but run_master reloads this
+                # digest-bound copy instead of trusting an LLM transcription.
+                "master_context": master_context,
             },
         )
     except Exception as exc:

@@ -311,8 +311,9 @@ def _inject_master_plan_hint(checkpoint, lines):
     pipeline_state.json on its own.  If we only say "Master plan is saved in
     session history", a fresh (non-resumed) session has NO history and the
     model spirals calling ToolSearch trying to find Read/Bash.  Instead we
-    inline a compact summary of each task so execute_workers(tasks=...)
-    can be called correctly.
+    inline a compact summary for observability while instructing the model to
+    pass ``tasks=[]``.  The worker tool then loads the exact checkpoint-owned
+    task objects; a prompt preview must never be used to reconstruct them.
     """
     plan = checkpoint.get("master_plan")
     route = route_policy(checkpoint)
@@ -336,16 +337,15 @@ def _inject_master_plan_hint(checkpoint, lines):
     if tasks:
         lines.append(
             "Master plan is saved — do NOT call run_master again. "
-            "Pass these tasks to execute_workers:"
+            "Call execute_workers with tasks=[] so the tool loads the exact "
+            "checkpoint-owned tasks. Do not paraphrase or reconstruct them:"
         )
         for t in tasks:
             wid = t.get("worker_id", "?")
             role = t.get("role", "?")
             targets = ", ".join(t.get("target_files", []))
-            prompt_preview = t.get("worker_prompt", "")[:200]
             lines.append(
-                f"  Worker {wid} ({role}): targets=[{targets}], "
-                f"prompt=\"{prompt_preview}...\""
+                f"  Worker {wid} ({role}): checkpoint targets=[{targets}]"
             )
     else:
         lines.append("Master plan is saved — do NOT call run_master again.")
@@ -494,7 +494,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("  prepare_next_gen(source_v, next_v) — copy source bot dir")
         lines.append("  run_direction_audit(source_v, next_v) — detect repetitive evolution directions")
         lines.append("  run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification, direction_audit, research_proposals) — plan worker tasks")
-        lines.append("  execute_workers(tasks, next_v, source_v, reviewer_feedback) — modify bot code in parallel when target_files do not overlap (max 3), otherwise serial")
+        lines.append("  execute_workers(tasks, next_v, source_v, reviewer_feedback) — after Master, pass tasks=[] to load the exact checkpoint-owned plan; modifies bot code in parallel when target_files do not overlap (max 3), otherwise serial")
         lines.append("  run_quality_gates(version, source_v) — full hard gates: code_changed, declared_scope, compile/runtime import, protected contracts, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, reachability")
         lines.append("  run_review(version, source_v, plan) — code quality review (boundaries, size, correctness)")
         lines.append("  run_critic(version, source_v, plan, reviewer_feedback, force_advance) — hard strategic gate; rejected candidates must rework before precommit_eval")

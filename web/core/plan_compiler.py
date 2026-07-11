@@ -14,12 +14,30 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from output_schema import RuntimeContract, runtime_contract_worker_prompt_terms
+from output_schema import (
+    RuntimeContract,
+    WORKER_PROMPT_MAX_CHARS,
+    WORKER_PROMPT_MIN_CHARS,
+    runtime_contract_worker_prompt_terms,
+)
 
 
 SOFT_WORKER_PROMPT_CHARS = 6_000
 HARD_WORKER_PROMPT_CHARS = 10_000
 TASK_CONTEXT_CHARS = 12_000
+SYSTEM_OWNED_CONTRACT_HEADER = (
+    "System-owned worker contract binding (derived from the structured "
+    "runtime_contract/reference card):"
+)
+SYSTEM_OWNED_CONTRACT_BEGIN = "[[SYSTEM_OWNED_WORKER_CONTRACT:BEGIN]]"
+SYSTEM_OWNED_CONTRACT_END = "[[SYSTEM_OWNED_WORKER_CONTRACT:END]]"
+_SYSTEM_OWNED_CONTRACT_RE = re.compile(
+    r"\n\n"
+    + re.escape(SYSTEM_OWNED_CONTRACT_BEGIN)
+    + r"\n.*?\n"
+    + re.escape(SYSTEM_OWNED_CONTRACT_END),
+    re.DOTALL,
+)
 
 
 def _safe_worker_id(value: Any, fallback: int) -> str:
@@ -79,6 +97,113 @@ def _compiled_prompt_validation_terms(
     return tuple(dict.fromkeys(terms))
 
 
+def bind_system_owned_worker_contract_terms(
+    plan: dict[str, Any],
+    *,
+    max_prompt_chars: int = WORKER_PROMPT_MAX_CHARS,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Bind machine-derived contract anchors into worker prompts.
+
+    Master owns the strategy choice and the concrete implementation brief.  It
+    should not also be a lossy serializer for literal terms that are already
+    determined by ``runtime_contract`` and the selected reference card.  This
+    pass renders one canonical system block from those structured sources
+    before the hard schema gate runs.  Re-running it replaces that block, so a
+    later system architecture policy can add focus terms without duplicating
+    stale blocks.
+
+    The pass is deliberately fail-closed.  It never repairs an invalid runtime
+    contract, never invents a reference card, and never truncates model-authored
+    text to make room.  Invalid contracts and prompt overflows therefore remain
+    visible to the existing schema validators.
+    """
+    bound = copy.deepcopy(plan)
+    tasks = bound.get("tasks", []) if isinstance(bound, dict) else []
+    meta: dict[str, Any] = {
+        "bound": False,
+        "bound_tasks": [],
+        "invalid_contract_tasks": [],
+        "invalid_prompt_tasks": [],
+        "overflow_tasks": [],
+        "max_prompt_chars": max_prompt_chars,
+    }
+    if not isinstance(tasks, list):
+        return bound, meta
+
+    for idx, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            continue
+        raw_contract = task.get("runtime_contract")
+        if not isinstance(raw_contract, dict):
+            continue
+        worker_id = task.get("worker_id", idx + 1)
+        try:
+            RuntimeContract.model_validate(raw_contract)
+        except Exception as exc:
+            meta["invalid_contract_tasks"].append({
+                "worker_id": worker_id,
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            })
+            continue
+
+        raw_prompt = task.get("worker_prompt")
+        if not isinstance(raw_prompt, str) or len(raw_prompt) < WORKER_PROMPT_MIN_CHARS:
+            meta["invalid_prompt_tasks"].append({
+                "worker_id": worker_id,
+                "reason": (
+                    "worker_prompt_not_string"
+                    if not isinstance(raw_prompt, str)
+                    else "worker_prompt_below_min_chars"
+                ),
+                "original_chars": len(raw_prompt) if isinstance(raw_prompt, str) else None,
+            })
+            continue
+
+        terms = _compiled_prompt_validation_terms(bound, task)
+        if not terms:
+            continue
+        prompt, replaced_blocks = _SYSTEM_OWNED_CONTRACT_RE.subn("", raw_prompt)
+        prompt_lower = prompt.lower()
+        missing_terms = tuple(
+            term for term in terms if str(term).lower() not in prompt_lower
+        )
+
+        binding_block = (
+            f"\n\n{SYSTEM_OWNED_CONTRACT_BEGIN}\n"
+            f"{SYSTEM_OWNED_CONTRACT_HEADER}\n"
+            "- Required literal execution anchors: "
+            + " | ".join(str(term) for term in terms)
+            + ".\n"
+            "- These anchors name executable obligations already selected in the "
+            "structured contract. Implement their behavior and control evidence; "
+            "do not treat them as labels.\n"
+            f"{SYSTEM_OWNED_CONTRACT_END}"
+        )
+        bound_prompt = prompt + binding_block
+        if len(bound_prompt) > max_prompt_chars:
+            meta["overflow_tasks"].append({
+                "worker_id": worker_id,
+                "original_chars": len(prompt),
+                "required_chars": len(bound_prompt),
+                "required_terms": list(terms),
+            })
+            continue
+
+        task["worker_prompt"] = bound_prompt
+        if bound_prompt != raw_prompt:
+            meta["bound"] = True
+            meta["bound_tasks"].append({
+                "worker_id": worker_id,
+                "original_chars": len(raw_prompt),
+                "bound_chars": len(bound_prompt),
+                "added_terms": list(missing_terms),
+                "bound_terms": list(terms),
+                "replaced_blocks": replaced_blocks,
+            })
+
+    return bound, meta
+
+
 def compile_master_plan(
     plan: dict[str, Any],
     *,
@@ -89,16 +214,28 @@ def compile_master_plan(
     context_chars: int = TASK_CONTEXT_CHARS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return a compiled copy of a Master plan plus compiler metadata."""
-    compiled = copy.deepcopy(plan)
+    compiled, contract_binding = bind_system_owned_worker_contract_terms(plan)
     tasks = compiled.get("tasks", []) if isinstance(compiled, dict) else []
     meta = {
         "compiled": False,
         "compiled_tasks": [],
         "hard_prompt_chars": hard_prompt_chars,
         "context_chars": context_chars,
+        "contract_binding": contract_binding,
     }
     context_dir = Path(target_dir) / ".task_context"
-    _reset_task_context_dir(context_dir)
+    has_precompiled_task = bool(
+        isinstance(tasks, list)
+        and any(
+            isinstance(task, dict)
+            and task.get("worker_prompt_compiled") is True
+            and str(task.get("task_brief_file") or "").strip()
+            for task in tasks
+        )
+    )
+    meta["preserved_compiled_context"] = has_precompiled_task
+    if not has_precompiled_task:
+        _reset_task_context_dir(context_dir)
     if not isinstance(tasks, list):
         return compiled, meta
 

@@ -17,8 +17,26 @@ The cards are not an equilibrium policy and do not certify strength.  Local
 native TCP precommit remains the strength gate; the official Windows EXE remains
 the protocol/compliance oracle only.
 
+Master chooses the typed runtime contract, reference card, implementation
+scope, behavior hypothesis, and controls.  After that choice, the plan compiler
+copies the card/runtime contract's exact literal execution anchors into the
+worker prompt before schema validation.  This is an idempotent serialization
+step, not semantic auto-repair: an unknown work primitive, mismatched card,
+invalid owner, missing contract section, or oversized prompt is still rejected.
+It prevents a weaker planner from losing a word such as `control` while keeping
+all strategic and safety judgments behind the existing hard gates.
+
 ## Design sources
 
+- [FunSearch](https://www.nature.com/articles/s41586-023-06924-6) starts from
+  an implementation/skeleton, samples a program database, and closes the loop
+  with an objective evaluator; its result supports parent-derived mutation, not
+  single-lineage hill climbing.
+- [AlphaEvolve](https://arxiv.org/abs/2506.13131) extends that pattern to
+  codebases with a program database, prompt sampling, automated evaluators, and
+  an evolutionary population.  For this repository the transferable boundary
+  is “LLM proposes; deterministic/native evaluators select,” not dependence on
+  a particular frontier model.
 - [DeepStack](https://arxiv.org/abs/1701.01724) motivates continual, public-state
   reasoning rather than one global static policy.
 - [Depth-Limited Solving for Imperfect-Information Games](https://arxiv.org/abs/1805.08195)
@@ -27,6 +45,24 @@ the protocol/compliance oracle only.
 - [OpenSpiel's algorithm reference](https://openspiel.readthedocs.io/en/latest/algorithms.html)
   is a practical reference for CFR-style finite action abstractions and bounded
   sampling, not a dependency of production bots.
+
+## Evolution topology
+
+Deriving a candidate from a proven bot is reasonable: it preserves a legal
+baseline, gives paired parent comparison, and makes attribution possible.  It
+becomes unreasonable when “derive” means one incumbent, one prompt, and another
+threshold patch forever.  Parentage is therefore a safety/baseline mechanism,
+while novelty must come from population/source selection, crossover when
+structurally justified, explicit unresolved architecture focuses, typed
+strategy cards, and measured action-level counterfactuals.  A candidate that
+only renames a helper or adjusts an old margin has not earned novelty merely by
+being a new version.
+
+The LLM is used as a mutation/planning operator.  It does not own source
+identity, evidence transport, executable contract serialization, worker task
+authority, legality, or promotion.  Those are deterministic because a weaker
+model is most useful when spending tokens on alternative mechanisms and code,
+not on copying hashes, enum literals, or checkpoint state without error.
 
 ## Current cards
 
@@ -81,13 +117,23 @@ evaluation would hide the very capability being tested.
 
 ## Candidate exact preflop-equity asset
 
-An operator-side research checkout contains an exact 1,326 × 1,326 heads-up
-preflop equity matrix.  This release worktree does **not** vendor, load, or
-authorize that file, so it is intentionally **not an implicit dependency** of
-generated bots.  If later admitted, its useful form is a compressed,
-hash-pinned row store: it fits inside the current 8 MiB in-memory contract
-after loading, and a weighted 1,225-combo query is substantially faster and
-less noisy than rebuilding a Monte Carlo estimate.
+The isolated neural-lab checkout at
+`bots/neural_national_lab/external/poker-cfr` contains an exact 1,326 × 1,326
+heads-up preflop equity matrix from `b-inary/poker-cfr`.  The source is
+BSD-2-Clause; the tracked asset was introduced by upstream commit
+`f3c04b645ed9ff70e558a9bbed0e0de40eeb112a`, is 7,033,112 bytes, and has SHA-256
+`006404b36d257fc9455da0d0f0ab89aef3e80ece56c8f3e770bad926cfe5ec8a`.
+It is a bincode `Vec<u32>`: an eight-byte length followed by 1,758,276 counters.
+This release worktree does **not** vendor, load, or authorize that nested-repo
+file for formal bots, so it is intentionally **not an implicit dependency** of
+generated candidates.
+
+The raw file fits under 8 MiB, but decoding 1.76 million values into ordinary
+Python integers does not.  Admission therefore needs a hash-pinned, read-only
+`mmap`/packed-row loader (or a smaller canonical row store), plus a measured
+weighted 1,225-combo query path.  That would be substantially faster and less
+noisy than rebuilding a Monte Carlo estimate without pretending the table is a
+complete strategy.
 
 Before it is provisioned, it needs a system-owned asset registry, license
 notice, source/decoded SHA-256 values, deterministic loader, empty/corrupt
