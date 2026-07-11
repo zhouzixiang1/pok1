@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 import random
 import sys
-from typing import Any
+from typing import Any, Callable
 
 
 TOOLS = Path(__file__).resolve().parent
@@ -434,12 +434,102 @@ def _match_outcome_observation(
     }
 
 
+def _select_scalar_candidate(
+    row: dict[str, Any], config: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Retain the historical v3 chip-score selector behind an explicit API."""
+    hand_weight = float(config["hand_weight"])
+    tail_weight = float(config.get("tail_weight", 0.0))
+    match_weight = float(
+        config.get("match_weight", 1.0 - hand_weight - tail_weight)
+    )
+    if min(hand_weight, tail_weight, match_weight) < -1e-9:
+        raise ValueError("policy value weights must be non-negative")
+    response_weight = float(config["response_weight"])
+    margin = float(config["margin"])
+    min_hand_lcb = config.get("min_hand_lcb")
+    if min_hand_lcb is not None:
+        min_hand_lcb = float(min_hand_lcb)
+    use_lower = bool(config.get("use_lower", True))
+    value_key = "lower" if use_lower else "mean"
+    best = None
+    for candidate in row["candidates"]:
+        label_id = candidate["label_id"]
+        hand = row["values"]["delta_vs_rule"][value_key][label_id]
+        tail = row["values"]["tail_delta_vs_rule"][value_key][label_id]
+        match = row["values"]["match_delta_vs_rule"][value_key][label_id]
+        if min_hand_lcb is not None and float(hand) < min_hand_lcb:
+            continue
+        score = (
+            hand_weight * float(hand)
+            + tail_weight * float(tail)
+            + match_weight * float(match)
+            + response_weight * float(candidate["response_signal"])
+        )
+        if best is None or score > best[0]:
+            best = (score, candidate, float(hand), float(tail), float(match))
+    if best is None or best[0] <= margin:
+        return None
+    return {
+        **best[1],
+        "prediction": {
+            "value_key": value_key,
+            "hand": best[2],
+            "tail": best[3],
+            "match": best[4],
+            "hand_weight": hand_weight,
+            "tail_weight": tail_weight,
+            "match_weight": match_weight,
+            "response_signal": best[1]["response_signal"],
+            "policy_score": best[0],
+        },
+    }
+
+
+def _validated_selected_candidate(
+    row: dict[str, Any], selected: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Bind a selector result back to the observed counterfactual evidence."""
+    if selected is None:
+        return None
+    if not isinstance(selected, dict) or not isinstance(
+        selected.get("prediction"), dict
+    ):
+        raise ValueError("policy selector returned an invalid candidate")
+    try:
+        label_id = int(selected["label_id"])
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("policy selector returned an invalid candidate") from exc
+    action = selected.get("action")
+    if action is not None:
+        try:
+            action = int(action)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("policy selector returned an invalid candidate") from exc
+    matches = [
+        candidate
+        for candidate in row["candidates"]
+        if int(candidate["label_id"]) == label_id
+        and (
+            action is None
+            or candidate.get("action") is None
+            or int(candidate["action"]) == action
+        )
+    ]
+    if len(matches) != 1:
+        raise ValueError("policy selector chose an unobserved candidate")
+    return {**matches[0], "prediction": dict(selected["prediction"])}
+
+
 def _evaluate_config(
     rows: list[dict[str, Any]],
     config: dict[str, Any],
     *,
     bootstrap_samples: int,
     bootstrap_seed: int,
+    candidate_selector: Callable[
+        [dict[str, Any], dict[str, Any]], dict[str, Any] | None
+    ] | None = None,
 ) -> dict[str, Any]:
     deltas = []
     sampling_weights = []
@@ -472,51 +562,18 @@ def _evaluate_config(
         str, dict[str, list[tuple[float, float]]]
     ] = {}
     outcome_flip_counts = Counter()
-    hand_weight = float(config["hand_weight"])
-    tail_weight = float(config.get("tail_weight", 0.0))
-    match_weight = float(
-        config.get("match_weight", 1.0 - hand_weight - tail_weight)
-    )
-    if min(hand_weight, tail_weight, match_weight) < -1e-9:
-        raise ValueError("policy value weights must be non-negative")
-    response_weight = float(config["response_weight"])
-    margin = float(config["margin"])
-    min_hand_lcb = config.get("min_hand_lcb")
-    if min_hand_lcb is not None:
-        min_hand_lcb = float(min_hand_lcb)
-    use_lower = bool(config.get("use_lower", True))
-    value_key = "lower" if use_lower else "mean"
+    selector = candidate_selector or _select_scalar_candidate
     for row_index, row in enumerate(rows):
         opponent = row["opponent"]
         cluster = str(row.get("cluster") or f"row:{row_index}")
         sampling_weight = float(row.get("sampling_weight", 1.0))
         if not math.isfinite(sampling_weight) or sampling_weight <= 0.0:
             raise ValueError("sampling_weight must be finite and positive")
-        best = None
-        for candidate in row["candidates"]:
-            label_id = candidate["label_id"]
-            hand = row["values"]["delta_vs_rule"][value_key][label_id]
-            tail = row["values"]["tail_delta_vs_rule"][value_key][label_id]
-            match = row["values"]["match_delta_vs_rule"][value_key][label_id]
-            if min_hand_lcb is not None and float(hand) < min_hand_lcb:
-                continue
-            score = (
-                hand_weight * float(hand)
-                + tail_weight * float(tail)
-                + match_weight * float(match)
-                + response_weight * float(candidate["response_signal"])
-            )
-            if best is None or score > best[0]:
-                best = (
-                    score, candidate, float(hand), float(tail), float(match)
-                )
-        chosen = None
-        if best is not None and best[0] > margin:
-            candidate = best[1]
-            delta = float(candidate["match_delta"])
-            selected.append(candidate)
+        chosen = _validated_selected_candidate(row, selector(row, config))
+        if chosen is not None:
+            delta = float(chosen["match_delta"])
+            selected.append(chosen)
             selected_weights.append(sampling_weight)
-            chosen = candidate
         else:
             delta = 0.0
         outcome = _match_outcome_observation(row, chosen)
@@ -540,17 +597,7 @@ def _evaluate_config(
                     "label": chosen.get("label"),
                     "action": chosen.get("action"),
                 },
-                "prediction": {
-                    "value_key": value_key,
-                    "hand": best[2],
-                    "tail": best[3],
-                    "match": best[4],
-                    "hand_weight": hand_weight,
-                    "tail_weight": tail_weight,
-                    "match_weight": match_weight,
-                    "response_signal": chosen["response_signal"],
-                    "policy_score": best[0],
-                },
+                "prediction": dict(chosen["prediction"]),
                 "observed": observed,
             })
         deltas.append(delta)

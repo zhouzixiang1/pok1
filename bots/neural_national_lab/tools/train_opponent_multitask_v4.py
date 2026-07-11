@@ -36,6 +36,16 @@ TRAINER_SCHEMA = "opponent_multitask_trainer_v4_win_first"
 CHECKPOINT_SCHEMA = "opponent_multitask_torch_checkpoint_v4"
 REPORT_SCHEMA = "opponent_multitask_training_report_v4"
 ARTIFACT_MANIFEST_SCHEMA = "opponent_multitask_training_artifacts_v4"
+FORMAL_COLLECTION_PASSES = 160
+
+
+def require_formal_collection_boundary(
+    dataset: RoleDatasetAccess, *, allow_incomplete_smoke: bool
+) -> None:
+    if not allow_incomplete_smoke:
+        dataset.require_collection_boundary(
+            expected_passes=FORMAL_COLLECTION_PASSES
+        )
 
 
 def outcome_objective(
@@ -548,6 +558,9 @@ def main(argv: list[str] | None = None) -> int:
             run_id=args.run_id,
             require_complete=not args.allow_incomplete_smoke,
         )
+        require_formal_collection_boundary(
+            dataset, allow_incomplete_smoke=args.allow_incomplete_smoke
+        )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
     incomplete = dataset.manifest.get("source_collection_complete") is not True
@@ -578,6 +591,9 @@ def main(argv: list[str] | None = None) -> int:
             "training_artifact_sha256": training_artifacts,
             "source_completed_passes": dataset.manifest.get(
                 "source_completed_passes"
+            ),
+            "source_requested_passes": dataset.manifest.get(
+                "source_requested_passes"
             ),
             "source_collection_complete": not incomplete,
             "code_artifacts": code_artifacts,

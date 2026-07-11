@@ -36,6 +36,7 @@ from sampling_weights import decision_sampling_weight  # noqa: E402
 
 
 SCHEMA = "opponent_role_dataset_v3"
+STRATEGY_CONTEXT_RUNTIME_MODE = "zero_vector_training_aligned_v1"
 SOURCE_SPLITS = ("train", "val", "held_out")
 PREFIXES = ("cf", "opponent_actions")
 EVIDENCE_ROLES = (
@@ -52,6 +53,28 @@ EXPECTED_SOURCE_SPLIT = {
     "policy_selection": "val",
     "policy_gate": "held_out",
 }
+
+
+def strategy_context_is_absent(row: dict[str, Any]) -> bool:
+    """Collector rows for this epoch must carry no runtime strategy context."""
+    containers = [row]
+    request = row.get("request")
+    if isinstance(request, dict):
+        containers.append(request)
+    for container in containers:
+        if (
+            "strategy_context_available" in container
+            and container["strategy_context_available"] is not False
+        ):
+            return False
+        for field in (
+            "strategy_context",
+            "strategy_context_features",
+            "strategy_context_schema",
+        ):
+            if field in container:
+                return False
+    return True
 
 
 def _sha256(path: Path) -> str:
@@ -345,6 +368,7 @@ def _verify_snapshots(
     return {
         "candidate": {
             "path": str(candidate_path.resolve()),
+            "name": candidate_path.name,
             "sha256": candidate_digest,
         },
         "opponents": used,
@@ -449,6 +473,14 @@ def freeze_role_dataset(
                     f"missing={sorted(roles[role] - observed)} "
                     f"unexpected={sorted(observed - roles[role])}"
                 )
+    for prefix in PREFIXES:
+        for role in EVIDENCE_ROLES:
+            for row in output_rows[prefix][role]:
+                if not strategy_context_is_absent(row):
+                    raise RuntimeError(
+                        "zero-context role freeze found strategy context: "
+                        f"{prefix}:{role}:{_opponent(row)}"
+                    )
 
     value_minimums = {role: 1 for role in EVIDENCE_ROLES}
     behavior_minimums = {role: 1 for role in EVIDENCE_ROLES}
@@ -534,6 +566,7 @@ def freeze_role_dataset(
             "source_requested_passes": requested,
             "source_collection_complete": completed == requested,
             "candidate_snapshot": snapshots["candidate"],
+            "strategy_context_runtime_mode": STRATEGY_CONTEXT_RUNTIME_MODE,
             "roles": {role: sorted(names) for role, names in roles.items()},
             "role_source_contract": EXPECTED_SOURCE_SPLIT,
             "input_files": input_files,

@@ -201,6 +201,18 @@ def validate_outcome_aggregation(payload: Any) -> dict[str, Any]:
             or std[index] < 0.0
         ):
             raise ValueError("outcome aggregation bounds are invalid")
+        radius = uncertainty * std[index]
+        expected_lower = max(0.0, mean[index] - radius)
+        expected_upper = min(1.0, mean[index] + radius)
+        if not (
+            math.isclose(
+                lower[index], expected_lower, rel_tol=0.0, abs_tol=1.0e-12
+            )
+            and math.isclose(
+                upper[index], expected_upper, rel_tol=0.0, abs_tol=1.0e-12
+            )
+        ):
+            raise ValueError("outcome aggregation bounds do not match uncertainty")
     return dict(payload)
 
 
@@ -239,18 +251,19 @@ def score_candidate(
     ):
         return None
     try:
-        hand = _finite(
-            values["delta_vs_rule"]["lower"][label_id], field="hand lower"
+        hand_values = _action_vector(
+            values["delta_vs_rule"], "lower", field="hand lower"
         )
-        tail = _finite(
-            values["tail_delta_vs_rule"]["lower"][label_id],
-            field="tail lower",
+        tail_values = _action_vector(
+            values["tail_delta_vs_rule"], "lower", field="tail lower"
         )
-        match = _finite(
-            values["match_delta_vs_rule"]["lower"][label_id],
-            field="match lower",
+        match_values = _action_vector(
+            values["match_delta_vs_rule"], "lower", field="match lower"
         )
-    except (KeyError, IndexError, TypeError) as exc:
+        hand = hand_values[label_id]
+        tail = tail_values[label_id]
+        match = match_values[label_id]
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise ValueError("v4 candidate value prediction is malformed") from exc
     if hand < policy["min_hand_lcb"]:
         return None

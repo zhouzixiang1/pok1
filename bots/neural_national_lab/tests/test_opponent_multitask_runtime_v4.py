@@ -62,7 +62,18 @@ def _calibration(*, checkpoint_sha256: str = "a" * 64) -> dict:
 def _payload(model, *, calibrated: bool = False) -> dict:
     return exporter.build_export_payload(
         model,
-        {"schema": "test_v4_checkpoint", "code_artifacts": {}},
+        {
+            "schema": exporter.CHECKPOINT_SCHEMA,
+            "role_manifest_sha256": "b" * 64,
+            "training_artifact_sha256": {
+                "train": "d" * 64,
+                "early_stop": "e" * 64,
+            },
+            "source_collection_complete": False,
+            "code_artifacts": {
+                "trainer": {"bytes": 1, "sha256": "f" * 64}
+            },
+        },
         checkpoint_sha256="a" * 64,
         outcome_calibration=_calibration() if calibrated else None,
     )
@@ -193,6 +204,18 @@ def test_runtime_rejects_outcome_weight_or_metadata_drift() -> None:
             {"schema": "test_v4_checkpoint", "code_artifacts": {}},
             checkpoint_sha256="a" * 64,
             outcome_calibration=_calibration(checkpoint_sha256="d" * 64),
+        )
+
+    with pytest.raises(ValueError, match="role manifest does not match"):
+        exporter.build_export_payload(
+            model,
+            {
+                "schema": "test_v4_checkpoint",
+                "role_manifest_sha256": "d" * 64,
+                "code_artifacts": {},
+            },
+            checkpoint_sha256="a" * 64,
+            outcome_calibration=_calibration(),
         )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -17,6 +18,8 @@ from freeze_opponent_role_dataset import (  # noqa: E402
     EVIDENCE_ROLES,
     PREFIXES,
     SCHEMA as ROLE_DATASET_SCHEMA,
+    STRATEGY_CONTEXT_RUNTIME_MODE,
+    strategy_context_is_absent,
 )
 from match_outcome_schema import (  # noqa: E402
     MATCH_OUTCOME_ESTIMAND,
@@ -40,6 +43,14 @@ POLICY_SELECTION_RESULT_SCHEMA = "policy_selection_result_v2"
 POLICY_OFFLINE_ESTIMAND = (
     "single_decision_action_uplift_ipw_v3_win_first_70_hand"
 )
+POLICY_SELECTION_RESULT_SCHEMA_V4 = "policy_selection_result_v3_win_first_v4"
+POLICY_OFFLINE_ESTIMAND_V4 = (
+    "single_decision_action_uplift_ipw_v4_win_first_70_hand"
+)
+POLICY_SELECTION_RESULT_CONTRACTS = {
+    POLICY_SELECTION_RESULT_SCHEMA: POLICY_OFFLINE_ESTIMAND,
+    POLICY_SELECTION_RESULT_SCHEMA_V4: POLICY_OFFLINE_ESTIMAND_V4,
+}
 REQUIRED_INVARIANTS = (
     "opponent_disjoint",
     "match_cluster_disjoint",
@@ -111,6 +122,34 @@ class RoleDatasetAccess:
             or match_outcome.get("required_for_win_first_policy_evidence") is not True
         ):
             raise ValueError("role dataset has invalid match outcome supervision")
+        candidate = manifest.get("candidate_snapshot")
+        candidate_path = (
+            str(candidate.get("path") or "").strip()
+            if isinstance(candidate, dict) else ""
+        )
+        candidate_name = (
+            str(candidate.get("name") or "").strip()
+            if isinstance(candidate, dict) else ""
+        )
+        if (
+            not candidate_path
+            or not candidate_name
+            or Path(candidate_path).name != candidate_name
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+", candidate_name)
+        ):
+            raise ValueError("role dataset candidate snapshot is invalid")
+        self.candidate_snapshot = {
+            "name": candidate_name,
+            "sha256": _digest(
+                candidate.get("sha256"), field="candidate_snapshot.sha256"
+            ),
+        }
+        if (
+            manifest.get("strategy_context_runtime_mode")
+            != STRATEGY_CONTEXT_RUNTIME_MODE
+        ):
+            raise ValueError("role dataset strategy-context mode is invalid")
+        self.strategy_context_runtime_mode = STRATEGY_CONTEXT_RUNTIME_MODE
         roles = manifest.get("roles")
         outputs = manifest.get("outputs")
         if not isinstance(roles, dict) or set(roles) != set(EVIDENCE_ROLES):
@@ -151,6 +190,38 @@ class RoleDatasetAccess:
                     "opponents": opponents,
                 }
 
+    def require_collection_boundary(
+        self, expected_passes: int = 160
+    ) -> dict[str, Any]:
+        """Require one complete atomic collection boundary before formal use."""
+        if (
+            isinstance(expected_passes, bool)
+            or not isinstance(expected_passes, int)
+            or expected_passes < 1
+        ):
+            raise ValueError("expected collection passes must be a positive integer")
+        completed = self.manifest.get("source_completed_passes")
+        requested = self.manifest.get("source_requested_passes")
+        if (
+            isinstance(completed, bool)
+            or not isinstance(completed, int)
+            or isinstance(requested, bool)
+            or not isinstance(requested, int)
+            or completed != expected_passes
+            or requested != expected_passes
+            or self.manifest.get("source_collection_complete") is not True
+        ):
+            raise ValueError(
+                "formal role dataset requires the complete atomic "
+                f"{expected_passes}-pass boundary"
+            )
+        return {
+            "schema": "complete_atomic_collection_boundary_v1",
+            "source_completed_passes": completed,
+            "source_requested_passes": requested,
+            "source_collection_complete": True,
+        }
+
     def _role_artifact_sha256(self, role: str) -> str:
         contract = {
             filename: self.outputs[filename]["sha256"]
@@ -169,6 +240,7 @@ class RoleDatasetAccess:
         candidate_sha256: str | None,
     ) -> bool:
         ledger = status(self.ledger_path)
+        expected_artifact = self._role_artifact_sha256(role)
         for opponent in self.roles[role]:
             exposures = (
                 ledger.get("opponents", {}).get(opponent, {}).get("exposures", [])
@@ -176,6 +248,7 @@ class RoleDatasetAccess:
             matching = [
                 row for row in exposures
                 if row.get("role") == role and row.get("run_id") == self.run_id
+                and row.get("artifact_sha256") == expected_artifact
             ]
             if candidate_sha256 is not None:
                 matching = [
@@ -206,7 +279,9 @@ class RoleDatasetAccess:
         path: Path | None,
         *,
         candidate_sha256: str,
-    ) -> str:
+        expected_schema: str | None = None,
+        expected_offline_estimand: str | None = None,
+    ) -> dict[str, str]:
         if path is None:
             raise RuntimeError("policy_gate requires a policy-selection result")
         raw = path.resolve().read_bytes()
@@ -216,12 +291,22 @@ class RoleDatasetAccess:
             raise RuntimeError("invalid policy-selection result") from exc
         if (
             not isinstance(report, dict)
-            or report.get("schema") != POLICY_SELECTION_RESULT_SCHEMA
+            or report.get("schema") not in POLICY_SELECTION_RESULT_CONTRACTS
+            or POLICY_SELECTION_RESULT_CONTRACTS[report.get("schema")]
+            != report.get("offline_estimand")
+            or (
+                expected_schema is not None
+                and report.get("schema") != expected_schema
+            )
+            or (
+                expected_offline_estimand is not None
+                and report.get("offline_estimand")
+                != expected_offline_estimand
+            )
             or report.get("passed") is not True
             or report.get("run_id") != self.run_id
             or report.get("candidate_sha256") != candidate_sha256
             or report.get("role_manifest_sha256") != self.manifest_sha256
-            or report.get("offline_estimand") != POLICY_OFFLINE_ESTIMAND
             or report.get("match_outcome_estimand") != MATCH_OUTCOME_ESTIMAND
             or report.get("deployment_policy_value") is not False
             or report.get("strength_evidence") is not False
@@ -230,6 +315,93 @@ class RoleDatasetAccess:
             != self._role_artifact_sha256("policy_selection")
         ):
             raise RuntimeError("policy-selection result did not authorize policy_gate")
+        if report.get("schema") == POLICY_SELECTION_RESULT_SCHEMA_V4:
+            thresholds = report.get("thresholds")
+            summary = report.get("summary")
+            bootstrap = (
+                summary.get("bootstrap_contract")
+                if isinstance(summary, dict) else None
+            )
+            threshold_fields = {
+                "min_overrides",
+                "min_selection_clusters",
+                "min_override_clusters",
+                "min_overrides_per_opponent",
+                "min_override_hand_mean",
+                "bootstrap_samples",
+                "min_cluster_ci_lower",
+                "min_opponent_stratified_ci_lower",
+                "min_match_outcome_coverage",
+                "min_match_positive_rate_ci_lower",
+                "min_match_positive_uplift_ci_lower",
+                "min_opponent_match_positive_rate",
+            }
+            integer_floors = {
+                "min_overrides": 12,
+                "min_selection_clusters": 8,
+                "min_override_clusters": 8,
+                "min_overrides_per_opponent": 4,
+                "bootstrap_samples": 2000,
+            }
+            valid_integers = isinstance(thresholds, dict) and all(
+                not isinstance(thresholds.get(field), bool)
+                and isinstance(thresholds.get(field), int)
+                and thresholds[field] >= floor
+                for field, floor in integer_floors.items()
+            )
+            numeric_fields = threshold_fields - set(integer_floors)
+            valid_numbers = isinstance(thresholds, dict) and all(
+                not isinstance(thresholds.get(field), bool)
+                and isinstance(thresholds.get(field), (int, float))
+                and math.isfinite(float(thresholds[field]))
+                for field in numeric_fields
+            )
+            if (
+                report.get("errors") != []
+                or report.get("formal_selection") is not True
+                or report.get("source_collection_complete") is not True
+                or report.get("candidate_snapshot") != self.candidate_snapshot
+                or report.get("strategy_context_runtime_mode")
+                != self.strategy_context_runtime_mode
+                or not isinstance(thresholds, dict)
+                or set(thresholds) != threshold_fields
+                or not valid_integers
+                or not valid_numbers
+                or thresholds.get("min_override_hand_mean", -1.0) < 0.0
+                or thresholds.get("min_cluster_ci_lower", -1.0) < 0.0
+                or thresholds.get(
+                    "min_opponent_stratified_ci_lower", -1.0
+                ) < 0.0
+                or thresholds.get("min_match_outcome_coverage") != 1.0
+                or thresholds.get("min_match_positive_rate_ci_lower", 0.0)
+                < 0.5
+                or thresholds.get(
+                    "min_match_positive_uplift_ci_lower", -1.0
+                ) < 0.0
+                or thresholds.get("min_opponent_match_positive_rate", 0.0)
+                < 0.5
+                or not isinstance(bootstrap, dict)
+                or set(bootstrap) != {
+                    "schema",
+                    "samples",
+                    "seed",
+                    "observed_70_hand_match_clusters",
+                    "ordinary",
+                    "opponent_stratified",
+                }
+                or bootstrap.get("schema")
+                != "observed_70_hand_match_cluster_bootstrap_v1"
+                or bootstrap.get("samples")
+                != thresholds.get("bootstrap_samples")
+                or isinstance(bootstrap.get("seed"), bool)
+                or not isinstance(bootstrap.get("seed"), int)
+                or bootstrap.get("observed_70_hand_match_clusters") is not True
+                or bootstrap.get("ordinary") is not True
+                or bootstrap.get("opponent_stratified") is not True
+            ):
+                raise RuntimeError(
+                    "policy-selection result did not authorize policy_gate"
+                )
         for field in (
             "calibration_payload_sha256",
             "evaluation_report_sha256",
@@ -241,7 +413,13 @@ class RoleDatasetAccess:
                 raise RuntimeError(
                     "policy-selection result did not authorize policy_gate"
                 ) from exc
-        return _sha256_bytes(raw)
+        return {
+            "sha256": _sha256_bytes(raw),
+            "calibration_payload_sha256": _digest(
+                report.get("calibration_payload_sha256"),
+                field="calibration_payload_sha256",
+            ),
+        }
 
     def _read_output(self, filename: str, role: str) -> list[dict[str, Any]]:
         path = self.root / filename
@@ -263,6 +441,11 @@ class RoleDatasetAccess:
                 raise RuntimeError(f"role row label mismatch: {filename}:{line_number}")
             if _opponent(row) not in self.roles[role]:
                 raise RuntimeError(f"role row opponent mismatch: {filename}:{line_number}")
+            if not strategy_context_is_absent(row):
+                raise RuntimeError(
+                    "zero-context role dataset contains strategy context: "
+                    f"{filename}:{line_number}"
+                )
             if filename.startswith("opponent_actions_"):
                 try:
                     validate_response_row(row)
@@ -286,12 +469,20 @@ class RoleDatasetAccess:
             raise RuntimeError(f"role output opponent coverage changed: {filename}")
         return rows
 
+    def runtime_context_contract(self) -> dict[str, Any]:
+        return {
+            "candidate_snapshot": dict(self.candidate_snapshot),
+            "strategy_context_runtime_mode": self.strategy_context_runtime_mode,
+        }
+
     def open_role(
         self,
         role: str,
         *,
         candidate_sha256: str | None = None,
         prerequisite_report: Path | None = None,
+        prerequisite_schema: str | None = None,
+        prerequisite_offline_estimand: str | None = None,
     ) -> dict[str, Any]:
         if role not in EVIDENCE_ROLES:
             raise ValueError(f"unsupported evidence role: {role}")
@@ -306,16 +497,27 @@ class RoleDatasetAccess:
         self._check_prerequisites(role, candidate_sha256=candidate_sha256)
         artifact_sha256 = self._role_artifact_sha256(role)
         prerequisite_sha256 = None
+        prerequisite_calibration_payload_sha256 = None
         if role == "policy_gate":
-            prerequisite_sha256 = self._policy_gate_report(
+            prerequisite = self._policy_gate_report(
                 prerequisite_report,
                 candidate_sha256=str(candidate_sha256),
+                expected_schema=prerequisite_schema,
+                expected_offline_estimand=prerequisite_offline_estimand,
             )
+            prerequisite_sha256 = prerequisite["sha256"]
+            prerequisite_calibration_payload_sha256 = prerequisite[
+                "calibration_payload_sha256"
+            ]
             artifact_sha256 = _sha256_bytes(
                 f"{artifact_sha256}:{prerequisite_sha256}".encode()
             )
-        elif prerequisite_report is not None:
-            raise ValueError("prerequisite_report is only valid for policy_gate")
+        elif any(value is not None for value in (
+            prerequisite_report,
+            prerequisite_schema,
+            prerequisite_offline_estimand,
+        )):
+            raise ValueError("prerequisite contract is only valid for policy_gate")
 
         # Exposure is recorded before touching either role file. If validation
         # then fails, the opponent remains conservatively exposed.
@@ -335,6 +537,9 @@ class RoleDatasetAccess:
             "artifact_sha256": artifact_sha256,
             "manifest_sha256": self.manifest_sha256,
             "prerequisite_sha256": prerequisite_sha256,
+            "prerequisite_calibration_payload_sha256": (
+                prerequisite_calibration_payload_sha256
+            ),
             "opponents": list(self.roles[role]),
             "value": value,
             "behavior": behavior,
