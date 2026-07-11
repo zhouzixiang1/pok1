@@ -47,6 +47,14 @@ cp /tmp/arena-eng/sever/engine/*.py /tmp/arena-eng/sever/server/protocol.py aren
 
 arena 的 `pyproject.toml` / venv / 启动脚本 / `PYTHONPATH` **绝不可**把 `~/project/pok/` 或 pok1 任何工作树加入 `sys.path`。pok1 顶层另有 `engine/` 包(无 `deck.py`),一旦入 path 会 `ModuleNotFoundError` 或静默串包。**pok1 仅作 copy 源,不是 import 源。**
 
+## arena 协议决策记录(2026-07-11,与用户确认)
+
+1. **raise 再加注边界 = `>=2×`(精确 2× 合法)**:照搬 `validator.py`(`RAISE_MULTIPLIER=2`, `amount < last_raise*2` 判非法)。与 `docs/official-raise-boundary-oracle-2026-07-11.md` + validator 注释引用的"官方 EXE 受控实测:raise 200→400 合法"一致。**HANDOFF.md L100 的"严格 >2×(最小801)"是笔误,arena 采用 >=2×(最小800),validator.py 未改**。
+
+2. **THP raise/allin 记总额(对齐 EXE)** — HANDOFF 未决问题1,用户定"总额"。已改 `game.py` 的 `THPRecorder.on_action` 调用:raise 传 `amount`(raise-to-total 总额)、allin 传 `bets[current_idx]`(allin 后该街总额),**非上游的增量**(needed / all_in_amount)。仅改 THP 记录格式,不影响 wire 协议 / 发牌 / 下注 / 结算逻辑。`docs/official-terminal-settlement-oracle-2026-07-11.md` 为结算 oracle 参考。
+
+3. **断线判负 = 仅真断开累计 forfeit** — HANDOFF 要求"连续2手无响应→forfeit",用户定"仅 TCP 真断开(`client.closed=True`)累计,60s 超时只当手 fold 不累计"。在 MatchManager / `NationalTCPGameEngine` 层区分 `_recv_action` 返回 None 的原因(断开 vs 超时)实现。
+
 ## re-sync 上游
 
 未来若上游有引擎 bugfix,先 `git -C ~/project/pok fetch origin` 取最新 `origin/main`,re-copy 后**更新本文件的 commit-hash**,并单独成一个 commit(消息如 `chore(engine): re-sync upstream@<short>`)。

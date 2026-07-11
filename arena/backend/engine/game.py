@@ -420,7 +420,7 @@ class GameEngine:
                 actions.append(("raise", amount))
                 await self.send(waiting_idx, f"raise {amount}")
                 if self.recorder:
-                    self.recorder.on_action(current_idx, "raise", needed)
+                    self.recorder.on_action(current_idx, "raise", amount)  # THP 记 raise-to-total 总额(对齐 EXE,arena 决策;非上游增量 needed)
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "raise",
                     "amount": amount, "needed": needed,
@@ -442,7 +442,7 @@ class GameEngine:
                 actions.append(("allin", all_in_amount))
                 await self.send(waiting_idx, "allin")
                 if self.recorder:
-                    self.recorder.on_action(current_idx, "allin", all_in_amount)
+                    self.recorder.on_action(current_idx, "allin", bets[current_idx])  # THP 记 allin 后该街总额(对齐 EXE,arena 决策;非上游全筹码增量)
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "allin",
                     "amount": all_in_amount,
