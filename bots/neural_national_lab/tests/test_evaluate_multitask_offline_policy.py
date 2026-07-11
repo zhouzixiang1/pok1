@@ -68,6 +68,7 @@ def test_offline_policy_uses_lcb_and_response_signal() -> None:
         "source_row_index": 0,
         "opponent": "national_v1",
         "cluster": "row:0",
+        "sampling_weight": 1.0,
         "decision": {},
         "rule_id": 1,
         "candidate": {"label_id": 2, "label": None, "action": None},
@@ -404,3 +405,65 @@ def test_cluster_bootstrap_resamples_whole_matches() -> None:
     assert ci["mean"] == 0.0
     assert ci["lower"] == -100.0
     assert ci["upper"] == 100.0
+
+
+def test_offline_policy_uses_ipw_for_means_and_all_bootstraps() -> None:
+    tool = _load_tool()
+    values = {
+        field: {
+            "lower": [0.0, 0.0, 100.0, 0.0, 0.0, 0.0],
+            "mean": [0.0, 0.0, 100.0, 0.0, 0.0, 0.0],
+        }
+        for field in ("delta_vs_rule", "tail_delta_vs_rule", "match_delta_vs_rule")
+    }
+    rows = [
+        {
+            "opponent": "national_v1",
+            "cluster": "positive",
+            "sampling_weight": 1.0,
+            "rule_id": 1,
+            "values": values,
+            "candidates": [{
+                "label_id": 2,
+                "response_signal": 0.0,
+                "hand_delta": 100.0,
+                "tail_delta": 100.0,
+                "match_delta": 100.0,
+            }],
+        },
+        {
+            "opponent": "national_v1",
+            "cluster": "negative",
+            "sampling_weight": 3.0,
+            "rule_id": 1,
+            "values": values,
+            "candidates": [{
+                "label_id": 2,
+                "response_signal": 0.0,
+                "hand_delta": -100.0,
+                "tail_delta": -100.0,
+                "match_delta": -100.0,
+            }],
+        },
+    ]
+
+    result = tool._evaluate_config(
+        rows,
+        {
+            "margin": 0.0,
+            "hand_weight": 1.0,
+            "response_weight": 0.0,
+            "use_lower": True,
+        },
+        bootstrap_samples=20,
+        bootstrap_seed=1,
+    )
+
+    assert result["match_total"] == -200.0
+    assert result["sample_match_total"] == 0.0
+    assert result["match_mean_per_opportunity"] == -50.0
+    assert result["match_bootstrap_mean_ci"]["mean"] == -50.0
+    assert result["match_cluster_bootstrap_mean_ci"]["mean"] == -50.0
+    assert result["match_opponent_stratified_cluster_ci"]["mean"] == -50.0
+    assert result["by_opponent"]["national_v1"]["mean"] == -50.0
+    assert result["estimated_opportunities"] == 4.0

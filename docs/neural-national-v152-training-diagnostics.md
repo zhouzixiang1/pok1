@@ -623,8 +623,11 @@ probability. Replacement `uniform` sampling is seeded independently from bot
 randomness and samples without replacement. Every value row now records the
 eligible and selected counts, sampling seed, inclusion probability, and inverse
 probability weight, plus stage/action population counts in the probe report.
-Training does not yet consume those weights, so this is provenance needed for
-the next controlled trainer, not a retroactive correction of old models.
+`sampling_weights.py` now defines self-normalized IPW and
+opponent-balanced-IPW contracts for the next controlled trainer. It applies
+decision IPW only to counterfactual value rows because behavior rows come from
+the complete baseline trace. The running pass-98 trainer does not consume those
+weights, so this is not a retroactive correction of old models.
 
 The audit identified three further estimand boundaries:
 
@@ -659,16 +662,18 @@ candidate/opponent directory SHA-256 values. `native_tcp_report_diff.py
 different opponent artifacts and reports leave-one-deck-block-out sensitivity.
 The old adjacent-seed v146 reports intentionally fail this contract.
 
-The offline evaluators now label their estimand
-`single_decision_action_uplift_v1`, set `deployment_policy_value=false` and
-`strength_evidence=false`, and treat their old `held_out` argument as a policy
-gate rather than a final blind test. If selection or calibration fails, the
-next file is not read, statted, or hashed; its manifest remains unopened. The
-catastrophe A/B evaluator also returns nonzero when post-selection gates fail.
-This closes the immediate file-exposure and false-success paths, but does not
-solve the trainer's reuse of model-calibration opponents or adaptive validation
-selection. Those require the separately partitioned pass after the running
-pass-98 control has finished.
+The offline policy evaluator now labels its estimand
+`single_decision_action_uplift_ipw_v2`, set `deployment_policy_value=false` and
+`strength_evidence=false`, and uses IPW for means, per-opponent summaries, and
+ordinary, match-cluster, and opponent-stratified cluster bootstrap intervals.
+Its old `held_out` argument remains only a policy gate, not a final blind test.
+The standalone evaluator does not read, stat, or hash that next file after an
+earlier gate fails. However, the old scaling sweep defeats that protection by
+running a whole-directory audit at startup, which parses and hashes every old
+split before training. It also reuses validation for checkpoint and policy
+selection, then reuses model-calibration rows as a policy gate. Therefore the
+running pass-98 sweep is architecture diagnostics only regardless of its final
+numbers. The new sweep must consume the five roles lazily after it finishes.
 
 `opponent_exposure_ledger.py` adds an append-only, file-locked role ledger.
 An opponent opened for train, early stop, model calibration, policy selection,
@@ -720,7 +725,9 @@ overlapping 70-hand deck blocks, reused bot seeds, source-split drift, invalid
 or duplicate counterfactual decisions, inconsistent uniform-sampling IPW, and
 candidate/opponent snapshot digest changes. Final blind is intentionally not a
 dataset role; it remains an external one-time native evaluation reserved in the
-exposure ledger after the candidate is frozen.
+exposure ledger after the candidate is frozen. Its manifest records requested
+and completed pass counts plus an explicit collection-complete flag, so a live
+prefix can be used for smoke tests but cannot pass the future candidate gate.
 
 The first real smoke freeze at the completed pass-2 boundary succeeded with
 seven train opponents, v141 for early stopping, v142 for model calibration,

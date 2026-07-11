@@ -379,6 +379,11 @@ def freeze_role_dataset(
     registry_path = source_dir / "opponent_snapshots" / "registry.json"
     collection, collection_digest = _load_json_snapshot(collection_path)
     registry, registry_digest = _load_json_snapshot(registry_path)
+    requested = _integer(
+        collection.get("passes_requested"),
+        field="passes_requested",
+        minimum=completed,
+    )
     if (collection.get("resume_contract") or {}).get("deck_seed_scheme") != (
         "disjoint_match_blocks_v1"
     ):
@@ -513,6 +518,8 @@ def freeze_role_dataset(
             "created_at": datetime.now(timezone.utc).isoformat(),
             "source_dir": str(source_dir),
             "source_completed_passes": completed,
+            "source_requested_passes": requested,
+            "source_collection_complete": completed == requested,
             "candidate_snapshot": snapshots["candidate"],
             "roles": {role: sorted(names) for role, names in roles.items()},
             "role_source_contract": EXPECTED_SOURCE_SPLIT,

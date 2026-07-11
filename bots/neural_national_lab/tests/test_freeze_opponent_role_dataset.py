@@ -164,6 +164,9 @@ def test_freeze_creates_five_opponent_disjoint_roles(tmp_path: Path) -> None:
     manifest = _freeze(source, output)
 
     assert manifest["schema"] == "opponent_role_dataset_v1"
+    assert manifest["source_completed_passes"] == 1
+    assert manifest["source_requested_passes"] == 2
+    assert manifest["source_collection_complete"] is False
     assert manifest["invariants"]["deck_blocks_non_overlapping"] is True
     assert manifest["roles"] == {
         role: [name] for role, name in OPPONENTS.items()

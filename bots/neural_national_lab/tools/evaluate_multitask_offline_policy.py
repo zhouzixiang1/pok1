@@ -9,7 +9,6 @@ import json
 import math
 from pathlib import Path
 import random
-import statistics
 import sys
 from typing import Any
 
@@ -20,13 +19,14 @@ if str(TOOLS) not in sys.path:
 
 from feature_spec import LABELS  # noqa: E402
 from opp_multitask_ensemble_runtime import OpponentMultiTaskEnsemble  # noqa: E402
+from sampling_weights import decision_sampling_weight  # noqa: E402
 from train_opponent_multitask_net import (  # noqa: E402
     _hero_action_features,
     build_value_sample,
 )
 
 
-OFFLINE_ESTIMAND = "single_decision_action_uplift_v1"
+OFFLINE_ESTIMAND = "single_decision_action_uplift_ipw_v2"
 
 
 def _read(path: Path) -> list[dict[str, Any]]:
@@ -51,34 +51,71 @@ def _percentile(values: list[float], q: float) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
+def _weighted_mean(values: list[float], weights: list[float]) -> float:
+    if len(values) != len(weights):
+        raise ValueError("value/weight lengths differ")
+    total_weight = sum(weights)
+    if not values or total_weight <= 0.0:
+        return 0.0
+    return sum(value * weight for value, weight in zip(values, weights)) / total_weight
+
+
+def _effective_sample_size(weights: list[float]) -> float:
+    total = sum(weights)
+    squared = sum(weight * weight for weight in weights)
+    return total * total / squared if squared > 0.0 else 0.0
+
+
+def _weighted_pairs(values: list[Any]) -> list[tuple[float, float]]:
+    pairs = []
+    for item in values:
+        if isinstance(item, (tuple, list)) and len(item) == 2:
+            value, weight = float(item[0]), float(item[1])
+        else:
+            value, weight = float(item), 1.0
+        if not math.isfinite(value) or not math.isfinite(weight) or weight <= 0.0:
+            raise ValueError("bootstrap values and weights must be finite and positive")
+        pairs.append((value, weight))
+    return pairs
+
+
 def _bootstrap_mean_ci(
-    values: list[float], *, samples: int, seed: int
+    values: list[float],
+    *,
+    weights: list[float] | None = None,
+    samples: int,
+    seed: int,
 ) -> dict[str, float]:
     if not values:
         return {"lower": 0.0, "mean": 0.0, "upper": 0.0}
+    weights = list(weights) if weights is not None else [1.0] * len(values)
+    pairs = _weighted_pairs(list(zip(values, weights)))
     rng = random.Random(seed)
-    n = len(values)
-    means = [
-        sum(values[rng.randrange(n)] for _ in range(n)) / n
-        for _ in range(max(1, samples))
-    ]
+    n = len(pairs)
+    means = []
+    for _ in range(max(1, samples)):
+        selected = [pairs[rng.randrange(n)] for _ in range(n)]
+        means.append(_weighted_mean(
+            [value for value, _ in selected],
+            [weight for _, weight in selected],
+        ))
     return {
         "lower": _percentile(means, 0.025),
-        "mean": statistics.fmean(values),
+        "mean": _weighted_mean(values, weights),
         "upper": _percentile(means, 0.975),
     }
 
 
 def _cluster_bootstrap_mean_ci(
-    clusters: dict[str, list[float]],
+    clusters: dict[str, list[Any]],
     *,
     samples: int,
     seed: int,
 ) -> dict[str, float]:
-    nonempty = [values for values in clusters.values() if values]
+    nonempty = [_weighted_pairs(values) for values in clusters.values() if values]
     if not nonempty:
         return {"lower": 0.0, "mean": 0.0, "upper": 0.0}
-    observed = [value for values in nonempty for value in values]
+    observed = [pair for values in nonempty for pair in values]
     rng = random.Random(seed)
     cluster_count = len(nonempty)
     means = []
@@ -86,46 +123,62 @@ def _cluster_bootstrap_mean_ci(
         sampled = [
             nonempty[rng.randrange(cluster_count)] for _ in range(cluster_count)
         ]
-        values = [value for cluster in sampled for value in cluster]
-        means.append(statistics.fmean(values))
+        pairs = [pair for cluster in sampled for pair in cluster]
+        means.append(_weighted_mean(
+            [value for value, _ in pairs],
+            [weight for _, weight in pairs],
+        ))
     return {
         "lower": _percentile(means, 0.025),
-        "mean": statistics.fmean(observed),
+        "mean": _weighted_mean(
+            [value for value, _ in observed],
+            [weight for _, weight in observed],
+        ),
         "upper": _percentile(means, 0.975),
     }
 
 
 def _opponent_stratified_cluster_ci(
-    clusters: dict[str, dict[str, list[float]]],
+    clusters: dict[str, dict[str, list[Any]]],
     *,
     samples: int,
     seed: int,
 ) -> dict[str, float]:
     usable = {
-        opponent: [values for values in opponent_clusters.values() if values]
+        opponent: [
+            _weighted_pairs(values)
+            for values in opponent_clusters.values()
+            if values
+        ]
         for opponent, opponent_clusters in clusters.items()
     }
     usable = {opponent: values for opponent, values in usable.items() if values}
     if not usable:
         return {"lower": 0.0, "mean": 0.0, "upper": 0.0}
     observed = [
-        value
+        pair
         for opponent_clusters in usable.values()
         for cluster in opponent_clusters
-        for value in cluster
+        for pair in cluster
     ]
     rng = random.Random(seed)
     means = []
     for _ in range(max(1, samples)):
-        values = []
+        pairs = []
         for opponent_clusters in usable.values():
             count = len(opponent_clusters)
             for _ in range(count):
-                values.extend(opponent_clusters[rng.randrange(count)])
-        means.append(statistics.fmean(values))
+                pairs.extend(opponent_clusters[rng.randrange(count)])
+        means.append(_weighted_mean(
+            [value for value, _ in pairs],
+            [weight for _, weight in pairs],
+        ))
     return {
         "lower": _percentile(means, 0.025),
-        "mean": statistics.fmean(observed),
+        "mean": _weighted_mean(
+            [value for value, _ in observed],
+            [weight for _, weight in observed],
+        ),
         "upper": _percentile(means, 0.975),
     }
 
@@ -150,7 +203,10 @@ def _response_signal(
 
 
 def _prepare_rows(
-    raw_rows: list[dict[str, Any]], ensemble: OpponentMultiTaskEnsemble
+    raw_rows: list[dict[str, Any]],
+    ensemble: OpponentMultiTaskEnsemble,
+    *,
+    require_ipw: bool = True,
 ) -> list[dict[str, Any]]:
     prepared = []
     for source_row_index, raw in enumerate(raw_rows):
@@ -204,6 +260,18 @@ def _prepare_rows(
             })
         if candidates:
             opponent = str(raw.get("_opponent_label") or raw.get("opponent"))
+            has_sampling_evidence = any(
+                key in raw for key in (
+                    "decision_inclusion_probability",
+                    "decision_inverse_probability_weight",
+                    "eligible_decisions",
+                    "selected_decisions",
+                )
+            )
+            if require_ipw or has_sampling_evidence:
+                sampling_weight = decision_sampling_weight(raw)
+            else:
+                sampling_weight = 1.0
             prepared.append({
                 "source_row_index": source_row_index,
                 "opponent": opponent,
@@ -213,6 +281,7 @@ def _prepare_rows(
                     str(raw.get("bot_seed_base")),
                 )),
                 "rule_id": rule_id,
+                "sampling_weight": sampling_weight,
                 "decision": {
                     key: raw.get(key)
                     for key in (
@@ -241,11 +310,13 @@ def _evaluate_config(
     bootstrap_seed: int,
 ) -> dict[str, Any]:
     deltas = []
+    sampling_weights = []
     selected = []
+    selected_weights = []
     override_trace = []
-    by_opponent: dict[str, list[float]] = {}
-    by_cluster: dict[str, list[float]] = {}
-    by_opponent_cluster: dict[str, dict[str, list[float]]] = {}
+    by_opponent: dict[str, list[tuple[float, float]]] = {}
+    by_cluster: dict[str, list[tuple[float, float]]] = {}
+    by_opponent_cluster: dict[str, dict[str, list[tuple[float, float]]]] = {}
     override_clusters: set[str] = set()
     override_opponents: set[str] = set()
     override_by_action = Counter()
@@ -269,6 +340,9 @@ def _evaluate_config(
     for row_index, row in enumerate(rows):
         opponent = row["opponent"]
         cluster = str(row.get("cluster") or f"row:{row_index}")
+        sampling_weight = float(row.get("sampling_weight", 1.0))
+        if not math.isfinite(sampling_weight) or sampling_weight <= 0.0:
+            raise ValueError("sampling_weight must be finite and positive")
         best = None
         for candidate in row["candidates"]:
             label_id = candidate["label_id"]
@@ -292,11 +366,13 @@ def _evaluate_config(
             candidate = best[1]
             delta = float(candidate["match_delta"])
             selected.append(candidate)
+            selected_weights.append(sampling_weight)
             chosen = candidate
             override_trace.append({
                 "source_row_index": row.get("source_row_index", row_index),
                 "opponent": opponent,
                 "cluster": cluster,
+                "sampling_weight": sampling_weight,
                 "decision": row.get("decision") or {},
                 "rule_id": row["rule_id"],
                 "candidate": {
@@ -324,11 +400,13 @@ def _evaluate_config(
         else:
             delta = 0.0
         deltas.append(delta)
-        by_opponent.setdefault(opponent, []).append(delta)
-        by_cluster.setdefault(cluster, []).append(delta)
+        sampling_weights.append(sampling_weight)
+        pair = (delta, sampling_weight)
+        by_opponent.setdefault(opponent, []).append(pair)
+        by_cluster.setdefault(cluster, []).append(pair)
         by_opponent_cluster.setdefault(opponent, {}).setdefault(
             cluster, []
-        ).append(delta)
+        ).append(pair)
         if chosen is not None:
             override_clusters.add(cluster)
             override_opponents.add(opponent)
@@ -342,7 +420,10 @@ def _evaluate_config(
     override_hand = [candidate["hand_delta"] for candidate in selected]
     override_tail = [candidate["tail_delta"] for candidate in selected]
     ci = _bootstrap_mean_ci(
-        deltas, samples=bootstrap_samples, seed=bootstrap_seed
+        deltas,
+        weights=sampling_weights,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed,
     )
     cluster_ci = _cluster_bootstrap_mean_ci(
         by_cluster, samples=bootstrap_samples, seed=bootstrap_seed + 1
@@ -360,8 +441,20 @@ def _evaluate_config(
         "rows": len(rows),
         "overrides": len(selected),
         "override_rate": len(selected) / len(rows) if rows else 0.0,
-        "match_total": sum(deltas),
-        "match_mean_per_opportunity": statistics.fmean(deltas) if deltas else 0.0,
+        "weighted_override_rate": (
+            sum(selected_weights) / sum(sampling_weights)
+            if sampling_weights else 0.0
+        ),
+        "match_total": sum(
+            delta * weight for delta, weight in zip(deltas, sampling_weights)
+        ),
+        "sample_match_total": sum(deltas),
+        "match_mean_per_opportunity": _weighted_mean(deltas, sampling_weights),
+        "estimated_opportunities": sum(sampling_weights),
+        "sampling_effective_sample_size": _effective_sample_size(
+            sampling_weights
+        ),
+        "sampling_weight_contract": "uniform_decision_inverse_probability_v1",
         "match_bootstrap_mean_ci": ci,
         "match_cluster_bootstrap_mean_ci": cluster_ci,
         "match_opponent_stratified_cluster_ci": stratified_cluster_ci,
@@ -371,11 +464,14 @@ def _evaluate_config(
         "override_opponent_names": sorted(override_opponents),
         "overrides_by_action": dict(sorted(override_by_action.items())),
         "override_trace": override_trace,
-        "override_match_mean": statistics.fmean(override_match) if override_match else 0.0,
-        "override_hand_mean": statistics.fmean(override_hand) if override_hand else 0.0,
-        "override_tail_mean": statistics.fmean(override_tail) if override_tail else 0.0,
+        "override_match_mean": _weighted_mean(override_match, selected_weights),
+        "override_hand_mean": _weighted_mean(override_hand, selected_weights),
+        "override_tail_mean": _weighted_mean(override_tail, selected_weights),
         "negative_override_rate": (
-            sum(value < 0 for value in override_match) / len(override_match)
+            sum(
+                weight for value, weight in zip(override_match, selected_weights)
+                if value < 0
+            ) / sum(selected_weights)
             if override_match else 0.0
         ),
         "worst_override_match": min(override_match) if override_match else 0.0,
@@ -388,8 +484,12 @@ def _evaluate_config(
                     opponent_override_clusters.get(opponent, set())
                 ),
                 "negative_overrides": opponent_negative_overrides[opponent],
-                "total": sum(values),
-                "mean": statistics.fmean(values),
+                "estimated_opportunities": sum(weight for _, weight in values),
+                "total": sum(value * weight for value, weight in values),
+                "mean": _weighted_mean(
+                    [value for value, _ in values],
+                    [weight for _, weight in values],
+                ),
             }
             for opponent, values in sorted(by_opponent.items())
         },
@@ -630,6 +730,11 @@ def main() -> int:
     parser.add_argument("--allow-negative-calibration-opponent", action="store_true")
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--bootstrap-seed", type=int, default=20260710)
+    parser.add_argument(
+        "--allow-missing-ipw",
+        action="store_true",
+        help="Legacy diagnostic only; treat rows without sampling evidence as weight 1",
+    )
     args = parser.parse_args()
     if not 0.0 <= args.min_match_weight <= 1.0:
         raise SystemExit("min-match-weight must be in [0, 1]")
@@ -640,7 +745,11 @@ def main() -> int:
     ensemble = OpponentMultiTaskEnsemble.load(model_paths)
     if ensemble is None:
         raise SystemExit("failed to load multi-task model ensemble")
-    selection_rows = _prepare_rows(_read(args.selection_data), ensemble)
+    selection_rows = _prepare_rows(
+        _read(args.selection_data),
+        ensemble,
+        require_ipw=not args.allow_missing_ipw,
+    )
     policy_selection = select_offline_policy(
         selection_rows,
         margins=[
@@ -703,7 +812,7 @@ def main() -> int:
     }
     if policy_selection["selected"] is None:
         payload = {
-            "schema_version": 5,
+            "schema_version": 6,
             "estimand": OFFLINE_ESTIMAND,
             "deployment_policy_value": False,
             "strength_evidence": False,
@@ -728,7 +837,11 @@ def main() -> int:
     def evaluate_optional(path: Path | None, config: dict[str, Any]):
         if path is None:
             return None
-        rows = _prepare_rows(_read(path), ensemble)
+        rows = _prepare_rows(
+            _read(path),
+            ensemble,
+            require_ipw=not args.allow_missing_ipw,
+        )
         return _evaluate_config(
             rows,
             config,
@@ -775,7 +888,7 @@ def main() -> int:
     no_response_config = dict(selected["config"], response_weight=0.0)
     mean_only_config = dict(selected["config"], use_lower=False)
     payload = {
-        "schema_version": 5,
+        "schema_version": 6,
         "estimand": OFFLINE_ESTIMAND,
         "deployment_policy_value": False,
         "strength_evidence": False,
