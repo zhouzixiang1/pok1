@@ -702,7 +702,11 @@ the running v150-format trainer or runtime:
 - `public_decision_context_v1` is a 15-dimensional public-only context with
   opponent/effective stack, minimum raise, all-in call amount, unsaturated pot
   and match score, remaining-match pressure, and a six-action legal mask. These
-  values can be reconstructed from the current raw request/state rows.
+  values can be reconstructed from the current raw request/state rows. The
+  combined `legacy48_plus_hero_hand_public_decision_v1` value-state contract is
+  81 dimensional: legacy 48 + hero hand/draw 18 + public decision 15. Response
+  masking removes the legacy private-card and hero-hand dimensions while
+  retaining all 15 public decision dimensions.
 - `v140_strategy_context_v1` is a 66-dimensional value-head-only contract for
   exact preflop strength, weighted equity, range-distribution summaries,
   made/draw/value profiles, opponent estimates, board/spot risk, and the rule

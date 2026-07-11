@@ -6,7 +6,6 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
-import math
 from pathlib import Path
 import shutil
 import sys
@@ -24,6 +23,7 @@ from freeze_oppmodel_dataset import (  # noqa: E402
     _write_jsonl,
 )
 from longrun_collect_oppmodel import _directory_digest  # noqa: E402
+from sampling_weights import decision_sampling_weight  # noqa: E402
 
 
 SCHEMA = "opponent_role_dataset_v1"
@@ -250,31 +250,10 @@ def _normalize_roles(
 
 
 def _validate_ipw(row: dict[str, Any]) -> None:
-    if row.get("decision_sampling") != "uniform":
-        raise RuntimeError("value row does not declare uniform decision sampling")
-    eligible = _integer(
-        row.get("eligible_decisions"), field="eligible_decisions", minimum=1
-    )
-    selected = _integer(
-        row.get("selected_decisions"), field="selected_decisions", minimum=1
-    )
-    if selected > eligible:
-        raise RuntimeError("selected_decisions exceeds eligible_decisions")
     try:
-        probability = float(row["decision_inclusion_probability"])
-        inverse = float(row["decision_inverse_probability_weight"])
-    except (KeyError, TypeError, ValueError, OverflowError) as exc:
-        raise RuntimeError("value row is missing finite IPW fields") from exc
-    expected = selected / eligible
-    if (
-        not math.isfinite(probability)
-        or not math.isfinite(inverse)
-        or not 0.0 < probability <= 1.0
-        or inverse < 1.0
-        or not math.isclose(probability, expected, rel_tol=1e-9, abs_tol=1e-12)
-        or not math.isclose(inverse, 1.0 / probability, rel_tol=1e-9)
-    ):
-        raise RuntimeError("value row has inconsistent IPW fields")
+        decision_sampling_weight(row)
+    except ValueError as exc:
+        raise RuntimeError(f"value row has inconsistent IPW fields: {exc}") from exc
 
 
 def _validate_rows(

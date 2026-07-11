@@ -13,6 +13,7 @@ sys.path.insert(0, str(TOOLS))
 
 import decision_context_features as context  # noqa: E402
 import feature_spec  # noqa: E402
+import state_feature_schema  # noqa: E402
 
 
 def _index(name: str) -> int:
@@ -234,3 +235,43 @@ def test_missing_fields_use_stable_neutral_defaults() -> None:
     assert features[_index("match_score_fraction")] == 0.5
     assert features[_index("score_over_remaining_swing")] == 0.5
     assert features[-6:] == [0.0] * 6
+
+
+def test_combined_value_state_keeps_public_context_out_of_private_mask() -> None:
+    request = _request(opponent_chips=8_000)
+    state = {
+        "stacks": [15_000, 8_000],
+        "min_raise_action": 1_500,
+        "allin_call_amount": 500,
+        "pot": 2_000,
+        "to_call": 500,
+    }
+    base = feature_spec.encode_features(request)
+    schema = state_feature_schema.HERO_HAND_PUBLIC_DECISION_STATE_SCHEMA
+
+    extended = state_feature_schema.extend_state_features(
+        base,
+        request,
+        state=state,
+        legal_mask=[1, 1, 1, 0, 0, 1],
+        schema=schema,
+    )
+    metadata = state_feature_schema.feature_schema_metadata(
+        schema=schema, base_dim=len(base)
+    )
+
+    assert len(extended) == (
+        len(base)
+        + state_feature_schema.HAND_CONTEXT_DIM
+        + context.DECISION_CONTEXT_DIM
+    )
+    assert metadata["state_dim"] == len(extended)
+    assert metadata["decision_context_schema"] == context.DECISION_CONTEXT_SCHEMA
+    assert max(metadata["response_private_state_masked"]) < (
+        len(base) + state_feature_schema.HAND_CONTEXT_DIM
+    )
+    public_indices = set(range(
+        len(base) + state_feature_schema.HAND_CONTEXT_DIM,
+        len(extended),
+    ))
+    assert not public_indices & set(metadata["response_private_state_masked"])
