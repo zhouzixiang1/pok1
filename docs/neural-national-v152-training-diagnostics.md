@@ -798,6 +798,25 @@ that run, candidate, and role-manifest digest. A failed result cannot touch or
 register the gate data. The active pass-98 sweep predates this reader; it will
 be integrated only after that process stops reading the old trainer from disk.
 
+`multitask_training_data.py` now provides the trainer-facing staged assembly
+contract without changing the trainer file used by the active exploratory
+sweep. The training phase can open only train and early-stop roles. Model
+calibration remains inaccessible until it receives a frozen-checkpoint
+authorization bound to the same run id, role-manifest digest, exact train and
+early-stop artifact digests, and completed early stopping. Policy-selection and
+policy-gate roles have no entry point in this assembly layer. Value rows in all
+three model-development roles receive opponent-balanced decision-sampling IPW;
+behavior rows receive opponent-balanced weights without counterfactual IPW.
+Only train rows expose gradient weights, while early-stop and calibration rows
+carry a distinct evaluation-weight field. Behavior rows are upgraded in memory
+to the national response v2 contract and rejected if their observed target is
+outside the reconstructed legal mask. The shared encoder produces the new
+81-dimensional state and 24-dimensional actor-aware history, masks all derived
+private hero features for the response head, and keeps the 66-dimensional exact
+strategy context value-head-only. A real pass-2 frozen-prefix smoke opened
+84/492 train value/behavior rows, 12/50 early-stop rows, and 12/82 calibration
+rows in the required order without touching policy data.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
