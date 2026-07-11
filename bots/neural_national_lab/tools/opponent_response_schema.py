@@ -15,6 +15,26 @@ AGGRESSIVE_SIZE_SCHEMA = "increment_over_pre_response_pot_log200_v1"
 INITIAL_CHIPS = 20_000.0
 MAX_AGGRESSIVE_POT_RATIO = 200.0
 _STAGE_ROUND = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
+_CANONICAL_RESPONSE_FIELDS = (
+    "response_schema",
+    "response_action_labels",
+    "response_eligible",
+    "response_observed",
+    "response_target_mask",
+    "response_outcome",
+    "response_legal_action_mask",
+    "response_legal_actions",
+    "response_context",
+    "response_amount_schema",
+    "response_amount_target_mask",
+    "response_amount_target",
+    "response_raise_to_total",
+    "response_aggressive_increment",
+    "response_aggressive_increment_pot_ratio",
+    "response_aggressive_stack_fraction",
+    "opponent_action_amount_norm",
+    "opponent_action_pot_ratio",
+)
 
 
 def _load_validator():
@@ -331,9 +351,10 @@ def annotate_response_row(
         math.log1p(max(0.0, pot_ratio)) / math.log1p(MAX_AGGRESSIVE_POT_RATIO),
     )
 
-    if "opponent_action_amount_norm" in result:
+    source_is_current = result.get("response_schema") == OPPONENT_RESPONSE_SCHEMA
+    if not source_is_current and "opponent_action_amount_norm" in result:
         result["legacy_opponent_action_amount_norm"] = result["opponent_action_amount_norm"]
-    if "opponent_action_pot_ratio" in result:
+    if not source_is_current and "opponent_action_pot_ratio" in result:
         result["legacy_opponent_action_pot_ratio"] = result["opponent_action_pot_ratio"]
     result.update({
         "response_schema": OPPONENT_RESPONSE_SCHEMA,
@@ -372,7 +393,37 @@ def annotate_response_row(
 def annotate_response_rows(
     rows: Sequence[Mapping[str, Any]], *, strict: bool = True
 ) -> list[dict[str, Any]]:
-    return [annotate_response_row(row, strict=strict) for row in rows]
+    result = []
+    for row in rows:
+        if row.get("response_schema") == OPPONENT_RESPONSE_SCHEMA:
+            validate_response_row(row)
+            result.append(dict(row))
+        else:
+            result.append(annotate_response_row(row, strict=strict))
+    return result
+
+
+def validate_response_row(row: Mapping[str, Any]) -> None:
+    """Reject persisted v2 supervision that disagrees with public source state."""
+    if row.get("response_schema") != OPPONENT_RESPONSE_SCHEMA:
+        raise ValueError("opponent response row does not use the current schema")
+    expected = annotate_response_row(row, strict=True)
+    fields = list(_CANONICAL_RESPONSE_FIELDS)
+    if expected.get("response_observed"):
+        fields.append("opponent_action_label_id")
+    missing = [field for field in fields if field not in row]
+    changed = [
+        field
+        for field in fields
+        if field in row and row.get(field) != expected.get(field)
+    ]
+    if not expected.get("response_observed") and "opponent_action_label_id" in row:
+        changed.append("opponent_action_label_id")
+    if missing or changed:
+        raise ValueError(
+            f"opponent response row failed canonical validation: "
+            f"missing={missing} changed={changed}"
+        )
 
 
 def _response_key(row: Mapping[str, Any]) -> tuple[int, str, int, int]:

@@ -62,6 +62,29 @@ def _behavior_row(name: str, deck: int, bot: int) -> dict:
         "_collection_hands": 70,
         "hand": 1,
         "hand_decision_index": 0,
+        "decision_serial": 0,
+        "stage": "preflop",
+        "hero_action": 200,
+        "hero_action_label_id": 2,
+        "opponent_action": "call",
+        "opponent_action_label_id": 2,
+        "opponent_action_amount": 100,
+        "opponent_action_amount_norm": 100 / 20_000,
+        "opponent_action_pot_ratio": 100 / 150,
+        "request": {
+            "my_id": 0,
+            "dealer_id": 0,
+            "my_chips": 19_950,
+            "opponent_chips": 19_900,
+            "my_stage_bet": 50,
+            "opponent_stage_bet": 100,
+            "pot": 150,
+            "to_call": 50,
+            "history": [],
+            "my_cards": [0, 4],
+            "public_cards": [],
+        },
+        "state": {"round": 0, "pot": 150, "to_call": 50},
     }
 
 
@@ -163,11 +186,15 @@ def test_freeze_creates_five_opponent_disjoint_roles(tmp_path: Path) -> None:
 
     manifest = _freeze(source, output)
 
-    assert manifest["schema"] == "opponent_role_dataset_v1"
+    assert manifest["schema"] == "opponent_role_dataset_v2"
     assert manifest["source_completed_passes"] == 1
     assert manifest["source_requested_passes"] == 2
     assert manifest["source_collection_complete"] is False
     assert manifest["invariants"]["deck_blocks_non_overlapping"] is True
+    assert manifest["invariants"]["national_response_v2_validated"] is True
+    assert manifest["behavior_supervision"]["schema"] == (
+        "national_opponent_response_v2"
+    )
     assert manifest["roles"] == {
         role: [name] for role, name in OPPONENTS.items()
     }
@@ -178,6 +205,9 @@ def test_freeze_creates_five_opponent_disjoint_roles(tmp_path: Path) -> None:
             assert row["opponent"] == opponent
             assert row["_source_split"] == SOURCE_SPLIT[opponent]
             assert row["_evidence_role"] == role
+            if prefix == "opponent_actions":
+                assert row["response_schema"] == "national_opponent_response_v2"
+                assert row["response_legal_action_mask"][row["opponent_action_label_id"]]
 
 
 def test_freeze_rejects_role_overlap(tmp_path: Path) -> None:
@@ -222,6 +252,18 @@ def test_freeze_rejects_inconsistent_ipw(tmp_path: Path) -> None:
     _write_jsonl(path, rows)
 
     with pytest.raises(RuntimeError, match="inconsistent IPW"):
+        _freeze(source, tmp_path / "out")
+
+
+def test_freeze_rejects_illegal_response_supervision(tmp_path: Path) -> None:
+    source = _collection(tmp_path)
+    path = source / "opponent_actions_train.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[0]["opponent_action"] = "check"
+    rows[0]["opponent_action_label_id"] = 1
+    _write_jsonl(path, rows)
+
+    with pytest.raises(ValueError, match="illegal"):
         _freeze(source, tmp_path / "out")
 
 

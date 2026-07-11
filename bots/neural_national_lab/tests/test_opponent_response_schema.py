@@ -170,6 +170,33 @@ def test_metadata_documents_national_wire_amount_semantics() -> None:
     assert metadata["public_only"] is True
 
 
+def test_current_response_rows_are_idempotent_and_canonical() -> None:
+    enriched = schema.annotate_response_row(_row())
+
+    assert schema.annotate_response_rows([enriched]) == [enriched]
+    schema.validate_response_row(enriched)
+
+    enriched["response_legal_action_mask"][2] = 0
+    with pytest.raises(ValueError, match="canonical validation"):
+        schema.validate_response_row(enriched)
+
+    closed = schema.annotate_response_row(
+        _row(
+            stage="flop",
+            dealer_id=0,
+            hero_action=0,
+            opponent_action=None,
+            history=[{"round": 1, "player_id": 1, "action_type": "check"}],
+            my_bet=0,
+            opponent_bet=0,
+            pot=200,
+            to_call=0,
+        )
+    )
+    assert schema.annotate_response_rows([closed]) == [closed]
+    schema.validate_response_row(closed)
+
+
 def test_population_accounts_for_observed_and_closed_decisions() -> None:
     observed = schema.annotate_response_row(_row())
     observed.update({"hand": 1, "hand_decision_index": 0, "decision_serial": 0})

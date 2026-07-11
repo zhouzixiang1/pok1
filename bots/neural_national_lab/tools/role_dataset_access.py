@@ -19,6 +19,10 @@ from freeze_opponent_role_dataset import (  # noqa: E402
     SCHEMA as ROLE_DATASET_SCHEMA,
 )
 from opponent_exposure_ledger import open_exposure, status  # noqa: E402
+from opponent_response_schema import (  # noqa: E402
+    OPPONENT_RESPONSE_SCHEMA,
+    validate_response_row,
+)
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -33,6 +37,7 @@ REQUIRED_INVARIANTS = (
     "match_cluster_disjoint",
     "deck_blocks_non_overlapping",
     "uniform_decision_ipw_validated",
+    "national_response_v2_validated",
     "artifact_snapshots_verified",
 )
 
@@ -84,6 +89,12 @@ class RoleDatasetAccess:
         failed = [name for name in REQUIRED_INVARIANTS if invariants.get(name) is not True]
         if failed or invariants.get("final_blind_in_dataset") is not False:
             raise ValueError(f"role dataset invariants failed: {failed}")
+        behavior_supervision = manifest.get("behavior_supervision")
+        if (
+            not isinstance(behavior_supervision, dict)
+            or behavior_supervision.get("schema") != OPPONENT_RESPONSE_SCHEMA
+        ):
+            raise ValueError("role dataset has invalid behavior supervision")
         roles = manifest.get("roles")
         outputs = manifest.get("outputs")
         if not isinstance(roles, dict) or set(roles) != set(EVIDENCE_ROLES):
@@ -112,6 +123,11 @@ class RoleDatasetAccess:
                 })
                 if rows < 1 or size < 1 or opponents != names:
                     raise ValueError(f"invalid role output contract: {filename}")
+                if (
+                    prefix == "opponent_actions"
+                    and details.get("row_schema") != OPPONENT_RESPONSE_SCHEMA
+                ):
+                    raise ValueError(f"invalid behavior row schema: {filename}")
                 self.outputs[filename] = {
                     "rows": rows,
                     "bytes": size,
@@ -213,6 +229,13 @@ class RoleDatasetAccess:
                 raise RuntimeError(f"role row label mismatch: {filename}:{line_number}")
             if _opponent(row) not in self.roles[role]:
                 raise RuntimeError(f"role row opponent mismatch: {filename}:{line_number}")
+            if filename.startswith("opponent_actions_"):
+                try:
+                    validate_response_row(row)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"invalid response row: {filename}:{line_number}: {exc}"
+                    ) from exc
             rows.append(row)
         if len(rows) != expected["rows"]:
             raise RuntimeError(f"role output row count changed: {filename}")

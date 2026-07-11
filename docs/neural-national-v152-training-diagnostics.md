@@ -780,12 +780,15 @@ exposure ledger after the candidate is frozen. Its manifest records requested
 and completed pass counts plus an explicit collection-complete flag, so a live
 prefix can be used for smoke tests but cannot pass the future candidate gate.
 
-The first real smoke freeze at the completed pass-2 boundary succeeded with
-seven train opponents, v141 for early stopping, v142 for model calibration,
-v98 for policy selection, and v57/v66 for the policy gate. It contained 144
-counterfactual rows and 782 behavior rows across 12 non-overlapping match
-blocks. These counts only validate the freeze contract; they are far below the
-minimum needed to train or claim strength, and the live collection continues.
+The initial pass-2 smoke validated role partitioning but used the now-superseded
+v1 behavior-row contract. A new `opponent_role_dataset_v2` smoke froze the
+atomic pass-7 boundary with v141 for early stopping, v142 for model calibration,
+v98 for policy selection, and v57/v66 for the policy gate. It contains 494
+counterfactual rows and 2,304 canonical response-v2 rows. All 2,304 responses
+were observed and legal; 574 carry an aggressive-size target. The manifest
+binds the response schema and each behavior output declares its row schema.
+These counts only validate the freeze contract; the source is explicitly
+incomplete at 7/160 passes and cannot train or support a strength claim.
 
 `role_dataset_access.py` is the matching lazy reader. Construction reads only
 `role_manifest.json`; role JSONL files are not opened, statted, or hashed. Each
@@ -813,9 +816,9 @@ to the national response v2 contract and rejected if their observed target is
 outside the reconstructed legal mask. The shared encoder produces the new
 81-dimensional state and 24-dimensional actor-aware history, masks all derived
 private hero features for the response head, and keeps the 66-dimensional exact
-strategy context value-head-only. A real pass-2 frozen-prefix smoke opened
-84/492 train value/behavior rows, 12/50 early-stop rows, and 12/82 calibration
-rows in the required order without touching policy data.
+strategy context value-head-only. The pass-7 v2 frozen-prefix smoke opened
+290/1,431 train value/behavior rows, 36/205 early-stop rows, and 36/137
+calibration rows in the required order without touching policy data.
 
 `multitask_calibration.py` defines the post-checkpoint calibration math that the
 refactored trainer will call. Lower-value offsets use the calibration role's

@@ -13,6 +13,10 @@ sys.path.insert(0, str(TOOLS))
 
 import freeze_opponent_role_dataset as freeze  # noqa: E402
 import opponent_exposure_ledger as ledger  # noqa: E402
+from opponent_response_schema import (  # noqa: E402
+    annotate_response_row,
+    response_schema_metadata,
+)
 import role_dataset_access as access  # noqa: E402
 
 
@@ -39,6 +43,29 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
                 "_split": role,
                 "_evidence_role": role,
             }
+            if prefix == "opponent_actions":
+                row.update({
+                    "stage": "preflop",
+                    "hero_action": 200,
+                    "hero_action_label_id": 2,
+                    "opponent_action": "call",
+                    "opponent_action_label_id": 2,
+                    "opponent_action_amount": 100,
+                    "request": {
+                        "my_id": 0,
+                        "dealer_id": 0,
+                        "my_chips": 19_950,
+                        "opponent_chips": 19_900,
+                        "my_stage_bet": 50,
+                        "opponent_stage_bet": 100,
+                        "pot": 150,
+                        "to_call": 50,
+                        "history": [],
+                        "public_cards": [],
+                    },
+                    "state": {"round": 0, "pot": 150, "to_call": 50},
+                })
+                row = annotate_response_row(row)
             raw = (json.dumps(row) + "\n").encode()
             (root / filename).write_bytes(raw)
             outputs[filename] = {
@@ -46,17 +73,24 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
                 "bytes": len(raw),
                 "sha256": _sha(raw),
                 "opponents": opponents,
+                **(
+                    {"row_schema": "national_opponent_response_v2"}
+                    if prefix == "opponent_actions"
+                    else {}
+                ),
             }
     manifest = {
         "schema": freeze.SCHEMA,
         "source_collection_complete": complete,
         "roles": roles,
         "outputs": outputs,
+        "behavior_supervision": response_schema_metadata(),
         "invariants": {
             "opponent_disjoint": True,
             "match_cluster_disjoint": True,
             "deck_blocks_non_overlapping": True,
             "uniform_decision_ipw_validated": True,
+            "national_response_v2_validated": True,
             "artifact_snapshots_verified": True,
             "final_blind_in_dataset": False,
         },
@@ -183,6 +217,30 @@ def test_failed_file_validation_remains_conservatively_exposed(
         dataset.open_role("train")
 
     report = ledger.status(dataset.ledger_path)
+    assert report["opponents"]["national_v1"]["exposures"][0]["role"] == "train"
+
+
+def test_canonical_response_validation_cannot_be_bypassed_by_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest_path, ledger_path = _dataset(tmp_path)
+    path = manifest_path.parent / "opponent_actions_train.jsonl"
+    row = json.loads(path.read_text())
+    row["response_legal_action_mask"][row["opponent_action_label_id"]] = 0
+    raw = (json.dumps(row) + "\n").encode()
+    path.write_bytes(raw)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["outputs"][path.name]["bytes"] = len(raw)
+    manifest["outputs"][path.name]["sha256"] = _sha(raw)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    dataset = access.RoleDatasetAccess(
+        manifest_path, ledger_path=ledger_path, run_id="run-1"
+    )
+
+    with pytest.raises(RuntimeError, match="invalid response row"):
+        dataset.open_role("train")
+
+    report = ledger.status(ledger_path)
     assert report["opponents"]["national_v1"]["exposures"][0]["role"] == "train"
 
 

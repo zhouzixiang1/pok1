@@ -23,10 +23,15 @@ from freeze_oppmodel_dataset import (  # noqa: E402
     _write_jsonl,
 )
 from longrun_collect_oppmodel import _directory_digest  # noqa: E402
+from opponent_response_schema import (  # noqa: E402
+    OPPONENT_RESPONSE_SCHEMA,
+    annotate_response_rows,
+    response_schema_metadata,
+)
 from sampling_weights import decision_sampling_weight  # noqa: E402
 
 
-SCHEMA = "opponent_role_dataset_v1"
+SCHEMA = "opponent_role_dataset_v2"
 SOURCE_SPLITS = ("train", "val", "held_out")
 PREFIXES = ("cf", "opponent_actions")
 EVIDENCE_ROLES = (
@@ -389,6 +394,20 @@ def freeze_role_dataset(
             data[prefix][split] = rows
             input_files[path.name] = details
     _validate_rows(data, tasks)
+    response_counts = {}
+    for split in SOURCE_SPLITS:
+        upgraded = annotate_response_rows(
+            data["opponent_actions"][split], strict=True
+        )
+        data["opponent_actions"][split] = upgraded
+        response_counts[split] = {
+            "rows": len(upgraded),
+            "eligible": sum(bool(row["response_eligible"]) for row in upgraded),
+            "observed": sum(bool(row["response_observed"]) for row in upgraded),
+            "amount_targets": sum(
+                bool(row["response_amount_target_mask"]) for row in upgraded
+            ),
+        }
     snapshots = _verify_snapshots(source_dir, collection, registry, tasks)
 
     role_for_opponent = {
@@ -491,6 +510,11 @@ def freeze_role_dataset(
                     "opponents": sorted({
                         _opponent(row) for row in output_rows[prefix][role]
                     }),
+                    **(
+                        {"row_schema": OPPONENT_RESPONSE_SCHEMA}
+                        if prefix == "opponent_actions"
+                        else {}
+                    ),
                 }
         manifest = {
             "schema": SCHEMA,
@@ -509,11 +533,16 @@ def freeze_role_dataset(
             "collector_state_sha256": state_digest,
             "opponent_registry_sha256": registry_digest,
             "outputs": outputs,
+            "behavior_supervision": {
+                **response_schema_metadata(),
+                "source_split_counts": response_counts,
+            },
             "invariants": {
                 "opponent_disjoint": True,
                 "match_cluster_disjoint": True,
                 "deck_blocks_non_overlapping": True,
                 "uniform_decision_ipw_validated": True,
+                "national_response_v2_validated": True,
                 "artifact_snapshots_verified": True,
                 "final_blind_in_dataset": False,
             },
