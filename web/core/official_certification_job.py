@@ -398,6 +398,13 @@ def _with_progress(state: dict[str, Any], progress: dict[str, Any]) -> dict[str,
     return _bump_state(state, **updates)
 
 
+def _worker_pythonpath(existing: str | None = None) -> str:
+    """Return the explicit import roots required by the standalone worker."""
+    entries = [str(SERVICE_PATH.parent), str(ROOT)]
+    entries.extend((existing or "").split(os.pathsep))
+    return os.pathsep.join(dict.fromkeys(entry for entry in entries if entry))
+
+
 def _spawn_worker(directory: Path, state: dict[str, Any], *, max_attempts: int, new_suite: bool) -> dict[str, Any]:
     attempt = int(state.get("attempt", 0) or 0) + (1 if new_suite else 0)
     attempt = max(1, attempt)
@@ -408,8 +415,7 @@ def _spawn_worker(directory: Path, state: dict[str, Any], *, max_attempts: int, 
     )
     claim_token = uuid.uuid4().hex
     env = os.environ.copy()
-    core_path = str(SERVICE_PATH.parent)
-    env["PYTHONPATH"] = core_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["PYTHONPATH"] = _worker_pythonpath(env.get("PYTHONPATH"))
     env["POK_OFFICIAL_JOB_CLAIM_TOKEN"] = claim_token
     env["POK_OFFICIAL_JOB_DIRECTORY"] = str(directory)
     with (directory / "worker.stdout.log").open("ab") as stdout, (directory / "worker.stderr.log").open("ab") as stderr:

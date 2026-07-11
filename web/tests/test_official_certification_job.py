@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -48,6 +50,33 @@ def _fake_spawn(directory, state, *, max_attempts, new_suite):
             0 if new_suite else int(state.get("worker_restart_count", 0) or 0) + 1
         ),
     }
+
+
+def test_worker_pythonpath_imports_core_and_repo_packages_from_arbitrary_cwd(tmp_path):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = jobs._worker_pythonpath("/preserved/operator/path")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import national_native; import sever; print('worker-imports-ok')",
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "worker-imports-ok"
+    assert env["PYTHONPATH"].split(os.pathsep)[:2] == [
+        str(jobs.SERVICE_PATH.parent),
+        str(jobs.ROOT),
+    ]
+    assert env["PYTHONPATH"].split(os.pathsep)[-1] == "/preserved/operator/path"
 
 
 def test_job_start_and_poll_are_identity_stable(tmp_path, monkeypatch):
