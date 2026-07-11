@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -35,8 +36,112 @@ def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _training_exposure_sha(run_id: str) -> str:
+    return _sha(f"formal-training-exposure:{run_id}".encode())
+
+
+def _scaling_contract(requested: dict) -> dict:
+    root = Path("/verified/scaling")
+    run_id_prefix = "formal-grid"
+    jobs = []
+    for scale in requested["scales"]:
+        for encoder in requested["encoders"]:
+            for seed in requested["seeds"]:
+                slug = scaling._slug(scale, encoder, seed)
+                jobs.append({
+                    "scale": scale,
+                    "encoder": encoder,
+                    "seed": seed,
+                    "slug": slug,
+                    "run_id": f"{run_id_prefix}-{slug}",
+                    "output_dir": str((root / slug).resolve()),
+                    "pythonhashseed": str(seed),
+                    "training_environment": {"device": requested["device"]},
+                    "command": [sys.executable, str(scaling.TRAINER.resolve())],
+                })
+    training_options = {
+        attribute: 0 for _, attribute in scaling.TRAINING_OPTION_SPECS
+    }
+    training_options.update({
+        "device": requested["device"],
+        "cross_transformer_heads": requested["cross_transformer_heads"],
+    })
+    roles = {
+        role: {
+            "opponents": [f"national_{role}"],
+            "artifact_sha256": (
+                "1" * 64 if role == "train" else "2" * 64
+            ),
+            "files": {
+                f"cf_{role}.jsonl": {
+                    "rows": 1, "bytes": 1, "sha256": "d" * 64,
+                },
+                f"opponent_actions_{role}.jsonl": {
+                    "rows": 1, "bytes": 1, "sha256": "e" * 64,
+                },
+            },
+        }
+        for role in ("train", "early_stop")
+    }
+    unsigned = {
+        "schema": scaling.RUN_CONTRACT_SCHEMA,
+        "created_at": "2026-07-12T00:00:00+00:00",
+        "output_dir": str(root),
+        "role_manifest": "/verified/role_manifest.json",
+        "role_manifest_sha256": "b" * 64,
+        "ledger": "/verified/ledger.json",
+        "run_id_prefix": run_id_prefix,
+        "requested": copy.deepcopy(requested),
+        "jobs": jobs,
+        "allow_incomplete_smoke": False,
+        "training_options": training_options,
+        "python_executable": sys.executable,
+        "trainer": str(scaling.TRAINER.resolve()),
+        "trainer_sha256": v4_trainer._code_artifacts()["trainer"]["sha256"],
+        "training_code_artifacts": v4_trainer._code_artifacts(),
+        "training_roles": {
+            "collection_boundary": {},
+            "candidate_snapshot": {"name": "candidate", "sha256": "f" * 64},
+            "roles": roles,
+        },
+        "environment": {"device": requested["device"]},
+        "git_commit": "1" * 40,
+        "summary_schema": scaling.SUMMARY_SCHEMA,
+        "model_format": calibration.MODEL_FORMAT,
+        "selection_method": calibration.SELECTION_METHOD,
+        "selection_key_order": list(calibration.SELECTION_KEY_ORDER),
+        "scaling_tool_sha256": calibration._sha256(
+            calibration._scaling_tool_path()
+        ),
+        "model_calibration_opened": False,
+        "policy_roles_opened": False,
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+    }
+    return {
+        **unsigned,
+        "payload_sha256": scaling._canonical_sha256(unsigned),
+    }
+
+
+def _bind_scaling_contract(summary: dict) -> None:
+    contract = _scaling_contract(summary["requested"])
+    summary.update({
+        "created_at": contract["created_at"],
+        "role_manifest": contract["role_manifest"],
+        "ledger": contract["ledger"],
+        "run_contract": contract,
+        "run_contract_sha256": contract["payload_sha256"],
+    })
+
+
 def _value_row(role: str, opponent: str, index: int) -> dict:
     mask = [0, 0, 1, 1, 0, 0]
+    deltas = [None, None, 0.0, -200.0, None, None]
+    profile = [0.25, 0.125, 0.10, 0.30, 0.40, 0.15, 0.05, 0.20,
+               0.10, 0.15, 0.15, 0.05]
+    cross_hand = [0.25, 0.1, 0.3, 0.4, 0.15, 0.05, 0.2, 0.2,
+                  0.2, 0.1, 0.2, 1.0, 0.0, 0.0, 1.0, -0.1]
     return {
         "opponent": opponent,
         "_opponent_label": opponent,
@@ -52,15 +157,46 @@ def _value_row(role: str, opponent: str, index: int) -> dict:
         "decision_inverse_probability_weight": 1.0,
         "legal_mask": mask,
         "rule_label_id": 2,
+        "state_features": [0.5] * 48,
+        "opponent_profile_features": profile,
+        "cross_hand_sequence_schema": "public_opponent_hand_v1",
+        "cross_hand_sequence": [cross_hand],
         "baseline_match_net_chips": 100.0,
-        "match_delta_vs_rule": [None, None, 0.0, -200.0, None, None],
+        "delta_vs_rule": deltas,
+        "tail_delta_vs_rule": deltas,
+        "match_delta_vs_rule": deltas,
         "match_action_values": [None, None, 100.0, -100.0, None, None],
-        "target_masks": {"match_delta_vs_rule": mask},
+        "target_masks": {
+            field: mask
+            for field in (
+                "delta_vs_rule", "tail_delta_vs_rule", "match_delta_vs_rule"
+            )
+        },
+        "request": {
+            "my_id": 0,
+            "dealer_id": 0,
+            "my_chips": 19_950,
+            "opponent_chips": 19_900,
+            "my_stage_bet": 50,
+            "opponent_stage_bet": 100,
+            "pot": 150,
+            "to_call": 50,
+            "history": [],
+            "my_cards": [0, 4],
+            "public_cards": [],
+            "remaining_hands": 70,
+            "total_win_chips": [0, 0],
+        },
+        "state": {"round": 0, "pot": 150, "to_call": 50},
         "probes": [],
     }
 
 
 def _behavior_row(role: str, opponent: str, index: int) -> dict:
+    profile = [0.25, 0.125, 0.10, 0.30, 0.40, 0.15, 0.05, 0.20,
+               0.10, 0.15, 0.15, 0.05]
+    cross_hand = [0.25, 0.1, 0.3, 0.4, 0.15, 0.05, 0.2, 0.2,
+                  0.2, 0.1, 0.2, 1.0, 0.0, 0.0, 1.0, -0.1]
     row = {
         "opponent": opponent,
         "_opponent_label": opponent,
@@ -74,6 +210,10 @@ def _behavior_row(role: str, opponent: str, index: int) -> dict:
         "opponent_action": "call",
         "opponent_action_label_id": 2,
         "opponent_action_amount": 100,
+        "state_features": [0.5] * 48,
+        "opponent_profile_features": profile,
+        "cross_hand_sequence_schema": "public_opponent_hand_v1",
+        "cross_hand_sequence": [cross_hand],
         "request": {
             "my_id": 0,
             "dealer_id": 0,
@@ -84,7 +224,10 @@ def _behavior_row(role: str, opponent: str, index: int) -> dict:
             "pot": 150,
             "to_call": 50,
             "history": [],
+            "my_cards": [0, 4],
             "public_cards": [],
+            "remaining_hands": 70,
+            "total_win_chips": [0, 0],
         },
         "state": {"round": 0, "pot": 150, "to_call": 50},
     }
@@ -152,6 +295,59 @@ def _role_dataset(tmp_path: Path) -> tuple[Path, Path]:
     return manifest_path, tmp_path / "ledger.json"
 
 
+def test_real_incomplete_scaling_resume_reuses_strict_training_artifact(
+    tmp_path: Path,
+) -> None:
+    manifest, ledger = _role_dataset(tmp_path)
+    output = tmp_path / "scaling"
+    command = [
+        "--role-manifest", str(manifest),
+        "--ledger", str(ledger),
+        "--out-dir", str(output),
+        "--run-id-prefix", "real-resume",
+        "--scales", "small",
+        "--encoders", "gru",
+        "--seeds", "101",
+        "--training-workers", "1",
+        "--allow-incomplete-smoke",
+        "--epochs", "1",
+        "--patience", "1",
+        "--batch-size", "1",
+        "--device", "cpu",
+    ]
+
+    assert scaling.main(command) == 0
+    summary_path = output / scaling.SUMMARY_NAME
+    first_summary = summary_path.read_bytes()
+    checkpoint = output / "small_gru_seed101" / "checkpoint.pt"
+    first_checkpoint_sha256 = scaling._sha256(checkpoint)
+
+    assert scaling.main([*command, "--resume", "--training-workers", "2"]) == 0
+    assert summary_path.read_bytes() == first_summary
+    assert scaling._sha256(checkpoint) == first_checkpoint_sha256
+    assert exposure.status(ledger)["events"] == 2
+
+    forbidden = output / "small_gru_seed101" / "policy_selection_result.json"
+    forbidden.write_text("{}", encoding="utf-8")
+    assert scaling.main([*command, "--resume"]) == 0
+    quarantine = output.parent / ".scaling.invalid-jobs"
+    quarantined = list(quarantine.glob("small_gru_seed101.invalid-*"))
+    assert len(quarantined) == 1
+    assert (quarantined[0] / forbidden.name).is_file()
+    assert not forbidden.exists()
+    assert exposure.status(ledger)["events"] == 2
+
+    exposure.open_exposure(
+        ledger,
+        role="model_calibration",
+        opponents=["national_v1"],
+        run_id="real-resume-small_gru_seed101",
+        artifact_sha256="c" * 64,
+    )
+    with pytest.raises(SystemExit, match="ledger exposure binding changed"):
+        scaling.main([*command, "--resume"])
+
+
 def _outcome_payload(
     checkpoint: str,
     *,
@@ -197,7 +393,7 @@ def test_formal_scaling_selection_requires_all_encoders_and_three_seeds() -> Non
                     "encoder": encoder,
                     "seed": seed,
                     "selection_key": [0.1 + counter / 1000, 0.2, 0.3, 0.4],
-                    "parameters": 100 + counter,
+                    "parameters": 100 + len(runs) // len(seeds),
                     "checkpoint_sha256": f"{counter:064x}",
                     "source_collection_complete": True,
                     "source_completed_passes": 160,
@@ -236,6 +432,7 @@ def test_formal_scaling_selection_requires_all_encoders_and_three_seeds() -> Non
         "configurations": configurations,
         "runs": runs,
     }
+    _bind_scaling_contract(summary)
 
     _, runs = calibration.selected_scaling_runs(
         summary, allow_incomplete_smoke=False
@@ -243,6 +440,10 @@ def test_formal_scaling_selection_requires_all_encoders_and_three_seeds() -> Non
     assert [row["seed"] for row in runs] == [101, 211, 307]
 
     summary["requested"]["scales"] = ["small"]
+    summary["requested"]["configurations"] = len(
+        summary["requested"]["encoders"]
+    )
+    _bind_scaling_contract(summary)
     with pytest.raises(ValueError, match="every scale"):
         calibration.selected_scaling_runs(
             summary, allow_incomplete_smoke=False
@@ -253,13 +454,15 @@ def _formal_grid_fixture() -> tuple[dict, dict[str, dict]]:
     seeds = [101, 211, 307]
     runs = []
     actual_by_output = {}
+    code_artifacts = v4_trainer._code_artifacts()
     counter = 0
     for scale in scaling.FORMAL_SCALES:
         for encoder in scaling.FORMAL_ENCODERS:
             counter += 1
             parameters = counter * 1000
             for seed_index, seed in enumerate(seeds):
-                output_dir = f"/verified/{scale}-{encoder}-{seed}"
+                slug = scaling._slug(scale, encoder, seed)
+                output_dir = f"/verified/scaling/{slug}"
                 selection_key = [
                     0.1 * counter + seed_index / 1000,
                     0.2,
@@ -274,7 +477,7 @@ def _formal_grid_fixture() -> tuple[dict, dict[str, dict]]:
                         4 if encoder == "transformer" else None
                     ),
                     "seed": seed,
-                    "run_id": f"run-{scale}-{encoder}-{seed}",
+                    "run_id": f"formal-grid-{slug}",
                     "output_dir": output_dir,
                     "completed": True,
                     "selection_key": selection_key,
@@ -287,6 +490,9 @@ def _formal_grid_fixture() -> tuple[dict, dict[str, dict]]:
                     "source_requested_passes": 160,
                     "incomplete_smoke": False,
                     "training_device": "cuda:0",
+                    "training_exposure_sha256": _training_exposure_sha(
+                        f"formal-grid-{slug}"
+                    ),
                 }
                 runs.append(row)
                 actual_by_output[output_dir] = {
@@ -312,7 +518,7 @@ def _formal_grid_fixture() -> tuple[dict, dict[str, dict]]:
                         "train": "1" * 64,
                         "early_stop": "2" * 64,
                     },
-                    "code_artifacts": {"trainer": {"sha256": "3" * 64}},
+                    "code_artifacts": code_artifacts,
                 }
     configurations, selected = scaling.summarize_runs(
         runs, required_seeds=seeds
@@ -345,6 +551,43 @@ def _formal_grid_fixture() -> tuple[dict, dict[str, dict]]:
         "configurations": configurations,
         "runs": runs,
     }
+    _bind_scaling_contract(summary)
+    planned_jobs = {
+        (row["scale"], row["encoder"], row["seed"]): row
+        for row in summary["run_contract"]["jobs"]
+    }
+    contract_roles = summary["run_contract"]["training_roles"]["roles"]
+    expected_role_counts = {
+        role: {
+            "opponents": details["opponents"],
+            "value": details["files"][f"cf_{role}.jsonl"]["rows"],
+            "behavior": details["files"][
+                f"opponent_actions_{role}.jsonl"
+            ]["rows"],
+            "provenance": {
+                "artifact_sha256": details["artifact_sha256"],
+                "manifest_sha256": "b" * 64,
+                "candidate_sha256": None,
+            },
+        }
+        for role, details in contract_roles.items()
+    }
+    for actual in actual_by_output.values():
+        planned = planned_jobs[
+            (actual["scale"], actual["encoder"], actual["seed"])
+        ]
+        config_arguments = SimpleNamespace(
+            **summary["run_contract"]["training_options"]
+        )
+        config_arguments.scale = actual["scale"]
+        config_arguments.cross_encoder = actual["encoder"]
+        config_arguments.seed = actual["seed"]
+        actual.update({
+            "training_command": planned["command"],
+            "training_environment": planned["training_environment"],
+            "training_config": v4_trainer._config(config_arguments),
+            "role_counts": expected_role_counts,
+        })
     return summary, actual_by_output
 
 
@@ -372,8 +615,10 @@ def _install_fake_grid_verifier(
     monkeypatch.setattr(calibration, "_verified_member", verify)
     monkeypatch.setattr(
         calibration,
-        "_current_training_code_artifacts",
-        lambda: {"trainer": {"sha256": "3" * 64}},
+        "validate_training_job_exposures",
+        lambda ledger_path, *, run_id, role_contracts, ledger_snapshot=None: (
+            _training_exposure_sha(run_id)
+        ),
     )
     return visited
 
@@ -386,6 +631,7 @@ def test_formal_grid_verifies_every_real_run_and_recomputes_winner(
 
     proof = calibration.verify_formal_scaling_artifacts(
         summary,
+        ledger_path=Path("/verified/ledger.json"),
         role_manifest_sha256="b" * 64,
         training_artifact_sha256={
             "train": "1" * 64, "early_stop": "2" * 64,
@@ -399,6 +645,7 @@ def test_formal_grid_verifies_every_real_run_and_recomputes_winner(
     assert all("model" not in row for row in proof["verified_runs"])
     calibration.validate_formal_grid_verification(
         proof,
+        ledger_path=Path("/verified/ledger.json"),
         role_manifest_sha256="b" * 64,
         training_artifact_sha256={
             "train": "1" * 64, "early_stop": "2" * 64,
@@ -419,12 +666,124 @@ def test_formal_grid_verifies_every_real_run_and_recomputes_winner(
     with pytest.raises(ValueError, match="binding changed"):
         calibration.validate_formal_grid_verification(
             tampered,
+            ledger_path=Path("/verified/ledger.json"),
             role_manifest_sha256="b" * 64,
             training_artifact_sha256={
                 "train": "1" * 64, "early_stop": "2" * 64,
             },
             selected_configuration=summary["selected_configuration"],
         )
+
+
+def test_formal_grid_rejects_resigned_run_contract_substitution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summary, actual = _formal_grid_fixture()
+    _install_fake_grid_verifier(monkeypatch, actual)
+    proof = calibration.verify_formal_scaling_artifacts(
+        summary,
+        ledger_path=Path("/verified/ledger.json"),
+        role_manifest_sha256="b" * 64,
+        training_artifact_sha256={
+            "train": "1" * 64, "early_stop": "2" * 64,
+        },
+    )
+
+    def replace_run_ids(contract: dict) -> None:
+        contract["run_id_prefix"] = "forged-grid"
+        for job in contract["jobs"]:
+            job["run_id"] = f"forged-grid-{job['slug']}"
+
+    def replace_output_root(contract: dict) -> None:
+        contract["output_dir"] = "/forged/scaling"
+        for job in contract["jobs"]:
+            job["output_dir"] = f"/forged/scaling/{job['slug']}"
+
+    def replace_code(contract: dict) -> None:
+        contract["training_code_artifacts"]["trainer"] = {
+            "bytes": 1,
+            "sha256": "9" * 64,
+        }
+        contract["trainer_sha256"] = "9" * 64
+
+    mutations = [
+        lambda contract: contract.__setitem__("allow_incomplete_smoke", True),
+        lambda contract: contract.__setitem__("role_manifest_sha256", "8" * 64),
+        lambda contract: contract["training_roles"]["roles"]["train"].__setitem__(
+            "artifact_sha256", "7" * 64
+        ),
+        lambda contract: contract.__setitem__("trainer_sha256", "6" * 64),
+        lambda contract: contract.__setitem__("scaling_tool_sha256", "5" * 64),
+        lambda contract: contract.__setitem__("ledger", "/forged/ledger.json"),
+        replace_run_ids,
+        replace_output_root,
+        replace_code,
+    ]
+    for mutate in mutations:
+        tampered = copy.deepcopy(proof)
+        contract = tampered["scaling_run_contract"]
+        mutate(contract)
+        unsigned_contract = dict(contract)
+        unsigned_contract.pop("payload_sha256")
+        contract["payload_sha256"] = calibration._canonical_sha256(
+            unsigned_contract
+        )
+        tampered["scaling_run_contract_sha256"] = contract["payload_sha256"]
+        unsigned_proof = dict(tampered)
+        unsigned_proof.pop("payload_sha256")
+        tampered["payload_sha256"] = calibration._canonical_sha256(
+            unsigned_proof
+        )
+        with pytest.raises(ValueError, match="binding changed"):
+            calibration.validate_formal_grid_verification(
+                tampered,
+                ledger_path=Path("/verified/ledger.json"),
+                role_manifest_sha256="b" * 64,
+                training_artifact_sha256={
+                    "train": "1" * 64, "early_stop": "2" * 64,
+                },
+                selected_configuration=summary["selected_configuration"],
+            )
+
+
+def test_formal_grid_rejects_resigned_verified_row_contract_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summary, actual = _formal_grid_fixture()
+    _install_fake_grid_verifier(monkeypatch, actual)
+    proof = calibration.verify_formal_scaling_artifacts(
+        summary,
+        ledger_path=Path("/verified/ledger.json"),
+        role_manifest_sha256="b" * 64,
+        training_artifact_sha256={
+            "train": "1" * 64, "early_stop": "2" * 64,
+        },
+    )
+
+    mutations = [
+        lambda row: row.__setitem__("training_command", ["forged"]),
+        lambda row: row.__setitem__("training_environment", {"device": "cuda:9"}),
+        lambda row: row["training_config"].__setitem__("dropout", 0.99),
+        lambda row: row.__setitem__("role_counts", {}),
+        lambda row: row.__setitem__("training_exposure_sha256", "0" * 64),
+        lambda row: row.__setitem__("training_code_artifacts_sha256", "0" * 64),
+    ]
+    for mutate in mutations:
+        tampered = copy.deepcopy(proof)
+        mutate(tampered["verified_runs"][0])
+        unsigned = dict(tampered)
+        unsigned.pop("payload_sha256")
+        tampered["payload_sha256"] = calibration._canonical_sha256(unsigned)
+        with pytest.raises(ValueError, match="binding changed"):
+            calibration.validate_formal_grid_verification(
+                tampered,
+                ledger_path=Path("/verified/ledger.json"),
+                role_manifest_sha256="b" * 64,
+                training_artifact_sha256={
+                    "train": "1" * 64, "early_stop": "2" * 64,
+                },
+                selected_configuration=summary["selected_configuration"],
+            )
 
 
 def test_formal_grid_rejects_forged_nonselected_run_and_winner(
@@ -440,13 +799,14 @@ def test_formal_grid_rejects_forged_nonselected_run_and_winner(
     )
     nonselected["parameters"] += 1
     with pytest.raises(ValueError, match="disagrees on parameters"):
-        calibration.verify_formal_scaling_artifacts(
-            summary,
-            role_manifest_sha256="b" * 64,
-            training_artifact_sha256={
-                "train": "1" * 64, "early_stop": "2" * 64,
-            },
-        )
+            calibration.verify_formal_scaling_artifacts(
+                summary,
+                ledger_path=Path("/verified/ledger.json"),
+                role_manifest_sha256="b" * 64,
+                training_artifact_sha256={
+                    "train": "1" * 64, "early_stop": "2" * 64,
+                },
+            )
 
     summary, actual = _formal_grid_fixture()
     _install_fake_grid_verifier(monkeypatch, actual)
@@ -457,6 +817,7 @@ def test_formal_grid_rejects_forged_nonselected_run_and_winner(
     with pytest.raises(ValueError, match="does not match verified artifacts"):
         calibration.verify_formal_scaling_artifacts(
             summary,
+            ledger_path=Path("/verified/ledger.json"),
             role_manifest_sha256="b" * 64,
             training_artifact_sha256={
                 "train": "1" * 64, "early_stop": "2" * 64,
@@ -470,10 +831,12 @@ def test_formal_grid_binds_requested_transformer_heads(
     summary, actual = _formal_grid_fixture()
     _install_fake_grid_verifier(monkeypatch, actual)
     summary["requested"]["cross_transformer_heads"] = 8
+    _bind_scaling_contract(summary)
 
     with pytest.raises(ValueError, match="complete CUDA run"):
         calibration.verify_formal_scaling_artifacts(
             summary,
+            ledger_path=Path("/verified/ledger.json"),
             role_manifest_sha256="b" * 64,
             training_artifact_sha256={
                 "train": "1" * 64, "early_stop": "2" * 64,
@@ -624,11 +987,16 @@ def test_formal_member_verification_requires_cuda(
 
 def test_verified_member_rejects_current_training_code_drift(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     checkpoint_sha = "a" * 64
     role_sha = "b" * 64
     training_artifacts = {"train": "1" * 64, "early_stop": "2" * 64}
     current_code = {"trainer": {"bytes": 10, "sha256": "3" * 64}}
+    root = tmp_path / "member-101"
+    root.mkdir()
+    for name in (*calibration.EXPECTED_TRAINING_FILES, "artifact_manifest.json"):
+        (root / name).write_bytes(b"fixture")
     metadata = {
         "format": calibration.MODEL_FORMAT,
         "scale": "small",
@@ -641,9 +1009,15 @@ def test_verified_member_rejects_current_training_code_drift(
         "cross_encoder": "gru",
         "cross_transformer_heads": 4,
     }
-    report = {
+    environment = {"device": "cuda:0"}
+    report = {field: None for field in calibration.TRAINING_REPORT_FIELDS}
+    report.update({
         "schema": calibration.TRAINING_REPORT_SCHEMA,
+        "created_at": "2026-07-12T00:00:00+00:00",
         "run_id": "member-101",
+        "command": ["python", "trainer.py"],
+        "role_manifest": "/verified/role_manifest.json",
+        "ledger": "/verified/ledger.json",
         "opened_roles": ["train", "early_stop"],
         "model_calibration_opened": False,
         "policy_roles_opened": False,
@@ -654,7 +1028,10 @@ def test_verified_member_rejects_current_training_code_drift(
         "checkpoint_sha256": checkpoint_sha,
         "model": metadata,
         "config": config,
-        "environment": {"device": "cuda:0"},
+        "environment": environment,
+        "role_counts": {},
+        "history": [],
+        "best_epoch": 1,
         "early_stop": {
             "selection_key": [0.1, 0.2, 0.3, 0.4],
             "selection_key_order": list(calibration.SELECTION_KEY_ORDER),
@@ -666,14 +1043,20 @@ def test_verified_member_rejects_current_training_code_drift(
         "source_collection_complete": True,
         "incomplete_smoke": False,
         "code_artifacts": current_code,
-    }
-    artifact = {
+        "checkpoint_authorization": {},
+    })
+    artifact = {field: None for field in calibration.TRAINING_ARTIFACT_FIELDS}
+    artifact.update({
         "schema": calibration.TRAINING_ARTIFACT_SCHEMA,
         "run_id": "member-101",
+        "files": {
+            name: {"bytes": 7, "sha256": "f" * 64}
+            for name in calibration.EXPECTED_TRAINING_FILES
+        },
         "source_collection_complete": True,
         "deployment_policy_value": False,
         "strength_evidence": False,
-    }
+    })
     authorization = {
         "schema": calibration.FROZEN_CHECKPOINT_SCHEMA,
         "frozen": True,
@@ -684,17 +1067,22 @@ def test_verified_member_rejects_current_training_code_drift(
         "training_artifact_sha256": training_artifacts,
         "checkpoint_sha256": checkpoint_sha,
     }
-    checkpoint = {
+    checkpoint = {field: None for field in calibration.TRAINING_CHECKPOINT_FIELDS}
+    checkpoint.update({
         "schema": calibration.TRAINING_CHECKPOINT_SCHEMA,
         "role_manifest_sha256": role_sha,
         "training_artifact_sha256": training_artifacts,
         "model_metadata": metadata,
         "training_config": config,
+        "training_data": calibration.training_data_metadata(),
+        "best_epoch": 1,
+        "training_environment": environment,
         "code_artifacts": current_code,
         "source_completed_passes": 160,
         "source_requested_passes": 160,
         "source_collection_complete": True,
-    }
+        "state_dict": {},
+    })
     payloads = {
         "artifact_manifest.json": artifact,
         "training_report.json": report,
@@ -720,7 +1108,7 @@ def test_verified_member_rejects_current_training_code_drift(
         "encoder": "gru",
         "seed": 101,
         "run_id": "member-101",
-        "output_dir": "/verified/member-101",
+        "output_dir": str(root),
         "completed": True,
         "selection_key": [0.1, 0.2, 0.3, 0.4],
         "selection_key_order": list(calibration.SELECTION_KEY_ORDER),

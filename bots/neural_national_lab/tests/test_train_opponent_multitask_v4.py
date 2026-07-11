@@ -215,5 +215,26 @@ def test_transformer_checkpoint_round_trip_and_parent_code_binding(
             trainer.load_checkpoint(malformed)
 
     artifacts = trainer._code_artifacts()
-    assert {"parent_model", "parent_batch"} <= set(artifacts)
+    assert {
+        "parent_model",
+        "parent_batch",
+        "dependency:freeze_opponent_role_dataset",
+        "dependency:opponent_exposure_ledger",
+        "dependency:role_dataset_access",
+        "dependency:sampling_weights",
+    } <= set(artifacts)
     assert all(len(row["sha256"]) == 64 for row in artifacts.values())
+
+
+def test_training_rejects_code_drift_before_checkpoint_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    startup = {"trainer": {"bytes": 10, "sha256": "a" * 64}}
+    monkeypatch.setattr(
+        trainer,
+        "_code_artifacts",
+        lambda: {"trainer": {"bytes": 11, "sha256": "b" * 64}},
+    )
+
+    with pytest.raises(RuntimeError, match="changed while v4 training"):
+        trainer._verify_code_artifacts_unchanged(startup)

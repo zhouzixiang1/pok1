@@ -1371,6 +1371,62 @@ not create strength evidence before the independent collection is complete.
 After this hardening, the complete neural-lab suite passes 484 tests and all 33
 national protocol tests pass.
 
+## Formal V4 Grid Resumability And Proof Binding
+
+The 36-job formal grid can now resume without treating a directory name or an
+old summary row as evidence. Before any trainer starts,
+`run_opponent_multitask_v4_scaling.py` atomically publishes a self-hashed
+`scaling_run_contract.json`. The contract freezes the exact Cartesian matrix,
+run IDs, output paths, commands, per-seed `PYTHONHASHSEED`, training options,
+device environment, Git commit, Python executable, trainer and transitive code
+hashes, role-manifest bytes, exact train/early-stop file bytes and row counts,
+candidate snapshot, and false deployment/strength claims. A resume may change
+only runner concurrency; any semantic or provenance change requires a new
+output root.
+
+Root initialization uses a same-filesystem sibling temporary directory,
+`fsync`, and rename. Each trainer similarly writes a PID-named temporary
+directory, rechecks its frozen code and environment immediately before
+publication, and renames only a complete manifest/checkpoint/report set.
+Completed jobs are reusable only after strict directory allowlisting, manifest
+and file rehashing, safe `torch.load(weights_only=True)`, exact checkpoint/report
+cross-binding, strict model-state loading, and reconstruction of the full
+CLI-derived training configuration. A dead training temporary is preserved in
+an abandoned-partial quarantine. An invalid completed artifact is preserved in
+an invalid-job quarantine and retrained; protected-role ledger contamination is
+never repaired by moving files or retraining. A nonblocking root lock excludes
+concurrent runners and is released in every success or exception path. A
+metadata temporary left by process termination between `fsync` and rename is
+also quarantined on resume rather than blocking an otherwise valid run root.
+
+Training-role evidence is checked from the raw append-only ledger rather than
+its expanded per-opponent view. The complete ledger must have canonical fields,
+continuous non-boolean sequence numbers, canonical opponent groups, valid UTC
+timestamps and hashes, and known event/role combinations. Each training run ID
+must have exactly two complete group events in `train` then `early_stop` order,
+with no candidate hash or other role. A canonical per-run receipt digest enters
+the scaling row and formal proof. The final all-job verification uses one
+shared-lock ledger snapshot and holds that lock through atomic summary
+publication, so unrelated concurrent runs may append before or after the
+barrier but the published grid cannot race a same-run mutation.
+
+Formal calibration no longer trusts even a self-consistent embedded proof. It
+reloads every real member on CPU, recomputes the winner, and binds each verified
+row back to the current manifest, train/early-stop composite digests, current
+code, scaling tool, trainer, requested CUDA matrix, planned run ID/output,
+exact command, environment, training configuration, role counts, and raw-ledger
+receipt. The downstream proof validator repeats those bindings from a single
+ledger snapshot and requires exact proof/row field sets. Re-signing a changed
+contract, command, environment, role count, code digest, or exposure receipt is
+therefore rejected.
+
+These changes make interruption and reuse auditable; they do not make an
+incomplete collection deployable. Incomplete smoke output still carries
+`deployment_policy_value=false` and `strength_evidence=false`, cannot become a
+formal selected configuration, and cannot create a Bot. No formal CUDA grid was
+run while the independent collector remained incomplete. The complete
+neural-lab suite now passes 498 tests and all 33 national protocol tests pass.
+
 ## Literature Recheck And Search Direction
 
 The architecture decision is also constrained by established imperfect-
