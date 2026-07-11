@@ -670,6 +670,47 @@ solve the trainer's reuse of model-calibration opponents or adaptive validation
 selection. Those require the separately partitioned pass after the running
 pass-98 control has finished.
 
+`opponent_exposure_ledger.py` adds an append-only, file-locked role ledger.
+An opponent opened for train, early stop, model calibration, policy selection,
+policy gate, development native evaluation, or regression can never be
+reserved as final blind. A final-blind reservation blocks every other reader;
+opening is conservative and one-time, after which the opponent may only be
+used as regression data. The local runtime ledger was initialized from the
+pass-100 snapshots: 19 train opponents, v98/v142 as early-stop opponents, and
+v57/v66 as policy-gate opponents. Consequently no currently used member of
+that pool is a legitimate final blind opponent; final release evidence must
+reserve newly completed classic versions that appear later in the live pool.
+The ledger itself is runtime data and is not committed with source code.
+Final-blind reservations are bound to the frozen candidate directory SHA-256;
+opening the blind result requires both the same candidate digest and the
+evaluation artifact digest. This prevents a reserved unseen opponent from
+being reused for a different post-tuning candidate under the same run ID.
+
+Three versioned input contracts have also been added without silently changing
+the running v150-format trainer or runtime:
+
+- `current_hand_actor_event_v2` is a 24-dimensional, actor-relative history
+  event. It removes hero/opponent collisions and uses event-local pot/stack
+  fields when present. Current collected rows contain actor identity but do not
+  contain `pot_after` for every event, so those availability bits remain zero;
+  a future trace-capable collection version must capture the missing fields.
+- `public_decision_context_v1` is a 15-dimensional public-only context with
+  opponent/effective stack, minimum raise, all-in call amount, unsaturated pot
+  and match score, remaining-match pressure, and a six-action legal mask. These
+  values can be reconstructed from the current raw request/state rows.
+- `v140_strategy_context_v1` is a 66-dimensional value-head-only contract for
+  exact preflop strength, weighted equity, range-distribution summaries,
+  made/draw/value profiles, opponent estimates, board/spot risk, and the rule
+  value plan. It is deliberately forbidden from the opponent-response head.
+  Current rows did not capture this exact rule-path context, so it cannot be
+  reconstructed faithfully or used until a new native trace version records
+  it with a dedicated deterministic decision RNG.
+
+These files define migration boundaries, not evidence that the new inputs have
+already trained or improved a deployed policy. Adoption requires a new model
+format, matching stdlib runtime validation, and paired regression against the
+unchanged v140 rule trajectory.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
