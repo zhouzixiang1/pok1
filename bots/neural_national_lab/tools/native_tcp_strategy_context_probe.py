@@ -19,6 +19,12 @@ if str(TOOLS) not in sys.path:
 
 import native_tcp_counterfactual_probe as base_probe  # noqa: E402
 from feature_spec import LABELS  # noqa: E402
+from opponent_response_schema import (  # noqa: E402
+    OPPONENT_RESPONSE_SCHEMA,
+    annotate_response_rows,
+    response_schema_metadata,
+    summarize_response_population,
+)
 from strategy_context_trace_rows import attach_strategy_context  # noqa: E402
 
 
@@ -56,14 +62,31 @@ def enrich_payload(
     attached, join = attach_strategy_context(
         list(payload.get("rows") or []), decision_trace
     )
+    behavior_rows = annotate_response_rows(
+        list(payload.get("behavior_rows") or []), strict=True
+    )
+    response_population = summarize_response_population(
+        decision_trace, behavior_rows, strict=True
+    )
     if any(
         "strategy_context_features" in row
-        for row in payload.get("behavior_rows") or []
+        for row in behavior_rows
     ):
         raise ValueError("strategy context leaked into opponent-response rows")
     enriched = dict(payload)
     enriched["execution_mode"] = "native_tcp_counterfactual_strategy_context"
     enriched["rows"] = attached
+    enriched["behavior_rows"] = behavior_rows
+    enriched["opponent_response_schema"] = response_schema_metadata()
+    enriched["opponent_response_population"] = response_population
+    enriched["behavior_summary"] = {
+        **dict(payload.get("behavior_summary") or {}),
+        "rows": len(behavior_rows),
+        "schema": OPPONENT_RESPONSE_SCHEMA,
+        "eligible_rows": sum(bool(row["response_eligible"]) for row in behavior_rows),
+        "observed_rows": sum(bool(row["response_observed"]) for row in behavior_rows),
+        "amount_rows": sum(bool(row["response_amount_target_mask"]) for row in behavior_rows),
+    }
     enriched["strategy_context_join"] = join
     enriched["strategy_context_replay"] = {
         "format": trace_payload.get("format"),

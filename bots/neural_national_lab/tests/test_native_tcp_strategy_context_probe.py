@@ -19,7 +19,21 @@ def _decision() -> dict:
         "hand": 3,
         "hand_decision_index": 1,
         "decision_serial": 8,
+        "stage": "preflop",
         "final_action": 200,
+        "request": {
+            "my_id": 0,
+            "dealer_id": 0,
+            "my_chips": 19_950,
+            "opponent_chips": 19_900,
+            "my_stage_bet": 50,
+            "opponent_stage_bet": 100,
+            "pot": 150,
+            "to_call": 50,
+            "history": [],
+            "public_cards": [],
+        },
+        "state": {"round": 0, "pot": 150, "to_call": 50},
         "strategy_context": {
             "schema": "v140_strategy_context_v1",
             "dim": 66,
@@ -40,7 +54,28 @@ def _payload() -> dict:
             "decision_serial": 8,
             "rule_final": 200,
         }],
-        "behavior_rows": [{"opponent_action": "call"}],
+        "behavior_rows": [{
+            "hand": 3,
+            "stage": "preflop",
+            "hand_decision_index": 1,
+            "decision_serial": 8,
+            "hero_action": 200,
+            "opponent_action": "call",
+            "opponent_action_amount": 100,
+            "request": {
+                "my_id": 0,
+                "dealer_id": 0,
+                "my_chips": 19_950,
+                "opponent_chips": 19_900,
+                "my_stage_bet": 50,
+                "opponent_stage_bet": 100,
+                "pot": 150,
+                "to_call": 50,
+                "history": [],
+                "public_cards": [],
+            },
+            "state": {"round": 0, "pot": 150, "to_call": 50},
+        }],
     }
 
 
@@ -71,6 +106,14 @@ def test_enrich_payload_adds_context_only_to_value_rows() -> None:
     )
     assert len(enriched["rows"][0]["strategy_context_features"]) == 66
     assert "strategy_context_features" not in enriched["behavior_rows"][0]
+    assert enriched["behavior_rows"][0]["response_schema"] == (
+        "national_opponent_response_v2"
+    )
+    assert enriched["behavior_rows"][0]["response_legal_actions"] == [
+        "fold", "call", "raise", "allin"
+    ]
+    assert enriched["behavior_summary"]["observed_rows"] == 1
+    assert enriched["opponent_response_population"]["missing_required_response"] == 0
     assert enriched["strategy_context_join"]["response_head_allowed"] is False
     assert len(enriched["strategy_context_replay"]["trace_sha256"]) == 64
 

@@ -749,6 +749,24 @@ compliance is clean, baseline net chips are identical, and every selected rule
 action matches its trace. This extra replay is why context collection will run
 as a separate dataset rather than being mixed into the active collection.
 
+The same new probe now emits the versioned
+`national_opponent_response_v2` supervision contract. It reconstructs the
+public state immediately before the opponent acts and uses the national
+platform validator as the legality oracle for the five response classes. Every
+observed row carries a legal-action mask, response-target mask, and explicit
+response eligibility. The full decision trace is reconciled with the observed
+rows, so hero folds, calls that close a street, all-in runouts, and preflop big
+blind checks are counted as no-response outcomes instead of silently entering
+or disappearing from the action target. Raise events retain their protocol
+raise-to-total value while sizing supervision uses the incremental commitment;
+all-in events are interpreted as remaining-stack increments. Both are encoded
+against the pot after the hero action, with a separate stack fraction and
+versioned log-pot target. A read-only audit of 1,351 complete behavior rows from
+the running independent collection passed this reconstruction and the official
+validator with zero failures. Those old rows remain immutable and exploratory;
+only a future strategy-context collection receives the v2 fields, and the
+trainer must not consume them until its role-isolated refactor is complete.
+
 `freeze_opponent_role_dataset.py` replaces the ambiguous four-way development
 freeze for the next training run. It emits five explicit opponent-disjoint
 roles: train, early stop, model calibration, policy selection, and policy gate.
