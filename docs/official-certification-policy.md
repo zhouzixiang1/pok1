@@ -138,11 +138,28 @@ Historical grants in `web/core/official_grandfathering.json` bind an annotated
 tag, exact artifact hash, roles, and migration policy. Known blocking evidence
 overrides every grant.
 
-The v142 official-opponent anchor is readiness-gated: it remains available only
-until two other signed full certificates are usable. Historical parent/rating
-grants sunset at the tracked migration boundary. This avoids deleting the
-existing rating population at once while ensuring grandfathering cannot become
-a permanent path for new output.
+Normal `official_opponent` eligibility requires a published, signed,
+content-valid `official-full-v5` certificate. Historical grants, including
+v142, are limited to their explicitly recorded parent/rating roles and can
+never satisfy a formal opponent selection. They sunset at the tracked migration
+boundary, which preserves continuity in the local rating population without
+turning grandfathering into a certification path for new output.
+
+The repository-pinned v141 signed-ledger root is a one-time operator bootstrap,
+not a normal opponent, active-pool fallback, or automatic evolution choice. It
+can certify exactly one fresh, unpublished candidate through the explicit
+`bootstrap-full` command. Only a successful certificate appended to the signed
+verdict ledger consumes the root; failed or inconclusive runs do not create a
+normal opponent. Once consumed, it cannot be replayed.
+
+After that manual suite succeeds, `commit_bot` may reuse only the exact existing
+certificate that passes the complete content-bound validator (candidate hash,
+signed receipt, evidence, ledger, selection receipt, and policy). It skips a
+second opponent selection/job for that handoff, then runs the same validator
+again immediately before staging and tagging. A status label, mutable JSON, or
+ledger entry alone is insufficient. Publishing that first attestation creates
+the first normal full-v5 opponent; subsequent candidates use the ordinary
+policy path.
 
 Lifecycle state is durable in annotated Git tags:
 
@@ -165,6 +182,12 @@ python3 scripts/official_certify.py doctor
 
 # Durable full 5+3x70 request and wait for its terminal result
 python3 scripts/official_certify.py full bots/national_v<N> --wait-if-busy
+
+# One-time first-anchor bootstrap for a fresh unpublished candidate
+python3 scripts/official_certify.py bootstrap-full bots/national_v<N> \
+  --root-id national-v141-official-full-v5-signed-ledger-root \
+  --acknowledge-one-time-ledger-bootstrap \
+  --wait-if-busy
 
 # Inspect/reconcile durable jobs
 python3 scripts/official_certify.py queue-status

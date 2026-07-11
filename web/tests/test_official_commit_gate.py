@@ -38,7 +38,7 @@ def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
     monkeypatch.setattr(
         official_certification,
         "official_full_certified",
-        lambda _status, _candidate, **_kwargs: True,
+        lambda status, _candidate, **_kwargs: status.get("status") == STATUS_CERTIFIED,
     )
     calls = []
 
@@ -80,6 +80,145 @@ def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
     assert kwargs["source_v"] == 123
     assert kwargs["retry_terminal"] is False
     assert result["opponent_selection"]["opponent"]["reason"] == "official_certified"
+
+
+def test_official_full_commit_gate_reuses_valid_bootstrap_certificate_before_selection(
+    tmp_path,
+    monkeypatch,
+):
+    import official_certification
+    import official_certification_job
+    import tool_commit
+
+    candidate = _native_bot(tmp_path / "bots" / "national_v146")
+    bootstrap_spec = {
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "candidate": str(candidate.resolve()),
+        "opponent": str((tmp_path / "bots" / "national_v141").resolve()),
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70,
+        "round_timeout_sec": 900.0,
+        "no_progress_timeout_sec": 75.0,
+        "bootstrap_root_id": "national-v141-official-full-v5-signed-ledger-root",
+    }
+    selection = {
+        "selected": True,
+        "bootstrap_root_id": bootstrap_spec["bootstrap_root_id"],
+        "opponent": {
+            "bot": "national_v141",
+            "reason": "signed_v5_ledger_bootstrap_root",
+        },
+    }
+    existing = {
+        "status": STATUS_CERTIFIED,
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "issues": [],
+        "certificate_digest": "a" * 64,
+        "certificate_path": str(tmp_path / "certificate.json"),
+        "official_evidence_path": str(tmp_path / "evidence.json"),
+        "official_evidence_summary": {"classification": "pass", "blocking": False},
+        "certification_identity": {
+            "candidate_hash": "b" * 64,
+            "spec": bootstrap_spec,
+        },
+        "opponent_selection": selection,
+    }
+    monkeypatch.setattr(official_certification, "read_status", lambda _candidate: existing)
+    validator_calls = []
+
+    def valid_full(status, requested_candidate, **kwargs):
+        validator_calls.append((status, requested_candidate, kwargs))
+        return status is existing and Path(requested_candidate) == candidate
+
+    monkeypatch.setattr(official_certification, "official_full_certified", valid_full)
+    monkeypatch.setattr(
+        official_certification,
+        "select_official_opponent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("valid existing certificate must bypass normal opponent selection")
+        ),
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "start_or_poll_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("valid existing certificate must not start another official job")
+        ),
+    )
+
+    result = asyncio.run(
+        tool_commit._run_official_full_commit_gate(
+            146,
+            142,
+            candidate,
+            {"national_execution_mode": "native_tcp"},
+            {},
+        )
+    )
+
+    assert result["passed"] is True
+    assert result["outcome"] == "passed"
+    assert result["reused_existing_certificate"] is True
+    assert result["bootstrap_certificate"] is True
+    assert result["spec"] == bootstrap_spec
+    assert result["opponent_selection"] == selection
+    assert len(validator_calls) == 1
+
+
+def test_official_full_commit_gate_does_not_reuse_invalid_existing_certificate(
+    tmp_path,
+    monkeypatch,
+):
+    import official_certification
+    import official_certification_job
+    import tool_commit
+
+    candidate = _native_bot(tmp_path / "bots" / "national_v146")
+    tampered = {
+        "status": STATUS_CERTIFIED,
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "certificate_digest": "tampered",
+        "certification_identity": {"candidate_hash": "wrong"},
+    }
+    monkeypatch.setattr(official_certification, "read_status", lambda _candidate: tampered)
+    monkeypatch.setattr(
+        official_certification,
+        "official_full_certified",
+        lambda status, _candidate, **_kwargs: False,
+    )
+    selection_calls = []
+
+    def no_normal_opponent(*args, **kwargs):
+        selection_calls.append((args, kwargs))
+        return {"selected": False, "reason": "no_official_eligible_opponent"}
+
+    monkeypatch.setattr(official_certification, "select_official_opponent", no_normal_opponent)
+    monkeypatch.setattr(
+        official_certification_job,
+        "start_or_poll_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("no opponent means no official job")
+        ),
+    )
+    monkeypatch.setattr(tool_commit, "get_active_bots", lambda: [])
+
+    result = asyncio.run(
+        tool_commit._run_official_full_commit_gate(
+            146,
+            142,
+            candidate,
+            {"national_execution_mode": "native_tcp"},
+            {},
+        )
+    )
+
+    assert result["passed"] is False
+    assert result["opponent_selection"]["reason"] == "no_official_eligible_opponent"
+    assert len(selection_calls) == 1
 
 
 def test_official_full_commit_gate_blocks_inconclusive_result(tmp_path, monkeypatch):

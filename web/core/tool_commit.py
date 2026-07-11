@@ -655,10 +655,56 @@ async def _run_official_full_commit_gate(
         build_spec,
         official_compliance_verdict,
         official_full_certified,
+        read_status,
         select_official_opponent,
         spec_record,
     )
     from official_certification_job import start_or_poll_job
+
+    # A manually started bootstrap-full job is deliberately outside the
+    # automatic evolution path.  Once it has produced a valid content-bound
+    # full certificate, commit_bot must publish that exact certificate instead
+    # of requiring another already-published opponent (which cannot exist for
+    # the first anchor).  The full validator rechecks candidate hash, signed
+    # receipt, evidence, ledger and policy here; commit_bot repeats the same
+    # validation immediately before Git staging/tagging below.
+    existing_status = read_status(bot_dir)
+    if official_full_certified(existing_status, bot_dir):
+        identity = (
+            existing_status.get("certification_identity")
+            if isinstance(existing_status.get("certification_identity"), dict)
+            else {}
+        )
+        existing_spec = (
+            identity.get("spec")
+            if isinstance(identity.get("spec"), dict)
+            else {}
+        )
+        opponent_selection = (
+            existing_status.get("opponent_selection")
+            if isinstance(existing_status.get("opponent_selection"), dict)
+            else {}
+        )
+        return {
+            "passed": True,
+            "outcome": "passed",
+            "version": v,
+            "source_v": source_v,
+            "spec": existing_spec,
+            "status": existing_status,
+            "verdict": official_compliance_verdict(existing_status),
+            "opponent_selection": opponent_selection,
+            "official_evidence_path": existing_status.get("official_evidence_path"),
+            "official_evidence_summary": (
+                existing_status.get("official_evidence_summary") or {}
+            ),
+            "certificate_digest": existing_status.get("certificate_digest"),
+            "certificate_path": existing_status.get("certificate_path"),
+            "certification_identity": identity,
+            "issues": existing_status.get("issues") or [],
+            "reused_existing_certificate": True,
+            "bootstrap_certificate": bool(existing_spec.get("bootstrap_root_id")),
+        }
 
     opponent_selection = select_official_opponent(
         bot_dir,
