@@ -1137,6 +1137,110 @@ completed collector state. The neural-lab suite passes 306 tests. This proves
 the data and gate contract on real collection output, not that a policy or bot
 has passed the new strength criterion.
 
+`opponent_multitask_model_v4.py` adds the first separately versioned neural
+consumer of that supervision. It preserves all v3 distributional value and
+opponent-response heads, but adds one absolute 70-hand positive-outcome logit
+per action from the shared opponent-aware value latent. Its masked objective is
+binary cross entropy plus within-decision positive-versus-nonpositive action
+ranking. Early stopping compares a lexicographic key in this order: flip-subset
+balanced error, overall outcome balanced error, outcome NLL, then the old v3
+value/response score. Thus a secondary chip/value improvement cannot replace a
+checkpoint whose primary outcome behavior worsened.
+
+An incomplete CUDA smoke on the atomic 24-pass role freeze trained a small GRU
+v4 model with 179,415 parameters for two epochs on the RTX 4060. Epoch two
+improved the secondary v3 score but worsened the primary flip-outcome error, so
+the trainer correctly restored epoch one. Its early-stop outcome balanced
+accuracy was 57.06 percent, flip-subset balanced accuracy 77.42 percent, NLL
+0.6670, and Brier score 0.2373. These numbers use only one early-stop opponent,
+24/160 collection passes, and two epochs; they are pipeline diagnostics, not a
+model-strength result.
+
+`opponent_multitask_runtime_v4.py` and
+`export_opponent_multitask_v4.py` extend the strict stdlib runtime without
+changing the v3 format. The smoke checkpoint exported to a 3,750,782-byte JSON
+artifact (SHA-256
+`b5bf27225507db89683cff82a8bfb8fbccf7df50fbe9a81085adbada221bd359`).
+On a real frozen `national_v135` row, Torch-versus-stdlib maximum differences
+were `2.02e-7` for distributional values and `6.94e-8` for outcome logits. The
+raw head still emits explicitly uncalibrated logits; probability calibration is
+a separate checkpoint-bound artifact rather than hidden model state.
+
+## Protected Outcome Probability Calibration
+
+`calibrate_match_outcome_v4.py` now opens only the frozen
+`model_calibration` role after verifying the early-stop checkpoint,
+authorization, training-role artifact hashes, run ID, and role manifest. It
+fits a positive global logit scale and bias by weighted binary NLL. Identity
+calibration is retained as an optimizer candidate, so an optimization-step
+bookkeeping mismatch cannot associate a measured loss with different
+parameters or return a worse regularized fit. Calibration JSON is self-hashed,
+bound to the exact checkpoint and model format, and explicitly carries false
+deployment and strength claims.
+
+The incomplete pass-24 smoke opened `national_v142` for model calibration and
+left policy-selection and policy-gate roles unopened. It used 144 source rows
+with 429 observed action outcomes. The fitted scale was `0.5265807` and bias
+was `0.3616051`; weighted NLL changed from `0.66576` to `0.65158`, Brier score
+from `0.23673` to `0.22974`, and ECE from `0.12033` to `0.03332`. However, its
+0.5-threshold balanced accuracy fell from 56.0 percent to 50.0 percent because
+all observations became positive predictions. The monotone transform preserves
+ranking but this tiny one-opponent split does not demonstrate useful policy
+discrimination. These results validate calibration mechanics only.
+
+`export_opponent_multitask_v4.py` can embed the calibration only when its
+self-hash, checkpoint SHA-256, and model format match the exported checkpoint.
+The strict stdlib runtime retains both raw logits and calibrated probabilities
+and rejects provenance or payload drift. The calibrated smoke export was
+3,753,996 bytes with SHA-256
+`154e899f2a692df444b9674a3845a41339d5a96368b1a7e5458aea7e8cf10948`.
+On a real frozen `national_v142` row, Torch-versus-stdlib maximum differences
+were `5.47e-8` for raw logits and `2.88e-8` after calibration. The calibration
+payload SHA-256 was
+`bf0df5bc0eaf88e2f09fc4a624c829a8f9774bd41c2401a19670ede817ca21b9`.
+The full neural-lab suite now passes 332 tests, and all 30 national protocol
+tests pass. A complete independently collected role dataset, multi-seed
+selection, protected gate, and fresh native TCP matches remain mandatory before
+this head can influence a formal candidate.
+
+## Runtime Win-First Policy Contract
+
+`win_first_policy_v4.py` makes the user's strength priority executable rather
+than leaving it only in the post-hoc gate. Calibrated probabilities from each
+seed are aggregated as a mean plus/minus a configurable population-standard-
+deviation uncertainty radius. A candidate is ineligible unless its absolute
+70-hand positive-outcome probability lower bound is at least 50 percent, its
+lower bound strictly exceeds the rule action's probability upper bound by the
+global uplift margin, its immediate-hand LCB is nonnegative, and its weighted
+chip LCB exceeds a nonnegative margin. Per-opponent fields and weakened
+positive-probability floors are rejected by the exact policy schema.
+
+Among eligible actions, selection is lexicographic: candidate positive-
+probability LCB first, conservative probability uplift second, and chip LCB
+score third. A controlled test therefore selects a higher-win-probability
+action with a one-chip score over a lower-win-probability action with a
+thousand-chip score. This intentionally encodes “finish the 70-hand match
+positive first; maximize chips second” rather than blending both objectives
+into one scalar that chips can dominate.
+
+`opponent_multitask_ensemble_runtime_v4.py` validates every calibrated v4
+member and its canonical payload hash, requires all members to use the same
+model-calibration role, reuses the tested v3 value/response aggregation through
+an exact base-model projection, and adds the outcome uncertainty path. A
+calibration-only bundle cannot select an action; a selected policy must be
+hash-bound and carry false deployment/strength claims. Eight focused tests
+cover uncertainty arithmetic, lexicographic priority, rule-UCB comparison,
+threshold weakening, malformed outcome bounds, uncalibrated members, and
+member-binding drift. The full neural-lab suite now passes 340 tests, with all
+30 national protocol tests still passing.
+
+This runtime contract is not yet connected to protected v4 policy selection,
+policy gate, native candidate construction, or native TCP strength evaluation.
+No new bot version has been created. The next implementation step is to add
+Torch-side multi-seed outcome aggregation to the opponent-disjoint selection
+role and make that selector call this same shared scoring function; copying the
+old v3 scalar-value selector would reintroduce offline/runtime semantic drift.
+
 ## Literature Recheck And Search Direction
 
 The architecture decision is also constrained by established imperfect-
