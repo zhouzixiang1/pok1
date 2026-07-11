@@ -2741,12 +2741,21 @@ def select_official_opponent(
 
 def resolve_managed_certification_spec(
     spec: CertificationSpec,
+    *,
+    exact_opponent_only: bool = False,
 ) -> tuple[CertificationSpec | None, dict[str, Any] | None]:
-    """Revalidate/reselect the opponent immediately before formal EXE work."""
+    """Revalidate/reselect the opponent immediately before formal EXE work.
+
+    Durable jobs have already frozen an opponent path and its authorization
+    receipt into their identity.  Their worker must revalidate that exact
+    artifact without depending on an unrelated scan of the mutable active
+    pool; all identity and receipt fields are compared again by the caller.
+    """
     if spec.opponent_rounds <= 0:
         return spec, None
     selection = select_official_opponent(
         spec.candidate,
+        active_bots=(spec.opponent,) if exact_opponent_only else None,
         preferred=spec.opponent,
         allow_bootstrap_grandfather=False,
     )
@@ -3566,9 +3575,19 @@ def run_identity_bound_certification_job(
         raise RuntimeError(
             "official_job_envelope_invalid: " + ", ".join(envelope_issues)
         )
-    resolved_spec, live_selection = resolve_managed_certification_spec(spec)
+    resolved_spec, live_selection = resolve_managed_certification_spec(
+        spec,
+        exact_opponent_only=True,
+    )
     if resolved_spec is None:
-        raise RuntimeError("official_job_opponent_no_longer_eligible")
+        failure = {
+            "reason": (live_selection or {}).get("reason") or "selection_unavailable",
+            "considered": (live_selection or {}).get("considered") or [],
+        }
+        raise RuntimeError(
+            "official_job_opponent_no_longer_eligible: "
+            + json.dumps(failure, ensure_ascii=True, sort_keys=True)[:2000]
+        )
     if certification_identity(resolved_spec) != expected_identity:
         raise RuntimeError("official_job_opponent_selection_changed")
     expected_selection = stable_official_opponent_selection(expected_opponent_selection)

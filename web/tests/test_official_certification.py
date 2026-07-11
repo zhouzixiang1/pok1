@@ -637,7 +637,7 @@ def test_production_full_preflight_rejects_missing_verdict_ledger_before_exe(
     monkeypatch.setattr(
         certification,
         "resolve_managed_certification_spec",
-        lambda _spec: (spec, selection),
+        lambda _spec, **_kwargs: (spec, selection),
     )
     monkeypatch.setattr(
         certification,
@@ -669,7 +669,10 @@ def test_identity_bound_job_rejects_live_opponent_reselection(tmp_path, monkeypa
     monkeypatch.setattr(
         certification,
         "resolve_managed_certification_spec",
-        lambda _spec: (replacement_spec, _selection(candidate, replacement)),
+        lambda _spec, **_kwargs: (
+            replacement_spec,
+            _selection(candidate, replacement),
+        ),
     )
     monkeypatch.setattr(
         certification,
@@ -713,7 +716,7 @@ def test_identity_bound_job_rejects_changed_opponent_authorization_receipt(tmp_p
     monkeypatch.setattr(
         certification,
         "resolve_managed_certification_spec",
-        lambda _spec: (spec, live),
+        lambda _spec, **_kwargs: (spec, live),
     )
     monkeypatch.setattr(
         certification,
@@ -739,10 +742,16 @@ def test_identity_bound_job_runs_exact_prevalidated_spec(tmp_path, monkeypatch):
     spec = build_spec("full", candidate, opponent=opponent)
     identity = certification.certification_identity(spec)
     selection = _selection(candidate, opponent)
+    resolve_calls = []
+
+    def fake_resolve(_spec, **kwargs):
+        resolve_calls.append(kwargs)
+        return spec, selection
+
     monkeypatch.setattr(
         certification,
         "resolve_managed_certification_spec",
-        lambda _spec: (spec, selection),
+        fake_resolve,
     )
     seen = {}
 
@@ -767,6 +776,87 @@ def test_identity_bound_job_runs_exact_prevalidated_spec(tmp_path, monkeypatch):
     assert seen["enforce_opponent_selection"] is False
     assert seen["opponent_selection"] == selection
     assert seen["force"] is True
+    assert resolve_calls == [{"exact_opponent_only": True}]
+
+
+def test_exact_managed_resolution_skips_unrelated_active_pool_discovery(
+    tmp_path,
+    monkeypatch,
+):
+    import official_certification as certification
+
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    spec = build_spec("full", candidate, opponent=opponent)
+    selection = _selection(candidate, opponent)
+    seen = {}
+
+    def fake_select(incoming, active_bots=None, **kwargs):
+        seen["candidate"] = incoming
+        seen["active_bots"] = active_bots
+        seen.update(kwargs)
+        return selection
+
+    monkeypatch.setattr(certification, "select_official_opponent", fake_select)
+
+    resolved, live = certification.resolve_managed_certification_spec(
+        spec,
+        exact_opponent_only=True,
+    )
+
+    assert resolved == spec
+    assert live == selection
+    assert seen["candidate"] == spec.candidate
+    assert seen["preferred"] == spec.opponent
+    assert seen["active_bots"] == (spec.opponent,)
+    assert seen["allow_bootstrap_grandfather"] is False
+
+
+def test_identity_bound_job_preserves_exact_opponent_rejection_reason(
+    tmp_path,
+    monkeypatch,
+):
+    import official_certification as certification
+
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    spec = build_spec("full", candidate, opponent=opponent)
+    identity = certification.certification_identity(spec)
+    expected = _selection(candidate, opponent)
+    rejected = {
+        "selected": False,
+        "reason": "no_official_eligible_opponent",
+        "considered": [{
+            "bot": opponent.name,
+            "path": str(opponent.resolve()),
+            "eligible": False,
+            "reason": "lifecycle_ledger_unavailable",
+        }],
+    }
+    monkeypatch.setattr(
+        certification,
+        "resolve_managed_certification_spec",
+        lambda _spec, **_kwargs: (None, rejected),
+    )
+    monkeypatch.setattr(
+        certification,
+        "_run_certification_impl",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("EXE must not start")
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="official_job_opponent_no_longer_eligible.*lifecycle_ledger_unavailable",
+    ):
+        certification.run_identity_bound_certification_job(
+            spec,
+            expected_identity=identity,
+            expected_opponent_selection=expected,
+            suite_dir=tmp_path / "suite",
+            job_envelope=_job_envelope(spec, tmp_path / "suite", expected),
+        )
 
 
 def test_full_report_requires_round_identity_and_wire_artifacts(tmp_path):
