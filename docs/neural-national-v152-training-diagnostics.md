@@ -727,6 +727,17 @@ schema instead of hard-coding legacy indices, and metadata explicitly records
 that exact rule strategy context is still absent. This prevents either side
 from silently adopting a different feature order or dimension.
 
+The independent native version
+`v152_national_v140_strategy_context_trace_tcp` captures that missing context
+inside the original v140 strategy call after its exact equity/range and
+postflop profile computations. Trace encoding consumes no random numbers and is
+disabled unless `POK_TRACE_DECISIONS=1`; the full range vector is reduced to
+six distribution summaries before serialization. Deterministic unit scenarios
+covering preflop and postflop currently produce identical v140/v152 actions,
+and the native trace row carries 66 finite bounded values. This is a diagnostic
+data-source version, not a neural strength candidate. Independent 70-hand
+native paired parity remains required before a context-aware collection starts.
+
 `freeze_opponent_role_dataset.py` replaces the ambiguous four-way development
 freeze for the next training run. It emits five explicit opponent-disjoint
 roles: train, early stop, model calibration, policy selection, and policy gate.

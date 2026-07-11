@@ -1,0 +1,11 @@
+{
+  "candidate_strength_evidence": false,
+  "native_tcp": true,
+  "parent": "v140_national_v123_overlay_no_large_commit_veto_tcp",
+  "policy_change": false,
+  "purpose": "exact_rule_path_strategy_context_collection",
+  "strategy_context_dim": 66,
+  "strategy_context_schema": "v140_strategy_context_v1",
+  "trace_env": "POK_TRACE_DECISIONS",
+  "trace_only": true
+}
