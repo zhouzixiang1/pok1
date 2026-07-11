@@ -80,6 +80,23 @@ git fetch --tags origin
 
 Do not switch branches or reset this checkout while the evolution service is running. If the service is stopped and the checkout is clean, update it with `git pull --ff-only --tags` before restarting. If the incoming change touches the active evaluation contract reported by `web/core/evaluation_contract.py`, stop the evolution service, merge/pull, restart from the new baseline, and observe the next generation. If the incoming change is contract-neutral for the active stage, it may be merged at the next safe point or reconciled automatically when evolution publishes its next commit.
 
+Before restarting after an evaluator-identity migration, establish the rating
+identity and the independent official-verdict authority in this order:
+
+```bash
+cd /home/zzx/project/pok/.evolution_pok
+python3 scripts/evaluation_data_identity.py
+python3 scripts/official_certify.py doctor
+# Only when doctor reports official_verdict_ledger_missing on a new operator host:
+python3 scripts/official_certify.py init-ledger
+python3 scripts/official_certify.py doctor
+```
+
+If the evaluation-data command reports an identity mismatch with existing
+authoritative rating payloads, use its explicit `--archive-and-initialize`
+workflow before restart. If the verdict ledger is corrupt or truncated, do not
+initialize over it; recover the operator ledger/history and run doctor again.
+
 After `.evolution_pok` publishes a bot:
 
 ```bash

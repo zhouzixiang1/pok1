@@ -561,9 +561,11 @@ def _bot_main(bot_name):
 
 def _load_h2h_data():
     from evaluation_data_identity import ensure_evaluation_data_identity
+    import evolution_infra
 
-    ensure_evaluation_data_identity(PROJECT_ROOT / "web" / "core" / "results")
-    return _read_json(PROJECT_ROOT / "web" / "core" / "results" / "head_to_head.json", {})
+    results_dir = evolution_infra.RESULTS_DIR
+    ensure_evaluation_data_identity(results_dir)
+    return _read_json(results_dir / "head_to_head.json", {})
 
 
 def _h2h_stats(bot_name, opponent, h2h):
@@ -624,9 +626,10 @@ def _match_history_file():
 
 
 def _rating_rows_for_active():
+    import evolution_infra
     from rating_snapshot import build_strength_rows
     h2h_data = _load_h2h_data()
-    bot_stats_data = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json", {})
+    bot_stats_data = _read_json(evolution_infra.RESULTS_DIR / "bot_stats.json", {})
     ratings = load_ratings()
     active = list(get_active_bots())
     return build_strength_rows(

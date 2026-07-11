@@ -347,6 +347,23 @@ def test_bot_adapter_telemetry_counts_clamped_raise():
     assert adapter.telemetry["would_be_illegal_raise"] == 1
 
 
+def test_bot_adapter_distinguishes_exact_2x_legality_from_plus_one_policy():
+    adapter = BotAdapter("127.0.0.1", 10001, "unused", "Bot")
+    adapter._stage = "flop"
+    adapter._my_stage_bet = 100
+    adapter._opponent_stage_bet = 200
+    adapter._my_chips = 20000
+    adapter._history = [
+        {"round": 1, "player_id": 1, "action": 200, "action_type": "raise"},
+    ]
+
+    # The bridge retains +1 headroom for legacy compatibility, but exact 2x
+    # is official-legal and therefore must not increment illegality telemetry.
+    assert adapter._convert_action(400) == ("raise 401", "raise", 401)
+    assert adapter.telemetry["clamped_raises"] == 1
+    assert adapter.telemetry["would_be_illegal_raise"] == 0
+
+
 def test_national_acceptance_matrix_skips_incomplete_default_national_bots(tmp_path, monkeypatch):
     matrix = _load_module_from_path(
         "national_acceptance_matrix_default_test",

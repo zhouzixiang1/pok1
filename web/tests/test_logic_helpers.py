@@ -154,6 +154,24 @@ class TestBuildMatchMatrixH2H:
         result = build_match_matrix(h2h, {}, {})
         assert result["source"] == "h2h"
 
+    def test_draws_score_half_even_when_stored_rate_is_stale(self):
+        from server.routes._helpers import build_match_matrix
+
+        result = build_match_matrix({
+            "a vs b": {
+                "win_rate": 0.0,
+                "games": 10,
+                "a_wins": 0,
+                "b_wins": 0,
+                "draws": 10,
+            },
+        }, {}, {})
+        a = result["bots"].index("a")
+        b = result["bots"].index("b")
+
+        assert result["matrix"][a][b] == 0.5
+        assert result["matrix"][b][a] == 0.5
+
 
 class TestBuildMatchMatrixLegacy:
     def test_symmetry(self):

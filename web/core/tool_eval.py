@@ -53,6 +53,7 @@ from precommit_eval_contract import (
     validate_evaluation_contract,
     validate_precommit_plan,
 )
+from strength_order import NON_STRENGTH_MATCHUP_REASONS, is_strength_matchup
 
 try:
     from candidate_store import append_candidate_event
@@ -67,7 +68,7 @@ log = get_logger("tool_eval")
 # commit, never contribute to the aggregate net-chips regression gate). The
 # nemesis probe (Phase 3) and the PSRO MixtureBot meta-opponent (Phase 4) both
 # degrade non-blocking so an early MixtureBot collapse cannot strand a commit.
-_NONBLOCKING_REASONS = {"nemesis_probe", "psro_meta_opponent"}
+_NONBLOCKING_REASONS = set(NON_STRENGTH_MATCHUP_REASONS)
 
 # H1 (2026-06-29): thread-safe shutdown flag for precommit-eval cancellation.
 # Blocking mirror battles run in short-lived owned executors. A running Python
@@ -259,6 +260,11 @@ def _national_sample_contract_blockers(
 ) -> list[dict]:
     sample_count = int(paired_bootstrap.get("net_chips_samples", 0) or 0)
     blockers: list[dict] = []
+    if int(paired_bootstrap.get("hands_per_match", 0) or 0) != 70:
+        blockers.append({
+            "reason": "national_strength_hands_not_70",
+            "details": "Every production national strength sample must be one complete 70-hand match.",
+        })
     if sample_count > 0 and sample_count < expected_samples:
         blockers.append({
             "reason": "national_sample_shortfall",
@@ -267,27 +273,17 @@ def _national_sample_contract_blockers(
                 "required full-match samples."
             ),
         })
-    if sample_count >= 2 and (
-        paired_bootstrap.get("aggregate_ci_lower") is None
-        or paired_bootstrap.get("aggregate_ci_upper") is None
-    ):
-        blockers.append({
-            "reason": "national_confidence_interval_missing",
-            "details": "National precommit did not produce a paired bootstrap confidence interval.",
-        })
-    if sample_count >= 2 and paired_bootstrap.get("gate_degraded") is True:
-        blockers.append({
-            "reason": "national_confidence_gate_degraded",
-            "details": "National precommit reported a degraded statistical gate.",
-        })
     return blockers
 
 
 def _national_precommit_shape(workflow_profile, sample_target: int) -> tuple[int, int]:
-    hands = int(os.environ.get(
-        "POK_NATIONAL_PRECOMMIT_HANDS",
-        str(getattr(workflow_profile, "national_precommit_hands", 70)),
-    ))
+    if getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp":
+        hands = 70
+    else:
+        hands = int(os.environ.get(
+            "POK_NATIONAL_PRECOMMIT_HANDS",
+            str(getattr(workflow_profile, "national_precommit_hands", 70)),
+        ))
     configured_matches = int(os.environ.get(
         "POK_NATIONAL_PRECOMMIT_MATCHES",
         str(getattr(workflow_profile, "national_precommit_matches", 1)),
@@ -364,6 +360,11 @@ async def _run_national_precommit_backend(
 
     blockers = list(initial_blockers or [])
     execution_protocol = "national_native_tcp" if native_tcp_mode else "national"
+    if national_hands != 70:
+        blockers.append({
+            "reason": "national_strength_hands_not_70",
+            "details": f"Production precommit requires 70 hands per match; plan requested {national_hands}.",
+        })
     if not blockers and opponents_with_paths:
         try:
             if native_tcp_mode:
@@ -375,8 +376,6 @@ async def _run_national_precommit_backend(
                     matches_per_opponent=national_matches,
                     parent_label=parent_name,
                     sample_plan=list(precommit_plan.get("sample_plan") or []),
-                    parent_loss_threshold=float(settings.get("parent_loss_threshold")),
-                    aggregate_loss_threshold=float(settings.get("aggregate_loss_threshold")),
                 )
             else:
                 from national_eval import run_national_precommit
@@ -469,16 +468,20 @@ async def _run_national_precommit_backend(
     total_draws = int(national_result.get("total_draws", 0) or 0)
     matchups = list(national_result.get("matchups") or [])
     paired_bootstrap_payload = dict(national_result.get("paired_bootstrap") or {})
-    from strength_order import summarize_70_hand_net_chips
+    from strength_order import summarize_70_hand_net_chips, summarize_match_outcomes
 
     strength_samples = [
         int(value)
         for matchup in matchups
+        if is_strength_matchup(matchup)
         for value in (matchup.get("net_chips") or [])
     ]
     strength_order = summarize_70_hand_net_chips(strength_samples)
+    outcome_order = summarize_match_outcomes(total_wins, total_losses, total_draws)
     sample_count = int(paired_bootstrap_payload.get("net_chips_samples", 0) or 0)
-    expected_samples = national_matches * len(opponents_with_paths)
+    expected_samples = national_matches * sum(
+        1 for item in opponents_with_paths if is_strength_matchup(item)
+    )
     if sample_count <= 0 and not blockers:
         blockers.append({
             "reason": "national_no_samples",
@@ -490,6 +493,23 @@ async def _run_national_precommit_backend(
             expected_samples=expected_samples,
         )
     )
+    if sample_count != outcome_order["samples"]:
+        blockers.append({
+            "reason": "national_outcome_sample_mismatch",
+            "details": (
+                f"Outcome counts describe {outcome_order['samples']} samples but "
+                f"the admitted strength vector contains {sample_count}."
+            ),
+        })
+    if strength_order["samples"] != sample_count or (
+        strength_order["positive_matches"] != total_wins
+        or strength_order["negative_matches"] != total_losses
+        or strength_order["zero_matches"] != total_draws
+    ):
+        blockers.append({
+            "reason": "national_strength_sign_mismatch",
+            "details": "Admitted net-chip signs disagree with the recorded W/L/D outcomes.",
+        })
     passed = (
         bool(national_result.get("passed"))
         and len(blockers) == 0
@@ -540,7 +560,8 @@ async def _run_national_precommit_backend(
         "blockers": blockers,
         "paired_bootstrap": paired_bootstrap_payload,
         "strength_order": strength_order,
-        "primary_70_hand_match_score": strength_order.get("primary_match_score"),
+        "outcome_order": outcome_order,
+        "primary_70_hand_match_score": outcome_order.get("primary_match_score"),
         "secondary_net_chips_total": strength_order.get("secondary_net_chips_total"),
         "secondary_net_chips_mean": strength_order.get("secondary_net_chips_mean"),
         "national": national_result,
@@ -553,7 +574,7 @@ async def _run_national_precommit_backend(
 
     scorecard = ScoreCard(
         name="precommit_eval",
-        primary_score=paired_bootstrap_payload.get("net_chips_mean"),
+        primary_score=outcome_order.get("primary_match_score"),
         metrics={
             "evaluation_protocol": execution_protocol,
             "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
@@ -563,7 +584,7 @@ async def _run_national_precommit_backend(
             "n_opponents": len(all_opponents),
             "hands_per_match": national_hands,
             "matches_per_opponent": national_matches,
-            "primary_70_hand_match_score": strength_order.get("primary_match_score"),
+            "primary_70_hand_match_score": outcome_order.get("primary_match_score"),
             "secondary_net_chips_mean": strength_order.get("secondary_net_chips_mean"),
         },
     )
@@ -1379,8 +1400,6 @@ async def run_precommit_eval(args):
                 opponents=opponents,
                 hands_per_match=national_hands,
                 matches_per_opponent=national_matches,
-                parent_loss_threshold=PARENT_NET_CHIPS_LOSS_THRESHOLD,
-                aggregate_loss_threshold=AGGREGATE_NET_CHIPS_LOSS_THRESHOLD,
                 path_resolver=lambda item: (
                     item.get("path")
                     or (

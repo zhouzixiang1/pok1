@@ -21,11 +21,13 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
+from strength_order import match_score
+
 
 SNAPSHOT_DIRNAME = "evidence_snapshot"
 H2H_SNAPSHOT_FILENAME = "head_to_head.json"
 MANIFEST_FILENAME = "manifest.json"
-SNAPSHOT_SCHEMA_VERSION = 2
+SNAPSHOT_SCHEMA_VERSION = 3
 
 
 def _infra():
@@ -279,12 +281,18 @@ def _row_versions(key: str) -> tuple[str | None, str | None]:
 
 def _row_win_rate(row: dict[str, Any]) -> float | None:
     try:
+        games = int(row.get("games", 0) or 0)
+        if games > 0 and (
+            row.get("a_wins") is not None or row.get("draws") is not None
+        ):
+            return match_score(
+                row.get("a_wins", 0),
+                row.get("draws", 0),
+                games,
+            )
         if row.get("win_rate") is not None:
             return float(row.get("win_rate"))
-        games = int(row.get("games", 0) or 0)
-        if games <= 0:
-            return None
-        return float(row.get("a_wins", 0) or 0) / games
+        return None
     except Exception:
         return None
 
@@ -315,6 +323,7 @@ def build_h2h_prompt_summary(
         games = int(row.get("games", 0) or 0)
         a_wins = int(row.get("a_wins", 0) or 0)
         b_wins = int(row.get("b_wins", 0) or 0)
+        draws = int(row.get("draws", 0) or 0)
         wr_a = _row_win_rate(row)
         if wr_a is None:
             continue
@@ -347,6 +356,7 @@ def build_h2h_prompt_summary(
             "games": games,
             "a_wins": a_wins,
             "b_wins": b_wins,
+            "draws": draws,
             "win_rate": wr_a,
             "source_match": perspective is not None,
             "source_wr": source_wr,
@@ -355,7 +365,7 @@ def build_h2h_prompt_summary(
             "sample_class": sample_class,
             "canonical_citation": (
                 f"{key}: games={games}, a_wins={a_wins}, "
-                f"b_wins={b_wins}, win_rate={wr_a:.4f}"
+                f"b_wins={b_wins}, draws={draws}, win_rate={wr_a:.4f}"
             ),
         })
 
@@ -382,13 +392,13 @@ def build_h2h_prompt_summary(
     lines = [
         "Compact source-focused H2H summary from the stable snapshot:",
         f"- Adequate/confirmed matchup claims require games >= {confirmed_games}; otherwise label sparse/advisory.",
-        "- Quote row key, games, a_wins, b_wins, and win_rate exactly when citing a matchup.",
+        "- Quote row key, games, a_wins, b_wins, draws, and win_rate exactly when citing a matchup.",
         "- Prefer the canonical_citation text below; do not derive matchup records from live H2H or match_history.",
     ]
     for r in rows:
         base = (
             f"- {r['key']}: games={r['games']}, a_wins={r['a_wins']}, "
-            f"b_wins={r['b_wins']}, win_rate={r['win_rate']:.4f}, "
+            f"b_wins={r['b_wins']}, draws={r['draws']}, win_rate={r['win_rate']:.4f}, "
             f"class={r['sample_class']}"
         )
         if r["source_match"]:
@@ -441,12 +451,13 @@ def h2h_citation_repair_guidance(
         games = int(row.get("games", 0) or 0)
         a_wins = int(row.get("a_wins", 0) or 0)
         b_wins = int(row.get("b_wins", 0) or 0)
+        draws = int(row.get("draws", 0) or 0)
         win_rate = _row_win_rate(row)
         if win_rate is None:
             win_rate = 0.0
         line = (
             f"- canonical_citation: {key}: games={games}, "
-            f"a_wins={a_wins}, b_wins={b_wins}, win_rate={win_rate:.4f}"
+            f"a_wins={a_wins}, b_wins={b_wins}, draws={draws}, win_rate={win_rate:.4f}"
         )
         a_v, b_v = _row_versions(key)
         if source_v is not None and str(source_v) in {a_v, b_v}:
@@ -575,6 +586,7 @@ def validate_h2h_citations_against_snapshot(master_plan: Any, next_v: int | str)
                     "games": _extract_int(r"\bgames?\s*[:=]\s*(\d+)", window),
                     "a_wins": _extract_int(r"\ba_wins\s*[:=]\s*(\d+)", window),
                     "b_wins": _extract_int(r"\bb_wins\s*[:=]\s*(\d+)", window),
+                    "draws": _extract_int(r"\bdraws\s*[:=]\s*(\d+)", window),
                 }
                 if cited["games"] is None:
                     cited["games"] = _extract_int(r"(?<![\w.])(\d+)\s*(?:g|games|局)\b", window)

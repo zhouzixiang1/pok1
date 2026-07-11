@@ -33,8 +33,10 @@ use official EXE or Web Arena chip outcomes as strength evidence.
   flop/turn/river; roles alternate each hand.
 - `raise <amount>` is raise-to-total. First preflop raise-to is at least 200,
   first postflop raise-to at least 100, and each re-raise is at least
-  `prev * 2 + 1`. A raise must exceed the current street bet and fit the stack;
-  a raise using all remaining chips becomes `allin`.
+  `prev * 2` inclusively. The official EXE accepts exact 2x; `prev * 2 + 1`
+  may be retained as conservative sizing headroom. A raise must exceed the
+  current street bet and fit the stack; a raise using all remaining chips
+  becomes `allin`.
 - Postflop first action cannot be `call`. After any first postflop action,
   `check` is illegal. If the first player checks, the second passes with
   `call`. Preflop BB after an SB limp checks, raises, or folds, never calls.

@@ -565,6 +565,76 @@ def test_runtime_contract_ledger_survives_unrelated_repair_task_replacement(tmp_
     )
 
 
+def test_checkpoint_ledger_reset_requires_authorized_transition_and_digest(
+    tmp_path,
+    monkeypatch,
+):
+    import json
+    import evolution_infra
+
+    checkpoint_path = tmp_path / "pipeline_state.json"
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", checkpoint_path)
+    plan = attach_runtime_contract_ledger(
+        {
+            "tasks": [{
+                "worker_id": "runtime",
+                "skill_layer": "opponent_model",
+                "architecture_focus_id": "incremental_match_model",
+                "runtime_contract": _match_memory_contract(),
+            }],
+        },
+        replace=True,
+    )
+    ledger_digest = plan["runtime_contract_ledger"]["ledger_digest"]
+
+    assert evolution_infra.write_pipeline_checkpoint(
+        2,
+        1,
+        "master_planned",
+        master_plan=plan,
+    ) is True
+    legacy_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    legacy_checkpoint.pop("runtime_contract_ledger")
+    checkpoint_path.write_text(json.dumps(legacy_checkpoint), encoding="utf-8")
+    assert evolution_infra.write_pipeline_checkpoint(
+        2,
+        1,
+        "direction_audited",
+        master_plan={},
+    ) is False
+    assert evolution_infra.write_pipeline_checkpoint(
+        2,
+        1,
+        "direction_audited",
+        master_plan={},
+        reset_runtime_contract_ledger=True,
+        expected_runtime_contract_ledger_digest=ledger_digest,
+    ) is False
+    assert evolution_infra.write_pipeline_checkpoint(
+        2,
+        1,
+        "direction_audited",
+        master_plan={},
+        reset_runtime_contract_ledger=True,
+        expected_runtime_contract_ledger_digest="wrong-digest",
+        runtime_contract_ledger_reset_reason="master_plan_rejected_replan",
+    ) is False
+    assert evolution_infra.write_pipeline_checkpoint(
+        2,
+        1,
+        "direction_audited",
+        master_plan={},
+        reset_runtime_contract_ledger=True,
+        expected_runtime_contract_ledger_digest=ledger_digest,
+        runtime_contract_ledger_reset_reason="master_plan_rejected_replan",
+    ) is True
+
+    checkpoint = evolution_infra.read_pipeline_checkpoint()
+    assert checkpoint["stage"] == "direction_audited"
+    assert checkpoint["master_plan"] == {}
+    assert checkpoint["runtime_contract_ledger"] is None
+
+
 def test_runtime_contract_ledger_tampering_fails_closed(tmp_path):
     candidate = _write_bot(tmp_path / "national_v2", complete=True)
     capabilities = evaluate_architecture_transition(candidate, candidate)["candidate_capabilities"]
@@ -626,11 +696,24 @@ def test_policy_identity_recovery_resets_candidate_and_replans(tmp_path, monkeyp
     (source / "strategy.py").write_text("SOURCE = True\n", encoding="utf-8")
     (candidate / "strategy.py").write_text("STALE = True\n", encoding="utf-8")
     (candidate / "new_stale.py").write_text("STALE = True\n", encoding="utf-8")
+    master_plan = attach_runtime_contract_ledger(
+        {
+            "tasks": [{
+                "worker_id": "runtime",
+                "skill_layer": "opponent_model",
+                "architecture_focus_id": "incremental_match_model",
+                "runtime_contract": _match_memory_contract(),
+            }],
+        },
+        replace=True,
+    )
     ckpt = {
         "next_v": 2,
         "source_v": 1,
         "parent2_v": parent2_v,
         "stage": "quality_failed",
+        "master_plan": master_plan,
+        "runtime_contract_ledger": master_plan["runtime_contract_ledger"],
         "direction_audit": {"suggested_direction": "runtime"},
         "gate_results": {
             "quality": {
@@ -656,6 +739,93 @@ def test_policy_identity_recovery_resets_candidate_and_replans(tmp_path, monkeyp
     assert writes[0][0][2] == "direction_audited"
     assert writes[0][1]["master_plan"] == {}
     assert writes[0][1]["clear_reviewer_feedback"] is True
+    assert writes[0][1]["reset_runtime_contract_ledger"] is True
+    assert writes[0][1]["expected_runtime_contract_ledger_digest"] == (
+        master_plan["runtime_contract_ledger"]["ledger_digest"]
+    )
+    assert writes[0][1]["runtime_contract_ledger_reset_reason"] == (
+        "architecture_policy_identity_replan"
+    )
     payload = result["content"][0]["text"]
     assert "ARCHITECTURE_POLICY_IDENTITY_REPLAN" in payload
     assert validate_stage_transition("quality_failed", "direction_audited")[0] is True
+
+
+def test_policy_identity_recovery_never_reports_replan_when_write_fails(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "national_v1"
+    candidate = tmp_path / "national_v2"
+    source.mkdir()
+    candidate.mkdir()
+    (source / "strategy.py").write_text("SOURCE = True\n", encoding="utf-8")
+    (candidate / "strategy.py").write_text("STALE = True\n", encoding="utf-8")
+    ckpt = {
+        "next_v": 2,
+        "source_v": 1,
+        "stage": "quality_failed",
+        "gate_results": {
+            "quality": {
+                "national_architecture_transition": {
+                    "policy_identity_errors": ["architecture_policy_contract_digest_mismatch"],
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", lambda *_a, **_k: False)
+
+    with pytest.raises(RuntimeError, match="checkpoint rejected"):
+        tool_planning._recover_architecture_policy_identity(ckpt, candidate, source)
+
+    assert (candidate / "strategy.py").read_text(encoding="utf-8") == "SOURCE = True\n"
+
+
+def test_execute_workers_reports_architecture_recovery_failure_not_replan(
+    tmp_path,
+    monkeypatch,
+):
+    import asyncio
+    import json
+
+    source = tmp_path / "national_v1"
+    candidate = tmp_path / "national_v2"
+    source.mkdir()
+    candidate.mkdir()
+    (source / "strategy.py").write_text("SOURCE = True\n", encoding="utf-8")
+    (candidate / "strategy.py").write_text("STALE = True\n", encoding="utf-8")
+    ckpt = {
+        "next_v": 2,
+        "source_v": 1,
+        "stage": "quality_failed",
+        "gate_results": {
+            "quality": {
+                "national_architecture_transition": {
+                    "policy_identity_errors": ["architecture_policy_contract_digest_mismatch"],
+                },
+            },
+        },
+    }
+
+    async def no_exhausted_failure(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(tool_planning, "get_bot_dir", lambda version: source if version == 1 else candidate)
+    monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_args: ckpt)
+    monkeypatch.setattr(
+        tool_planning,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhausted_failure,
+    )
+    monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", lambda *_a, **_k: False)
+    monkeypatch.setattr(tool_planning, "log_system_event", lambda *_a, **_k: None)
+
+    result = asyncio.run(tool_planning.execute_workers.handler({
+        "next_v": 2,
+        "source_v": 1,
+    }))
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["error"] == "ARCHITECTURE_POLICY_IDENTITY_RECOVERY_FAILED"
+    assert "next_tool" not in payload
+    assert "run_master" not in payload["directive"]

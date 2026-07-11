@@ -22,7 +22,7 @@ Current bot: {bot_name} (coverage: {opp_eval}/{opp_total} opponents = {opp_cover
 
 {rd_warning}
 
-## Top 5 Bots (by H2H avg win rate)
+## Top 5 Bots (by authoritative strength order)
 {top_bots}
 
 {critic_insights}
@@ -70,9 +70,11 @@ Output ONLY a JSON block:
 
 **recommended_source**: Which bot should be used as the evolution source for the next generation?
 - Consider ALL active bots, not just the latest version.
-- Prioritize bots with the highest `leaderboard_score`, adequate opponent coverage (≥80%), and enough H2H games.
+- Each production sample is one complete, compliance-passing 70-hand native TCP match. Compare primary W/L/D-derived `selection_score` first; draws score 0.5 and are not losses.
+- Use net-chip magnitude only as a secondary tie-break when primary strength is equal. Official-EXE chips/results and incomplete or compliance-failed rows are never strength evidence.
+- Prioritize bots with the highest `selection_score`, adequate opponent coverage (≥80%), and enough H2H games.
 - Treat `h2h_avg_wr` as matchup evidence, not the canonical skill metric. Low coverage can inflate or deflate it.
 - Use Glicko RD/conservative rating to discount uncertain bots; a high raw rating with high RD is not reliable.
-- If multiple bots have similar `leaderboard_score`, prefer the one with better active-pool H2H coverage and more games.
+- If multiple bots have equal primary `selection_score`, use secondary net-chip magnitude as the tie-break. Coverage and game count determine confidence in the primary score; they do not let a lower primary score leapfrog a higher one.
 - Example: prefer "national_v6" if it has score=0.532, 95% coverage, and rd=80 over v8 with h2h_avg_wr=53% but only 10 games vs one opponent.
 </output_format>

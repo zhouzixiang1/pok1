@@ -1,4 +1,5 @@
 from pathlib import Path
+import socket
 
 from bot_artifact import hash_path
 from official_bot_sandbox import build_sandboxed_bot_command, seal_bot_artifact
@@ -54,19 +55,26 @@ def test_sandbox_command_exposes_only_bot_and_single_log(tmp_path):
     )
     log_path = tmp_path / "evidence" / "botA.log"
 
-    command, environment = build_sandboxed_bot_command(
-        sealed,
-        host="127.0.0.1",
-        port=10001,
-        name="candidate",
-        seat="upper",
-        log_path=log_path,
-        supports_log=True,
-    )
+    peer, inherited = socket.socketpair()
+    try:
+        command, environment = build_sandboxed_bot_command(
+            sealed,
+            host="127.0.0.1",
+            port=10001,
+            name="candidate",
+            seat="upper",
+            log_path=log_path,
+            supports_log=True,
+            preconnected_fd=inherited.fileno(),
+        )
+    finally:
+        peer.close()
+        inherited.close()
 
     joined = "\0".join(command)
     assert "--unshare-all" in command
-    assert "--share-net" in command
+    assert "--share-net" not in command
+    assert "POK_PRECONNECTED_SOCKET_FD" in command
     assert "--clearenv" in command
     assert "-I" in command and "-B" in command
     assert str(sealed.root) in command
@@ -85,6 +93,7 @@ def test_execution_profile_is_tracked_and_requires_sandbox():
         "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
     )
     assert profile["sandbox"]["required"] is True
+    assert profile["sandbox"]["network"] == "isolated-netns-preconnected-socket-fd"
     assert profile["sandbox"]["python_flags"] == ["-I", "-B"]
     assert len(identity["profile_sha256"]) == 64
     assert len(identity["profile_digest"]) == 64

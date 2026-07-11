@@ -311,3 +311,18 @@ class TestSummarizeReplayForAnalysis:
         assert evidence["actions"]["fold"] == 1
         assert evidence["actions"]["raise"] == 1
         assert "big_pot_losses" in evidence["spot_tags"]
+
+    def test_extract_replay_evidence_scores_draw_as_half(self):
+        games = [
+            {"winner": 0, "bot0_chips": 100, "bot1_chips": -100, "logs": []},
+            {"winner": -1, "bot0_chips": 0, "bot1_chips": 0, "logs": []},
+            {"winner": 1, "bot0_chips": -100, "bot1_chips": 100, "logs": []},
+        ]
+        replay = self._make_replay("A", "B", games)
+
+        evidence = extract_replay_evidence_for_analysis(replay, "A", match_id="draws")
+
+        assert evidence["wins"] == 1
+        assert evidence["losses"] == 1
+        assert evidence["draws"] == 1
+        assert evidence["win_rate"] == 0.5

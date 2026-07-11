@@ -96,6 +96,13 @@ Managed processes inherit a small environment allowlist. API/model keys and
 unrelated operator secrets are not passed to bot code. Stdout, stderr, decision
 logs, process identity, and the complete TCP wire stream are session artifacts.
 
+Managed bots do not share the host network namespace. The trusted manager opens
+one TCP connection to the bot's dedicated seat listener, passes only that
+connected descriptor through Bubblewrap, and launches the bot in an otherwise
+isolated network namespace. The bootstrap consumes the descriptor through the
+historical `socket.create_connection` API exactly once. A bot cannot scan the
+other seat, the host loopback namespace, or outbound network endpoints.
+
 ### External TCP
 
 The requested IP/port is bound and the first two clients become top and bottom

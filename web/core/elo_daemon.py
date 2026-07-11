@@ -555,6 +555,19 @@ def save_match_replay(
     if strength_sample_unit == "70_hand_match":
         from strength_order import summarize_70_hand_net_chips
 
+        if not net_chips_values:
+            raise ValueError("70-hand strength replay must contain at least one sample")
+        if len(replay_data or []) != len(net_chips_values):
+            raise ValueError("70-hand strength replay rows disagree with sample count")
+        for index, replay in enumerate(replay_data or []):
+            if not isinstance(replay, dict):
+                raise ValueError(f"70-hand strength replay {index} is not an object")
+            if int(replay.get("hands_played", 0) or 0) != 70:
+                raise ValueError(f"70-hand strength replay {index} is incomplete")
+            if replay.get("passed_compliance") is not True:
+                raise ValueError(f"70-hand strength replay {index} failed compliance")
+            if replay.get("wrapper_used") is True:
+                raise ValueError(f"70-hand strength replay {index} used a legacy wrapper")
         strength_summary = summarize_70_hand_net_chips(net_chips_values)
         if (
             strength_summary["positive_matches"] != int(wins_a)
@@ -572,6 +585,11 @@ def save_match_replay(
         "draws": draws,
         "evaluation_identity_digest": evaluation_identity_digest,
         "strength_sample_unit": strength_sample_unit,
+        "hands_per_strength_sample": 70 if strength_summary is not None else None,
+        "strength_admitted": strength_summary is not None,
+        "strength_complete": strength_summary is not None,
+        "strength_compliance_passed": strength_summary is not None,
+        "strength_sample_count": strength_summary.get("samples", 0) if strength_summary else 0,
         "net_chips_bot0": net_chips_values,
         "strength_order": strength_summary,
         "games": replay_data,
@@ -596,6 +614,11 @@ def save_match_replay(
             "draws": draws,
             "evaluation_identity_digest": evaluation_identity_digest,
             "strength_sample_unit": strength_sample_unit,
+            "hands_per_strength_sample": 70 if strength_summary is not None else None,
+            "strength_admitted": strength_summary is not None,
+            "strength_complete": strength_summary is not None,
+            "strength_compliance_passed": strength_summary is not None,
+            "strength_sample_count": strength_summary.get("samples", 0) if strength_summary else 0,
             "net_chips_bot0": net_chips_values,
             "strength_order": strength_summary,
         }
@@ -670,10 +693,17 @@ def _rating_protocol_config(n_pairs=None):
         getattr(profile, "rating_protocol", "local_json"),
     )
     protocol = protocol if protocol in {"local_json", "national"} else "local_json"
-    national_hands = int(os.environ.get(
-        "POK_NATIONAL_RATING_HANDS",
-        str(getattr(profile, "national_rating_hands", 70)),
-    ))
+    national_execution_mode = getattr(profile, "national_execution_mode", "adapter")
+    if national_execution_mode == "native_tcp":
+        # Production strength identity is immutable: an environment variable
+        # may change sample count, but cannot switch backend or shorten a match.
+        protocol = "national"
+        national_hands = 70
+    else:
+        national_hands = int(os.environ.get(
+            "POK_NATIONAL_RATING_HANDS",
+            str(getattr(profile, "national_rating_hands", 70)),
+        ))
     matches_override = "POK_NATIONAL_RATING_MATCHES" in os.environ
     national_matches = int(os.environ.get(
         "POK_NATIONAL_RATING_MATCHES",
@@ -691,7 +721,7 @@ def _rating_protocol_config(n_pairs=None):
     return {
         "profile_id": getattr(profile, "profile_id", "default"),
         "protocol": protocol,
-        "national_execution_mode": getattr(profile, "national_execution_mode", "adapter"),
+        "national_execution_mode": national_execution_mode,
         "national_hands": national_hands,
         "national_matches": national_matches,
         "strict": strict_bool,
@@ -785,6 +815,17 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
     matches = int(config["national_matches"])
     strict = bool(config["strict"])
     native_tcp_mode = config.get("national_execution_mode") == "native_tcp"
+    if native_tcp_mode and hands != 70:
+        return (
+            bot_a_name,
+            bot_b_name,
+            0,
+            0,
+            0,
+            0,
+            f"native_rating_contract: expected exactly 70 hands, got {hands}",
+            [],
+        )
     if native_tcp_mode:
         from national_native import run_native_tcp_pair
     else:
@@ -807,6 +848,20 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
             ))
         else:
             result = asyncio.run(run_pair(bot_a, bot_b, hands, strict=strict))
+        replay = dict(result)
+        replay["rating_protocol"] = "national_native_tcp" if native_tcp_mode else "national"
+        replay["repeat"] = repeat + 1
+        replays.append(replay)
+        hands_played = int(result.get("hands_played", 0) or 0)
+        if hands_played != hands:
+            issues.append(f"repeat={repeat + 1}: hands_played={hands_played}/{hands}")
+        if result.get("passed_compliance") is not True:
+            reported = [str(item) for item in (result.get("issues") or [])]
+            issues.extend(reported or [f"repeat={repeat + 1}: compliance_failed"])
+        if native_tcp_mode and result.get("wrapper_used") is True:
+            issues.append(f"repeat={repeat + 1}: native_wrapper_used")
+        if issues:
+            continue
         net = int(result.get("net_chips_a", 0) or 0)
         net_chips_list.append(net)
         if net > 0:
@@ -815,14 +870,23 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
             wins_b += 1
         else:
             draws += 1
-        if not result.get("passed_compliance", False):
-            issues.extend(str(item) for item in (result.get("issues") or []))
-        replay = dict(result)
-        replay["rating_protocol"] = "national_native_tcp" if native_tcp_mode else "national"
-        replay["repeat"] = repeat + 1
-        replays.append(replay)
 
     total = wins_a + wins_b + draws
+    if issues:
+        # Fail the whole daemon batch closed.  In particular, do not write a
+        # replay/history row that reconstruction could later mistake for
+        # authoritative H2H evidence.
+        return (
+            bot_a_name,
+            bot_b_name,
+            0,
+            0,
+            0,
+            0,
+            ("native_rating_contract: " if native_tcp_mode else "national_rating_contract: ")
+            + "; ".join(issues[:8]),
+            [],
+        )
     try:
         save_match_replay(
             bot_a_name,
@@ -837,17 +901,6 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
     except Exception as e:
         log.debug("National replay save failed: %s", e)
 
-    if issues:
-        return (
-            bot_a_name,
-            bot_b_name,
-            wins_a,
-            wins_b,
-            draws,
-            total,
-            ("native_rating_compliance: " if native_tcp_mode else "national_rating_compliance: ") + "; ".join(issues[:5]),
-            net_chips_list,
-        )
     return (bot_a_name, bot_b_name, wins_a, wins_b, draws, total, None, net_chips_list)
 
 

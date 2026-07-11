@@ -15,6 +15,130 @@ from typing import Any, Iterable
 STRENGTH_ORDER_SCHEMA_VERSION = 1
 NATIONAL_STRENGTH_HANDS = 70
 NATIONAL_STRENGTH_SAMPLE_UNIT = "70_hand_match"
+PRECOMMIT_PARENT_MIN_SAMPLES = 4
+PRECOMMIT_PARENT_MAX_SCORE = 0.40
+PRECOMMIT_AGGREGATE_MIN_SAMPLES = 8
+PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN = 2
+NON_STRENGTH_MATCHUP_REASONS = frozenset({"nemesis_probe", "psro_meta_opponent"})
+
+
+def is_strength_matchup(matchup: dict[str, Any]) -> bool:
+    return str(matchup.get("reason") or "") not in NON_STRENGTH_MATCHUP_REASONS
+
+
+def match_score(wins: int | float, draws: int | float, games: int | float) -> float | None:
+    """Return outcome points per match, with every draw worth exactly 0.5."""
+
+    try:
+        wins = float(wins)
+        draws = float(draws)
+        games = float(games)
+    except (TypeError, ValueError):
+        return None
+    if games <= 0 or wins < 0 or draws < 0 or wins + draws > games:
+        return None
+    return (wins + 0.5 * draws) / games
+
+
+def summarize_match_outcomes(wins: int, losses: int, draws: int) -> dict[str, Any]:
+    """Summarize W/L/D using the national match scoring contract.
+
+    A draw is worth half a point.  Counts are deliberately kept separate from
+    chip amounts so callers cannot accidentally turn a large pot into multiple
+    rating observations or treat a zero-chip match as a loss.
+    """
+
+    counts = tuple(int(value) for value in (wins, losses, draws))
+    if any(value < 0 for value in counts):
+        raise ValueError("match outcome counts must be non-negative")
+    wins, losses, draws = counts
+    samples = wins + losses + draws
+    points = wins + 0.5 * draws
+    return {
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "samples": samples,
+        "points": points,
+        "primary_match_score": points / samples if samples else None,
+        "win_loss_margin": wins - losses,
+    }
+
+
+def precommit_outcome_blockers(
+    matchups: Iterable[dict[str, Any]],
+    *,
+    parent_label: str = "",
+    aggregate_reason: str = "aggregate_native_regression",
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Apply the production precommit gate to complete-match outcomes.
+
+    The parent gate catches a clear matchup collapse after at least four
+    samples.  The aggregate gate keeps the established two-match loss-margin
+    tolerance after at least eight samples.  Both operate exclusively on W/L/D
+    points; net-chip magnitude is intentionally not accepted as an argument.
+    """
+
+    blockers: list[dict[str, Any]] = []
+    total_wins = total_losses = total_draws = 0
+    per_matchup: list[dict[str, Any]] = []
+    for matchup in matchups:
+        if not is_strength_matchup(matchup):
+            continue
+        summary = summarize_match_outcomes(
+            matchup.get("wins", 0),
+            matchup.get("losses", 0),
+            matchup.get("draws", 0),
+        )
+        opponent = str(matchup.get("opponent") or "")
+        per_matchup.append({"opponent": opponent, **summary})
+        total_wins += summary["wins"]
+        total_losses += summary["losses"]
+        total_draws += summary["draws"]
+        if (
+            parent_label
+            and opponent == parent_label
+            and summary["samples"] >= PRECOMMIT_PARENT_MIN_SAMPLES
+            and summary["primary_match_score"] <= PRECOMMIT_PARENT_MAX_SCORE
+        ):
+            blockers.append({
+                "reason": "lost_to_parent",
+                "opponent": opponent,
+                "details": (
+                    f"70-hand outcomes {summary['wins']}W-{summary['losses']}L-"
+                    f"{summary['draws']}D score={summary['primary_match_score']:.3f}; "
+                    f"block at score<={PRECOMMIT_PARENT_MAX_SCORE:.2f} with "
+                    f"n>={PRECOMMIT_PARENT_MIN_SAMPLES}."
+                ),
+            })
+
+    aggregate = summarize_match_outcomes(total_wins, total_losses, total_draws)
+    if (
+        aggregate["samples"] >= PRECOMMIT_AGGREGATE_MIN_SAMPLES
+        and aggregate["losses"] >= (
+            aggregate["wins"] + PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN
+        )
+    ):
+        blockers.append({
+            "reason": aggregate_reason,
+            "details": (
+                f"Aggregate 70-hand outcomes {aggregate['wins']}W-"
+                f"{aggregate['losses']}L-{aggregate['draws']}D "
+                f"score={aggregate['primary_match_score']:.3f}; loss margin "
+                f">={PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN} with "
+                f"n>={PRECOMMIT_AGGREGATE_MIN_SAMPLES}."
+            ),
+        })
+    return blockers, {
+        **aggregate,
+        "per_matchup": per_matchup,
+        "parent_min_samples": PRECOMMIT_PARENT_MIN_SAMPLES,
+        "parent_max_score": PRECOMMIT_PARENT_MAX_SCORE,
+        "aggregate_min_samples": PRECOMMIT_AGGREGATE_MIN_SAMPLES,
+        "aggregate_min_loss_margin": PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
+        "gate_basis": "complete_70_hand_match_outcomes",
+        "draw_score": 0.5,
+    }
 
 
 def summarize_70_hand_net_chips(samples: Iterable[int | float]) -> dict[str, Any]:

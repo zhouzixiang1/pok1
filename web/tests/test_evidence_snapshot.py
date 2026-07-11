@@ -301,7 +301,7 @@ def test_h2h_prompt_summary_keeps_all_source_rows_before_other_rows(monkeypatch,
     summary = evidence_snapshot.build_h2h_prompt_summary(124, source_v=123, max_rows=35)
 
     assert "national_v123 vs national_v74: games=5, a_wins=3, b_wins=2" in summary
-    assert "canonical_citation=\"national_v123 vs national_v74: games=5, a_wins=3, b_wins=2, win_rate=0.6000\"" in summary
+    assert "canonical_citation=\"national_v123 vs national_v74: games=5, a_wins=3, b_wins=2, draws=0, win_rate=0.6000\"" in summary
     assert "source_record=3W/2L" in summary
     assert "national_v200 vs national_v201" not in summary
 
@@ -326,9 +326,23 @@ def test_h2h_citation_repair_guidance_returns_canonical_snapshot_rows(monkeypatc
 
     guidance = evidence_snapshot.h2h_citation_repair_guidance(124, errors, source_v=123)
 
-    assert "canonical_citation: national_v123 vs national_v74: games=5, a_wins=3, b_wins=2, win_rate=0.6000" in guidance
+    assert "canonical_citation: national_v123 vs national_v74: games=5, a_wins=3, b_wins=2, draws=0, win_rate=0.6000" in guidance
     assert "v123 perspective: 3W/2L, wr=0.6000" in guidance
     assert "Do not replace them with live H2H" in guidance
+
+
+def test_snapshot_recomputes_draw_aware_score_instead_of_stale_win_rate():
+    import evidence_snapshot
+
+    row = {
+        "games": 10,
+        "a_wins": 0,
+        "b_wins": 0,
+        "draws": 10,
+        "win_rate": 0.0,
+    }
+
+    assert evidence_snapshot._row_win_rate(row) == 0.5
 
 
 def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):

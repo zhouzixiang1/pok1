@@ -29,6 +29,7 @@ SEMANTIC_PATHS = (
     "sever/server/protocol.py",
     "web/core/glicko2.py",
     "web/core/elo_daemon.py",
+    "web/core/evolution_infra.py",
     "web/core/national_bot_launcher.py",
     "web/core/national_game_runtime.py",
     "web/core/national_native.py",

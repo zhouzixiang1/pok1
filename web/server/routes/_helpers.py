@@ -155,7 +155,16 @@ def build_match_matrix(h2h_data: dict | None, ratings_data: dict | None, stats_d
             a, b = parts[0].strip(), parts[1].strip()
             if a in idx and b in idx:
                 i, j = idx[a], idx[b]
-                wr = v.get("win_rate")
+                games = int(v.get("games", 0) or 0)
+                if games > 0 and (
+                    v.get("a_wins") is not None or v.get("draws") is not None
+                ):
+                    wr = (
+                        float(v.get("a_wins", 0) or 0)
+                        + 0.5 * float(v.get("draws", 0) or 0)
+                    ) / games
+                else:
+                    wr = v.get("win_rate")
                 if wr is not None:
                     wr_matrix[i][j] = round(wr, 4)
                     wr_matrix[j][i] = round(1.0 - wr, 4)

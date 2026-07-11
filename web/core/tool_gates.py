@@ -343,21 +343,25 @@ def _idempotency_check(v, source_v, stage_set, gate_name, approval_key="approved
 
 
 def _bot_code_fingerprint(bot_dir):
-    """Stable hash of the bot's Python source files for gate cache validity."""
+    """Content hash of the complete decision artifact for gate cache validity.
+
+    The persisted field name predates data/model-backed bots, but its value must
+    cover every artifact file that can affect a decision.  ``hash_path`` uses
+    the shared deterministic manifest and intentionally excludes only runtime
+    completion/cache artifacts such as ``.completed`` and ``__pycache__``.
+    """
     root = Path(bot_dir)
     if not root.exists():
         return ""
-    h = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts):
-        rel = path.relative_to(root).as_posix()
-        h.update(rel.encode("utf-8"))
-        h.update(b"\0")
-        try:
-            h.update(path.read_bytes())
-        except OSError:
-            continue
-        h.update(b"\0")
-    return h.hexdigest()
+    try:
+        from bot_artifact import hash_path
+
+        return hash_path(root)
+    except Exception:
+        # Callers treat an empty fingerprint as unavailable and final commit
+        # fails closed.  Do not bless a partial manifest after an I/O race or an
+        # unsafe artifact entry.
+        return ""
 
 
 def _llm_gate_infrastructure_identity(

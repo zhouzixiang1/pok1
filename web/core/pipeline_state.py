@@ -393,6 +393,26 @@ def validate_stage_transition(current_stage, proposed_stage):
     return True, "unknown_stage"
 
 
+def validate_runtime_contract_ledger_reset(current_stage, proposed_stage):
+    """Authorize the narrow rollback transitions that may discard a plan ledger.
+
+    Runtime-contract ledgers are append-only during ordinary repair work.  They
+    may be reset only when the state machine rejects the entire Master plan and
+    routes back to ``direction_audited`` for a genuinely fresh plan.  Keeping
+    this decision next to the stage-transition authority prevents a generic
+    checkpoint write from turning into an implicit ledger-erasure escape hatch.
+    """
+    valid, reason = validate_stage_transition(current_stage, proposed_stage)
+    if not valid:
+        return False, reason
+    if reason not in {
+        "master_plan_rejected_replan",
+        "architecture_policy_identity_replan",
+    }:
+        return False, f"runtime_contract_ledger_reset_forbidden:{reason}"
+    return True, reason
+
+
 def is_rework_reset_transition(current_stage: str | None, proposed_stage: str | None) -> bool:
     """True when stage movement implies bot code is being regenerated."""
     if not current_stage or not proposed_stage:

@@ -11,6 +11,7 @@ _log = get_logger("review")
 
 from bot_namespace import bot_name
 from llm_failure import is_llm_infra_error, infra_payload
+from strength_order import match_score
 
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
@@ -297,34 +298,51 @@ async def _run_performance_verification(source_v, ratings, ui):
     win_rate_lines = []
     if MATCH_HISTORY_FILE.exists():
         try:
-            wins, losses = 0, 0
+            wins, losses, draws = 0, 0, 0
+            from rating_snapshot import _admitted_70_hand_history_sample
             with locked_file(MATCH_HISTORY_FILE, "r") as mf:
                 all_lines = mf.readlines()
             for line in all_lines[-100:]:
                 try:
                     entry = json.loads(line.strip())
+                    if _admitted_70_hand_history_sample(entry) is None:
+                        continue
                     b0, b1 = entry.get("bot0"), entry.get("bot1")
                     w0, w1 = entry.get("bot0_wins", 0), entry.get("bot1_wins", 0)
+                    d = entry.get("draws", 0)
                     if b0 == source_bot_name:
-                        wins += w0; losses += w1
+                        wins += w0; losses += w1; draws += d
                     elif b1 == source_bot_name:
-                        wins += w1; losses += w0
+                        wins += w1; losses += w0; draws += d
                 except (json.JSONDecodeError, KeyError):
                     continue
-            total = wins + losses
-            if total > 0:
-                win_rate_lines.append(f"  {source_bot_name} recent: {wins}W / {losses}L ({wins*100//total}% win rate)")
+            total = wins + losses + draws
+            win_rate = match_score(wins, draws, total)
+            if win_rate is not None:
+                win_rate_lines.append(
+                    f"  {source_bot_name} recent: {wins}W / {losses}L / "
+                    f"{draws}D ({win_rate:.0%} score)"
+                )
         except Exception as e:
             _log.warning("Failed to read match history for perf verification: %s", e)
 
     # ── Top-5 active bots for context ──
     active_bots = get_active_bots()
-    from tool_helpers import load_h2h_avg_winrates, load_strength_scores
+    from tool_helpers import (
+        load_h2h_avg_winrates,
+        load_selection_order_keys,
+        load_selection_scores,
+    )
     h2h_winrates = load_h2h_avg_winrates()
-    strength_scores = load_strength_scores()
+    strength_scores = load_selection_scores()
+    selection_order_keys = load_selection_order_keys()
     sorted_bots = sorted(
         [(b, ratings.get(b, Glicko2Player())) for b in active_bots],
-        key=lambda x: strength_scores.get(x[0], 0.0), reverse=True
+        key=lambda x: selection_order_keys.get(
+            x[0],
+            (strength_scores.get(x[0], 0.0),),
+        ),
+        reverse=True,
     )[:5]
     ratings_lines = [
         f"  {b}: score={strength_scores.get(b, 0.0):.4f}, h2h_avg_wr={h2h_winrates.get(b, 0.0):.2%} (r={p.r:.0f} rd={p.rd:.0f})"
@@ -353,14 +371,17 @@ async def _run_performance_verification(source_v, ratings, ui):
                     bot_w = v.get("a_wins", 0)
                 else:
                     bot_w = v.get("b_wins", 0)
-                opp_w = g - bot_w - v.get("draws", 0)
-                wr = bot_w / g
+                draws = v.get("draws", 0)
+                opp_w = g - bot_w - draws
+                wr = match_score(bot_w, draws, g)
+                if wr is None:
+                    continue
                 tag = ""
                 if wr < 0.40:
                     tag = " ← WEAKNESS"
                 elif wr > 0.60:
                     tag = " ← STRENGTH"
-                h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L ({wr:.0%}){tag}"))
+                h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L-{draws}D ({wr:.0%}){tag}"))
             h2h_lines.sort(key=lambda x: x[0])
         except Exception as e:
             _log.warning("Failed to read H2H data for perf verification: %s", e)

@@ -381,16 +381,22 @@ Both `engine/judge.py` and `sever/` use the same raise-to-total convention:
 - Internally: `additional = raise_to - player_bets_this_stage[idx]` (derives increment from total)
 - Example: SB (already bet 50) wants to raise to 200 → sends `raise 200`
 
-**Minimum raise rules (both engines):**
+**Minimum raise rules:**
 
 | Rule | `engine/judge.py` | `sever/` |
 |------|--------------------|----------|
 | Tracking variable | `last_raise_to` (last raise-to total) | `last_raise_to` (last raise-to total) |
 | Preflop first raise | total ≥ 200 (derived from `big_blind`) | total ≥ 200 (explicit check) |
 | Postflop first raise | total ≥ 100 (derived from `big_blind // 2`) | total ≥ 100 (explicit check) |
-| Re-raise minimum | total > `last_raise_to * 2` (strictly greater) | total > `last_raise_to * 2` (strictly greater) |
+| Re-raise minimum | legacy/local judge currently uses total > `last_raise_to * 2` | official-compatible national validator accepts total ≥ `last_raise_to * 2` |
 
-**Re-raise boundary clarification**: "一倍以上" in 非法行为说明.docx means strictly >2x, NOT >=2x. The 补充说明.docx example uses raise 400 → raise 801 (not 800), confirming the strictly-greater interpretation. E.g., after raise 400, minimum re-raise is 801.
+**Re-raise boundary clarification**: the official Windows EXE is the authority
+for protocol legality. A controlled two-seat oracle run on 2026-07-11 showed
+`raise 200` followed by exact `raise 400` being relayed, followed by `fold` and
+zero-sum `earnChips ±200`; exact 2x is therefore legal. `raise 401` also passed
+as a control. Native templates, the legacy adapter, and legacy fix injection may
+continue to choose `2x + 1` as conservative cross-path headroom, but must not
+describe exact 2x as illegal. See `docs/official-raise-boundary-oracle-2026-07-11.md`.
 
 **`bot_adapter.py` bridge:** Converts bot integer output directly for actions: `>0` → `raise {value}`. Since both engines use raise-to-total, the action amount does not need delta conversion.
 

@@ -22,7 +22,7 @@ Analyze the Master plan systematically:
    plans that ask JSON bots to emit TCP text. In all workflows,
    reject wire-level `bet`, raise-by-increment instead of raise-to-total,
    positive-raise all-ins, postflop TCP `check-check`, BB calling after an SB
-   limp/call preflop, or non-strict re-raise minimums. Full rules live in
+   limp/call preflop, or re-raises below the official inclusive 2x minimum. Full rules live in
    `sever/国赛平台/`.
 </analysis>
 

@@ -255,6 +255,7 @@ def get_unanalyzed_matches(n: int = TARGET_BATCH) -> list[dict]:
         return []
 
     candidates = []
+    from rating_snapshot import _admitted_70_hand_history_sample
     for line in lines:
         line = line.strip()
         if not line:
@@ -262,6 +263,8 @@ def get_unanalyzed_matches(n: int = TARGET_BATCH) -> list[dict]:
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if _admitted_70_hand_history_sample(entry) is None:
             continue
         match_id = entry.get("id", "")
         if not match_id:

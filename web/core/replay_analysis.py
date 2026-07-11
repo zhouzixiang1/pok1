@@ -21,6 +21,8 @@ import json
 import math
 from collections import defaultdict
 
+from strength_order import match_score
+
 STREETS = ("preflop", "flop", "turn", "river")
 # Canonical action categories used in per-street frequency vectors.
 _FP_ACTIONS = ("fold", "raise", "call", "allin")
@@ -554,7 +556,7 @@ def extract_replay_evidence_for_analysis(replay_data, bot_name, match_id=""):
         "wins": wins,
         "losses": losses,
         "draws": draws,
-        "win_rate": wins / total_games if total_games else None,
+        "win_rate": match_score(wins, draws, total_games),
         "avg_delta": avg_delta,
         "best_delta": max(chip_deltas),
         "worst_delta": min(chip_deltas),

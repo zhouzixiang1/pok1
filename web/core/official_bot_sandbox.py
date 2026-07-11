@@ -10,16 +10,8 @@ import stat
 from typing import Any, Mapping
 
 from bot_artifact import artifact_manifest, canonical_digest, hash_path
+from managed_bot_socket import SANDBOX_BOOTSTRAP, endpoint_environment
 from official_execution_profile import load_execution_profile
-
-
-SANDBOX_BOOTSTRAP = (
-    "import runpy,sys;"
-    "entry=sys.argv[1];"
-    "sys.path.insert(0,'/bot');"
-    "sys.argv=[entry]+sys.argv[2:];"
-    "runpy.run_path(entry,run_name='__main__')"
-)
 
 
 @dataclass(frozen=True)
@@ -113,6 +105,7 @@ def build_sandboxed_bot_command(
     seat: str | None,
     log_path: Path | None,
     supports_log: bool,
+    preconnected_fd: int,
     extra_args: tuple[str, ...] = (),
 ) -> tuple[list[str], dict[str, str]]:
     profile = load_execution_profile()
@@ -124,7 +117,6 @@ def build_sandboxed_bot_command(
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
-        "--share-net",
         "--cap-drop", "ALL",
         "--clearenv",
         "--setenv", "PATH", "/usr/bin:/bin",
@@ -141,6 +133,12 @@ def build_sandboxed_bot_command(
         "--ro-bind", str(artifact.root), "/bot",
         "--dir", "/evidence",
     ]
+    for key, value in endpoint_environment(
+        preconnected_fd,
+        host,
+        port,
+    ).items():
+        command.extend(["--setenv", key, value])
     if log_path is not None and supports_log:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch(exist_ok=True)

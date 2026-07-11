@@ -22,6 +22,7 @@ import random
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -35,6 +36,7 @@ from official_bot_sandbox import (
     build_sandboxed_bot_command,
     seal_bot_artifact,
 )
+from managed_bot_socket import connect_managed_endpoint
 from official_execution_profile import (
     execution_profile_identity,
     validate_execution_profile,
@@ -379,6 +381,7 @@ def _popen(
     env: dict[str, str],
     stdout,
     stderr,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.Popen:
     managed_group = env.get("POK_OFFICIAL_JOB_PROCESS_GROUP") == "1"
     return subprocess.Popen(
@@ -388,6 +391,7 @@ def _popen(
         stdout=stdout,
         stderr=stderr,
         text=False,
+        pass_fds=pass_fds,
         # Durable certification jobs own one outer process group so cancellation
         # can reap Wine, Xvfb and both bots together. Standalone/manual rounds
         # retain their per-child groups for the existing cleanup path.
@@ -586,28 +590,53 @@ def _launch_bot(
     entry = resolve_bot_entry(bot.path)
     stdout = stdout_path.open("wb")
     stderr = stderr_path.open("wb")
-    if bot.sealed_artifact is not None:
-        cmd, bot_env = build_sandboxed_bot_command(
-            bot.sealed_artifact,
-            host=config.host,
-            port=config.port if port is None else int(port),
-            name=bot.name,
-            seat=bot.seat if bot.supports_seat else None,
-            log_path=log_path,
-            supports_log=bot.supports_log,
-            extra_args=bot.extra_args,
+    preconnected: socket.socket | None = None
+    pass_fds: tuple[int, ...] = ()
+    endpoint_port = config.port if port is None else int(port)
+    try:
+        if bot.sealed_artifact is not None:
+            preconnected = connect_managed_endpoint(
+                config.host,
+                endpoint_port,
+                timeout=min(10.0, config.listen_timeout_sec),
+            )
+            pass_fds = (preconnected.fileno(),)
+            cmd, bot_env = build_sandboxed_bot_command(
+                bot.sealed_artifact,
+                host=config.host,
+                port=endpoint_port,
+                name=bot.name,
+                seat=bot.seat if bot.supports_seat else None,
+                log_path=log_path,
+                supports_log=bot.supports_log,
+                preconnected_fd=preconnected.fileno(),
+                extra_args=bot.extra_args,
+            )
+            cwd = None
+        else:
+            cmd = build_bot_command(
+                bot,
+                host=config.host,
+                port=endpoint_port,
+                log_path=log_path,
+            )
+            cwd = entry.parent
+            bot_env = env
+        proc = _popen(
+            cmd,
+            cwd=cwd,
+            env=bot_env,
+            stdout=stdout,
+            stderr=stderr,
+            pass_fds=pass_fds,
         )
-        cwd = None
-    else:
-        cmd = build_bot_command(
-            bot,
-            host=config.host,
-            port=config.port if port is None else int(port),
-            log_path=log_path,
-        )
-        cwd = entry.parent
-        bot_env = env
-    proc = _popen(cmd, cwd=cwd, env=bot_env, stdout=stdout, stderr=stderr)
+    except BaseException:
+        stdout.close()
+        stderr.close()
+        raise
+    finally:
+        if preconnected is not None:
+            preconnected.close()
     proc._pok_stdout = stdout  # type: ignore[attr-defined]
     proc._pok_stderr = stderr  # type: ignore[attr-defined]
     return proc
@@ -644,7 +673,7 @@ def _read_issue_file(path: Path, patterns: tuple[str, ...] = CRITICAL_LOG_PATTER
 def _target_reached(summary: dict[str, Any], target_hands: int) -> bool:
     hands_started = int(summary.get("hands_started_min", 0) or 0)
     settlements = int(summary.get("settlements_min", 0) or 0)
-    return hands_started >= target_hands and settlements >= max(0, target_hands - 1)
+    return hands_started >= target_hands and settlements >= target_hands
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

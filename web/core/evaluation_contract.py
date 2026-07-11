@@ -246,7 +246,10 @@ PRECOMMIT_STAGE_EXACT = frozenset().union(
         "web/core/national_runtime_probe.py",
         "web/core/national_runtime_probe_scenarios.py",
         "web/core/national_runtime_probe_worker.py",
+        "web/core/precommit_eval_contract.py",
+        "web/core/rating_snapshot.py",
         "web/core/runtime_architecture_policy.py",
+        "web/core/strength_order.py",
         "web/core/tool_eval.py",
     },
 )

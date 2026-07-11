@@ -4074,6 +4074,7 @@ class TestWorkerFailureCircuitBreaker:
         validation would reject as an EXHAUSTED direction."""
         import asyncio
         import tool_planning
+        from runtime_architecture_policy import attach_runtime_contract_ledger
 
         ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
         state = json.loads(ckpt_file.read_text())
@@ -4082,15 +4083,23 @@ class TestWorkerFailureCircuitBreaker:
             "exhausted_directions": ["fold margin clamp tuning"],
             "llm_failed": False,
         }
-        state["master_plan"] = {
+        state["master_plan"] = attach_runtime_contract_ledger({
             "analysis": "stale plan",
             "tasks": [{
                 "worker_id": 1,
                 "role": "Algorithmic Logic Architect",
                 "target_files": ["strategy.py"],
                 "worker_prompt": "Parameter tuning: adjust fold margin clamp and sizing_aggr constants.",
+                "runtime_contract": {
+                    "decision": None,
+                    "precompute_artifacts": [],
+                    "match_memory": None,
+                    "official_feedback_refs": [],
+                    "forbidden_runtime_work": [],
+                },
             }],
-        }
+        }, replace=True)
+        state["runtime_contract_ledger"] = state["master_plan"]["runtime_contract_ledger"]
         ckpt_file.write_text(json.dumps(state))
         monkeypatch.setattr(
             tool_planning,
@@ -4112,8 +4121,59 @@ class TestWorkerFailureCircuitBreaker:
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "direction_audited"
         assert ckpt["master_plan"] == {}
+        assert ckpt["runtime_contract_ledger"] is None
         assert ckpt["audit_attempt"] == 1
         assert ckpt["direction_audit"]["repetition_detected"] is True
+        recovery = ckpt["audit_context"]["worker_exhausted_plan_blocked"]
+        assert recovery["runtime_contract_ledger_reset"] is True
+        assert recovery["previous_runtime_contract_ledger_digest"]
+
+    def test_exhausted_plan_does_not_claim_replan_when_checkpoint_write_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import asyncio
+        import tool_planning
+
+        self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
+        monkeypatch.setattr(
+            tool_planning,
+            "_extract_exhausted_keywords",
+            lambda: [("parameter_tuning", "fold margin clamp tuning")],
+        )
+        monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", lambda *_a, **_k: False)
+        events = []
+        monkeypatch.setattr(
+            tool_planning,
+            "log_system_event",
+            lambda *args, **_kwargs: events.append(args),
+        )
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec:
+                result = await tool_planning.execute_workers.handler({
+                    "next_v": 11,
+                    "source_v": 10,
+                    "tasks": [{
+                        "worker_id": 1,
+                        "role": "Algorithmic Logic Architect",
+                        "target_files": ["strategy.py"],
+                        "worker_prompt": "Adjust the fold margin clamp with parameter tuning.",
+                    }],
+                })
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+
+        assert data["error"] == "WORKER_EXHAUSTED_PLAN_RECOVERY_FAILED"
+        assert "next_tool" not in data
+        assert "No re-planning transition has been recorded" in data["message"]
+        mock_exec.assert_not_called()
+        assert [event[0] for event in events] == [
+            "pipeline.worker_exhausted_plan_recovery_failed"
+        ]
 
     def test_backward_compat_old_invocation_count_key(self, tmp_path, monkeypatch):
         """Old checkpoint with worker_invocation_count (no worker_failure_count) should be read."""

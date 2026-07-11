@@ -16,7 +16,7 @@ from bot_artifact import canonical_digest, hash_path, published_bot_identity
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
 EVALUATION_CONTRACT_SCHEMA_VERSION = 1
 DEFAULT_DECK_SEED_BASE = 91_000
 
@@ -32,6 +32,7 @@ SEMANTIC_PATHS = (
     "web/core/national_native.py",
     "web/core/national_transport.py",
     "web/core/precommit_eval_contract.py",
+    "web/core/strength_order.py",
     "web/core/tool_eval.py",
 )
 
@@ -131,12 +132,14 @@ def create_precommit_plan(
     opponents: list[dict[str, Any]],
     hands_per_match: int,
     matches_per_opponent: int,
-    parent_loss_threshold: float,
-    aggregate_loss_threshold: float,
     path_resolver: Callable[[dict[str, Any]], str | Path],
     require_published_opponents: bool,
     deck_seed_base: int = DEFAULT_DECK_SEED_BASE,
 ) -> dict[str, Any]:
+    if str(execution_mode) == "native_tcp" and int(hands_per_match) != 70:
+        raise PrecommitEvalContractError(
+            "native TCP precommit requires exactly 70 hands per strength sample"
+        )
     if not opponents:
         raise PrecommitEvalContractError("precommit plan requires at least one opponent")
     normalized: list[dict[str, Any]] = []
@@ -161,13 +164,22 @@ def create_precommit_plan(
             ),
         })
 
+    from strength_order import (
+        PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
+        PRECOMMIT_AGGREGATE_MIN_SAMPLES,
+        PRECOMMIT_PARENT_MAX_SCORE,
+        PRECOMMIT_PARENT_MIN_SAMPLES,
+    )
+
     settings = {
         "sample_unit": "70_hand_match" if int(hands_per_match) == 70 else "national_match",
         "hands_per_match": int(hands_per_match),
         "matches_per_opponent": int(matches_per_opponent),
         "deck_seed_base": int(deck_seed_base),
-        "parent_loss_threshold": float(parent_loss_threshold),
-        "aggregate_loss_threshold": float(aggregate_loss_threshold),
+        "parent_min_samples": PRECOMMIT_PARENT_MIN_SAMPLES,
+        "parent_max_score": PRECOMMIT_PARENT_MAX_SCORE,
+        "aggregate_min_samples": PRECOMMIT_AGGREGATE_MIN_SAMPLES,
+        "aggregate_min_loss_margin": PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
     }
     payload = {
         "schema_version": PLAN_SCHEMA_VERSION,
@@ -272,6 +284,27 @@ def validate_precommit_plan(
             issues.append(f"precommit_opponent_{name or index}_identity_drift")
 
     settings = plan.get("settings") if isinstance(plan.get("settings"), dict) else {}
+    if str(execution_mode) == "native_tcp":
+        from strength_order import (
+            PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
+            PRECOMMIT_AGGREGATE_MIN_SAMPLES,
+            PRECOMMIT_PARENT_MAX_SCORE,
+            PRECOMMIT_PARENT_MIN_SAMPLES,
+        )
+
+        if int(settings.get("hands_per_match", 0) or 0) != 70:
+            issues.append("precommit_native_hands_per_match_not_70")
+        if settings.get("sample_unit") != "70_hand_match":
+            issues.append("precommit_native_sample_unit_mismatch")
+        expected_outcome_settings = {
+            "parent_min_samples": PRECOMMIT_PARENT_MIN_SAMPLES,
+            "parent_max_score": PRECOMMIT_PARENT_MAX_SCORE,
+            "aggregate_min_samples": PRECOMMIT_AGGREGATE_MIN_SAMPLES,
+            "aggregate_min_loss_margin": PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
+        }
+        for key, expected in expected_outcome_settings.items():
+            if settings.get(key) != expected:
+                issues.append(f"precommit_native_{key}_mismatch")
     try:
         expected_samples = build_sample_plan(
             opponents,
@@ -291,6 +324,12 @@ def build_evaluation_contract(
     *,
     candidate_code_fingerprint: str,
 ) -> dict[str, Any]:
+    """Bind the frozen plan to the candidate's complete artifact manifest hash.
+
+    ``candidate_code_fingerprint`` is retained as a checkpoint-schema field
+    name for compatibility; callers provide ``bot_artifact.hash_path`` through
+    the shared gate fingerprint helper, not a Python-only source digest.
+    """
     payload = {
         "schema_version": EVALUATION_CONTRACT_SCHEMA_VERSION,
         "precommit_plan_digest": str(plan.get("plan_digest") or ""),

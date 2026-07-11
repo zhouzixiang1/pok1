@@ -1,10 +1,21 @@
 from pathlib import Path
+import socket
 from types import SimpleNamespace
 
 import pytest
 
 from bot_artifact import hash_path
 from national_arena import sandbox as arena_sandbox
+
+
+@pytest.fixture
+def preconnected_fd():
+    peer, inherited = socket.socketpair()
+    try:
+        yield inherited.fileno()
+    finally:
+        peer.close()
+        inherited.close()
 
 
 def _bot_source(tmp_path: Path) -> Path:
@@ -42,7 +53,7 @@ def test_arena_seal_is_content_bound_and_read_only(tmp_path):
         )
 
 
-def test_arena_sandbox_plan_exposes_no_writable_host_bind(tmp_path):
+def test_arena_sandbox_plan_exposes_no_writable_host_bind(tmp_path, preconnected_fd):
     source = _bot_source(tmp_path)
     sealed = arena_sandbox.seal_bot_artifact(
         source,
@@ -63,11 +74,14 @@ def test_arena_sandbox_plan_exposes_no_writable_host_bind(tmp_path):
         hard_deadline=55.0,
         refinement_budget=54.0,
         baseline_target=0.25,
+        preconnected_fd=preconnected_fd,
     )
 
     command = list(launch.command)
     assert "--unshare-all" in command
-    assert "--share-net" in command
+    assert "--share-net" not in command
+    assert "POK_PRECONNECTED_SOCKET_FD" in command
+    assert launch.pass_fds == (preconnected_fd,)
     assert "--bind" not in command
     assert command[command.index("--ro-bind", command.index("--tmpfs")) + 1] == str(
         sealed.root
@@ -118,7 +132,7 @@ def test_arena_sandbox_missing_or_unusable_bwrap_fails_closed(monkeypatch):
         arena_sandbox.require_managed_sandbox()
 
 
-def test_arena_sandbox_rejects_non_loopback_endpoint(tmp_path):
+def test_arena_sandbox_rejects_non_loopback_endpoint(tmp_path, preconnected_fd):
     source = _bot_source(tmp_path)
     sealed = arena_sandbox.seal_bot_artifact(
         source,
@@ -140,4 +154,5 @@ def test_arena_sandbox_rejects_non_loopback_endpoint(tmp_path):
             hard_deadline=55.0,
             refinement_budget=54.0,
             baseline_target=0.25,
+            preconnected_fd=preconnected_fd,
         )

@@ -45,8 +45,6 @@ def _make_plan(tmp_path, monkeypatch, *, matches=3):
         opponents=opponents,
         hands_per_match=70,
         matches_per_opponent=matches,
-        parent_loss_threshold=-2000,
-        aggregate_loss_threshold=-2000,
         path_resolver=lambda item: tmp_path / item["name"],
         require_published_opponents=True,
     )
@@ -74,6 +72,34 @@ def test_plan_freezes_order_identity_and_all_sample_seeds(tmp_path, monkeypatch)
         execution_mode="native_tcp",
         evaluation_protocol="national",
     ) == []
+
+
+def test_native_plan_rejects_shortened_strength_matches(tmp_path, monkeypatch):
+    opponent = tmp_path / "national_v8"
+    opponent.mkdir()
+    (opponent / "national_bot.py").write_text("# native\n", encoding="utf-8")
+    monkeypatch.setattr(
+        contract,
+        "published_bot_identity",
+        lambda _path: _published(opponent),
+    )
+
+    with pytest.raises(
+        contract.PrecommitEvalContractError,
+        match="exactly 70 hands",
+    ):
+        contract.create_precommit_plan(
+            candidate_version=9,
+            source_version=8,
+            profile_id="national_native",
+            execution_mode="native_tcp",
+            evaluation_protocol="national",
+            opponents=[{"name": "national_v8", "reason": "parent"}],
+            hands_per_match=3,
+            matches_per_opponent=8,
+            path_resolver=lambda _item: opponent,
+            require_published_opponents=True,
+        )
 
 
 def test_plan_fails_closed_when_published_opponent_identity_drifts(tmp_path, monkeypatch):
@@ -108,6 +134,60 @@ def test_evaluation_contract_binds_candidate_code_and_frozen_plan(tmp_path, monk
         plan,
         candidate_code_fingerprint="candidate-b",
     ) == ["precommit_evaluation_contract_mismatch"]
+
+
+@pytest.mark.parametrize(
+    ("asset_name", "before_bytes", "after_bytes"),
+    [
+        ("ranges.json", b'{"open": ["AA"]}\n', b'{"open": ["AA", "KK"]}\n'),
+        ("policy.model", b"model-v1\x00weights", b"model-v2\x00weights"),
+        ("equity_table.txt", b"AA=0.85\n", b"AA=0.81\n"),
+    ],
+)
+def test_precommit_candidate_fingerprint_covers_non_python_decision_assets(
+    tmp_path,
+    asset_name,
+    before_bytes,
+    after_bytes,
+):
+    from tool_gates import _bot_code_fingerprint
+
+    candidate = tmp_path / "national_v9"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
+    asset = candidate / asset_name
+    asset.write_bytes(before_bytes)
+    before = _bot_code_fingerprint(candidate)
+    frozen = contract.build_evaluation_contract(
+        {"plan_digest": "frozen-plan"},
+        candidate_code_fingerprint=before,
+    )
+
+    asset.write_bytes(after_bytes)
+    after = _bot_code_fingerprint(candidate)
+
+    assert after != before
+    assert contract.validate_evaluation_contract(
+        frozen,
+        {"plan_digest": "frozen-plan"},
+        candidate_code_fingerprint=after,
+    ) == ["precommit_evaluation_contract_mismatch"]
+
+
+def test_precommit_candidate_fingerprint_ignores_runtime_markers_and_caches(tmp_path):
+    from tool_gates import _bot_code_fingerprint
+
+    candidate = tmp_path / "national_v9"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
+    before = _bot_code_fingerprint(candidate)
+
+    (candidate / ".completed").write_text("runtime marker\n", encoding="utf-8")
+    cache = candidate / "__pycache__"
+    cache.mkdir()
+    (cache / "national_bot.cpython-314.pyc").write_bytes(b"runtime cache")
+
+    assert _bot_code_fingerprint(candidate) == before
 
 
 def test_plan_digest_detects_seed_schedule_tampering(tmp_path, monkeypatch):

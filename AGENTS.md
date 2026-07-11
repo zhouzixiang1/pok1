@@ -290,11 +290,20 @@ Core protocol facts from those documents:
 - `raise <amount>` must use exactly one space between keyword and amount; leading/trailing spaces, tabs, and extra spaces are illegal protocol formats.
 - `bet` must not be sent; the protocol uses `raise` in place of bet.
 - `raise X` means raise to total stage bet `X`, not add `X`.
-- Consecutive raises must be strictly greater than 2x the previous raise-to value in the implementation.
+- Consecutive raises must be at least 2x the previous raise-to value. A controlled
+  official-EXE oracle run on 2026-07-11 confirmed that `raise 200` followed by
+  exact `raise 400` is accepted and relayed. Generated bots may still use
+  `2x + 1` as conservative sizing headroom, but that is policy, not legality.
 - Postflop first action `call` is illegal. Postflop after any first action, `check` is illegal; when one player checks first, the second player passes the street by sending `call`.
 - After `allin` is called, clients should only receive runout cards and settlement messages for that hand; they must not act again before `earnChips`.
 - Server card format is `<suit,rank>` with `suit 0=Spade, 1=Heart, 2=Diamond, 3=Club` and `rank 0=2 .. 12=Ace`.
 - Important server-to-client messages include `name`, `preflop|SMALLBLIND|...`, `preflop|BIGBLIND|...`, `flop|...`, `turn|...`, `river|...`, `earnChips <amount>`, and `oppo_hands|...`.
+- Official captures show that `earnChips` is the current seat's signed per-hand
+  net change and paired seat values are zero-sum. `oppo_hands` appears only at
+  showdown. The EXE can suppress a street-closing peer `call`/`check` and jump
+  directly to the next street or settlement; generated native runtimes must
+  infer only actions proven by that boundary. The EXE sends no cumulative match
+  result token, and none of its chip/win outputs may enter strength ratings.
 
 All illegal actions are treated as fold. The validator implements the national document's bet/call/check/raise/allin restrictions in `sever/engine/validator.py`.
 

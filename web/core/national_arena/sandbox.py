@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import ipaddress
 import os
 from pathlib import Path
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -15,16 +15,10 @@ from typing import Any, Mapping
 import uuid
 
 from bot_artifact import artifact_manifest, canonical_digest, hash_path
+from managed_bot_socket import SANDBOX_BOOTSTRAP, endpoint_environment
 
 
 ROOT = Path(__file__).resolve().parents[3]
-SANDBOX_BOOTSTRAP = (
-    "import runpy,sys;"
-    "entry=sys.argv[1];"
-    "sys.path.insert(0,'/bot');"
-    "sys.argv=[entry]+sys.argv[2:];"
-    "runpy.run_path(entry,run_name='__main__')"
-)
 
 
 class ArenaSandboxError(RuntimeError):
@@ -56,7 +50,8 @@ class SandboxedBotLaunch:
     command: tuple[str, ...]
     environment: dict[str, str]
     cwd: Path
-    security_profile: str = "bwrap_ro_artifact_tmpfs_loopback_endpoint"
+    pass_fds: tuple[int, ...]
+    security_profile: str = "bwrap_ro_artifact_tmpfs_preconnected_socket_netns"
 
 
 def _path_is_within(path: Path, parent: Path) -> bool:
@@ -148,11 +143,12 @@ def require_managed_sandbox(
     )
     mounts = _runtime_mount_arguments(capability)
     if probe:
+        probe_parent, probe_child = socket.socketpair()
+        probe_fd = probe_child.fileno()
         command = [
             str(bwrap),
             "--die-with-parent",
             "--unshare-all",
-            "--share-net",
             "--new-session",
             "--cap-drop",
             "ALL",
@@ -168,7 +164,7 @@ def require_managed_sandbox(
             "-I",
             "-B",
             "-c",
-            "pass",
+            f"import socket; socket.socket(fileno={probe_fd}).sendall(b'1')",
         ]
         try:
             completed = subprocess.run(
@@ -180,16 +176,29 @@ def require_managed_sandbox(
                 timeout=5.0,
                 check=False,
                 env={"PATH": os.defpath},
+                pass_fds=(probe_fd,),
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            probe_child.close()
+            probe_parent.settimeout(1.0)
+            inherited_socket_ok = (
+                completed.returncode == 0 and probe_parent.recv(1) == b"1"
+            )
+        except (OSError, socket.timeout, subprocess.TimeoutExpired) as exc:
             raise ArenaSandboxUnavailable(
                 f"arena_sandbox_probe_failed: {type(exc).__name__}: {str(exc)[:200]}"
             ) from exc
+        finally:
+            probe_parent.close()
+            probe_child.close()
         if completed.returncode != 0:
             detail = (completed.stderr or "").strip().replace("\n", " ")[:240]
             raise ArenaSandboxUnavailable(
                 "arena_sandbox_namespace_unavailable"
                 + (f": {detail}" if detail else "")
+            )
+        if not inherited_socket_ok:
+            raise ArenaSandboxUnavailable(
+                "arena_sandbox_preconnected_socket_unavailable"
             )
     return capability
 
@@ -327,17 +336,23 @@ def build_sandboxed_bot_launch(
     hard_deadline: float,
     refinement_budget: float,
     baseline_target: float,
+    preconnected_fd: int,
 ) -> SandboxedBotLaunch:
-    """Build a plan with no writable host bind and a loopback-only endpoint."""
+    """Build a read-only bot plan with one inherited stream and no network."""
 
     try:
-        loopback = ipaddress.ip_address(host).is_loopback
+        endpoint_env = endpoint_environment(preconnected_fd, host, port)
     except ValueError as exc:
-        raise ArenaSandboxError("arena_managed_endpoint_is_not_an_ip") from exc
-    if not loopback:
-        raise ArenaSandboxError("arena_managed_endpoint_must_be_loopback")
-    if not 1 <= int(port) <= 65_535:
-        raise ArenaSandboxError("arena_managed_endpoint_port_invalid")
+        message = str(exc)
+        if "literal IP" in message:
+            raise ArenaSandboxError("arena_managed_endpoint_is_not_an_ip") from exc
+        if "loopback" in message:
+            raise ArenaSandboxError("arena_managed_endpoint_must_be_loopback") from exc
+        if "port" in message:
+            raise ArenaSandboxError("arena_managed_endpoint_port_invalid") from exc
+        raise ArenaSandboxError(
+            f"arena_managed_preconnected_socket_invalid: {message}"
+        ) from exc
     if seat not in {"upper", "lower"}:
         raise ArenaSandboxError("arena_managed_seat_invalid")
     if hash_path(artifact.root) != artifact.artifact_hash:
@@ -362,13 +377,14 @@ def build_sandboxed_bot_launch(
         str(capability.bwrap),
         "--die-with-parent",
         "--unshare-all",
-        "--share-net",
         "--new-session",
         "--cap-drop",
         "ALL",
         "--clearenv",
     ]
     for key, value in timing_environment.items():
+        command.extend(("--setenv", key, value))
+    for key, value in endpoint_env.items():
         command.extend(("--setenv", key, value))
     command.extend(_runtime_mount_arguments(capability))
     command.extend((
@@ -405,4 +421,5 @@ def build_sandboxed_bot_launch(
             "POK_ARENA_SESSION_ID": session_id,
         },
         cwd=artifact.root,
+        pass_fds=(int(preconnected_fd),),
     )

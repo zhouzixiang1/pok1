@@ -157,10 +157,9 @@ def _launch_command(cmd: list[str], *, cwd: Path, env: dict[str, str], stdout_pa
 
 
 def _target_reached(summary: dict[str, Any], target_hands: int) -> bool:
-    required_settlements = max(0, target_hands - 1) if target_hands >= 70 else target_hands
     return (
         int(summary.get("hands_started_min", 0) or 0) >= target_hands
-        and int(summary.get("settlements_min", 0) or 0) >= required_settlements
+        and int(summary.get("settlements_min", 0) or 0) >= target_hands
         and not summary.get("pending_expected_actions")
     )
 

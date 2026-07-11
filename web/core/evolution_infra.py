@@ -122,6 +122,7 @@ from pipeline_state import (
     STAGE_ORDER,
     STAGE_GATE_ALLOWLIST,
     validate_stage_transition,
+    validate_runtime_contract_ledger_reset,
     is_rework_reset_transition,
     invalidates_official_job_transition,
 )
@@ -320,7 +321,10 @@ def update_bot_stats(bot_stats, name, wins, losses, draws=0):
     entry["draws"] += draws
     entry["games"] += wins + losses + draws
     if entry["games"] > 0:
-        entry["win_rate"] = round(entry["wins"] / entry["games"], 4)
+        entry["win_rate"] = round(
+            (entry["wins"] + 0.5 * entry["draws"]) / entry["games"],
+            4,
+        )
 
 
 def substitute_template(template, replacements):
@@ -461,11 +465,16 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                infra_failure_owner=None,
                                expected_infra_failure_digest=None,
                                official_job=None, clear_official_job=False,
-                               expected_official_job_id=None):
+                               expected_official_job_id=None,
+                               reset_runtime_contract_ledger=False,
+                               expected_runtime_contract_ledger_digest=None,
+                               runtime_contract_ledger_reset_reason=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
-    read-merge-write races (POSIX guarantees os.replace is atomic).
+    read-merge-write races (POSIX guarantees os.replace is atomic). Runtime
+    contract ledgers remain append-only unless a state-machine-authorized plan
+    rejection supplies an explicit reset reason and expected ledger digest.
     """
     try:
         from workflow_profiles import get_workflow_profile
@@ -547,6 +556,12 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 if str(item).strip()
             ]
             existing_runtime_contract_ledger = existing.get("runtime_contract_ledger")
+            if existing_runtime_contract_ledger is None:
+                legacy_master_plan = existing.get("master_plan")
+                if isinstance(legacy_master_plan, dict):
+                    existing_runtime_contract_ledger = legacy_master_plan.get(
+                        "runtime_contract_ledger"
+                    )
             existing_infra_failure = existing.get("infra_failure")
             existing_official_job = existing.get("official_job")
         elif existing:
@@ -703,6 +718,69 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             if isinstance(existing_master_plan, dict)
             else None
         )
+        if reset_runtime_contract_ledger:
+            old_stage = existing.get("stage") if isinstance(existing, dict) else None
+            reset_allowed, reset_reason = validate_runtime_contract_ledger_reset(
+                old_stage,
+                stage,
+            )
+            if not reset_allowed:
+                log.error(
+                    "Refusing runtime contract ledger reset for %s -> %s: %s",
+                    old_stage,
+                    stage,
+                    reset_reason,
+                )
+                return False
+            if str(runtime_contract_ledger_reset_reason or "") != reset_reason:
+                log.error(
+                    "Runtime contract ledger reset reason mismatch: requested=%s required=%s",
+                    runtime_contract_ledger_reset_reason,
+                    reset_reason,
+                )
+                return False
+            if master_plan != {} or incoming_runtime_contract_ledger is not None:
+                log.error(
+                    "Runtime contract ledger reset requires an explicitly empty master_plan"
+                )
+                return False
+            if expected_runtime_contract_ledger_digest is None:
+                log.error(
+                    "Runtime contract ledger reset requires an expected ledger digest"
+                )
+                return False
+            try:
+                from runtime_architecture_policy import validate_runtime_contract_ledger
+
+                if existing_runtime_contract_ledger is not None:
+                    existing_errors = validate_runtime_contract_ledger(
+                        existing_runtime_contract_ledger
+                    )
+                    if existing_errors:
+                        log.error(
+                            "Refusing reset of invalid runtime contract ledger: %s",
+                            existing_errors,
+                        )
+                        return False
+                current_ledger_digest = str(
+                    (existing_runtime_contract_ledger or {}).get("ledger_digest") or ""
+                )
+            except Exception as exc:
+                log.error(
+                    "Runtime contract ledger reset validation failed closed: %s",
+                    exc,
+                )
+                return False
+            if str(expected_runtime_contract_ledger_digest) != current_ledger_digest:
+                log.warning(
+                    "Runtime contract ledger reset compare-and-swap rejected: "
+                    "expected=%s current=%s",
+                    expected_runtime_contract_ledger_digest,
+                    current_ledger_digest,
+                )
+                return False
+            existing_runtime_contract_ledger = None
+
         if incoming_runtime_contract_ledger is not None or existing_runtime_contract_ledger is not None:
             try:
                 from runtime_architecture_policy import validate_runtime_contract_ledger

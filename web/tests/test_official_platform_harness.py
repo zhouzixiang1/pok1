@@ -107,7 +107,7 @@ def test_official_platform_cli_writes_evidence_and_default_llm_analysis(tmp_path
                     "target_hands": 5,
                     "passed": True,
                     "issues": [],
-                    "log_summary": {"hands_started_min": 5, "settlements_min": 4, "issues": []},
+                    "log_summary": {"hands_started_min": 5, "settlements_min": 5, "issues": []},
                     "artifacts": {"round_dir": str(suite / "self_play_01"), "thp_summaries": []},
                 }
             ],
@@ -365,7 +365,7 @@ def test_acceptance_scheduler_runs_self_and_opponent_rounds(tmp_path):
             "issues": [],
             "round_kind": round_kind,
             "round_index": round_index,
-            "log_summary": {"hands_started_min": target_hands, "settlements_min": target_hands - 1},
+            "log_summary": {"hands_started_min": target_hands, "settlements_min": target_hands},
         }
 
     result = run_official_acceptance_sync(
@@ -409,7 +409,7 @@ def test_acceptance_scheduler_defaults_to_one_plus_one_compliance(tmp_path):
             "issues": [],
             "round_kind": round_kind,
             "round_index": round_index,
-            "log_summary": {"hands_started_min": target_hands, "settlements_min": target_hands - 1},
+            "log_summary": {"hands_started_min": target_hands, "settlements_min": target_hands},
         }
 
     result = run_official_acceptance_sync(
@@ -484,7 +484,7 @@ def test_acceptance_resume_reuses_only_complete_identity_bound_rounds(tmp_path):
         "target_hands": 70,
         "bot_a": {"path": str(candidate), "role": "candidate"},
         "bot_b": {"path": str(candidate), "role": "candidate"},
-        "log_summary": {"hands_started_min": 70, "settlements_min": 69},
+        "log_summary": {"hands_started_min": 70, "settlements_min": 70},
         "artifacts": {
             "receipt": str(receipt_path),
             **artifact_paths,
@@ -516,7 +516,7 @@ def test_acceptance_resume_reuses_only_complete_identity_bound_rounds(tmp_path):
             "round_kind": round_kind,
             "round_index": round_index,
             "target_hands": target_hands,
-            "log_summary": {"hands_started_min": target_hands, "settlements_min": target_hands - 1},
+            "log_summary": {"hands_started_min": target_hands, "settlements_min": target_hands},
         }
 
     result = run_official_acceptance_sync(
@@ -614,7 +614,7 @@ def test_formal_full_reruns_user_writable_passed_receipt_in_fresh_directory(
             "bot_a": {"path": str(bot_a.path), "role": bot_a.role},
             "bot_b": {"path": str(bot_b.path), "role": bot_b.role},
             "job_envelope": kwargs["job_envelope"],
-            "log_summary": {"hands_started_min": 70, "settlements_min": 69},
+            "log_summary": {"hands_started_min": 70, "settlements_min": 70},
             "artifacts": {},
         }
 
@@ -653,7 +653,7 @@ def test_formal_full_reruns_user_writable_passed_receipt_in_fresh_directory(
     ] == 2.0
 
 
-def test_target_reached_accepts_official_final_settlement_quirk(tmp_path):
+def test_target_reached_requires_the_final_official_settlement(tmp_path):
     bot_a_log = tmp_path / "botA.log"
     bot_b_log = tmp_path / "botB.log"
     bot_a_log.write_text(
@@ -675,7 +675,16 @@ def test_target_reached_accepts_official_final_settlement_quirk(tmp_path):
 
     assert summary["hands_started_min"] == 70
     assert summary["settlements_min"] == 69
-    assert _target_reached(summary, 70)
+    assert not _target_reached(summary, 70)
+
+    with bot_a_log.open("a", encoding="utf-8") as stream:
+        stream.write("\n[10:04:00] DISPATCH line='earnChips 50'\n")
+    with bot_b_log.open("a", encoding="utf-8") as stream:
+        stream.write("\n[10:04:00] DISPATCH line='earnChips -50'\n")
+
+    complete = summarize_round_logs(bot_a_log, bot_b_log)
+    assert complete["settlements_min"] == 70
+    assert _target_reached(complete, 70)
 
 
 def test_collect_new_thp_files_keeps_platform_dir_clean(tmp_path):

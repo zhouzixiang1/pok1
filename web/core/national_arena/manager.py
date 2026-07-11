@@ -17,6 +17,7 @@ import ipaddress
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import time
 import uuid
@@ -40,6 +41,7 @@ from national_arena.sandbox import (
     require_managed_sandbox,
     seal_bot_artifact,
 )
+from managed_bot_socket import connect_managed_endpoint
 from national_game_runtime import NationalTCPGameEngine
 from national_native import check_native_contract, resolve_bot
 from national_transport import NationalProtocolError, NationalTCPClient
@@ -1349,19 +1351,34 @@ class NationalArenaManager:
             )
             session.artifacts[f"{seat}_stdout"] = stdout_path.name
             session.artifacts[f"{seat}_stderr"] = stderr_path.name
-            launch = build_sandboxed_bot_launch(
-                sealed,
-                capability,
-                host=endpoint_host,
-                port=endpoint_port,
-                name=label,
-                seat="upper" if seat == "top" else "lower",
-                session_id=session.session_id,
-                action_delay=session.official_action_delay,
-                hard_deadline=hard_deadline,
-                refinement_budget=max(0.04, hard_deadline - 0.10),
-                baseline_target=min(0.25, hard_deadline * 0.25),
-            )
+            preconnected: socket.socket | None = None
+            try:
+                preconnected = connect_managed_endpoint(
+                    endpoint_host,
+                    endpoint_port,
+                    timeout=5.0,
+                )
+                launch = build_sandboxed_bot_launch(
+                    sealed,
+                    capability,
+                    host=endpoint_host,
+                    port=endpoint_port,
+                    name=label,
+                    seat="upper" if seat == "top" else "lower",
+                    session_id=session.session_id,
+                    action_delay=session.official_action_delay,
+                    hard_deadline=hard_deadline,
+                    refinement_budget=max(0.04, hard_deadline - 0.10),
+                    baseline_target=min(0.25, hard_deadline * 0.25),
+                    preconnected_fd=preconnected.fileno(),
+                )
+            except Exception as exc:
+                if preconnected is not None:
+                    preconnected.close()
+                raise ArenaInfrastructureError(
+                    "managed endpoint preconnection failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
             session.sandbox_profile = launch.security_profile
             stdout_handle = stdout_path.open("w", encoding="utf-8", buffering=1)
             stderr_handle = stderr_path.open("w", encoding="utf-8", buffering=1)
@@ -1375,6 +1392,7 @@ class NationalArenaManager:
                     text=True,
                     env=launch.environment,
                     start_new_session=True,
+                    pass_fds=launch.pass_fds,
                 )
             except Exception as exc:
                 stdout_handle.close()
@@ -1382,6 +1400,9 @@ class NationalArenaManager:
                 raise ArenaInfrastructureError(
                     f"managed sandbox process launch failed: {type(exc).__name__}: {exc}"
                 ) from exc
+            finally:
+                if preconnected is not None:
+                    preconnected.close()
             try:
                 pgid = os.getpgid(process.pid)
             except ProcessLookupError:

@@ -950,6 +950,7 @@ def test_get_bot_info_handles_parent_and_oversized_triples(tmp_path, monkeypatch
 
 def test_get_status_uses_abandoned_floor_for_next_v(tmp_path, monkeypatch):
     import evolution_core
+    import tool_helpers
     import tool_status
 
     (tmp_path / "national_v256").mkdir()
@@ -970,6 +971,8 @@ def test_get_status_uses_abandoned_floor_for_next_v(tmp_path, monkeypatch):
     monkeypatch.setattr(tool_status, "read_locked_json", lambda *_a, **_k: {})
     monkeypatch.setattr(tool_status, "load_strength_scores", lambda: {})
     monkeypatch.setattr(tool_status, "load_h2h_avg_winrates", lambda: {})
+    monkeypatch.setattr(tool_helpers, "load_strength_scores", lambda: {})
+    monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates", lambda: {})
     monkeypatch.setattr(evolution_core, "_load_recent_failures", lambda _n: [])
 
     result = asyncio.run(tool_status.get_status.handler({}))

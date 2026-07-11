@@ -27,6 +27,8 @@ from official_wire_probe import split_server_messages  # noqa: E402
 
 CHECK_CALL_DOWN = "check_call_down"
 PREFLOP_RAISE_FOLD = "preflop_raise_fold"
+PREFLOP_RERAISE_2X = "preflop_reraise_2x"
+PREFLOP_RERAISE_2X_PLUS_ONE = "preflop_reraise_2x_plus_one"
 FLOP_BET_FOLD = "flop_bet_fold"
 FLOP_BET_CALL_TURN_BET_CALL = "flop_bet_call_turn_bet_call"
 FLOP_CHECK_SB_BET_BB_FOLD = "flop_check_sb_bet_bb_fold"
@@ -34,6 +36,8 @@ FLOP_CHECK_SB_BET_BB_FOLD = "flop_check_sb_bet_bb_fold"
 SCENARIOS = {
     CHECK_CALL_DOWN,
     PREFLOP_RAISE_FOLD,
+    PREFLOP_RERAISE_2X,
+    PREFLOP_RERAISE_2X_PLUS_ONE,
     FLOP_BET_FOLD,
     FLOP_BET_CALL_TURN_BET_CALL,
     FLOP_CHECK_SB_BET_BB_FOLD,
@@ -88,7 +92,11 @@ class ScriptedClient:
         if message.startswith("preflop|"):
             self._start_hand(message)
             if self.is_small_blind:
-                if self.scenario == PREFLOP_RAISE_FOLD:
+                if self.scenario in {
+                    PREFLOP_RAISE_FOLD,
+                    PREFLOP_RERAISE_2X,
+                    PREFLOP_RERAISE_2X_PLUS_ONE,
+                }:
                     self.send(sock, "raise 200", reason="sb_open_raise")
                 else:
                     self.send(sock, "call", reason="sb_limp")
@@ -141,11 +149,18 @@ class ScriptedClient:
         if not self.is_small_blind and message.startswith("raise "):
             if self.scenario == PREFLOP_RAISE_FOLD:
                 self.send(sock, "fold", reason="bb_fold_to_open_raise")
+            elif self.scenario == PREFLOP_RERAISE_2X:
+                self.send(sock, "raise 400", reason="bb_exact_2x_reraise_probe")
+            elif self.scenario == PREFLOP_RERAISE_2X_PLUS_ONE:
+                self.send(sock, "raise 401", reason="bb_2x_plus_one_reraise_control")
             else:
                 self.send(sock, "call", reason="bb_call_preflop_raise")
             return
         if self.is_small_blind and message.startswith("raise "):
-            self.send(sock, "call", reason="sb_call_preflop_raise")
+            if self.scenario in {PREFLOP_RERAISE_2X, PREFLOP_RERAISE_2X_PLUS_ONE}:
+                self.send(sock, "fold", reason="sb_fold_after_reraise_probe")
+            else:
+                self.send(sock, "call", reason="sb_call_preflop_raise")
 
     def _respond_postflop(self, sock: socket.socket, message: str) -> None:
         if message == "check":

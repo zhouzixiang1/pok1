@@ -26,6 +26,11 @@ def test_cli_has_no_legacy_default_opponent():
 
 def test_cli_fails_without_eligible_opponent(monkeypatch, capsys):
     module = _module()
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {"valid": True, "issues": [], "entry_count": 0, "head": None},
+    )
     monkeypatch.setattr(module, "select_official_opponent", lambda *_a, **_k: {
         "selected": False,
         "reason": "no_official_eligible_opponent",
@@ -40,7 +45,19 @@ def test_cli_fails_without_eligible_opponent(monkeypatch, capsys):
 
 def test_cli_doctor_requires_platform_and_signer(monkeypatch, capsys):
     module = _module()
-    monkeypatch.setattr(module, "check_environment", lambda: {"ok": True, "issues": []})
+    monkeypatch.setattr(
+        module,
+        "check_environment",
+        lambda **kwargs: {
+            "ok": kwargs.get("require_formal_sandbox") is True,
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {"valid": True, "issues": [], "entry_count": 0, "head": None},
+    )
     monkeypatch.setattr(
         module,
         "signing_environment_report",
@@ -55,8 +72,141 @@ def test_cli_doctor_requires_platform_and_signer(monkeypatch, capsys):
     assert "signer missing" in output
 
 
+def test_cli_doctor_reports_missing_ledger_without_initializing(monkeypatch, capsys):
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "check_environment",
+        lambda **kwargs: {
+            "ok": kwargs.get("require_formal_sandbox") is True,
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "signing_environment_report",
+        lambda: {"ok": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {
+            "valid": False,
+            "issues": ["official_verdict_ledger_missing"],
+            "entry_count": 0,
+            "head": None,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "initialize_verdict_ledger",
+        lambda: (_ for _ in ()).throw(AssertionError("doctor must not initialize authority")),
+    )
+
+    exit_code = module.main(["doctor"])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "official_verdict_ledger_missing" in output
+    assert "python3 scripts/official_certify.py init-ledger" in output
+
+
+def test_cli_init_ledger_is_explicit_and_idempotent(monkeypatch, capsys):
+    module = _module()
+    calls = []
+    monkeypatch.setattr(
+        module,
+        "signing_environment_report",
+        lambda: {"ok": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        module,
+        "initialize_verdict_ledger",
+        lambda: calls.append("initialize") or {
+            "initialized": False,
+            "valid": True,
+            "entry_count": 3,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {"valid": True, "issues": [], "entry_count": 3, "head": {}},
+    )
+
+    exit_code = module.main(["init-ledger"])
+
+    assert exit_code == 0
+    assert calls == ["initialize"]
+    assert '"initialized": false' in capsys.readouterr().out
+
+
+def test_cli_init_ledger_requires_signer_before_creating_genesis(monkeypatch, capsys):
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "signing_environment_report",
+        lambda: {"ok": False, "issues": ["signer missing"]},
+    )
+    monkeypatch.setattr(
+        module,
+        "initialize_verdict_ledger",
+        lambda: (_ for _ in ()).throw(AssertionError("must not create unsigned genesis")),
+    )
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {
+            "valid": False,
+            "issues": ["official_verdict_ledger_missing"],
+            "entry_count": 0,
+            "head": None,
+        },
+    )
+
+    exit_code = module.main(["init-ledger"])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "signer missing" in output
+    assert '"initialized": false' in output
+
+
+def test_cli_full_blocks_before_selection_when_ledger_is_unavailable(monkeypatch, capsys):
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {
+            "valid": False,
+            "issues": ["official_verdict_ledger_missing"],
+            "entry_count": 0,
+            "head": None,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "select_official_opponent",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("selection/job work must not start")
+        ),
+    )
+
+    exit_code = module.main(["full", "bots/national_v143"])
+
+    assert exit_code == 2
+    output = capsys.readouterr().out
+    assert "formal-preflight-blocked" in output
+    assert "official_verdict_ledger_missing" in output
+
+
 def test_cli_returns_nonzero_for_terminal_job_infrastructure_failure(monkeypatch):
     module = _module()
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {"valid": True, "issues": [], "entry_count": 0, "head": None},
+    )
     monkeypatch.setattr(module, "select_official_opponent", lambda *_a, **_k: {
         "selected": True,
         "candidate": "bots/national_v143",

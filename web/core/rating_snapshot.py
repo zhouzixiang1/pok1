@@ -103,17 +103,57 @@ def _iter_match_history(path: Path):
             yield entry
 
 
+def _admitted_70_hand_history_sample(entry: dict[str, Any]) -> list[int] | None:
+    """Return proven strength samples, otherwise fail the history row closed."""
+
+    if (
+        entry.get("strength_sample_unit") != "70_hand_match"
+        or int(entry.get("hands_per_strength_sample", 0) or 0) != 70
+        or entry.get("strength_admitted") is not True
+        or entry.get("strength_complete") is not True
+        or entry.get("strength_compliance_passed") is not True
+    ):
+        return None
+    raw_samples = entry.get("net_chips_bot0")
+    if not isinstance(raw_samples, list):
+        return None
+    try:
+        samples = [int(value) for value in raw_samples]
+        wins = int(entry.get("bot0_wins", 0) or 0)
+        losses = int(entry.get("bot1_wins", 0) or 0)
+        draws = int(entry.get("draws", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if not samples:
+        return None
+    if int(entry.get("strength_sample_count", -1) or 0) != len(samples):
+        return None
+    from strength_order import summarize_70_hand_net_chips
+
+    summary = summarize_70_hand_net_chips(samples)
+    if (
+        summary["samples"] != wins + losses + draws
+        or summary["positive_matches"] != wins
+        or summary["negative_matches"] != losses
+        or summary["zero_matches"] != draws
+    ):
+        return None
+    return samples
+
+
 def reconstruct_h2h_from_match_history(
     active_bots: list[str] | set[str] | tuple[str, ...],
     match_history_path: Path | str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Rebuild active-pool H2H from append-only match history."""
+    """Rebuild active-pool H2H from admitted national strength history only."""
     active = set(active_bots or [])
     if len(active) < 2:
         return {}
     path = Path(match_history_path) if match_history_path is not None else _default_match_history_file()
     rebuilt: dict[str, dict[str, Any]] = {}
     for entry in _iter_match_history(path) or []:
+        if _admitted_70_hand_history_sample(entry) is None:
+            continue
         bot_a = entry.get("bot0") or entry.get("bot_a")
         bot_b = entry.get("bot1") or entry.get("bot_b")
         if bot_a not in active or bot_b not in active:
@@ -137,25 +177,12 @@ def national_chip_metrics_from_match_history(
     path = Path(match_history_path) if match_history_path is not None else _default_match_history_file()
     samples_by_bot: dict[str, list[int]] = {name: [] for name in active}
     for entry in _iter_match_history(path) or []:
-        if entry.get("strength_sample_unit") != "70_hand_match":
-            continue
         bot_a = str(entry.get("bot0") or "")
         bot_b = str(entry.get("bot1") or "")
         if bot_a not in active or bot_b not in active or bot_a == bot_b:
             continue
-        raw_samples = entry.get("net_chips_bot0")
-        if not isinstance(raw_samples, list):
-            continue
-        try:
-            samples = [int(value) for value in raw_samples]
-        except (TypeError, ValueError):
-            continue
-        summary = summarize_70_hand_net_chips(samples)
-        if (
-            summary["positive_matches"] != int(entry.get("bot0_wins", 0) or 0)
-            or summary["negative_matches"] != int(entry.get("bot1_wins", 0) or 0)
-            or summary["zero_matches"] != int(entry.get("draws", 0) or 0)
-        ):
+        samples = _admitted_70_hand_history_sample(entry)
+        if samples is None:
             continue
         samples_by_bot[bot_a].extend(samples)
         samples_by_bot[bot_b].extend(-value for value in samples)

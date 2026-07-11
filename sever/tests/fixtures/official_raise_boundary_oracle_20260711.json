@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "authority": "official_windows_exe_controlled_wire_oracle",
+  "observed_at_local": "2026-07-11T16:38:01+08:00",
+  "official_exe_sha256": "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a",
+  "exact_2x_raw_wire_sha256": "dc9dffa1121bee77bab1478842b7f336e1d4a72686e2ad7cbf322ed077bf85f3",
+  "plus_one_control_raw_wire_sha256": "ab2828becfc470749a33da92434c6fd812a30e7ec80683613b7a40c605ff28be",
+  "claim": "After raise 200, exact raise 400 is accepted and relayed by the official EXE; raise 401 also passes as a control.",
+  "observations": [
+    {
+      "hand": 1,
+      "small_blind_conn": "A",
+      "big_blind_conn": "B",
+      "actions": ["raise 200", "raise 400", "fold"],
+      "settlements": {"A": -200, "B": 200}
+    },
+    {
+      "hand": 2,
+      "small_blind_conn": "B",
+      "big_blind_conn": "A",
+      "actions": ["raise 200", "raise 400", "fold"],
+      "settlements": {"A": 200, "B": -200}
+    }
+  ],
+  "replay_events": [
+    {"t": 0.0, "dt": 0.0, "conn": "A", "direction": "server_to_bot", "messages": ["preflop|SMALLBLIND|<3,5><3,1>"]},
+    {"t": 0.0, "dt": 0.0, "conn": "B", "direction": "server_to_bot", "messages": ["preflop|BIGBLIND|<0,0><1,12>"]},
+    {"t": 1.0, "dt": 1.0, "conn": "A", "direction": "bot_to_server", "messages": ["raise 200"]},
+    {"t": 2.0, "dt": 2.0, "conn": "B", "direction": "server_to_bot", "messages": ["raise 200"]},
+    {"t": 3.0, "dt": 3.0, "conn": "B", "direction": "bot_to_server", "messages": ["raise 400"]},
+    {"t": 4.0, "dt": 4.0, "conn": "A", "direction": "server_to_bot", "messages": ["raise 400"]},
+    {"t": 5.0, "dt": 5.0, "conn": "A", "direction": "bot_to_server", "messages": ["fold"]},
+    {"t": 6.0, "dt": 6.0, "conn": "B", "direction": "server_to_bot", "messages": ["fold"]},
+    {"t": 7.0, "dt": 7.0, "conn": "A", "direction": "server_to_bot", "messages": ["earnChips -200"]},
+    {"t": 7.0, "dt": 7.0, "conn": "B", "direction": "server_to_bot", "messages": ["earnChips 200"]},
+    {"t": 8.0, "dt": 8.0, "conn": "A", "direction": "server_to_bot", "messages": ["preflop|BIGBLIND|<0,1><2,3>"]},
+    {"t": 8.0, "dt": 8.0, "conn": "B", "direction": "server_to_bot", "messages": ["preflop|SMALLBLIND|<0,5><2,7>"]},
+    {"t": 9.0, "dt": 9.0, "conn": "B", "direction": "bot_to_server", "messages": ["raise 200"]},
+    {"t": 10.0, "dt": 10.0, "conn": "A", "direction": "server_to_bot", "messages": ["raise 200"]},
+    {"t": 11.0, "dt": 11.0, "conn": "A", "direction": "bot_to_server", "messages": ["raise 400"]},
+    {"t": 12.0, "dt": 12.0, "conn": "B", "direction": "server_to_bot", "messages": ["raise 400"]},
+    {"t": 13.0, "dt": 13.0, "conn": "B", "direction": "bot_to_server", "messages": ["fold"]},
+    {"t": 14.0, "dt": 14.0, "conn": "A", "direction": "server_to_bot", "messages": ["fold"]},
+    {"t": 15.0, "dt": 15.0, "conn": "A", "direction": "server_to_bot", "messages": ["earnChips 200"]},
+    {"t": 15.0, "dt": 15.0, "conn": "B", "direction": "server_to_bot", "messages": ["earnChips -200"]}
+  ]
+}

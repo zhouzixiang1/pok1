@@ -421,6 +421,7 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
 
     recent_losses = []
     close_wins = []
+    from rating_snapshot import _admitted_70_hand_history_sample
 
     with locked_file(MATCH_HISTORY_FILE, "r") as f:
         for line in f:
@@ -430,6 +431,8 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if _admitted_70_hand_history_sample(entry) is None:
                 continue
 
             b0, b1 = entry.get("bot0"), entry.get("bot1")

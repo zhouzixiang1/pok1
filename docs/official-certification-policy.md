@@ -17,6 +17,8 @@ strategy scores.
 - exactly 70 hands in every round;
 - complete THP, wire capture/replay, bot logs, stdout/stderr, platform log, and
   screenshot evidence;
+- sealed read-only bot artifacts launched in an isolated network namespace with
+  only one host-preconnected wire-proxy socket descriptor;
 - no deterministic candidate-side protocol, communication, timeout,
   state-machine, or obvious decision-state violation;
 - every round countable under `official-attribution-v1`.
@@ -42,11 +44,25 @@ The certificate is signed with the local key selected by
 `web/core/official_certifier_allowed_signers`. The private key is never stored
 in Git. Production verification cannot replace this trust root through an
 environment variable; tests may inject a temporary trust file only through an
-explicit API. Run this before an expensive suite:
+explicit API. The doctor also validates the signed append-only verdict ledger;
+it never creates or repairs authority state. Run it before an expensive suite:
 
 ```bash
 python3 scripts/official_certify.py doctor
 ```
+
+On a new operator host, create the signed empty genesis only through the
+explicit idempotent command, then re-run doctor:
+
+```bash
+python3 scripts/official_certify.py init-ledger
+python3 scripts/official_certify.py doctor
+```
+
+`init-ledger` first requires a healthy signing identity. It creates nothing when
+the existing ledger is already valid and refuses to overwrite a corrupt,
+truncated, or unsigned history. Formal production preflight checks the ledger
+again and stops before launching the EXE when genesis/history is unavailable.
 
 Full certification fails before launching the EXE when signing or trust-root
 preflight fails. Before Git commit, the candidate hash is checked again. The
@@ -134,7 +150,11 @@ eligible roles or repaired; the validator is never relaxed to keep it active.
 ## Operator Commands
 
 ```bash
-# Platform + signer readiness
+# Platform + signer + verdict-ledger readiness
+python3 scripts/official_certify.py doctor
+
+# First-host signed genesis (explicit and idempotent), then verify all readiness
+python3 scripts/official_certify.py init-ledger
 python3 scripts/official_certify.py doctor
 
 # Durable full 5+3x70 request and wait for its terminal result

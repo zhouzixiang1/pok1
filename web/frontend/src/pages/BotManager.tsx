@@ -451,9 +451,9 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                   const isA = parts[0] === bot.name;
                   const opp = isA ? parts[1] : parts[0];
                   if (!isA && parts[1] !== bot.name) continue;
-                  const wr = isA ? val.a_wins / val.games : val.b_wins / val.games;
                   const wins = isA ? val.a_wins : val.b_wins;
                   const losses = isA ? val.b_wins : val.a_wins;
+                  const wr = (wins + 0.5 * val.draws) / val.games;
                   if (val.games > 0 && isFinite(wr)) opponents.push({ name: opp, wr, games: val.games, wins, losses, draws: val.draws });
                 }
                 if (opponents.length === 0) return null;

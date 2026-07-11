@@ -37,13 +37,14 @@ from national_game_runtime import NationalTCPGameEngine
 from national_transport import NationalTCPClient
 from pipeline_schema import NationalAcceptanceResult
 from runtime_capacity import acquire_match_slots_async
+from strength_order import is_strength_matchup, precommit_outcome_blockers
 
 
 ROOT = Path(__file__).resolve().parents[2]
 NATIVE_ENTRY = "national_bot.py"
 PRECOMPUTE_ENTRY = "precompute.py"
 TRACE_PREFIX = "POK_TRACE_DECISION "
-NATIONAL_DECISION_RUNTIME_VERSION = 5
+NATIONAL_DECISION_RUNTIME_VERSION = 6
 
 
 NATIVE_BOT_TEMPLATE = r'''#!/usr/bin/env python3
@@ -1257,7 +1258,15 @@ class NativeNationalBot:
         round_num = self._round_num()
         return any(h.get("round") == round_num and h.get("action_type") == "allin" for h in self._history)
 
-    def _record_action(self, player_id: int, action_type: str, amount: int | None, committed: int = 0) -> None:
+    def _record_action(
+        self,
+        player_id: int,
+        action_type: str,
+        amount: int | None,
+        committed: int = 0,
+        *,
+        inferred_boundary: str | None = None,
+    ) -> None:
         if action_type == "call":
             action_val = 0
         elif action_type == "check":
@@ -1279,6 +1288,10 @@ class NativeNationalBot:
             "action": action_val,
             "action_type": action_type,
         }
+        if inferred_boundary is not None:
+            entry["inferred"] = True
+            entry["inference_reason"] = "official_suppressed_terminal_action"
+            entry["inference_boundary"] = inferred_boundary
         if action_type in {"call", "raise", "allin"}:
             if player_id == self._my_id:
                 entry["stage_bet"] = self._my_stage_bet
@@ -1294,6 +1307,67 @@ class NativeNationalBot:
             action_type,
             amount=entry.get("stage_bet", amount),
         )
+
+    def _infer_suppressed_terminal_opponent_action(self, boundary: str) -> str | None:
+        """Repair the official EXE's omitted peer pass before a proven boundary.
+
+        The local server relays terminal calls/checks, while the official EXE can
+        advance directly after our action.  A street/settlement/showdown boundary
+        proves the peer response only when our last action still required one:
+        calls close our raise/allin, postflop calls close our first check, and the
+        big blind checks behind our opening small-blind limp.  Recording through
+        the normal action path keeps chips, pot, current-hand history, and the
+        persistent opponent tracker consistent.  If a server relayed the token,
+        the last actor is already the opponent and this method is a no-op.
+        """
+        if self._hand_num <= 0 or self._in_allin_runout:
+            return None
+        round_num = self._round_num()
+        round_history = [
+            record for record in self._history
+            if record.get("round") == round_num
+        ]
+        if not round_history:
+            return None
+        last = round_history[-1]
+        if last.get("player_id") != self._my_id:
+            return None
+
+        hero_action = last.get("action_type")
+        inferred_action = None
+        if hero_action in {"raise", "allin"}:
+            inferred_action = "call"
+        elif self._stage != "preflop" and hero_action == "check":
+            inferred_action = "call"
+        elif (
+            self._stage == "preflop"
+            and self._is_sb
+            and hero_action == "call"
+            and len(round_history) == 1
+        ):
+            inferred_action = "check"
+        if inferred_action is None:
+            return None
+
+        committed = self._apply_opponent_action(inferred_action, None)
+        self._record_action(
+            self._opponent_id,
+            inferred_action,
+            None,
+            committed,
+            inferred_boundary=boundary,
+        )
+        if inferred_action == "call" and (
+            self._current_round_has_allin()
+            or self._my_chips == 0
+            or self._opponent_chips == 0
+        ):
+            self._in_allin_runout = True
+        _log(
+            f"INFER_SUPPRESSED_TERMINAL hand={self._hand_num} stage={self._stage} "
+            f"action={inferred_action} committed={committed} boundary={boundary}"
+        )
+        return inferred_action
 
     def _last_raise_total(self) -> int | None:
         round_num = self._round_num()
@@ -1314,6 +1388,8 @@ class NativeNationalBot:
     def _minimum_raise_total(self) -> int:
         last_raise = self._last_raise_total()
         if last_raise is not None:
+            # Official legality is inclusive 2x.  Keep +1 as conservative
+            # sizing headroom, not because exact 2x is illegal.
             minimum = last_raise * 2 + 1
         elif self._stage == "preflop":
             minimum = 2 * BIG_BLIND
@@ -1481,6 +1557,7 @@ class NativeNationalBot:
             return
         if line.startswith(("flop", "turn", "river")):
             stage, cards = line.split("|", 1)
+            self._infer_suppressed_terminal_opponent_action(f"street:{stage}")
             self._stage = stage
             self._public_cards.extend(_parse_cards(cards))
             self._my_action_count = 0
@@ -1492,6 +1569,7 @@ class NativeNationalBot:
             return
         if line.startswith("earnChips"):
             earned = int(line.split()[1])
+            self._infer_suppressed_terminal_opponent_action("settlement")
             self._last_earned = earned
             self._earned_by_hand[self._hand_num] = earned
             self._total_win_chips[self._my_id] += earned
@@ -1518,6 +1596,7 @@ class NativeNationalBot:
             self._in_allin_runout = False
             return
         if line.startswith("oppo_hands|"):
+            self._infer_suppressed_terminal_opponent_action("showdown")
             record = self._showdown_by_hand.get(self._hand_num)
             if record is None:
                 record = {
@@ -1921,6 +2000,8 @@ def check_native_contract(
             '_stop_strategy_worker("decision_deadline", wait=False)',
             "def _socket_safe_fallback_action",
             "return -1 if self._opponent_stage_bet > self._my_stage_bet else 0",
+            "def _infer_suppressed_terminal_opponent_action",
+            "official_suppressed_terminal_action",
         )
         for token in runtime_tokens:
             if token not in text:
@@ -2808,11 +2889,13 @@ async def run_native_precommit(
     parent_label: str = "",
     deck_seed_base: int | None = 91_000,
     sample_plan: list[dict[str, Any]] | None = None,
-    parent_loss_threshold: float = -2000,
-    aggregate_loss_threshold: float = -2000,
 ) -> dict[str, Any]:
     candidate = resolve_bot(candidate_token)
-    hands = max(1, min(70, int(hands)))
+    hands = int(hands)
+    if hands != 70:
+        raise ValueError(
+            f"native precommit strength samples must contain exactly 70 hands; got {hands}"
+        )
     matches_per_opponent = max(1, int(matches_per_opponent))
     matchups: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
@@ -2838,6 +2921,7 @@ async def run_native_precommit(
         blockers.append({"reason": "native_no_opponents", "details": "Native precommit requires at least one opponent."})
     for opp_index, item in enumerate(opponents):
         reason = str(item.get("reason") or "precommit")
+        strength_authoritative = is_strength_matchup(item)
         token = item.get("path") or item.get("token") or item.get("name")
         opponent = resolve_bot(token)
         resolved_opponents.append({"name": item.get("name") or opponent[0], "reason": reason, "path": str(opponent[1])})
@@ -2877,8 +2961,6 @@ async def run_native_precommit(
                 bot_seed_base=bot_seed,
             )
             net = int(result.get("net_chips_a", 0) or 0)
-            samples.append(net)
-            aggregate_net_chips.append(net)
             hands_played = int(result.get("hands_played", 0) or 0)
             hands_played_total += hands_played
             c_issues = [
@@ -2891,6 +2973,14 @@ async def run_native_precommit(
                 for issue in result.get("issues", [])
                 if not (str(issue).startswith(candidate[0] + ":") or str(issue).startswith("hands_played="))
             ]
+            complete = hands_played == hands
+            compliance_passed = bool(result.get("passed_compliance", False))
+            sample_valid = complete and compliance_passed and not c_issues and not o_issues
+            strength_admitted = strength_authoritative and sample_valid
+            if sample_valid:
+                samples.append(net)
+            if strength_admitted:
+                aggregate_net_chips.append(net)
             candidate_issues.extend(c_issues)
             opponent_issues.extend(o_issues)
             repeats.append({
@@ -2901,26 +2991,33 @@ async def run_native_precommit(
                 "net_chips": net,
                 "candidate_issues": c_issues,
                 "opponent_issues": o_issues,
+                "complete": complete,
+                "passed_compliance": compliance_passed,
+                "sample_valid": sample_valid,
+                "strength_admitted": strength_admitted,
                 "raw": result,
             })
         wins = sum(1 for value in samples if value > 0)
         losses = sum(1 for value in samples if value < 0)
         draws = sum(1 for value in samples if value == 0)
-        total_wins += wins
-        total_losses += losses
-        total_draws += draws
+        if strength_authoritative:
+            total_wins += wins
+            total_losses += losses
+            total_draws += draws
         mean = _mean(samples)
         ci_lo, ci_hi = _ci(samples)
         matchup = {
             "opponent": item.get("name") or opponent[0],
             "reason": reason,
+            "strength_authoritative": strength_authoritative,
             "protocol": "national_native_tcp",
             "hands_per_match": hands,
             "matches": matches_per_opponent,
             "wins": wins,
             "losses": losses,
             "draws": draws,
-            "n_played": matches_per_opponent,
+            "n_played": len(samples),
+            "samples_expected": matches_per_opponent,
             "hands_played_total": hands_played_total,
             "net_chips": samples,
             "net_chips_mean": _rounded(mean),
@@ -2931,52 +3028,45 @@ async def run_native_precommit(
             "repeats": repeats,
         }
         matchups.append(matchup)
-        if candidate_issues:
+        if strength_authoritative and candidate_issues:
             blockers.append({"reason": "native_candidate_compliance", "opponent": matchup["opponent"], "details": "; ".join(candidate_issues[:5])})
-        if hands_played_total < hands * matches_per_opponent:
+        if strength_authoritative and opponent_issues:
+            blockers.append({"reason": "native_opponent_compliance", "opponent": matchup["opponent"], "details": "; ".join(opponent_issues[:5])})
+        if strength_authoritative and any(not row["complete"] for row in repeats):
             blockers.append({"reason": "native_incomplete_match", "opponent": matchup["opponent"], "details": f"{hands_played_total}/{hands * matches_per_opponent} hands completed"})
-        if (
-            parent_label
-            and matchup["opponent"] == parent_label
-            and ci_hi is not None
-            and ci_hi < parent_loss_threshold
-        ):
+        if strength_authoritative and len(samples) != matches_per_opponent:
             blockers.append({
-                "reason": "lost_to_parent",
+                "reason": "native_strength_sample_shortfall",
                 "opponent": matchup["opponent"],
-                "details": (
-                    f"Native national bootstrap CI upper {ci_hi:.0f} below "
-                    f"{parent_loss_threshold:.0f}; samples={samples}"
-                ),
+                "details": f"{len(samples)}/{matches_per_opponent} complete compliant 70-hand samples admitted",
             })
     agg_mean = _mean(aggregate_net_chips)
     agg_ci_lower, agg_ci_upper = _ci(aggregate_net_chips)
     if not aggregate_net_chips:
         blockers.append({"reason": "native_no_samples", "details": "Native precommit produced zero completed match samples."})
-    if agg_ci_upper is not None and agg_ci_upper < aggregate_loss_threshold:
-        blockers.append({
-            "reason": "aggregate_native_regression",
-            "details": (
-                f"Aggregate native bootstrap CI upper {agg_ci_upper:.0f} below "
-                f"{aggregate_loss_threshold:.0f}; samples={len(aggregate_net_chips)}"
-            ),
-        })
+    outcome_blockers, outcome_gate = precommit_outcome_blockers(
+        matchups,
+        parent_label=parent_label,
+        aggregate_reason="aggregate_native_regression",
+    )
+    blockers.extend(outcome_blockers)
     paired_payload = {
         "protocol": "national_native_tcp",
         "hands_per_match": hands,
         "matches_per_opponent": matches_per_opponent,
         "aggregate_ci_lower": _rounded(agg_ci_lower),
         "aggregate_ci_upper": _rounded(agg_ci_upper),
-        "aggregate_threshold": aggregate_loss_threshold,
-        "aggregate_gate_bound": _rounded(agg_ci_upper),
-        "aggregate_gate_rule": "block_if_ci_upper_below_threshold",
+        "aggregate_threshold": None,
+        "aggregate_gate_bound": outcome_gate.get("primary_match_score"),
+        "aggregate_gate_rule": "complete_70_hand_wld_loss_margin",
+        "outcome_gate": outcome_gate,
         "net_chips_samples": len(aggregate_net_chips),
         "gate_degraded": len(aggregate_net_chips) < 2,
         "net_chips_mean": _rounded(agg_mean),
         "net_chips_std": round(statistics.pstdev(aggregate_net_chips), 1) if len(aggregate_net_chips) > 1 else None,
         "net_chips_min": min(aggregate_net_chips) if aggregate_net_chips else None,
         "net_chips_max": max(aggregate_net_chips) if aggregate_net_chips else None,
-        "parent_loss_threshold": parent_loss_threshold,
+        "secondary_net_chip_ci": [_rounded(agg_ci_lower), _rounded(agg_ci_upper)],
     }
     return {
         "evaluation_protocol": "national_native_tcp",

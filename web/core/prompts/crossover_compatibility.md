@@ -35,7 +35,7 @@ For each parent pair:
 - Different raise-to-total semantics = HARD CONFLICT
 - Different national protocol legality assumptions = HARD CONFLICT, including
   raise-by-increment, wire-level `bet`, positive raise for all-in, postflop
-  TCP `check-check`, or non-strict re-raise minimums.
+  TCP `check-check`, or re-raises below the official inclusive 2x minimum.
 - Opposite aggression philosophies = SOFT CONFLICT (can merge with careful selection)
 - Different constant naming conventions = SOFT CONFLICT (renaming needed)
 - Complementary strengths (A strong preflop, B strong postflop) = IDEAL merge

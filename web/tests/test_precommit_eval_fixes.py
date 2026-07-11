@@ -43,6 +43,7 @@ def test_national_precommit_rejects_one_sample():
 
     blockers = tool_eval._national_sample_contract_blockers(
         {
+            "hands_per_match": 70,
             "net_chips_samples": 1,
             "aggregate_ci_lower": None,
             "aggregate_ci_upper": None,
@@ -54,11 +55,12 @@ def test_national_precommit_rejects_one_sample():
     assert {item["reason"] for item in blockers} == {"national_sample_shortfall"}
 
 
-def test_national_precommit_requires_real_ci_for_complete_samples():
+def test_national_precommit_does_not_make_secondary_chip_ci_a_hard_gate():
     import tool_eval
 
     blockers = tool_eval._national_sample_contract_blockers(
         {
+            "hands_per_match": 70,
             "net_chips_samples": 8,
             "aggregate_ci_lower": None,
             "aggregate_ci_upper": None,
@@ -67,10 +69,7 @@ def test_national_precommit_requires_real_ci_for_complete_samples():
         expected_samples=8,
     )
 
-    assert {item["reason"] for item in blockers} == {
-        "national_confidence_interval_missing",
-        "national_confidence_gate_degraded",
-    }
+    assert blockers == []
 
 
 # ── P0: Reap Signal Ordering ─────────────────────────────────────────

@@ -60,7 +60,7 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
 6. In legacy/local JSON internals, `main.py` may still output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 7. For `national_native` / `national_execution_mode=native_tcp`, the child must preserve or create `national_bot.py` as the formal submission entry. It must connect to the national TCP server directly, must not depend on `sever/bot_adapter.py`, must not output JSON `response` objects as national communication, must never output `bet`, must send `allin` rather than a positive raise consuming all remaining chips, must preserve raise-to-total semantics, and must preserve the official EXE send throttle (`POK_OFFICIAL_ACTION_DELAY` default near `0.30s`, `_send_wire_action`) in the TCP wire layer.
 8. Do not add timeout-rescue loops that send unsolicited `call` or `check`; generated bots may only send one legal action while the platform is waiting for the current decision.
-9. Preserve full national legality from `sever/国赛平台/`: first preflop raise-to >= 200; first postflop raise-to >= 100; re-raise strictly >2x previous raise-to (`prev * 2 + 1` minimum); postflop first action cannot be call; postflop after any first action, check is illegal; after a postflop check the second pass is call, not check; preflop BB cannot call after SB limps/calls; after all-in the opponent can only call or fold; consecutive all-ins are illegal.
+9. Preserve full national legality from `sever/国赛平台/`: first preflop raise-to >= 200; first postflop raise-to >= 100; re-raise >=2x previous raise-to (exact `prev * 2` is legal; `prev * 2 + 1` is optional conservative headroom); postflop first action cannot be call; postflop after any first action, check is illegal; after a postflop check the second pass is call, not check; preflop BB cannot call after SB limps/calls; after all-in the opponent can only call or fold; consecutive all-ins are illegal.
 10. Preserve file-size gate compliance. Core strategy files (`strategy.py`,
     `postflop.py`) have a 2000-line base limit; helper Python files have a
     1500-line base limit; the hard cap is 2500 lines. If Parent A/source is already over the base limit, the child may match or shrink that file but
@@ -85,6 +85,6 @@ This is protocol correctness, not a strategic tuning choice:
 
 Do not infer required edits from generation-specific prompt history. Preserve all
 parent capabilities that pass the current deterministic contracts. The quality
-pipeline independently checks evaluator correctness, strict raise semantics,
+pipeline independently checks evaluator correctness, official raise semantics,
 70-hand configuration, national position semantics, native TCP behavior, and
 the selected runtime architecture focus.

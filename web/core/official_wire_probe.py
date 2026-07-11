@@ -492,8 +492,8 @@ class OfficialWireReplay:
                 return False, "first preflop raise must be at least 200"
             if seat.stage in {"flop", "turn", "river"} and last_raise is None and amount < BIG_BLIND:
                 return False, "first postflop raise must be at least 100"
-            if last_raise is not None and amount <= last_raise * 2:
-                return False, "consecutive raise must be strictly greater than 2x previous raise-to"
+            if last_raise is not None and amount < last_raise * 2:
+                return False, "consecutive raise must be at least 2x previous raise-to"
             return True, ""
         return False, "unrecognized action type"
 

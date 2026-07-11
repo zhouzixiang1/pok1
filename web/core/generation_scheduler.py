@@ -19,6 +19,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version
+from strength_order import match_score
 from system_log import log_system_event, SYSTEM_EVENTS_FILE
 
 log = logging.getLogger("pok.scheduler")
@@ -53,7 +54,7 @@ def _save_committed_bot_fingerprint(committed_v: int) -> str:
     return committed_bot
 
 
-def _wilson_lower_bound(wins, games, z=1.96):
+def _wilson_lower_bound(points, games, z=1.96):
     """95% lower confidence bound on the true win rate (Wilson score interval).
 
     Used by the H2H anomaly detector (prepare_generation) so small-sample
@@ -64,7 +65,7 @@ def _wilson_lower_bound(wins, games, z=1.96):
     """
     if games <= 0:
         return 0.0
-    p = wins / games
+    p = points / games
     denom = 1.0 + z * z / games
     center = (p + z * z / (2 * games)) / denom
     margin = z * ((p * (1 - p) + z * z / (4 * games)) / games) ** 0.5 / denom
@@ -549,9 +550,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     else:
                         bot_wins = pair_data.get("b_wins", 0)
                         opp = parts[0]
-                    wr = bot_wins / games
+                    draws = int(pair_data.get("draws", 0) or 0)
+                    wr = match_score(bot_wins, draws, games)
+                    if wr is None:
+                        continue
                     delta = wr - 0.5
-                    lb = _wilson_lower_bound(bot_wins, games)
+                    lb = _wilson_lower_bound(bot_wins + 0.5 * draws, games)
                     entry = {
                         "opponent": opp,
                         "win_rate": round(wr, 3),

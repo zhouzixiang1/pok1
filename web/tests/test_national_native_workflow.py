@@ -148,7 +148,7 @@ def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_pat
     assert ".readline(" not in text
     assert "msg + \"\\n\"" not in text
     assert "NATIONAL_STREAM_DECODER_VERSION = 2" in text
-    assert "NATIONAL_DECISION_RUNTIME_VERSION = 5" in text
+    assert "NATIONAL_DECISION_RUNTIME_VERSION = 6" in text
     assert 'os.environ["POK_NATIVE_BOT_SEED"]' in text
     assert "random.seed(int(random_seed))" in text
     assert "def _reap_retired_strategy_workers" in text
@@ -156,6 +156,7 @@ def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_pat
     assert "def _strategy_worker_main" in text
     assert "process.terminate()" in text
     assert "iter_refinements" in text
+    assert "def _infer_suppressed_terminal_opponent_action" in text
     assert check_native_stream_decoder(bot_dir) == []
     assert check_native_contract(
         bot_dir,
@@ -691,6 +692,350 @@ def test_native_entry_template_uses_raise_to_total(monkeypatch, tmp_path):
     }]
 
     assert bot._action_to_tcp(300) == ("raise 401", "raise", 401)
+
+
+def test_official_suppressed_raise_call_is_inferred_before_flop(monkeypatch, tmp_path):
+    """Real EXE shape: our raise 282 is followed directly by the flop."""
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class FakeSock:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._strategy_action = lambda: 282
+    sock = FakeSock()
+
+    bot.handle("preflop|SMALLBLIND|<0,12><1,11>", sock)
+    assert sock.sent == [b"raise 282"]
+    assert (bot._my_stage_bet, bot._opponent_stage_bet, bot._pot) == (282, 100, 382)
+
+    bot.handle("flop|<2,0><0,9><3,7>", sock)
+
+    preflop = [row for row in bot._history if row["round"] == 0]
+    assert [row["action_type"] for row in preflop] == ["raise", "call"]
+    inferred = preflop[-1]
+    assert inferred["player_id"] == bot._opponent_id
+    assert inferred["inferred"] is True
+    assert inferred["inference_boundary"] == "street:flop"
+    assert inferred["committed"] == 182
+    assert inferred["stage_bet"] == 282
+    assert bot._opponent_chips == 19718
+    assert bot._pot == 564
+    snapshot = bot._opponent_tracker.snapshot()
+    assert snapshot["street_actions"]["preflop"]["call"] == 1
+    assert snapshot["samples"]["fold_to_raise"] == 1
+
+
+def test_relayed_terminal_call_is_not_inferred_twice(monkeypatch, tmp_path):
+    """The local sever path relays the terminal call before the street token."""
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class FakeSock:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._strategy_action = lambda: 282
+    sock = FakeSock()
+
+    for message in (
+        "preflop|SMALLBLIND|<0,12><1,11>",
+        "call",
+        "flop|<2,0><0,9><3,7>",
+    ):
+        bot.handle(message, sock)
+
+    opponent_calls = [
+        row for row in bot._history
+        if row["round"] == 0
+        and row["player_id"] == bot._opponent_id
+        and row["action_type"] == "call"
+    ]
+    assert len(opponent_calls) == 1
+    assert "inferred" not in opponent_calls[0]
+    assert bot._opponent_chips == 19718
+    assert bot._pot == 564
+    snapshot = bot._opponent_tracker.snapshot()
+    assert snapshot["street_actions"]["preflop"]["call"] == 1
+    assert snapshot["samples"]["fold_to_raise"] == 1
+
+
+def test_real_official_reraise_trace_repairs_call_before_flop(monkeypatch, tmp_path):
+    """Observed trace: receive raise 282, send raise 676, then receive flop."""
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class FakeSock:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._strategy_action = lambda: 676
+    sock = FakeSock()
+
+    bot.handle("preflop|BIGBLIND|<0,9><2,8>", sock)
+    bot.handle("raise 282", sock)
+    # Keep the assertion focused on state immediately before the next decision.
+    bot._send_decision = lambda _sock: None
+    bot.handle("flop|<3,7><3,0><2,4>", sock)
+
+    assert sock.sent == [b"raise 676"]
+    preflop = [row for row in bot._history if row["round"] == 0]
+    assert [row["action_type"] for row in preflop] == ["raise", "raise", "call"]
+    assert [row["player_id"] for row in preflop] == [
+        bot._opponent_id,
+        bot._my_id,
+        bot._opponent_id,
+    ]
+    assert preflop[-1]["inferred"] is True
+    assert preflop[-1]["committed"] == 394
+    assert preflop[-1]["stage_bet"] == 676
+    assert bot._opponent_chips == 19324
+    assert bot._pot == 1352
+    snapshot = bot._opponent_tracker.snapshot()
+    assert snapshot["street_actions"]["preflop"]["raise"] == 1
+    assert snapshot["street_actions"]["preflop"]["call"] == 1
+    assert snapshot["samples"]["fold_to_raise"] == 1
+
+
+def test_official_suppressed_postflop_pass_is_inferred_before_next_street(
+    monkeypatch,
+    tmp_path,
+):
+    """Real EXE shape: our first check jumps to the next street without peer call."""
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class FakeSock:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._strategy_action = lambda: 0
+    sock = FakeSock()
+
+    for message in (
+        "preflop|BIGBLIND|<0,12><1,11>",
+        "call",
+        "flop|<2,0><0,9><3,7>",
+        "turn|<1,3>",
+    ):
+        bot.handle(message, sock)
+
+    flop = [row for row in bot._history if row["round"] == 1]
+    assert [row["action_type"] for row in flop] == ["check", "call"]
+    assert flop[-1]["player_id"] == bot._opponent_id
+    assert flop[-1]["inferred"] is True
+    assert flop[-1]["inference_boundary"] == "street:turn"
+    assert flop[-1]["committed"] == 0
+    assert bot._pot == 200
+    snapshot = bot._opponent_tracker.snapshot()
+    assert snapshot["street_actions"]["flop"]["call"] == 1
+
+
+def test_official_suppressed_big_blind_check_is_inferred_after_open_limp(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class FakeSock:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._strategy_action = lambda: 0
+    sock = FakeSock()
+
+    bot.handle("preflop|SMALLBLIND|<0,12><1,11>", sock)
+    bot.handle("flop|<2,0><0,9><3,7>", sock)
+
+    preflop = [row for row in bot._history if row["round"] == 0]
+    assert [row["action_type"] for row in preflop] == ["call", "check"]
+    assert preflop[-1]["player_id"] == bot._opponent_id
+    assert preflop[-1]["inferred"] is True
+    assert preflop[-1].get("committed", 0) == 0
+    assert bot._opponent_tracker.snapshot()["street_actions"]["preflop"]["check"] == 1
+
+
+def test_our_closing_call_does_not_create_a_phantom_opponent_action(
+    monkeypatch,
+    tmp_path,
+):
+    """A relayed first check plus our call already closes the postflop street."""
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class FakeSock:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._strategy_action = lambda: 0
+    sock = FakeSock()
+
+    for message in (
+        "preflop|SMALLBLIND|<0,12><1,11>",
+        "flop|<2,0><0,9><3,7>",
+        "check",
+        "turn|<1,3>",
+    ):
+        bot.handle(message, sock)
+
+    flop = [row for row in bot._history if row["round"] == 1]
+    assert [(row["player_id"], row["action_type"]) for row in flop] == [
+        (bot._opponent_id, "check"),
+        (bot._my_id, "call"),
+    ]
+    assert not any(row.get("inferred") for row in flop)
+    snapshot = bot._opponent_tracker.snapshot()
+    assert snapshot["street_actions"]["flop"]["check"] == 1
+    assert snapshot["street_actions"]["flop"]["call"] == 0
+
+
+@pytest.mark.parametrize("showdown_first", [True, False])
+def test_suppressed_river_call_is_hand_keyed_across_settlement_showdown_order(
+    monkeypatch,
+    tmp_path,
+    showdown_first,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    bot = module.NativeNationalBot("Probe")
+    bot._hand_num = 1
+    bot._stage = "river"
+    bot._my_cards = [0, 1]
+    bot._public_cards = [2, 3, 4, 5, 6]
+    bot._my_chips = 19900
+    bot._opponent_chips = 19900
+    bot._pot = 200
+    bot._opponent_tracker.begin_hand(1, opponent_is_sb=True)
+    committed = bot._apply_my_action("raise", 400)
+    bot._record_action(bot._my_id, "raise", 400, committed)
+
+    messages = ["oppo_hands|<0,3><1,3>", "earnChips -500"]
+    if not showdown_first:
+        messages.reverse()
+    for message in messages:
+        bot.handle(message, None)
+    # The later boundary and a duplicate showdown must not infer again.
+    bot.handle("oppo_hands|<0,3><1,3>", None)
+
+    river_calls = [
+        row for row in bot._history
+        if row["round"] == 3
+        and row["player_id"] == bot._opponent_id
+        and row["action_type"] == "call"
+    ]
+    assert len(river_calls) == 1
+    assert river_calls[0]["inferred"] is True
+    assert river_calls[0]["committed"] == 400
+    assert bot._opponent_chips == 19500
+    assert bot._pot == 1000
+    assert bot._total_win_chips[bot._my_id] == -500
+    assert len(bot._showdowns) == 1
+    assert bot._showdowns[0]["earned"] == -500
+    showdown_calls = [
+        row for row in bot._showdowns[0]["history"]
+        if row["player_id"] == bot._opponent_id and row["action_type"] == "call"
+    ]
+    assert len(showdown_calls) == 1
+    snapshot = bot._opponent_tracker.snapshot()
+    assert snapshot["hands_completed"] == 1
+    assert snapshot["showdowns"] == 1
+    assert snapshot["street_actions"]["river"]["call"] == 1
+    assert snapshot["samples"]["fold_to_raise"] == 1
+    assert snapshot["recent_hands"][-1]["last_opponent_action"] == "call"
+
+
+def test_suppressed_allin_call_enters_runout_without_phantom_street_actions(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+
+    class FakeSock:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    bot = module.NativeNationalBot("Probe")
+    bot._strategy_action = lambda: -2
+    sock = FakeSock()
+
+    for message in (
+        "preflop|BIGBLIND|<0,12><1,11>",
+        "call",
+        "flop|<2,0><0,9><3,7>",
+        "turn|<1,3>",
+        "river|<2,4>",
+    ):
+        bot.handle(message, sock)
+
+    assert sock.sent == [b"allin"]
+    inferred = [row for row in bot._history if row.get("inferred")]
+    assert len(inferred) == 1
+    assert inferred[0]["round"] == 0
+    assert inferred[0]["action_type"] == "call"
+    assert inferred[0]["committed"] == 19900
+    assert bot._my_chips == bot._opponent_chips == 0
+    assert bot._pot == 40000
+    assert bot._in_allin_runout is True
+    assert not any(row["round"] > 0 for row in bot._history)
+
+    bot.handle("earnChips 0", None)
+    assert bot._in_allin_runout is False
+    snapshot = bot._opponent_tracker.snapshot()
+    assert snapshot["street_actions"]["preflop"]["call"] == 2
+    assert snapshot["samples"]["fold_to_allin"] == 1
 
 
 def test_native_entry_template_throttles_official_action_send(monkeypatch, tmp_path):
@@ -1885,7 +2230,7 @@ def test_native_acceptance_and_precommit_require_native_entries_for_both_players
     precommit = asyncio.run(national_native.run_native_precommit(
         candidate,
         [{"name": "Opponent", "path": str(opponent), "reason": "parent"}],
-        hands=1,
+        hands=70,
         parent_label="Opponent",
         sample_plan=[{
             "opponent": "Opponent",
@@ -1894,8 +2239,6 @@ def test_native_acceptance_and_precommit_require_native_entries_for_both_players
             "deck_seed_base": 777,
             "bot_seed_base": 888,
         }],
-        parent_loss_threshold=-999_999,
-        aggregate_loss_threshold=-999_999,
     ))
 
     assert acceptance.report["wrapper_used"] is False

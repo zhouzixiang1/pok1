@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_id": "official-exe-2021-wine9-bwrap-v1",
+  "profile_id": "official-exe-2021-wine9-bwrap-v2",
   "official_exe": {
     "repository_path": "sever/国赛平台/德州扑克对弈平台限时一分钟2021版/德州扑克对弈平台限时一分钟2021版.exe",
     "sha256": "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
@@ -34,7 +34,7 @@
   },
   "sandbox": {
     "required": true,
-    "network": "shared-host-loopback",
+    "network": "isolated-netns-preconnected-socket-fd",
     "filesystem": "sealed-bot-readonly-plus-single-log",
     "pid_namespace": true,
     "user_namespace": true,

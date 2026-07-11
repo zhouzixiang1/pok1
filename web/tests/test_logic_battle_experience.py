@@ -11,6 +11,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 import battle_experience as be
 
 
+def _admitted_entry(match_id, bot0, bot1):
+    return {
+        "id": match_id,
+        "bot0": bot0,
+        "bot1": bot1,
+        "bot0_wins": 1,
+        "bot1_wins": 0,
+        "draws": 0,
+        "strength_sample_unit": "70_hand_match",
+        "hands_per_strength_sample": 70,
+        "strength_admitted": True,
+        "strength_complete": True,
+        "strength_compliance_passed": True,
+        "strength_sample_count": 1,
+        "net_chips_bot0": [1],
+    }
+
+
 # ── Fixtures ──
 
 
@@ -70,9 +88,9 @@ class TestGetUnanalyzedFiltersAnalyzed:
     def test_get_unanalyzed_filters_analyzed(self, history_file, replay_dir):
         """Returns only entries whose IDs have not been marked as analyzed."""
         entries = [
-            {"id": "m1", "bot0": "v1", "bot1": "v2"},
-            {"id": "m2", "bot0": "v2", "bot1": "v3"},
-            {"id": "m3", "bot0": "v1", "bot1": "v3"},
+            _admitted_entry("m1", "v1", "v2"),
+            _admitted_entry("m2", "v2", "v3"),
+            _admitted_entry("m3", "v1", "v3"),
         ]
         with open(history_file, "w") as f:
             for e in entries:
@@ -98,8 +116,8 @@ class TestGetUnanalyzedEmpty:
     def test_get_unanalyzed_returns_empty_when_all_analyzed(self, history_file, replay_dir):
         """Empty list when every match has been analyzed."""
         entries = [
-            {"id": "m1", "bot0": "v1", "bot1": "v2"},
-            {"id": "m2", "bot0": "v2", "bot1": "v3"},
+            _admitted_entry("m1", "v1", "v2"),
+            _admitted_entry("m2", "v2", "v3"),
         ]
         with open(history_file, "w") as f:
             for e in entries:
@@ -115,6 +133,13 @@ class TestGetUnanalyzedEmpty:
 
     def test_get_unanalyzed_returns_empty_when_no_history(self):
         """Empty list when match_history.jsonl does not exist."""
+        assert be.get_unanalyzed_matches() == []
+
+    def test_get_unanalyzed_excludes_unproven_strength_rows(self, history_file, replay_dir):
+        entry = {"id": "bad", "bot0": "v1", "bot1": "v2"}
+        history_file.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+        (replay_dir / "bad").write_text(json.dumps({"games": []}), encoding="utf-8")
+
         assert be.get_unanalyzed_matches() == []
 
 
@@ -292,8 +317,8 @@ class TestGetUnanalyzedSkipsEvicted:
     def test_get_unanalyzed_skips_evicted_replays(self, history_file, replay_dir):
         """Entries whose replay files have been evicted are skipped."""
         entries = [
-            {"id": "m1", "bot0": "v1", "bot1": "v2", "timestamp": "2024-01-01T00:00:00"},
-            {"id": "m2", "bot0": "v2", "bot1": "v3", "timestamp": "2024-01-01T00:01:00"},
+            {**_admitted_entry("m1", "v1", "v2"), "timestamp": "2024-01-01T00:00:00"},
+            {**_admitted_entry("m2", "v2", "v3"), "timestamp": "2024-01-01T00:01:00"},
         ]
         with open(history_file, "w") as f:
             for e in entries:
@@ -342,8 +367,10 @@ class TestGetUnanalyzedRandomSampling:
         """Random sampling returns a subset without recency bias."""
         entries = []
         for i in range(20):
-            e = {"id": f"m{i:02d}", "bot0": "v1", "bot1": "v2",
-                 "timestamp": f"2024-01-01T00:{i:02d}:00"}
+            e = {
+                **_admitted_entry(f"m{i:02d}", "v1", "v2"),
+                "timestamp": f"2024-01-01T00:{i:02d}:00",
+            }
             entries.append(e)
 
         with open(history_file, "w") as f:
@@ -618,9 +645,9 @@ class TestGetUnanalyzedRetriesTransient:
         for mid in ("t1", "t2", "t3"):
             (replay_dir / mid).write_text(json.dumps({"games": []}))
         entries = [
-            {"id": "t1", "bot0": "v1", "bot1": "v2", "timestamp": "2024-01-01T00:00:00"},
-            {"id": "t2", "bot0": "v1", "bot1": "v2", "timestamp": "2024-01-01T00:01:00"},
-            {"id": "t3", "bot0": "v1", "bot1": "v2", "timestamp": "2024-01-01T00:02:00"},
+            {**_admitted_entry("t1", "v1", "v2"), "timestamp": "2024-01-01T00:00:00"},
+            {**_admitted_entry("t2", "v1", "v2"), "timestamp": "2024-01-01T00:01:00"},
+            {**_admitted_entry("t3", "v1", "v2"), "timestamp": "2024-01-01T00:02:00"},
         ]
         with open(history_file, "w") as f:
             for e in entries:

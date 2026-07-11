@@ -693,6 +693,14 @@ class TestMatchAnalystSentinel:
         history.write_text(json.dumps({
             "id": "replay-x", "bot0": "national_v50", "bot1": "national_v40",
             "bot0_wins": 1, "bot1_wins": 5,
+            "draws": 0,
+            "strength_sample_unit": "70_hand_match",
+            "hands_per_strength_sample": 70,
+            "strength_admitted": True,
+            "strength_complete": True,
+            "strength_compliance_passed": True,
+            "strength_sample_count": 6,
+            "net_chips_bot0": [1, -1, -1, -1, -1, -1],
         }) + "\n")
         (replay_dir / "replay-x").write_text(json.dumps({"hands": []}))
 
@@ -727,20 +735,28 @@ class TestPerformanceAnalystSentinel:
     def test_infra_error_returns_sentinel(self, monkeypatch):
         from claude_agent_sdk import ClaudeSDKError
         import agent_review
+        import tool_helpers
 
         async def fake_query(*a, **kw):
             raise ClaudeSDKError("signature error")
         monkeypatch.setattr(agent_review, "run_claude_query", fake_query)
+        monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates", lambda: {})
+        monkeypatch.setattr(tool_helpers, "load_selection_scores", lambda: {})
+        monkeypatch.setattr(tool_helpers, "load_selection_order_keys", lambda: {})
 
         result = asyncio.run(agent_review._run_performance_verification(50, {}, _UI()))
         assert result == LLM_INFRA_SENTINEL
 
     def test_non_infra_error_returns_empty(self, monkeypatch):
         import agent_review
+        import tool_helpers
 
         async def fake_query(*a, **kw):
             raise ValueError("parse error")
         monkeypatch.setattr(agent_review, "run_claude_query", fake_query)
+        monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates", lambda: {})
+        monkeypatch.setattr(tool_helpers, "load_selection_scores", lambda: {})
+        monkeypatch.setattr(tool_helpers, "load_selection_order_keys", lambda: {})
 
         result = asyncio.run(agent_review._run_performance_verification(50, {}, _UI()))
         assert result == ""
@@ -836,9 +852,10 @@ class TestAdvisoryAgentInfraMarkers:
         import audit_agents
         import evolution_infra
         self._patch_query_to_raise(monkeypatch, audit_agents, ClaudeSDKError("sig"))
+        monkeypatch.setattr(evolution_infra, "load_ratings", lambda: {})
         # Minimal parent bot dirs so the audit reaches the LLM call.
         for v in (60, 30):
-            d = evolution_infra.BOTS_DIR / f"claude_v{v}"
+            d = evolution_infra.BOTS_DIR / f"national_v{v}"
             d.mkdir(parents=True, exist_ok=True)
             (d / "strategy.py").write_text("# stub")
         result = asyncio.run(audit_agents._run_crossover_compatibility_audit(60, 30, _UI()))
@@ -890,6 +907,8 @@ class TestAdvisoryAgentInfraMarkers:
         # Bypass the data-sufficiency (<0.8 coverage) early-return by stubbing
         # the coverage helper imported inside _analyze_stagnation.
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
+                            lambda: {"national_v50": 0.5})
+        monkeypatch.setattr(tool_helpers, "load_strength_scores",
                             lambda: {"national_v50": 0.5})
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates_with_coverage",
                             lambda: {"national_v50": {"opponent_coverage": 1.0,

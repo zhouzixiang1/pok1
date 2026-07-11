@@ -14,8 +14,10 @@ textual shape of the code; it checks the STRUCTURE / RUNTIME behavior:
   call evaluate_5() on a non-flush wheel, assert the result is a straight with
   high == 5. On any import/runtime failure it falls back to an AST scan for the
   literal set {14, 2, 3, 4, 5} inside evaluate_5.
-- BOT-002a  (re-raise strictly > 2x): AST-locate the min_raise_action
-  assignment and assert its formula contains "+ 1".
+- BOT-002a  (conservative re-raise headroom): AST-locate the
+  min_raise_action assignment and assert its formula contains "+ 1". The
+  official EXE accepts exact 2x; this is a retained cross-path policy, not the
+  protocol legality boundary.
 - BOT-004   (TOTAL_HANDS == 70): subprocess-import the bot's constants and
   assert TOTAL_HANDS == 70.
 
@@ -178,7 +180,7 @@ def _literal_int_set(node: ast.AST) -> set[int] | None:
 
 
 def _verify_min_raise(bot_dir: Path) -> dict:
-    """BOT-002a: min_raise_action formula must contain "+ 1" (strictly > 2x re-raise)."""
+    """BOT-002a: require the retained one-chip compatibility headroom policy."""
     state_py = bot_dir / "state.py"
     if not state_py.exists():
         # state.py may legitimately be absent in some bot layouts; verifier
@@ -213,12 +215,12 @@ def _verify_min_raise(bot_dir: Path) -> dict:
 
     for text, seg in assignments:
         if "+ 1" in text or "+ 1" in seg:
-            return {"ok": True, "reason": f"min_raise_action contains '+ 1' (strictly >2x): {text[:80]}"}
+            return {"ok": True, "reason": f"min_raise_action contains conservative '+ 1' headroom: {text[:80]}"}
     joined = " | ".join(t[:80] for t, _ in assignments)
     return {
         "ok": False,
         "reason": (
-            f"min_raise_action assignment(s) lack '+ 1' — re-raise is not strictly >2x: {joined}"
+            f"min_raise_action assignment(s) lack the retained conservative '+ 1' headroom policy: {joined}"
         ),
     }
 

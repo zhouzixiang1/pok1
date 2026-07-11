@@ -77,7 +77,7 @@ MANDATORY_FIXES: list[Fix] = [
     ),
     Fix(
         fix_id="BOT-002a",
-        description="Re-raise minimum: strictly > 2x (last_raise_to variant)",
+        description="Conservative re-raise headroom: official 2x floor plus one chip (last_raise_to variant)",
         patches=[
             Patch(
                 file_rel="state.py",
@@ -90,7 +90,7 @@ MANDATORY_FIXES: list[Fix] = [
     ),
     Fix(
         fix_id="BOT-002b",
-        description="Re-raise minimum: strictly > 2x (judge_round_raise variant, older bots)",
+        description="Conservative re-raise headroom: official 2x floor plus one chip (judge_round_raise variant, older bots)",
         patches=[
             Patch(
                 file_rel="state.py",

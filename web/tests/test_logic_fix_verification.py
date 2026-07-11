@@ -137,11 +137,13 @@ def get_state(last_raise_to, my_round_bet):
 '''
 
     def test_min_raise_plus_one_ok(self, fv, make_bot):
+        """The verifier enforces retained policy headroom, not official legality."""
         bot_dir = make_bot(state=self.STATE_FIXED)
         r = fv.verify_fixes(bot_dir)["BOT-002a"]
         assert r["ok"] is True
 
     def test_min_raise_missing_plus_one_not_ok(self, fv, make_bot):
+        """Exact 2x is official-legal but still outside this compatibility policy."""
         bot_dir = make_bot(state=self.STATE_UNFIXED)
         r = fv.verify_fixes(bot_dir)["BOT-002a"]
         assert r["ok"] is False

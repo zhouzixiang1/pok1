@@ -72,6 +72,7 @@ HARNESS_MARKERS = (
     "wineprefix_missing",
     "official_platform_lock_timeout",
     "wire_probe",
+    "official_full_settlement_incomplete",
     "connection reset",
     "connectionreseterror",
 )

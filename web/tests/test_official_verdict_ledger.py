@@ -1,5 +1,7 @@
 from pathlib import Path
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import pytest
 
@@ -155,6 +157,48 @@ def test_explicit_signed_genesis_allows_empty_healthy_ledger(tmp_path, monkeypat
     assert initialized["initialized"] is True
     assert result["valid"] is True
     assert result["entry_count"] == 0
+
+
+def test_concurrent_genesis_is_serialized_and_idempotent(tmp_path, monkeypatch):
+    _signing_material(tmp_path, monkeypatch, initialize=False)
+    barrier = threading.Barrier(2)
+
+    def initialize_together():
+        barrier.wait(timeout=5)
+        return initialize_verdict_ledger()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: initialize_together(), range(2)))
+
+    assert sorted(result["initialized"] for result in results) == [False, True]
+    assert all(result["valid"] is True for result in results)
+    assert ledger_integrity()["valid"] is True
+
+
+def test_failed_genesis_does_not_strand_unsigned_empty_ledger(tmp_path, monkeypatch):
+    import official_verdict_ledger
+
+    _signing_material(tmp_path, monkeypatch, initialize=False)
+    original_write_signed_head = official_verdict_ledger._write_signed_head
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_write_signed_head",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("transient signing failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="transient signing failure"):
+        initialize_verdict_ledger()
+
+    assert not ledger_path().exists()
+    assert not ledger_head_path().exists()
+
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_write_signed_head",
+        original_write_signed_head,
+    )
+    assert initialize_verdict_ledger()["initialized"] is True
+    assert ledger_integrity()["valid"] is True
 
 
 def test_append_does_not_reinitialize_missing_history(tmp_path, monkeypatch):

@@ -265,7 +265,15 @@ def initialize_verdict_ledger() -> dict[str, Any]:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        _write_signed_head(path)
+        try:
+            _write_signed_head(path)
+        except Exception:
+            # Genesis is one operator action.  A transient signing/write error
+            # must not strand an empty ledger without its signed head and make
+            # the idempotent init command permanently reject the retry.
+            ledger_head_path(path).unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            raise
         return {
             "initialized": True,
             "valid": True,

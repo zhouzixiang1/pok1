@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -58,6 +59,34 @@ def test_postflop_first_raise_after_check_has_minimum_and_positive_amount():
         assert not ok
 
     assert validate_action("raise", 100, checked) == (True, "")
+
+
+def test_official_oracle_accepts_exact_2x_reraise_and_rejects_below_boundary():
+    fixture_path = ROOT / "sever" / "tests" / "fixtures" / "official_raise_boundary_oracle_20260711.json"
+    oracle = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    assert oracle["official_exe_sha256"] == (
+        "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
+    )
+    assert oracle["exact_2x_raw_wire_sha256"] == (
+        "dc9dffa1121bee77bab1478842b7f336e1d4a72686e2ad7cbf322ed077bf85f3"
+    )
+    assert {row["big_blind_conn"] for row in oracle["observations"]} == {"A", "B"}
+    assert all(sum(row["settlements"].values()) == 0 for row in oracle["observations"])
+
+    facing_raise = _state(
+        stage="preflop",
+        actions=[("raise", 200)],
+        player_bet=100,
+        opponent_bet=200,
+        is_small_blind=False,
+        is_big_blind=True,
+        player_action_count=0,
+    )
+    assert validate_action("raise", 400, facing_raise) == (True, "")
+    ok, reason = validate_action("raise", 399, facing_raise)
+    assert not ok
+    assert ">= 2x" in reason
 
 
 def test_thp_hand_line_uses_big_blind_order_for_cards_earnings_and_players():

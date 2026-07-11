@@ -6,6 +6,7 @@ Importing server.app ensures broadcaster/web_ui exist for endpoints that referen
 
 import sys
 from pathlib import Path
+import subprocess
 
 import pytest
 from fastapi import FastAPI
@@ -45,6 +46,44 @@ _has_active_bot = False
 _has_graveyard_bot = False
 
 
+def _tagged_test_bot_versions() -> list[int]:
+    """Return repository bot fixtures backed by annotated completion tags.
+
+    Unit tests must not depend on the operator checkout's ignored verdict ledger,
+    rating manifest, or ``.completed`` cache.  They still need a real, published
+    source tree for read-only route and archive tests, so use the immutable tag
+    namespace directly and build an isolated synthetic runtime around one bot.
+    """
+
+    completed = subprocess.run(
+        [
+            "git",
+            "for-each-ref",
+            "--format=%(objecttype) %(refname:short)",
+            "refs/tags/national-bot-v*",
+        ],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return []
+    versions: list[int] = []
+    for line in completed.stdout.splitlines():
+        object_type, separator, tag = line.partition(" ")
+        if object_type != "tag" or not separator:
+            continue
+        version = parse_bot_version(tag.replace("national-bot-v", "national_v", 1))
+        if version is None:
+            continue
+        bot_dir = PROJECT_ROOT / "bots" / f"national_v{version}"
+        if bot_dir.is_dir() and (bot_dir / "main.py").is_file():
+            versions.append(version)
+    return sorted(set(versions))
+
+
 def pytest_configure(config):
     """Register custom pytest markers and detect bots for conditional skipping."""
     config.addinivalue_line(
@@ -63,17 +102,7 @@ def pytest_configure(config):
     # pytest_collection_modifyitems can use the results.
     global _has_active_bot, _has_graveyard_bot
     bots_dir = PROJECT_ROOT / "bots"
-    if bots_dir.exists():
-        active = [
-            d
-            for d in bots_dir.iterdir()
-            if d.is_dir()
-            and d.name.startswith(ACTIVE_BOT_PREFIX)
-            and not d.name.endswith(".tmp")
-        ]
-        _has_active_bot = len(active) > 0
-    else:
-        _has_active_bot = False
+    _has_active_bot = bool(_tagged_test_bot_versions())
 
     gy = bots_dir / "graveyard"
     if gy.exists():
@@ -169,33 +198,8 @@ def sample_h2h():
 
 @pytest.fixture(scope="session")
 def active_bot_version():
-    import json
-    import time
-
-    from evolution_infra import RATINGS_FILE, get_active_bots, locked_file
-
-    bots = get_active_bots()
-    if not bots:
-        return None
-    rated = set()
-    for _ in range(5):
-        try:
-            if RATINGS_FILE.exists():
-                with locked_file(RATINGS_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                rated = set(data) if isinstance(data, dict) else set()
-                break
-        except (json.JSONDecodeError, OSError, ValueError):
-            time.sleep(0.1)
-    rated_versions = sorted(
-        version
-        for b in bots
-        if b in rated and (version := parse_bot_version(b)) is not None
-    )
-    if rated_versions:
-        return rated_versions[len(rated_versions) // 2]
-    versions = sorted(version for b in bots if (version := parse_bot_version(b)) is not None)
-    return versions[len(versions) // 2]
+    versions = _tagged_test_bot_versions()
+    return versions[-1] if versions else None
 
 
 @pytest.fixture(scope="session")
@@ -274,65 +278,47 @@ def isolate_state(tmp_path, monkeypatch):
     graveyard_dir = bots_dir / "graveyard"
     graveyard_dir.mkdir()
 
-    # Symlink real bot dirs into isolated bots_dir so requires_active_bot
-    # tests can read bot data. Uses symlinks to avoid copying large files;
-    # these tests are read-only (they query bot info, never modify it).
+    # Materialize one small, regular-file bot fixture.  Artifact identity rejects
+    # symlink roots by design, and tests must never read through into or mutate a
+    # real bot directory.
     real_bots = PROJECT_ROOT / "bots"
-    if real_bots.exists():
-        for d in real_bots.iterdir():
-            if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX) and not d.name.endswith(".tmp"):
-                (bots_dir / d.name).symlink_to(d)
-        real_gy = real_bots / "graveyard"
-        if real_gy.exists():
-            for d in real_gy.iterdir():
-                if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX):
-                    (graveyard_dir / d.name).symlink_to(d)
+    tagged_versions = _tagged_test_bot_versions()
+    if tagged_versions:
+        fixture_version = tagged_versions[-1]
+        source = real_bots / f"national_v{fixture_version}"
+        target = bots_dir / source.name
+        target.mkdir()
+        for filename in ("main.py", "national_bot.py"):
+            (target / filename).write_bytes((source / filename).read_bytes())
+        (target / ".completed").write_text("isolated test fixture\n", encoding="utf-8")
 
-    # Symlink real data files into isolated results_dir for tests that need
-    # read-only access to production data (ratings, H2H, stats, etc).
-    # Uses symlinks to avoid copying; these tests only read, never write.
-    real_results = PROJECT_ROOT / "web" / "core" / "results"
-    _SYMLINK_FILES = [
-        "glicko_ratings.json", "head_to_head.json", "bot_stats.json",
-        "elo_daemon_stats.json", "rating_history.jsonl",
-    ]
-    for fname in _SYMLINK_FILES:
-        src = real_results / fname
-        if src.exists():
-            (results_dir / fname).symlink_to(src)
-    if not (results_dir / "glicko_ratings.json").exists():
-        import json
+    # Create an identity before writing any authoritative payload, then seed
+    # wholly synthetic rating data.  Production data and ignored runtime ledgers
+    # are never inputs to unit tests.
+    import json
+    from evaluation_data_identity import ensure_evaluation_data_identity
 
-        active_names = sorted(
-            (
-                d.name
-                for d in bots_dir.iterdir()
-                if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX)
-            ),
-            key=lambda name: parse_bot_version(name) or 0,
-        )
-        ratings = {
-            name: {"r": 1500 + idx * 5, "rd": 80, "sigma": 0.06, "last_period": "test"}
-            for idx, name in enumerate(active_names)
-        }
-        bot_stats = {
-            name: {"wins": 1, "losses": 1, "draws": 0, "games": 2, "win_rate": 0.5}
-            for name in active_names
-        }
-        h2h = {}
-        if len(active_names) >= 2:
-            a, b = active_names[0], active_names[1]
-            h2h[f"{a} vs {b}"] = {"games": 2, "a_wins": 1, "b_wins": 1, "draws": 0, "win_rate": 0.5}
-        (results_dir / "glicko_ratings.json").write_text(json.dumps(ratings), encoding="utf-8")
-        if not (results_dir / "bot_stats.json").exists():
-            (results_dir / "bot_stats.json").write_text(json.dumps(bot_stats), encoding="utf-8")
-        if not (results_dir / "head_to_head.json").exists():
-            (results_dir / "head_to_head.json").write_text(json.dumps(h2h), encoding="utf-8")
-    # match_history.jsonl is copied, not symlinked: some tests append/write a
-    # synthetic history file, and a symlink would corrupt production runtime data.
-    match_history_src = real_results / "match_history.jsonl"
-    if match_history_src.exists():
-        (results_dir / "match_history.jsonl").write_bytes(match_history_src.read_bytes())
+    ensure_evaluation_data_identity(results_dir)
+    active_names = sorted(
+        (
+            d.name
+            for d in bots_dir.iterdir()
+            if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX)
+        ),
+        key=lambda name: parse_bot_version(name) or 0,
+    )
+    ratings = {
+        name: {"r": 1500 + idx * 5, "rd": 80, "sigma": 0.06, "last_period": "test"}
+        for idx, name in enumerate(active_names)
+    }
+    bot_stats = {
+        name: {"wins": 1, "losses": 1, "draws": 0, "games": 2, "win_rate": 0.5}
+        for name in active_names
+    }
+    (results_dir / "glicko_ratings.json").write_text(json.dumps(ratings), encoding="utf-8")
+    (results_dir / "bot_stats.json").write_text(json.dumps(bot_stats), encoding="utf-8")
+    (results_dir / "head_to_head.json").write_text("{}", encoding="utf-8")
+    (results_dir / "match_history.jsonl").write_text("", encoding="utf-8")
 
     # --- Snapshot real state for restoration ---
     real_config = app_state._config_file
@@ -363,6 +349,9 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(evolution_infra, "RATING_HISTORY_FILE", results_dir / "rating_history.jsonl")
     monkeypatch.setattr(evolution_infra, "CROSS_GEN_EXHAUSTED_HISTORY", results_dir / "cross_gen_exhausted_history.jsonl")
     monkeypatch.setattr(evolution_infra, "EXPERIENCE_FILE", iso / "experience_pool.md")
+    # Publication/official eligibility is covered by dedicated tests.  Generic
+    # route and helper tests operate on the isolated tag-backed artifact above.
+    monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _path: True)
 
     # --- 2. Patch system_log module constant ---
     monkeypatch.setattr(system_log, "SYSTEM_EVENTS_FILE", iso / "system_events.jsonl")

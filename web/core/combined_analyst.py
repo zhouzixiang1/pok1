@@ -12,6 +12,7 @@ import logging
 log = logging.getLogger('pok.analyst')
 
 from bot_namespace import bot_name, bot_tag_glob, parse_tag_version
+from strength_order import match_score
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
     locked_file, get_logs_dir, load_ratings, get_active_bots,
@@ -138,7 +139,12 @@ async def _run_combined_analysis(
       branch_from, verified_improvements, persistent_weaknesses, reason, suggestion
     Returns a safe default on failure.
     """
-    from tool_helpers import load_h2h_avg_winrates, load_h2h_avg_winrates_with_coverage, load_strength_scores
+    from tool_helpers import (
+        load_h2h_avg_winrates,
+        load_h2h_avg_winrates_with_coverage,
+        load_selection_order_keys,
+        load_selection_scores,
+    )
 
     safe_default = {
         "is_stagnant": False,
@@ -163,7 +169,8 @@ async def _run_combined_analysis(
 
     if h2h_data is None:
         h2h_winrates = load_h2h_avg_winrates()
-        strength_scores = load_strength_scores()
+        strength_scores = load_selection_scores()
+        selection_order_keys = load_selection_order_keys()
         coverage_data = load_h2h_avg_winrates_with_coverage()
         frozen_h2h_data = None
     else:
@@ -183,8 +190,11 @@ async def _run_combined_analysis(
             row["name"]: row.get("h2h_avg_wr", 0.5) for row in rows
         }
         strength_scores = {
-            row["name"]: row.get("leaderboard_score", 0.5) for row in rows
+            row["name"]: row.get("selection_score", row.get("leaderboard_score", 0.5))
+            for row in rows
         }
+        from strength_order import strength_order_key
+        selection_order_keys = {row["name"]: strength_order_key(row) for row in rows}
         coverage_data = {row["name"]: row for row in rows}
 
     # ── Data sufficiency check ──
@@ -289,7 +299,11 @@ async def _run_combined_analysis(
                     failure_ctx += f"  - v{e.get('gen','?')} {e.get('role','?')}: {e.get('error','')[:120]}\n"
     except Exception as e:
         log.debug('Worker failure context load failed: %s', e)
-    sorted_bots = sorted(active_bots, key=lambda b: strength_scores.get(b, 0.0), reverse=True)[:5]
+    sorted_bots = sorted(
+        active_bots,
+        key=lambda b: selection_order_keys.get(b, (strength_scores.get(b, 0.0),)),
+        reverse=True,
+    )[:5]
     top_bots_lines = []
     for b in sorted_bots:
         p = ratings.get(b, Glicko2Player())
@@ -335,11 +349,12 @@ async def _run_combined_analysis(
                 opponent = b_name if source_bot_name == a_name else a_name
                 bot_w = v.get("a_wins", 0) if source_bot_name == a_name else v.get("b_wins", 0)
                 opp_w = v.get("b_wins", 0) if source_bot_name == a_name else v.get("a_wins", 0)
-                total = bot_w + opp_w
-                if total > 0:
-                    wr = bot_w / total
+                draws = v.get("draws", 0)
+                total = v.get("games", bot_w + opp_w + draws)
+                wr = match_score(bot_w, draws, total)
+                if wr is not None:
                     tag = " STRENGTH" if wr > 0.60 else " WEAKNESS" if wr < 0.40 else ""
-                    h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L ({wr:.0%}){tag}"))
+                    h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L-{draws}D ({wr:.0%}){tag}"))
             h2h_lines.sort(key=lambda x: x[0])
         except Exception as e:
             log.debug('H2H per-opponent analysis failed: %s', e)

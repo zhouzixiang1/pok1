@@ -112,6 +112,7 @@ COMPLIANCE_INCONCLUSIVE_FAILURE_MARKERS = (
     "no_progress_timeout",
     "round_timeout",
     "incomplete_round",
+    "official_full_settlement_incomplete",
     "thp_missing_for_full_70_hand_round",
     "thp_incomplete",
     "smoke_progress_incomplete",
@@ -691,7 +692,7 @@ def _log_target_reached(receipt: Any, target_hands: int) -> bool:
         settlements = int(summary.get("settlements_min", 0) or 0)
     except Exception:
         return False
-    return hands_started >= target_hands and settlements >= max(0, target_hands - 1)
+    return hands_started >= target_hands and settlements >= target_hands
 
 
 def _same_resolved_path(left: Any, right: str | None) -> bool:
@@ -818,6 +819,14 @@ def receipt_validation_issues(
 
     thp_hands = _max_thp_hands(receipt)
     if spec.mode == "full" or spec.target_hands >= 70:
+        if not _log_target_reached(receipt, spec.target_hands):
+            summary = receipt.get("log_summary") or {}
+            issues.append(
+                "official_full_settlement_incomplete: "
+                f"hands_started={summary.get('hands_started_min', 0)} "
+                f"settlements={summary.get('settlements_min', 0)} "
+                f"target={spec.target_hands}"
+            )
         issues.extend(_full_evidence_artifact_issues(receipt))
         issues.extend(_formal_execution_issues(receipt))
         formal_thp_issues = _formal_thp_artifact_issues(
@@ -2343,7 +2352,7 @@ def authoritative_verdict_status_issues(status: Any) -> list[str]:
     return list(dict.fromkeys(str(issue) for issue in issues if str(issue)))
 
 
-def _grandfather_ledger_issues() -> list[str]:
+def _official_verdict_ledger_issues() -> list[str]:
     try:
         from official_verdict_ledger import ledger_integrity
 
@@ -2355,6 +2364,10 @@ def _grandfather_ledger_issues() -> list[str]:
     if validation.get("valid"):
         return []
     return list(validation.get("issues") or ["official_verdict_ledger_invalid"])
+
+
+def _grandfather_ledger_issues() -> list[str]:
+    return _official_verdict_ledger_issues()
 
 
 def parent_eligible(candidate: str | Path) -> bool:
@@ -3380,6 +3393,15 @@ def _run_certification_impl(
                 "formal full certification requires a valid durable job envelope: "
                 + ", ".join(envelope_issues)
             )
+        if not test_only:
+            ledger_issues = _official_verdict_ledger_issues()
+            if ledger_issues:
+                raise RuntimeError(
+                    "official_verdict_ledger_preflight_failed: "
+                    + "; ".join(ledger_issues)
+                    + "; explicitly initialize genesis with "
+                    "python3 scripts/official_certify.py init-ledger"
+                )
     if enforce_opponent_selection:
         resolved_spec, opponent_selection = resolve_managed_certification_spec(spec)
         if resolved_spec is None:

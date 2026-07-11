@@ -11,6 +11,7 @@ import pytest
 from bot_artifact import canonical_digest, hash_path
 from official_platform_harness import OfficialPlatformConfig
 from official_certification import (
+    _log_target_reached,
     _process_certification_queue_with_runner_for_test,
     _run_certification_impl,
     _run_certification_with_runner_for_test,
@@ -82,6 +83,18 @@ class FakeResult:
 
     def model_dump(self):
         return self.payload
+
+
+def test_formal_certification_requires_the_final_settlement():
+    receipt = {
+        "log_summary": {
+            "hands_started_min": 70,
+            "settlements_min": 69,
+        }
+    }
+    assert _log_target_reached(receipt, 70) is False
+    receipt["log_summary"]["settlements_min"] = 70
+    assert _log_target_reached(receipt, 70) is True
 
 
 def _run_official_certificate_fixture(
@@ -303,7 +316,7 @@ def _full_report(
                 "wire_probe": {"enabled": True, "issues": []},
                 "log_summary": {
                     "hands_started_min": 70,
-                    "settlements_min": 69,
+                    "settlements_min": 70,
                     "issues": [],
                 },
                 "artifacts": {
@@ -438,7 +451,7 @@ def _smoke_report_without_thp(*, target_hands: int = 10, rounds: int = 2):
             "target_hands": target_hands,
             "log_summary": {
                 "hands_started_min": target_hands,
-                "settlements_min": target_hands - 1,
+                "settlements_min": target_hands,
             },
             "artifacts": {
                 "thp_summaries": [],
@@ -607,6 +620,40 @@ def test_full_certification_checks_signer_before_starting_exe(tmp_path, monkeypa
                 AssertionError("EXE must not start without a trusted signer")
             ),
             queue_on_busy=False,
+        )
+
+
+def test_production_full_preflight_rejects_missing_verdict_ledger_before_exe(
+    tmp_path,
+    monkeypatch,
+):
+    import official_certification as certification
+
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    spec = build_spec("full", candidate, opponent=opponent)
+    identity = certification.certification_identity(spec)
+    selection = _selection(candidate, opponent)
+    monkeypatch.setattr(
+        certification,
+        "resolve_managed_certification_spec",
+        lambda _spec: (spec, selection),
+    )
+    monkeypatch.setattr(
+        certification,
+        "_PRODUCTION_CERTIFICATION_RUNNER",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("EXE must not start without verdict-ledger genesis")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="official_verdict_ledger_preflight_failed"):
+        certification.run_identity_bound_certification_job(
+            spec,
+            expected_identity=identity,
+            expected_opponent_selection=selection,
+            suite_dir=tmp_path / "suite",
+            job_envelope=_job_envelope(spec, tmp_path / "suite", selection),
         )
 
 
@@ -861,6 +908,19 @@ def test_full_certification_rejects_thp_overrun(tmp_path):
 
     assert report_valid_for_spec(payload, spec) is False
     assert any("thp_hand_count_mismatch_for_full_certification" in issue for issue in issues)
+
+
+def test_full_certification_rejects_missing_final_settlement(tmp_path):
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    spec = build_spec("full", candidate, opponent=opponent)
+    payload = _full_report(tmp_path, candidate, opponent)
+    payload["report"]["rounds"][0]["log_summary"]["settlements_min"] = 69
+
+    issues = report_validation_issues(payload, spec)
+
+    assert report_valid_for_spec(payload, spec) is False
+    assert any("official_full_settlement_incomplete" in issue for issue in issues)
 
 
 def test_run_certification_uses_valid_cache(tmp_path, monkeypatch):

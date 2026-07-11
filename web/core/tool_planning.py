@@ -2085,7 +2085,7 @@ async def run_master(args):
                     "overall_pass": False,
                     "feedback": (
                         "Master plan H2H citations disagree with the stable generation "
-                        "H2H snapshot. Correct the cited raw games/a_wins/b_wins counts "
+                        "H2H snapshot. Correct the cited raw games/a_wins/b_wins/draws counts "
                         "against web/core/results/v{}/evidence_snapshot/head_to_head.json: "
                         "{}{}{}".format(
                             next_v,
@@ -3412,6 +3412,15 @@ def _checkpoint_architecture_policy_identity_errors(ckpt):
     return [str(item) for item in transition.get("policy_identity_errors") or [] if str(item)]
 
 
+def _checkpoint_runtime_contract_ledger_digest(ckpt):
+    ledger = ckpt.get("runtime_contract_ledger") if isinstance(ckpt, dict) else None
+    if ledger is None and isinstance(ckpt, dict):
+        master_plan = ckpt.get("master_plan")
+        if isinstance(master_plan, dict):
+            ledger = master_plan.get("runtime_contract_ledger")
+    return str((ledger or {}).get("ledger_digest") or "")
+
+
 def _recover_architecture_policy_identity(ckpt, next_dir, source_dir):
     """Discard stale-policy code and route through a fresh system-owned Master plan."""
     errors = _checkpoint_architecture_policy_identity_errors(ckpt)
@@ -3419,6 +3428,7 @@ def _recover_architecture_policy_identity(ckpt, next_dir, source_dir):
         return None
     next_v = ckpt.get("next_v")
     source_v = ckpt.get("source_v")
+    ledger_digest = _checkpoint_runtime_contract_ledger_digest(ckpt)
     _full_reset_next_dir(next_dir, source_dir)
     existing_audit = ckpt.get("audit_context") or {}
     audit_context = {
@@ -3427,6 +3437,8 @@ def _recover_architecture_policy_identity(ckpt, next_dir, source_dir):
             "source_stage": ckpt.get("stage"),
             "identity_errors": errors,
             "candidate_reset_to_source": True,
+            "runtime_contract_ledger_reset": True,
+            "previous_runtime_contract_ledger_digest": ledger_digest,
             "directive": (
                 "The persisted architecture policy no longer matches the source contract. "
                 "Build a fresh system-owned policy and Master plan before editing bot code."
@@ -3443,6 +3455,9 @@ def _recover_architecture_policy_identity(ckpt, next_dir, source_dir):
         worker_failure_count=ckpt.get("worker_failure_count", 0),
         clear_reviewer_feedback=True,
         touch_stage_timestamp=True,
+        reset_runtime_contract_ledger=True,
+        expected_runtime_contract_ledger_digest=ledger_digest,
+        runtime_contract_ledger_reset_reason="architecture_policy_identity_replan",
     )
     if not written:
         raise RuntimeError("checkpoint rejected architecture policy identity replan")
@@ -7372,13 +7387,16 @@ async def execute_workers(args):
     )
     if exhausted_violations and ckpt.get("stage") == "master_planned" and not reviewer_feedback:
         audit_attempt = int(ckpt.get("audit_attempt") or 0) + 1
+        ledger_digest = _checkpoint_runtime_contract_ledger_digest(ckpt)
         audit_context = {
             "worker_exhausted_plan_blocked": {
                 "validation_errors": exhausted_violations,
                 "source_stage": ckpt.get("stage"),
+                "runtime_contract_ledger_reset": True,
+                "previous_runtime_contract_ledger_digest": ledger_digest,
             }
         }
-        write_pipeline_checkpoint(
+        written = write_pipeline_checkpoint(
             next_v,
             source_v,
             "direction_audited",
@@ -7388,7 +7406,37 @@ async def execute_workers(args):
             audit_attempt=audit_attempt,
             audit_context=audit_context,
             touch_stage_timestamp=True,
+            reset_runtime_contract_ledger=True,
+            expected_runtime_contract_ledger_digest=ledger_digest,
+            runtime_contract_ledger_reset_reason="master_plan_rejected_replan",
         )
+        if not written:
+            log_system_event(
+                "pipeline.worker_exhausted_plan_recovery_failed",
+                "error",
+                f"Could not persist exhausted-plan rollback for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "source_stage": ckpt.get("stage"),
+                    "runtime_contract_ledger_digest": ledger_digest,
+                },
+            )
+            return _json_tool_result({
+                "error": "WORKER_EXHAUSTED_PLAN_RECOVERY_FAILED",
+                "next_v": next_v,
+                "source_v": source_v,
+                "validation_errors": exhausted_violations,
+                "message": (
+                    "The invalid exhausted plan was blocked, but its checkpoint "
+                    "rollback could not be persisted. No re-planning transition "
+                    "has been recorded."
+                ),
+                "directive": (
+                    "Do not run workers or report a new Master-plan route; repair "
+                    "checkpoint persistence/state synchronization first."
+                ),
+            })
         log_system_event(
             "pipeline.worker_exhausted_plan_blocked",
             "error",

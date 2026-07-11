@@ -8,21 +8,13 @@ survive the final precommit performance gate under national 70-hand rules?".
 
 from __future__ import annotations
 
-import os
 import statistics
 from pathlib import Path
 from typing import Any
 
 from eval_stats import paired_bootstrap_ci
 from national_acceptance import _critical_adapter_issues, resolve_bot, run_pair
-
-
-NATIONAL_PARENT_LOSS_THRESHOLD = float(
-    os.environ.get("POK_NATIONAL_PARENT_LOSS_THRESHOLD", "-2000")
-)
-NATIONAL_AGGREGATE_LOSS_THRESHOLD = float(
-    os.environ.get("POK_NATIONAL_AGGREGATE_LOSS_THRESHOLD", "-2000")
-)
+from strength_order import is_strength_matchup, precommit_outcome_blockers
 
 
 def _mean(values: list[int]) -> float | None:
@@ -83,8 +75,6 @@ async def run_national_precommit(
     strict: bool = True,
     parent_label: str = "",
     deck_seed_base: int | None = 91_000,
-    parent_loss_threshold: float = NATIONAL_PARENT_LOSS_THRESHOLD,
-    aggregate_loss_threshold: float = NATIONAL_AGGREGATE_LOSS_THRESHOLD,
 ) -> dict[str, Any]:
     """Run national 70-hand precommit matchups for one candidate.
 
@@ -93,7 +83,11 @@ async def run_national_precommit(
     chips mean candidate advantage.
     """
     candidate = resolve_bot(candidate_token)
-    hands = max(1, min(70, int(hands)))
+    hands = int(hands)
+    if hands != 70:
+        raise ValueError(
+            f"national precommit strength samples must contain exactly 70 hands; got {hands}"
+        )
     matches_per_opponent = max(1, int(matches_per_opponent))
 
     matchups: list[dict[str, Any]] = []
@@ -112,6 +106,7 @@ async def run_national_precommit(
 
     for opp_index, item in enumerate(opponents):
         reason = str(item.get("reason") or "precommit")
+        strength_authoritative = is_strength_matchup(item)
         token = item.get("path") or item.get("token") or item.get("name")
         opponent = resolve_bot(token)
         resolved_opponents.append({
@@ -132,12 +127,18 @@ async def run_national_precommit(
                 seed = int(deck_seed_base) + (opp_index * 100_000) + (repeat * 1_000)
             result = await run_pair(candidate, opponent, hands, strict=strict, deck_seed_base=seed)
             net = int(result.get("net_chips_a", 0) or 0)
-            samples.append(net)
-            aggregate_net_chips.append(net)
             hands_played = int(result.get("hands_played", 0) or 0)
             hands_played_total += hands_played
             c_issues = _candidate_compliance_issues(result, candidate.label, strict=strict)
             o_issues = _opponent_compliance_issues(result, candidate.label, strict=strict)
+            complete = hands_played == hands
+            compliance_passed = bool(result.get("passed_compliance", False))
+            sample_valid = complete and compliance_passed and not c_issues and not o_issues
+            strength_admitted = strength_authoritative and sample_valid
+            if sample_valid:
+                samples.append(net)
+            if strength_admitted:
+                aggregate_net_chips.append(net)
             candidate_issues.extend(c_issues)
             opponent_issues.extend(o_issues)
             repeats.append({
@@ -147,28 +148,35 @@ async def run_national_precommit(
                 "net_chips": net,
                 "candidate_issues": c_issues,
                 "opponent_issues": o_issues,
+                "complete": complete,
+                "passed_compliance": compliance_passed,
+                "sample_valid": sample_valid,
+                "strength_admitted": strength_admitted,
                 "raw": result,
             })
 
         wins = sum(1 for value in samples if value > 0)
         losses = sum(1 for value in samples if value < 0)
         draws = sum(1 for value in samples if value == 0)
-        total_wins += wins
-        total_losses += losses
-        total_draws += draws
+        if strength_authoritative:
+            total_wins += wins
+            total_losses += losses
+            total_draws += draws
         mean = _mean(samples)
         ci_lo, ci_hi = _ci(samples)
 
         matchup = {
             "opponent": item.get("name") or opponent.label,
             "reason": reason,
+            "strength_authoritative": strength_authoritative,
             "protocol": "national",
             "hands_per_match": hands,
             "matches": matches_per_opponent,
             "wins": wins,
             "losses": losses,
             "draws": draws,
-            "n_played": matches_per_opponent,
+            "n_played": len(samples),
+            "samples_expected": matches_per_opponent,
             "hands_played_total": hands_played_total,
             "net_chips": samples,
             "net_chips_mean": _rounded(mean),
@@ -179,31 +187,29 @@ async def run_national_precommit(
         }
         matchups.append(matchup)
 
-        if candidate_issues:
+        if strength_authoritative and candidate_issues:
             blockers.append({
                 "reason": "national_candidate_compliance",
                 "opponent": matchup["opponent"],
                 "details": "; ".join(candidate_issues[:5]),
             })
-        if hands_played_total < hands * matches_per_opponent:
+        if strength_authoritative and opponent_issues:
+            blockers.append({
+                "reason": "national_opponent_compliance",
+                "opponent": matchup["opponent"],
+                "details": "; ".join(opponent_issues[:5]),
+            })
+        if strength_authoritative and any(not row["complete"] for row in repeats):
             blockers.append({
                 "reason": "national_incomplete_match",
                 "opponent": matchup["opponent"],
                 "details": f"{hands_played_total}/{hands * matches_per_opponent} hands completed",
             })
-        if (
-            parent_label
-            and matchup["opponent"] == parent_label
-            and mean is not None
-            and mean < parent_loss_threshold
-        ):
+        if strength_authoritative and len(samples) != matches_per_opponent:
             blockers.append({
-                "reason": "lost_to_parent",
+                "reason": "national_strength_sample_shortfall",
                 "opponent": matchup["opponent"],
-                "details": (
-                    f"National 70-hand mean net chips {mean:.0f} below "
-                    f"{parent_loss_threshold:.0f}; samples={samples}"
-                ),
+                "details": f"{len(samples)}/{matches_per_opponent} complete compliant 70-hand samples admitted",
             })
 
     agg_mean = _mean(aggregate_net_chips)
@@ -213,14 +219,12 @@ async def run_national_precommit(
             "reason": "national_no_samples",
             "details": "National precommit produced zero completed match samples.",
         })
-    if agg_mean is not None and agg_mean < aggregate_loss_threshold:
-        blockers.append({
-            "reason": "aggregate_national_regression",
-            "details": (
-                f"Aggregate national mean net chips {agg_mean:.0f} below "
-                f"{aggregate_loss_threshold:.0f}; samples={len(aggregate_net_chips)}"
-            ),
-        })
+    outcome_blockers, outcome_gate = precommit_outcome_blockers(
+        matchups,
+        parent_label=parent_label,
+        aggregate_reason="aggregate_national_regression",
+    )
+    blockers.extend(outcome_blockers)
 
     paired_payload = {
         "protocol": "national",
@@ -228,9 +232,10 @@ async def run_national_precommit(
         "matches_per_opponent": matches_per_opponent,
         "aggregate_ci_lower": _rounded(agg_ci_lower),
         "aggregate_ci_upper": _rounded(agg_ci_upper),
-        "aggregate_threshold": aggregate_loss_threshold,
-        "aggregate_gate_bound": _rounded(agg_mean),
-        "aggregate_gate_rule": "block_if_mean_below_threshold",
+        "aggregate_threshold": None,
+        "aggregate_gate_bound": outcome_gate.get("primary_match_score"),
+        "aggregate_gate_rule": "complete_70_hand_wld_loss_margin",
+        "outcome_gate": outcome_gate,
         "net_chips_samples": len(aggregate_net_chips),
         "gate_degraded": len(aggregate_net_chips) < 2,
         "net_chips_mean": _rounded(agg_mean),
@@ -240,7 +245,7 @@ async def run_national_precommit(
         ),
         "net_chips_min": min(aggregate_net_chips) if aggregate_net_chips else None,
         "net_chips_max": max(aggregate_net_chips) if aggregate_net_chips else None,
-        "parent_loss_threshold": parent_loss_threshold,
+        "secondary_net_chip_ci": [_rounded(agg_ci_lower), _rounded(agg_ci_upper)],
     }
 
     return {

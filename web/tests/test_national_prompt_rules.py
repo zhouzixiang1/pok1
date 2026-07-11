@@ -30,7 +30,8 @@ def test_core_prompts_include_full_national_legality_rules():
     required_phrases = [
         "sever/国赛平台",
         "raise-to-total",
-        "prev * 2 + 1",
+        "Exact `prev * 2` is legal",
+        "conservative",
         "postflop first action cannot be",
         "check is illegal",
         "Preflop BB cannot",
@@ -39,6 +40,14 @@ def test_core_prompts_include_full_national_legality_rules():
     ]
     for phrase in required_phrases:
         assert phrase in combined
+
+    forbidden_legality_claims = [
+        "strictly greater than 2x",
+        "strictly >2x",
+        "minimum valid re-raise after raise X is X*2+1",
+    ]
+    for claim in forbidden_legality_claims:
+        assert claim not in combined
 
 
 def test_active_generation_prompts_use_national_bot_namespace():
@@ -230,7 +239,9 @@ def test_regression_guardian_prompt_matches_current_trigger_contract():
     tool_gates = (ROOT / "web" / "core" / "tool_gates.py").read_text(encoding="utf-8")
 
     assert "currently called only from `run_critic`" in guardian_prompt
-    assert "hard-gate critic score is below 4" in guardian_prompt
+    assert "advisory critic score is below 4" in guardian_prompt
+    assert "Neither the Critic nor this Guardian can block or certify" in guardian_prompt
+    assert "local native-TCP precommit evaluation is the strategy hard gate" in guardian_prompt
     assert "do not automatically invoke this Guardian" in guardian_prompt
     assert "Precommit eval blocks a commit" not in guardian_prompt
     assert "2+ consecutive generations show rating decline" not in guardian_prompt

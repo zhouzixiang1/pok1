@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import socket
 import subprocess
 from typing import Any
 
@@ -39,29 +40,47 @@ def execution_profile_identity() -> dict[str, Any]:
     }
 
 
-def _bwrap_probe(command: str) -> str | None:
-    probe = subprocess.run(
-        [
-            command,
-            "--die-with-parent",
-            "--new-session",
-            "--unshare-all",
-            "--share-net",
-            "--ro-bind", "/usr", "/usr",
-            "--ro-bind", "/lib", "/lib",
-            "--ro-bind", "/lib64", "/lib64",
-            "--proc", "/proc",
-            "--dev", "/dev",
-            "--tmpfs", "/tmp",
-            "/usr/bin/true",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=10,
-        check=False,
-    )
+def _bwrap_probe(command: str, python: str) -> str | None:
+    parent, child = socket.socketpair()
+    inherited_socket_ok = False
+    try:
+        child_fd = child.fileno()
+        probe = subprocess.run(
+            [
+                command,
+                "--die-with-parent",
+                "--new-session",
+                "--unshare-all",
+                "--ro-bind", "/usr", "/usr",
+                "--ro-bind", "/lib", "/lib",
+                "--ro-bind", "/lib64", "/lib64",
+                "--proc", "/proc",
+                "--dev", "/dev",
+                "--tmpfs", "/tmp",
+                python,
+                "-I",
+                "-B",
+                "-c",
+                f"import socket; socket.socket(fileno={child_fd}).sendall(b'1')",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+            pass_fds=(child_fd,),
+        )
+        child.close()
+        parent.settimeout(1.0)
+        inherited_socket_ok = probe.returncode == 0 and parent.recv(1) == b"1"
+    except (OSError, socket.timeout, subprocess.TimeoutExpired) as exc:
+        return f"official_sandbox_probe_failed: {type(exc).__name__}: {str(exc)[:180]}"
+    finally:
+        parent.close()
+        child.close()
     if probe.returncode == 0:
-        return None
+        if inherited_socket_ok:
+            return None
+        return "official_sandbox_probe_failed: inherited socket unavailable"
     detail = probe.stderr.decode("utf-8", errors="replace").strip()[:240]
     return f"official_sandbox_probe_failed: rc={probe.returncode} {detail}"
 
@@ -105,8 +124,11 @@ def validate_execution_profile(
             issues.append(f"official_execution_tool_path_mismatch:{name}")
         if observed_hash != str(expected.get("sha256") or ""):
             issues.append(f"official_execution_tool_sha256_mismatch:{name}")
-    if probe_sandbox and "bwrap" in observed_tools:
-        probe_issue = _bwrap_probe(observed_tools["bwrap"]["command_path"])
+    if probe_sandbox and "bwrap" in observed_tools and "python" in observed_tools:
+        probe_issue = _bwrap_probe(
+            observed_tools["bwrap"]["command_path"],
+            observed_tools["python"]["command_path"],
+        )
         if probe_issue:
             issues.append(probe_issue)
     return {
