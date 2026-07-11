@@ -882,8 +882,10 @@ def architecture_policy_prompt(policy: dict[str, Any]) -> str:
         f"- required_checks={', '.join(focus.get('required_checks') or [])}",
         f"- accepted_skill_layers={', '.join(focus.get('accepted_skill_layers') or [])}",
         f"- suggested_files={', '.join(focus.get('suggested_files') or [])}",
+        f"- required_worker_prompt_terms={', '.join(focus.get('required_terms') or [])}",
         f"- rationale={focus.get('rationale')}",
         "- one task MUST set architecture_focus_id exactly to selected_focus and implement the complete behavior",
+        "- the matching task worker_prompt MUST literally contain every required_worker_prompt_terms value",
         "- a label is not proof: quality gates re-run AST evidence and block unless every required check passes",
     ])
     return "\n".join(lines)

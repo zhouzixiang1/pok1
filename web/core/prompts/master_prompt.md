@@ -183,6 +183,14 @@ and do not require a worker unless quality evidence says they still fail.
   unbounded Monte Carlo/search, large table build in `get_action`, or
   unsolicited socket sends that this task must not introduce.
 
+<system_owned_master_plan_contract>
+The following block is generated from the same constants and literal types used
+by the Pydantic schema and downstream hard validator. It is authoritative; do
+not substitute remembered field names, bounds, event names, or prompt terms.
+
+{master_plan_executable_contract}
+</system_owned_master_plan_contract>
+
 If the injected Line budget section marks `strategy.py` or `postflop.py` as `near_hard_cap`, that file must not grow. Plan cohesive helper-module migration or LOC recovery first, and set `expected_diff_shape` to show which logic moves out or is deleted. A plan that only adds logic to a near-cap core file will fail the size gate.
 </worker_guidance>
 
@@ -370,7 +378,7 @@ Required schema (emit exactly this structure as raw JSON):
         "official_feedback_refs": [],
         "forbidden_runtime_work": ["file_io_in_decision", "network_io_in_decision", "unbounded_history_scan"]
       },
-      "worker_prompt": "Detailed instructions for this worker..."
+      "worker_prompt": "Implement a bounded decision budget: compute the legal strategy baseline before refinement, enforce the monotonic deadline, and return the baseline through the legal fallback path on timeout or error."
     }
   ]
 }

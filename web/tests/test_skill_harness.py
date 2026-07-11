@@ -65,8 +65,13 @@ def test_national_native_runtime_layers_are_schema_valid():
             worker_id=1,
             role="Algorithmic Logic Architect",
             target_files=["national_bot.py"],
+            files_allowed=["strategy.py"],
             skill_layer=layer,
-            worker_prompt="Implement a focused national runtime architecture change with checks.",
+            worker_prompt=(
+                "Implement a bounded decision budget with a legal fallback, fast baseline, "
+                "and hard deadline; consume bounded precompute lookup data and incremental "
+                "match memory with confidence through opponent_runtime."
+            ),
             runtime_contract=runtime_contract,
         )
         assert task.skill_layer == layer

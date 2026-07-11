@@ -66,9 +66,11 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
     import agent_master
 
     call_count = {"n": 0}
+    captured_prompts = []
 
     async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None):
         call_count["n"] += 1
+        captured_prompts.append(prompt)
         return _mock_llm_output(), 0.0, {}
 
     # Patch the name as bound in agent_master's namespace (imported at top).
@@ -90,6 +92,14 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
         f"Master called the LLM {call_count['n']}x for a valid plan; expected 1 "
         "(a valid plan must return immediately, not retry-and-discard)"
     )
+    rendered_prompt = captured_prompts[0]
+    assert "{master_plan_executable_contract}" not in rendered_prompt
+    assert "System-owned executable Master-plan contract" in rendered_prompt
+    assert "tasks: 1..3 items" in rendered_prompt
+    assert "task.target_files: 1..3 files (never more than 3)" in rendered_prompt
+    assert 'build_phase="module_import"' in rendered_prompt
+    assert "runtime_contract.match_memory" in rendered_prompt
+    assert '"memory", "confidence", "opponent_runtime"' in rendered_prompt
 
 
 @pytest.mark.asyncio

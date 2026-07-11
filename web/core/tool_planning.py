@@ -42,6 +42,16 @@ from tool_helpers import (
 )
 from system_log import log_system_event
 from pipeline_state import route_policy
+from output_schema import (
+    MASTER_PLAN_MAX_TASKS,
+    RuntimeContract,
+    WORKER_PROMPT_MAX_CHARS,
+    WORKER_TASK_MAX_TARGET_FILES,
+    runtime_contract_missing_sections,
+    runtime_contract_required_layers,
+    runtime_contract_required_sections,
+    runtime_contract_worker_prompt_terms,
+)
 
 
 def _literature_probe_cache_path(next_v: int | str) -> Path:
@@ -947,16 +957,24 @@ def _validate_master_plan(
     errors = []
     warnings = []
     tasks = plan.get("tasks", [])
-    if len(tasks) > 3:
-        errors.append(f"Too many tasks: {len(tasks)} > 3")
+    if len(tasks) > MASTER_PLAN_MAX_TASKS:
+        errors.append(
+            f"Too many tasks: {len(tasks)} > {MASTER_PLAN_MAX_TASKS}"
+        )
     for i, task in enumerate(tasks):
         targets = task.get("target_files", [])
         files_allowed = task.get("files_allowed", []) or []
-        if len(targets) > 3:
-            errors.append(f"Task {i}: too many target_files ({len(targets)} > 3)")
+        if len(targets) > WORKER_TASK_MAX_TARGET_FILES:
+            errors.append(
+                f"Task {i}: too many target_files "
+                f"({len(targets)} > {WORKER_TASK_MAX_TARGET_FILES})"
+            )
         prompt = task.get("worker_prompt", "")
-        if len(prompt) > 12000:
-            errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 12000 chars)")
+        if len(prompt) > WORKER_PROMPT_MAX_CHARS:
+            errors.append(
+                f"Task {i}: worker_prompt too long "
+                f"({len(prompt)} > {WORKER_PROMPT_MAX_CHARS} chars)"
+            )
         layer = str(task.get("skill_layer", "") or "").strip()
         errors.extend(_runtime_contract_errors(task, i, layer))
         role = str(task.get("role", ""))
@@ -1088,17 +1106,7 @@ def _validate_master_plan(
 
 def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
     """Return hard Master-plan errors for runtime-architecture task contracts."""
-    try:
-        from output_schema import RuntimeContract, runtime_contract_required_layers
-        required_layers = runtime_contract_required_layers()
-    except Exception:
-        required_layers = {
-            "runtime_architecture",
-            "precompute",
-            "match_memory",
-            "opponent_model",
-            "native_tcp",
-        }
+    required_layers = runtime_contract_required_layers()
     focus_id = str(task.get("architecture_focus_id") or "").strip()
     if layer not in required_layers and not focus_id:
         return []
@@ -1126,28 +1134,8 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
             f"Task {index}: runtime_contract schema invalid: {'; '.join(details)}"
         ]
 
-    missing: list[str] = []
-    if layer in {"runtime_architecture", "native_tcp"} and validated.decision is None:
-        missing.append("decision")
-    if layer == "precompute" and not validated.precompute_artifacts:
-        missing.append("precompute_artifacts")
-    if layer in {"match_memory", "opponent_model"} and validated.match_memory is None:
-        missing.append("match_memory")
-    focus_required = {
-        "incremental_match_model": ("match_memory",),
-        "reusable_precompute": ("precompute_artifacts",),
-        "deadline_refinement": ("decision",),
-        "bounded_runtime_enumeration": ("precompute_artifacts",),
-        "decision_path_purity": ("decision",),
-    }
-    for field in focus_required.get(focus_id, ()):
-        if field == "decision" and validated.decision is None:
-            missing.append(field)
-        elif field == "precompute_artifacts" and not validated.precompute_artifacts:
-            missing.append(field)
-        elif field == "match_memory" and validated.match_memory is None:
-            missing.append(field)
-    missing = list(dict.fromkeys(missing))
+    required_sections = runtime_contract_required_sections(layer, focus_id)
+    missing = runtime_contract_missing_sections(validated, required_sections)
     if missing:
         return [
             f"Task {index}: runtime_contract for skill_layer={layer!r} is missing "
@@ -1175,16 +1163,8 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
         ]
 
     prompt = str(task.get("worker_prompt", task.get("instruction", ""))).lower()
-    contract_terms = []
-    if validated.decision is not None:
-        contract_terms.extend(("budget", "fallback", "baseline", "deadline"))
-    if validated.precompute_artifacts:
-        contract_terms.append("precompute")
-    if validated.match_memory is not None:
-        contract_terms.extend(("memory", "confidence", "opponent_runtime"))
-    if validated.official_feedback_refs:
-        contract_terms.append("official")
-    missing_terms = [term for term in dict.fromkeys(contract_terms) if term not in prompt]
+    contract_terms = runtime_contract_worker_prompt_terms(validated)
+    missing_terms = [term for term in contract_terms if term not in prompt]
     if missing_terms:
         return [
             f"Task {index}: runtime_contract is declared but worker_prompt does not "
