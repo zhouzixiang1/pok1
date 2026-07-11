@@ -14,6 +14,7 @@ TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import summarize_v4_native_ablations as summary  # noqa: E402
+from v4_native_strength_runtime import native_strength_runtime_contract  # noqa: E402
 
 
 OPPONENTS = (("opp_a", "/bots/opp_a"), ("opp_b", "/bots/opp_b"))
@@ -142,6 +143,7 @@ def _report(
         "format": "native_tcp_evaluation_v2",
         "execution_mode": "native_tcp",
         "candidate_ablation": _ablation_contract(mode),
+        "runtime_contract": native_strength_runtime_contract(),
         "candidate_path": "/bots/candidate_v4",
         "opponent_paths": [path for _, path in OPPONENTS],
         "hands_per_match": 70,
@@ -177,10 +179,15 @@ def _report(
         "force": {"hand": None, "decision": None, "action": None},
         "rows": rows,
         "strength_evidence": {
+            "schema": "native_tcp_strength_evidence_v2_outcome_first",
+            "criterion": "net_chips_after_70_hands_gt_zero",
             "requested": False,
+            "execution_contract_passed": False,
+            "outcome_gate_passed": False,
             "passed": False,
             "request_errors": [],
             "result_errors": [],
+            "statistical_errors": [],
         },
     }
 
@@ -334,7 +341,10 @@ def test_input_strength_claim_is_rejected() -> None:
 def test_clean_requested_full_strength_report_is_accepted_as_diagnostic_input() -> None:
     reports = _reports()
     reports["full"]["strength_evidence"].update(
-        requested=True, passed=True
+        requested=True,
+        execution_contract_passed=True,
+        outcome_gate_passed=True,
+        passed=True,
     )
 
     artifact = summary.summarize_native_ablation_reports(
@@ -343,6 +353,24 @@ def test_clean_requested_full_strength_report_is_accepted_as_diagnostic_input() 
 
     assert artifact["diagnostic_only"] is True
     assert artifact["eligible_as_strength_evidence"] is False
+    assert artifact["strength_evidence"] is False
+
+
+def test_failed_requested_full_strength_report_remains_valid_diagnostic_input() -> None:
+    reports = _reports()
+    reports["full"]["strength_evidence"].update(
+        requested=True,
+        execution_contract_passed=True,
+        outcome_gate_passed=False,
+        passed=False,
+        statistical_errors=["ordinary_positive_rate_lcb_not_above_half"],
+    )
+
+    artifact = summary.summarize_native_ablation_reports(
+        _inputs(reports), bootstrap_samples=10
+    )
+
+    assert artifact["diagnostic_only"] is True
     assert artifact["strength_evidence"] is False
 
 
@@ -383,6 +411,54 @@ def test_artifact_seed_and_leg_drift_are_rejected(
     with pytest.raises(ValueError, match=message):
         summary.summarize_native_ablation_reports(
             _inputs(reports), bootstrap_samples=10
+        )
+
+
+@pytest.mark.parametrize("value", (-20_000, 20_000))
+def test_physical_hand_chip_boundaries_are_accepted(value: int) -> None:
+    values = {
+        (opponent, match_idx, leg): value
+        for opponent, _ in OPPONENTS
+        for match_idx in range(len(SEEDS))
+        for leg in summary.LEG_NAMES
+    }
+    report = _report("full", values=values)
+
+    validated = summary.validate_native_ablation_report_bytes(
+        _encode(report), source="physical_boundary"
+    )
+
+    assert validated.clusters[(OPPONENTS[0][0], 0)]["legs"]["forward"][
+        "hand_net_chips"
+    ][0] == value
+    assert report["rows"][0]["hand_net_chips"][0] == 2 * value
+
+
+@pytest.mark.parametrize("value", (-20_001, 20_001))
+def test_leg_hand_chip_value_outside_stack_is_rejected(value: int) -> None:
+    report = _report("neural_off")
+    leg = report["rows"][0]["legs"][0]
+    leg["hand_net_chips"] = [value, *([0] * 69)]
+    leg["net_chips"] = value
+
+    with pytest.raises(ValueError, match=r"hand_net_chips\[0\].*exceeds 20000"):
+        summary.validate_native_ablation_report_bytes(
+            _encode(report), source="leg_overflow"
+        )
+
+
+@pytest.mark.parametrize("value", (-40_001, 40_001))
+def test_paired_hand_chip_value_outside_two_seat_sum_is_rejected(
+    value: int,
+) -> None:
+    report = _report("neural_off")
+    row = report["rows"][0]
+    row["hand_net_chips"] = [value, *([0] * 69)]
+    row["net_chips"] = value
+
+    with pytest.raises(ValueError, match=r"hand_net_chips\[0\].*exceeds 40000"):
+        summary.validate_native_ablation_report_bytes(
+            _encode(report), source="paired_overflow"
         )
 
 

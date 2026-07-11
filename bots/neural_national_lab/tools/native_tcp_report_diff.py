@@ -6,11 +6,21 @@ import json
 import random
 import statistics
 from pathlib import Path
+import sys
 from typing import Any
 
 
+TOOLS = Path(__file__).resolve().parent
+if str(TOOLS) not in sys.path:
+    sys.path.insert(0, str(TOOLS))
+
+import summarize_v4_native_ablations as ablations  # noqa: E402
+
+
 def _load(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return ablations.strict_json_object_bytes(
+        path.read_bytes(), source=str(path)
+    )
 
 
 def _row_key(row: dict[str, Any]) -> tuple[str, int]:
@@ -119,9 +129,34 @@ def _strength_report_errors(report: dict[str, Any]) -> list[str]:
     errors = []
     if report.get("format") != "native_tcp_evaluation_v2":
         errors.append("unsupported_evaluation_format")
-    evidence = report.get("strength_evidence") or {}
-    if not evidence.get("passed"):
-        errors.append("evaluator_strength_evidence_not_passed")
+    evidence = report.get("strength_evidence")
+    expected_evidence_keys = {
+        "schema",
+        "criterion",
+        "requested",
+        "execution_contract_passed",
+        "outcome_gate_passed",
+        "passed",
+        "request_errors",
+        "result_errors",
+        "statistical_errors",
+    }
+    if not isinstance(evidence, dict) or set(evidence) != expected_evidence_keys:
+        errors.append("evaluator_strength_evidence_schema_mismatch")
+    elif (
+        evidence.get("schema")
+        != "native_tcp_strength_evidence_v2_outcome_first"
+        or evidence.get("criterion") != "net_chips_after_70_hands_gt_zero"
+        or evidence.get("requested") is not True
+        or evidence.get("execution_contract_passed") is not True
+        or evidence.get("outcome_gate_passed") is not True
+        or evidence.get("passed") is not True
+        or any(
+            not isinstance(evidence.get(field), list) or evidence.get(field)
+            for field in ("request_errors", "result_errors", "statistical_errors")
+        )
+    ):
+        errors.append("evaluator_outcome_first_strength_evidence_not_passed")
     if report.get("execution_mode") != "native_tcp":
         errors.append("execution_mode_not_native_tcp")
     if not report.get("paired"):
@@ -173,6 +208,73 @@ def _strength_report_errors(report: dict[str, Any]) -> list[str]:
         for right in windows[left_index + 1:]:
             if max(left[0], right[0]) <= min(left[1], right[1]):
                 errors.append(f"overlapping_deck_windows:{left[0]},{right[0]}")
+    validated = None
+    try:
+        validated = ablations.validate_native_ablation_report_bytes(
+            json.dumps(
+                report,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8"),
+            source="native_tcp_report_diff.strength_report",
+        )
+    except (TypeError, ValueError) as exc:
+        errors.append(f"deep_native_report_validation_failed:{exc}")
+    if validated is not None:
+        samples = report.get("outcome_bootstrap_samples")
+        seed = report.get("outcome_bootstrap_seed")
+        if (
+            isinstance(samples, bool)
+            or not isinstance(samples, int)
+            or samples < 2_000
+            or isinstance(seed, bool)
+            or not isinstance(seed, int)
+        ):
+            errors.append("outcome_bootstrap_contract_invalid")
+        else:
+            clusters: list[list[int]] = []
+            groups: dict[str, list[list[int]]] = {}
+            for key in sorted(validated.clusters):
+                cluster = validated.clusters[key]
+                outcomes = [
+                    int(cluster["legs"][leg]["net_chips"] > 0)
+                    for leg in ablations.LEG_NAMES
+                ]
+                clusters.append(outcomes)
+                groups.setdefault(str(cluster["opponent"]), []).append(outcomes)
+            ordinary = ablations._ordinary_cluster_bootstrap(
+                clusters, samples=samples, seed=seed
+            )
+            stratified = ablations._equal_opponent_stratified_cluster_bootstrap(
+                groups, samples=samples, seed=seed + 1
+            )
+            if ordinary["low"] <= 0.5:
+                errors.append("recomputed_ordinary_positive_rate_lcb_not_above_half")
+            if stratified["low"] <= 0.5:
+                errors.append(
+                    "recomputed_stratified_positive_rate_lcb_not_above_half"
+                )
+            for opponent, opponent_clusters in sorted(groups.items()):
+                outcomes = [
+                    value
+                    for cluster in opponent_clusters
+                    for value in cluster
+                ]
+                if sum(outcomes) / len(outcomes) < 0.5:
+                    errors.append(
+                        f"recomputed_opponent_positive_rate_below_half:{opponent}"
+                    )
+        outcome = report.get("seventy_hand_outcomes")
+        if (
+            not isinstance(outcome, dict)
+            or outcome.get("criterion")
+            != "net_chips_after_70_hands_gt_zero"
+            or not isinstance(outcome.get("combined"), dict)
+            or outcome["combined"].get("win_rate_evidence_passed") is not True
+        ):
+            errors.append("reported_seventy_hand_outcome_gate_not_passed")
     return errors
 
 
@@ -242,6 +344,9 @@ def _diff_rows(
             "bot_seed_base",
             "bot_seed_stride",
             "hands_per_match",
+            "outcome_bootstrap_samples",
+            "outcome_bootstrap_seed",
+            "runtime_contract",
         ):
             if candidate.get(field) != baseline.get(field):
                 raise SystemExit(
@@ -259,8 +364,17 @@ def _diff_rows(
             raise SystemExit(
                 "strength reports used different opponent artifacts"
             )
-    candidate_rows = {_row_key(row): row for row in candidate.get("rows", [])}
-    baseline_rows = {_row_key(row): row for row in baseline.get("rows", [])}
+    def index_rows(report: dict[str, Any], label: str) -> dict[tuple[str, int], dict[str, Any]]:
+        indexed: dict[tuple[str, int], dict[str, Any]] = {}
+        for row in report.get("rows", []):
+            key = _row_key(row)
+            if key in indexed:
+                raise SystemExit(f"{label} report has duplicate row key: {key!r}")
+            indexed[key] = row
+        return indexed
+
+    candidate_rows = index_rows(candidate, "candidate")
+    baseline_rows = index_rows(baseline, "baseline")
     missing = sorted(set(candidate_rows) ^ set(baseline_rows))
     if missing:
         raise SystemExit(f"reports have different row keys: {missing[:10]}")
@@ -293,6 +407,20 @@ def _diff_rows(
             cand_hands[idx] - base_hands[idx]
             for idx in range(min(len(cand_hands), len(base_hands)))
         ]
+        candidate_outcomes = [
+            int(int(leg.get("net_chips", 0)) > 0)
+            for leg in cand.get("legs", [])
+        ]
+        baseline_outcomes = [
+            int(int(leg.get("net_chips", 0)) > 0)
+            for leg in base.get("legs", [])
+        ]
+        outcome_uplifts = [
+            candidate_outcomes[index] - baseline_outcomes[index]
+            for index in range(
+                min(len(candidate_outcomes), len(baseline_outcomes))
+            )
+        ]
         delta = int(cand["net_chips"]) - int(base["net_chips"])
         rows.append({
             "opponent": key[0],
@@ -312,6 +440,9 @@ def _diff_rows(
             "largest_hand_delta": max(hand_deltas) if hand_deltas else None,
             "smallest_hand_delta": min(hand_deltas) if hand_deltas else None,
             "hand_deltas": hand_deltas,
+            "candidate_positive_outcomes": candidate_outcomes,
+            "baseline_positive_outcomes": baseline_outcomes,
+            "positive_outcome_uplifts": outcome_uplifts,
         })
     return rows
 
@@ -363,14 +494,78 @@ def _summary(
         seed=bootstrap_seed + 1,
     )
     combined["leave_one_block_out"] = _leave_one_block_out(rows)
+    outcome_rows = [
+        row for row in rows if len(row["positive_outcome_uplifts"]) == 2
+    ]
+    outcome_clusters = [row["positive_outcome_uplifts"] for row in outcome_rows]
+    outcome_groups = {
+        opponent: [
+            row["positive_outcome_uplifts"]
+            for row in outcome_rows
+            if row["opponent"] == opponent
+        ]
+        for opponent in sorted({row["opponent"] for row in outcome_rows})
+    }
+    candidate_outcomes = [
+        value for row in outcome_rows for value in row["candidate_positive_outcomes"]
+    ]
+    baseline_outcomes = [
+        value for row in outcome_rows for value in row["baseline_positive_outcomes"]
+    ]
+    if outcome_rows and len(outcome_rows) != len(rows):
+        raise ValueError("outcome diagnostic has a partial two-leg row set")
+    if outcome_rows:
+        ordinary_outcome = ablations._ordinary_cluster_bootstrap(
+            outcome_clusters, samples=max(1, bootstrap_samples), seed=bootstrap_seed
+        )
+        stratified_outcome = ablations._equal_opponent_stratified_cluster_bootstrap(
+            outcome_groups, samples=max(1, bootstrap_samples), seed=bootstrap_seed + 1
+        )
+        estimate = ordinary_outcome["estimate"]
+        primary_outcome = {
+            "available": True,
+            "criterion": "candidate_minus_baseline_70_hand_positive_outcome_uplift",
+            "complete_seed_blocks": len(outcome_rows),
+            "candidate_positive_rate": round(
+                sum(candidate_outcomes) / len(candidate_outcomes), 9
+            ),
+            "baseline_positive_rate": round(
+                sum(baseline_outcomes) / len(baseline_outcomes), 9
+            ),
+            "ordinary_cluster_bootstrap_ci": ordinary_outcome,
+            "opponent_stratified_cluster_bootstrap_ci": stratified_outcome,
+            "direction": (
+                "improved" if estimate > 0.0
+                else "degraded" if estimate < 0.0
+                else "tied"
+            ),
+            "used_as_strength_evidence": False,
+        }
+    else:
+        primary_outcome = {
+            "available": False,
+            "criterion": "candidate_minus_baseline_70_hand_positive_outcome_uplift",
+            "complete_seed_blocks": 0,
+            "reason": "reports_do_not_contain_complete_two_leg_rows",
+            "used_as_strength_evidence": False,
+        }
     return {
-        "format": "native_tcp_strength_diff_v2",
+        "format": "native_tcp_report_diff_v3_diagnostic",
+        "authority_scope": "diagnostic_only_unregistered_bootstrap",
+        "diagnostic_only": True,
+        "strength_evidence": False,
+        "native_strength_evidence": False,
+        "deployment_policy_value": False,
+        "deployment_eligible": False,
+        "formal_release_evidence": False,
         "candidate_report": candidate.get("candidate_path"),
         "baseline_report": baseline.get("candidate_path"),
         "candidate_paired": bool(candidate.get("paired")),
         "baseline_paired": bool(baseline.get("paired")),
         "hands_per_match": candidate.get("hands_per_match"),
         "rows": len(rows),
+        "primary_outcome_diagnostic": primary_outcome,
+        "chip_delta_role": "secondary_only_cannot_override_outcome_direction",
         "combined": combined,
         "opponents": by_opponent,
         "worst": _top(rows, reverse=False, limit=limit),
@@ -407,14 +602,25 @@ def main() -> int:
         bootstrap_seed=args.bootstrap_seed,
     )
     payload["diff_rows"] = rows
-    payload["strength_evidence_validated"] = bool(args.strength_evidence)
+    payload["input_strength_receipts_validated"] = bool(args.strength_evidence)
+    payload["strength_evidence_validated"] = False
+    payload["strength_evidence"] = False
+    payload["native_strength_evidence"] = False
+    payload["deployment_policy_value"] = False
+    payload["deployment_eligible"] = False
+    payload["formal_release_evidence"] = False
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     compact_opponents = {
         name: {key: value for key, value in stats.items() if key not in {"worst", "best"}}
         for name, stats in payload["opponents"].items()
     }
-    print(json.dumps({"combined": payload["combined"], "opponents": compact_opponents}, ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "authority_scope": payload["authority_scope"],
+        "primary_outcome_diagnostic": payload["primary_outcome_diagnostic"],
+        "secondary_chip_diagnostic": payload["combined"],
+        "opponents": compact_opponents,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 

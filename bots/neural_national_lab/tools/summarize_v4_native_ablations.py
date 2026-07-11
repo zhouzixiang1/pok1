@@ -22,10 +22,31 @@ from pathlib import Path
 import random
 from typing import Any, Iterable, Mapping, Sequence
 
+try:  # package import in tests; direct import for the CLI
+    from .v4_native_strength_runtime import (
+        validate_native_strength_runtime_contract,
+    )
+except ImportError:  # pragma: no cover - direct CLI execution path
+    from v4_native_strength_runtime import (  # type: ignore[no-redef]
+        validate_native_strength_runtime_contract,
+    )
+
 
 SUMMARY_SCHEMA = "opponent_multitask_v4_native_ablation_summary_v1"
 SUMMARY_METHOD = "paired_complete_seed_block_cluster_bootstrap_v1"
 ABLATION_SCHEMA = "opponent_multitask_v4_native_ablation_v1"
+EVALUATOR_STRENGTH_SCHEMA = "native_tcp_strength_evidence_v2_outcome_first"
+EVALUATOR_STRENGTH_KEYS = {
+    "schema",
+    "criterion",
+    "requested",
+    "execution_contract_passed",
+    "outcome_gate_passed",
+    "passed",
+    "request_errors",
+    "result_errors",
+    "statistical_errors",
+}
 PRIMARY_CRITERION = (
     "full_minus_ablation_70_hand_net_chips_gt_zero_paired_uplift"
 )
@@ -88,6 +109,8 @@ ZERO_COUNTER_FIELDS = (
 )
 LEG_NAMES = ("forward", "swapped")
 HANDS_PER_LEG = 70
+MAX_ABS_HAND_NET_CHIPS_PER_LEG = 20_000
+MAX_ABS_PAIRED_HAND_NET_CHIPS = 40_000
 DEFAULT_BOOTSTRAP_SAMPLES = 20_000
 DEFAULT_BOOTSTRAP_SEED = 20_260_712
 INPUT_OPTIONAL_CONTROL_VALUES = {
@@ -202,6 +225,13 @@ def _strict_json_loads(raw: bytes, *, source: str) -> dict[str, Any]:
         raise ValueError(f"{source}: report root must be an object")
     _finite_tree(payload, field=source)
     return payload
+
+
+def strict_json_object_bytes(
+    raw: bytes, *, source: str = "json_object"
+) -> dict[str, Any]:
+    """Public duplicate-key and non-finite rejecting JSON object loader."""
+    return _strict_json_loads(bytes(raw), source=str(source))
 
 
 def _object(value: Any, *, field: str) -> dict[str, Any]:
@@ -336,6 +366,17 @@ def _integer_vector(value: Any, *, field: str, length: int) -> list[int]:
     return [_integer(item, field=f"{field}[{index}]") for index, item in enumerate(raw)]
 
 
+def _validate_hand_chip_bounds(
+    values: Sequence[int], *, field: str, maximum: int
+) -> None:
+    """Reject hand results outside the national per-seat stack boundary."""
+    for index, value in enumerate(values):
+        if abs(value) > maximum:
+            raise ValueError(
+                f"{field}[{index}] absolute value exceeds {maximum}"
+            )
+
+
 def _validate_leg(
     raw: Any,
     *,
@@ -380,6 +421,11 @@ def _validate_leg(
         field=f"{field}.hand_net_chips",
         length=HANDS_PER_LEG,
     )
+    _validate_hand_chip_bounds(
+        hand_chips,
+        field=f"{field}.hand_net_chips",
+        maximum=MAX_ABS_HAND_NET_CHIPS_PER_LEG,
+    )
     net_chips = _integer(leg.get("net_chips"), field=f"{field}.net_chips")
     if sum(hand_chips) != net_chips:
         raise ValueError(f"{field}: hand chip accounting does not equal net_chips")
@@ -399,6 +445,9 @@ def _validate_report(raw: bytes, *, source: str) -> _LoadedReport:
         raise ValueError(f"{source}: format must be native_tcp_evaluation_v2")
     if payload.get("execution_mode") != "native_tcp":
         raise ValueError(f"{source}: execution_mode must be native_tcp")
+    runtime_contract = validate_native_strength_runtime_contract(
+        payload.get("runtime_contract"), require_default_timeout=False
+    )
     if payload.get("paired") is not True:
         raise ValueError(f"{source}: paired must be true")
     if _integer(payload.get("hands_per_match"), field=f"{source}.hands_per_match") != HANDS_PER_LEG:
@@ -415,14 +464,23 @@ def _validate_report(raw: bytes, *, source: str) -> _LoadedReport:
     )
     _exact_keys(
         strength,
-        {"requested", "passed", "request_errors", "result_errors"},
+        EVALUATOR_STRENGTH_KEYS,
         field=f"{source}.strength_evidence",
     )
+    if strength.get("schema") != EVALUATOR_STRENGTH_SCHEMA:
+        raise ValueError(f"{source}: unsupported strength evidence schema")
+    if strength.get("criterion") != "net_chips_after_70_hands_gt_zero":
+        raise ValueError(f"{source}: strength evidence criterion changed")
     requested = strength.get("requested")
+    execution_passed = strength.get("execution_contract_passed")
+    outcome_passed = strength.get("outcome_gate_passed")
     passed = strength.get("passed")
-    if not isinstance(requested, bool) or not isinstance(passed, bool):
+    if any(
+        not isinstance(value, bool)
+        for value in (requested, execution_passed, outcome_passed, passed)
+    ):
         raise ValueError(f"{source}: strength evidence flags must be booleans")
-    for field in ("request_errors", "result_errors"):
+    for field in ("request_errors", "result_errors", "statistical_errors"):
         errors = strength.get(field)
         if not isinstance(errors, list) or any(
             not isinstance(error, str) for error in errors
@@ -433,21 +491,40 @@ def _validate_report(raw: bytes, *, source: str) -> _LoadedReport:
     strength_errors = [
         *strength["request_errors"],
         *strength["result_errors"],
+        *strength["statistical_errors"],
     ]
     if mode != "full":
-        if requested or passed or strength_errors:
+        if (
+            requested
+            or execution_passed
+            or outcome_passed
+            or passed
+            or strength_errors
+        ):
             raise ValueError(
                 f"{source}: non-full ablation must not claim strength evidence"
             )
-    elif requested:
-        if not passed or strength_errors:
-            raise ValueError(
-                f"{source}: requested full strength evidence must have passed cleanly"
-            )
-    elif passed or strength_errors:
+    elif not requested and (
+        execution_passed or outcome_passed or passed or strength_errors
+    ):
         raise ValueError(
             f"{source}: unrequested full strength evidence must be false and clean"
         )
+    elif requested:
+        expected_execution = not (
+            strength["request_errors"] or strength["result_errors"]
+        )
+        expected_outcome = bool(
+            expected_execution and not strength["statistical_errors"]
+        )
+        if (
+            execution_passed is not expected_execution
+            or outcome_passed is not expected_outcome
+            or passed is not expected_outcome
+        ):
+            raise ValueError(
+                f"{source}: requested full strength flags contradict their errors"
+            )
     for field, expected in INPUT_OPTIONAL_CONTROL_VALUES.items():
         if field in payload and (
             payload.get(field) != expected
@@ -600,6 +677,11 @@ def _validate_report(raw: bytes, *, source: str) -> _LoadedReport:
             field=f"{field}.hand_net_chips",
             length=HANDS_PER_LEG,
         )
+        _validate_hand_chip_bounds(
+            hand_chips,
+            field=f"{field}.hand_net_chips",
+            maximum=MAX_ABS_PAIRED_HAND_NET_CHIPS,
+        )
         expected_hand_chips = [
             legs["forward"]["hand_net_chips"][index]
             + legs["swapped"]["hand_net_chips"][index]
@@ -667,6 +749,7 @@ def _validate_report(raw: bytes, *, source: str) -> _LoadedReport:
         opponent_seed_stride,
         bot_seed_base,
         bot_seed_stride,
+        json.dumps(runtime_contract, sort_keys=True, separators=(",", ":")),
         tuple(sorted(row_metadata)),
         tuple(sorted(leg_keys)),
     )
@@ -681,6 +764,13 @@ def _validate_report(raw: bytes, *, source: str) -> _LoadedReport:
         plan_signature=plan_signature,
         clusters=clusters,
     )
+
+
+def validate_native_ablation_report_bytes(
+    raw: bytes, *, source: str = "native_ablation_report"
+) -> _LoadedReport:
+    """Public strict validator shared by native evidence reducers."""
+    return _validate_report(bytes(raw), source=str(source))
 
 
 def _rounded(value: float, digits: int = 9) -> float:
@@ -989,6 +1079,7 @@ def summarize_native_ablation_reports(
             "required_modes": list(ABLATION_MODES),
             "candidate_ablation_schema": ABLATION_SCHEMA,
             "native_evaluation_format": "native_tcp_evaluation_v2",
+            "runtime_contract": full.payload["runtime_contract"],
             "paired": True,
             "hands_per_leg": HANDS_PER_LEG,
             "legs_per_cluster": 2,

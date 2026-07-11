@@ -50,6 +50,30 @@ def test_native_launcher_uses_allowlisted_environment_for_arena(tmp_path, monkey
     assert "--log" in plan.command
 
 
+def test_native_launcher_respects_explicit_empty_environment(tmp_path, monkeypatch):
+    bot = tmp_path / "national_v1"
+    bot.mkdir()
+    entry = bot / "national_bot.py"
+    entry.write_text("print('unused')\n", encoding="utf-8")
+    monkeypatch.setenv("PARENT_ONLY_SECRET", "must-not-be-inherited")
+
+    plan = build_native_bot_launch(
+        bot_dir=bot,
+        entry=entry,
+        label="national_v1",
+        host="127.0.0.1",
+        port=10001,
+        action_delay=0.0,
+        hard_deadline=2.0,
+        refinement_budget=1.8,
+        baseline_target=0.2,
+        base_environment={},
+        inherit_all_environment=True,
+    )
+
+    assert "PARENT_ONLY_SECRET" not in plan.environment
+
+
 def test_runtime_capacity_lease_reserves_slots_across_callers(tmp_path):
     root = tmp_path / "capacity"
     first = try_acquire_match_slots("arena", 2, root=root, total_slots=2)

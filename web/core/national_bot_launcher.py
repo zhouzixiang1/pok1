@@ -81,7 +81,7 @@ def build_native_bot_launch(
     entry_path = Path(entry).resolve()
     if entry_path.parent != bot_path or entry_path.name != "national_bot.py":
         raise ValueError("native entry must be national_bot.py inside bot_dir")
-    source = base_environment or os.environ
+    source = os.environ if base_environment is None else base_environment
     environment = (
         {str(key): str(value) for key, value in source.items()}
         if inherit_all_environment
