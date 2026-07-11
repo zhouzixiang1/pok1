@@ -737,6 +737,11 @@ covering preflop and postflop currently produce identical v140/v152 actions,
 and the native trace row carries 66 finite bounded values. This is a diagnostic
 data-source version, not a neural strength candidate. Independent 70-hand
 native paired parity remains required before a context-aware collection starts.
+`strategy_context_trace_rows.py` provides the strict value-row join: it binds
+on hand, in-hand decision index, and match decision serial; requires the traced
+final action to equal the row's rule action; validates all 66 values; and stores
+a canonical context digest. The joined fields explicitly forbid use by the
+opponent-response head.
 
 `freeze_opponent_role_dataset.py` replaces the ambiguous four-way development
 freeze for the next training run. It emits five explicit opponent-disjoint
