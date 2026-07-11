@@ -1,0 +1,12 @@
+{
+  "suite_dir": "bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260710_011816",
+  "self_play_rounds": 1,
+  "opponent_rounds": 1,
+  "target_hands": 10,
+  "rounds_requested": 2,
+  "rounds_run": 2,
+  "passed_rounds": 2,
+  "failed_rounds": 0,
+  "official_platform": true
+}
+summary_json=bots/neural_national_lab/data/official_platform_v141_smoke/acceptance_20260710_011816/summary.json
