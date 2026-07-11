@@ -1137,6 +1137,36 @@ completed collector state. The neural-lab suite passes 306 tests. This proves
 the data and gate contract on real collection output, not that a policy or bot
 has passed the new strength criterion.
 
+`opponent_multitask_model_v4.py` adds the first separately versioned neural
+consumer of that supervision. It preserves all v3 distributional value and
+opponent-response heads, but adds one absolute 70-hand positive-outcome logit
+per action from the shared opponent-aware value latent. Its masked objective is
+binary cross entropy plus within-decision positive-versus-nonpositive action
+ranking. Early stopping compares a lexicographic key in this order: flip-subset
+balanced error, overall outcome balanced error, outcome NLL, then the old v3
+value/response score. Thus a secondary chip/value improvement cannot replace a
+checkpoint whose primary outcome behavior worsened.
+
+An incomplete CUDA smoke on the atomic 24-pass role freeze trained a small GRU
+v4 model with 179,415 parameters for two epochs on the RTX 4060. Epoch two
+improved the secondary v3 score but worsened the primary flip-outcome error, so
+the trainer correctly restored epoch one. Its early-stop outcome balanced
+accuracy was 57.06 percent, flip-subset balanced accuracy 77.42 percent, NLL
+0.6670, and Brier score 0.2373. These numbers use only one early-stop opponent,
+24/160 collection passes, and two epochs; they are pipeline diagnostics, not a
+model-strength result.
+
+`opponent_multitask_runtime_v4.py` and
+`export_opponent_multitask_v4.py` extend the strict stdlib runtime without
+changing the v3 format. The smoke checkpoint exported to a 3,750,782-byte JSON
+artifact (SHA-256
+`b5bf27225507db89683cff82a8bfb8fbccf7df50fbe9a81085adbada221bd359`).
+On a real frozen `national_v135` row, Torch-versus-stdlib maximum differences
+were `2.02e-7` for distributional values and `6.94e-8` for outcome logits. The
+head still emits explicitly uncalibrated logits. A protected calibration role
+must fit and bind probability calibration before policy selection. The full
+neural-lab suite now passes 322 tests, and all 30 national protocol tests pass.
+
 ## Literature Recheck And Search Direction
 
 The architecture decision is also constrained by established imperfect-
