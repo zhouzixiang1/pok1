@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import random
 import shutil
+import subprocess
 import sys
 from typing import Any
 
@@ -48,6 +49,38 @@ def require_formal_collection_boundary(
         dataset.require_collection_boundary(
             expected_passes=FORMAL_COLLECTION_PASSES
         )
+
+
+def training_environment(
+    device: str, *, pythonhashseed: str | None = None
+) -> dict[str, Any]:
+    environment = v3._environment(device)
+    environment["torch"] = str(environment.get("torch"))
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).resolve().parents[3],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    git_commit = result.stdout.strip()
+    if result.returncode != 0 or len(git_commit) != 40:
+        raise RuntimeError("training checkout has no valid Git commit")
+    environment.update({
+        "git_commit": git_commit,
+        "pythonhashseed": (
+            os.environ.get("PYTHONHASHSEED")
+            if pythonhashseed is None
+            else str(pythonhashseed)
+        ),
+        "cublas_workspace_config": os.environ.get(
+            "CUBLAS_WORKSPACE_CONFIG", ":4096:8"
+        ),
+        "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+        "mkl_num_threads": os.environ.get("MKL_NUM_THREADS"),
+        "openblas_num_threads": os.environ.get("OPENBLAS_NUM_THREADS"),
+    })
+    return environment
 
 
 def outcome_objective(
@@ -400,7 +433,7 @@ def train_model(
 def load_checkpoint(
     path: Path, *, device: torch.device | str = "cpu"
 ) -> tuple[OpponentAwareMultiTaskNetV4, dict[str, Any]]:
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(payload, dict) or payload.get("schema") != CHECKPOINT_SCHEMA:
         raise ValueError("unsupported v4 checkpoint")
     metadata = payload.get("model_metadata")
@@ -518,10 +551,56 @@ def _code_artifacts() -> dict[str, dict[str, Any]]:
         "parent_model": Path(parent_model.__file__).resolve(),
         "parent_batch": Path(parent_batch.__file__).resolve(),
     }
+    for module_name in (
+        "audit_oppmodel_dataset",
+        "cross_hand_sequence",
+        "decision_context_features",
+        "feature_spec",
+        "freeze_opponent_role_dataset",
+        "freeze_oppmodel_dataset",
+        "hand_context_features",
+        "history_feature_schema",
+        "longrun_collect_oppmodel",
+        "match_outcome_schema",
+        "model_input_schema",
+        "multitask_calibration",
+        "multitask_training_data",
+        "opponent_exposure_ledger",
+        "opponent_profile_schema",
+        "opponent_response_schema",
+        "role_dataset_access",
+        "sampling_weights",
+        "state_feature_schema",
+        "strategy_context_schema",
+    ):
+        module = sys.modules.get(module_name)
+        raw_path = getattr(module, "__file__", None)
+        if raw_path is None:
+            raise RuntimeError(
+                f"training dependency module is not loaded: {module_name}"
+            )
+        paths[f"dependency:{module_name}"] = Path(raw_path).resolve()
+    paths["dependency:sever_validator"] = (
+        Path(__file__).resolve().parents[3] / "sever" / "engine" / "validator.py"
+    )
     return {
         name: {"bytes": path.stat().st_size, "sha256": v3._sha256(path)}
         for name, path in sorted(paths.items())
     }
+
+
+def _verify_code_artifacts_unchanged(
+    startup: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    if _code_artifacts() != startup:
+        raise RuntimeError("training code changed while v4 training was running")
+    return startup
+
+
+def _verify_environment_unchanged(startup: dict[str, Any]) -> dict[str, Any]:
+    if training_environment(str(startup.get("device"))) != startup:
+        raise RuntimeError("training environment changed while v4 training was running")
+    return startup
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -573,6 +652,8 @@ def main(argv: list[str] | None = None) -> int:
     _validate_args(args)
     config = _config(args)
     v3._seed_everything(args.seed)
+    startup_code_artifacts = _code_artifacts()
+    startup_environment = training_environment(args.device)
 
     out_dir = args.out_dir.resolve()
     if out_dir.exists():
@@ -609,7 +690,12 @@ def main(argv: list[str] | None = None) -> int:
         history, best_epoch, final_early_stop = train_model(
             model, train, early_stop, config=config, device=args.device
         )
-        code_artifacts = _code_artifacts()
+        code_artifacts = _verify_code_artifacts_unchanged(
+            startup_code_artifacts
+        )
+        training_environment_artifact = _verify_environment_unchanged(
+            startup_environment
+        )
         checkpoint_path = temporary / "checkpoint.pt"
         training_artifacts = {
             role: training_phase["roles"][role]["provenance"]["artifact_sha256"]
@@ -627,6 +713,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "source_collection_complete": not incomplete,
             "code_artifacts": code_artifacts,
+            "training_environment": training_environment_artifact,
             "model_metadata": model.metadata(),
             "training_data": training_data_metadata(),
             "training_config": config,
@@ -675,7 +762,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             "model": model.metadata(),
             "config": config,
-            "environment": v3._environment(args.device),
+            "environment": training_environment_artifact,
             "code_artifacts": code_artifacts,
             "history": history,
             "best_epoch": best_epoch,
@@ -706,6 +793,8 @@ def main(argv: list[str] | None = None) -> int:
             "deployment_policy_value": False,
             "strength_evidence": False,
         })
+        _verify_code_artifacts_unchanged(startup_code_artifacts)
+        _verify_environment_unchanged(startup_environment)
         temporary.replace(out_dir)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)

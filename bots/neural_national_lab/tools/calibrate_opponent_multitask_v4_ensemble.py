@@ -35,6 +35,7 @@ from multitask_training_data import (
     VALUE_FIELDS,
     prepare_model_calibration,
     prepare_training_phase,
+    training_data_metadata,
 )
 from opponent_multitask_model_v3 import QUANTILE_LEVELS
 from opponent_multitask_model_v4 import MODEL_FORMAT, MODEL_SCALES
@@ -42,12 +43,19 @@ from role_dataset_access import RoleDatasetAccess
 from run_opponent_multitask_v4_scaling import (
     FORMAL_ENCODERS,
     FORMAL_SCALES,
+    TRAINING_ARTIFACT_FIELDS,
+    TRAINING_AUTHORIZATION_FIELDS,
+    TRAINING_CHECKPOINT_FIELDS,
+    TRAINING_REPORT_FIELDS,
     SELECTION_METHOD,
     SELECTION_KEY_ORDER,
     SUMMARY_SCHEMA,
     _finite_selection_key,
     _is_cuda_device,
+    locked_exposure_ledger_snapshot,
     summarize_runs,
+    validate_training_job_exposures,
+    validate_run_contract,
 )
 from train_opponent_multitask_v3 import checkpoint_authorization
 from train_opponent_multitask_v4 import (
@@ -55,6 +63,7 @@ from train_opponent_multitask_v4 import (
     CHECKPOINT_SCHEMA as TRAINING_CHECKPOINT_SCHEMA,
     REPORT_SCHEMA as TRAINING_REPORT_SCHEMA,
     _code_artifacts as current_training_code_artifacts,
+    _config as build_training_config,
     load_checkpoint,
 )
 from win_first_policy_v4 import OUTCOME_AGGREGATION_METHOD
@@ -64,7 +73,52 @@ ENSEMBLE_MANIFEST_SCHEMA = "opponent_multitask_v4_ensemble_checkpoint_v1"
 ENSEMBLE_CALIBRATION_SCHEMA = "opponent_multitask_v4_ensemble_calibration_v1"
 CALIBRATION_REPORT_SCHEMA = "opponent_multitask_v4_ensemble_calibration_report_v1"
 ARTIFACT_MANIFEST_SCHEMA = "opponent_multitask_v4_ensemble_artifacts_v1"
-FORMAL_GRID_VERIFICATION_SCHEMA = "opponent_multitask_v4_formal_grid_verification_v2"
+FORMAL_GRID_VERIFICATION_SCHEMA = "opponent_multitask_v4_formal_grid_verification_v3"
+FORMAL_VERIFIED_RUN_FIELDS = {
+    "scale",
+    "encoder",
+    "cross_transformer_heads",
+    "seed",
+    "run_id",
+    "output_dir",
+    "completed",
+    "selection_key",
+    "selection_key_order",
+    "parameters",
+    "checkpoint_sha256",
+    "role_manifest_sha256",
+    "source_collection_complete",
+    "source_completed_passes",
+    "source_requested_passes",
+    "incomplete_smoke",
+    "training_device",
+    "training_exposure_sha256",
+    "training_command",
+    "training_environment",
+    "training_config",
+    "role_counts",
+    "training_code_artifacts_sha256",
+}
+FORMAL_GRID_VERIFICATION_FIELDS = {
+    "schema",
+    "role_manifest_sha256",
+    "training_artifact_sha256",
+    "training_code_artifacts",
+    "requested",
+    "selection_key_order",
+    "selection_method",
+    "scaling_tool_sha256",
+    "scaling_run_contract",
+    "scaling_run_contract_sha256",
+    "verified_runs",
+    "configurations",
+    "selected_configuration",
+    "all_models_loaded_on_cpu_without_retention",
+    "source_collection_complete",
+    "deployment_policy_value",
+    "strength_evidence",
+    "payload_sha256",
+}
 EXPECTED_TRAINING_FILES = {
     "checkpoint.pt",
     "checkpoint_authorization.json",
@@ -195,6 +249,7 @@ def _verify_file_contracts(
         path = root / name
         if (
             not isinstance(contract, dict)
+            or set(contract) != {"bytes", "sha256"}
             or not path.is_file()
             or path.stat().st_size != int(contract.get("bytes", -1))
             or _sha256(path) != contract.get("sha256")
@@ -205,8 +260,17 @@ def _verify_file_contracts(
 def selected_scaling_runs(
     summary: dict[str, Any], *, allow_incomplete_smoke: bool
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    run_contract = validate_run_contract(summary.get("run_contract"))
     if (
         summary.get("schema") != SUMMARY_SCHEMA
+        or summary.get("run_contract_sha256")
+        != run_contract.get("payload_sha256")
+        or summary.get("created_at") != run_contract.get("created_at")
+        or summary.get("role_manifest") != run_contract.get("role_manifest")
+        or summary.get("ledger") != run_contract.get("ledger")
+        or summary.get("requested") != run_contract.get("requested")
+        or summary.get("scaling_tool_sha256")
+        != run_contract.get("scaling_tool_sha256")
         or summary.get("model_calibration_opened") is not False
         or summary.get("policy_roles_opened") is not False
         or summary.get("deployment_policy_value") is not False
@@ -335,8 +399,20 @@ def _verified_member(
     retain_model: bool = True,
 ) -> dict[str, Any]:
     root = Path(str(row.get("output_dir", ""))).resolve()
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("v4 member training directory is invalid")
+    expected_entries = {*EXPECTED_TRAINING_FILES, "artifact_manifest.json"}
+    entries = list(root.iterdir())
+    if (
+        {path.name for path in entries} != expected_entries
+        or any(path.is_symlink() for path in entries)
+    ):
+        raise ValueError("v4 member training directory has unexpected artifacts")
     artifact = _load_json(root / "artifact_manifest.json", field="training artifact")
-    if artifact.get("schema") != TRAINING_ARTIFACT_SCHEMA:
+    if (
+        set(artifact) != TRAINING_ARTIFACT_FIELDS
+        or artifact.get("schema") != TRAINING_ARTIFACT_SCHEMA
+    ):
         raise ValueError("v4 member has the wrong training artifact schema")
     _verify_file_contracts(
         root,
@@ -348,6 +424,10 @@ def _verified_member(
     authorization = _load_json(
         root / "checkpoint_authorization.json", field="checkpoint authorization"
     )
+    if set(report) != TRAINING_REPORT_FIELDS:
+        raise ValueError("v4 member training report fields changed")
+    if set(authorization) != TRAINING_AUTHORIZATION_FIELDS:
+        raise ValueError("v4 member checkpoint authorization fields changed")
     checkpoint_path = root / "checkpoint.pt"
     checkpoint_sha256 = _sha256(checkpoint_path)
     config = report.get("config") or {}
@@ -434,12 +514,16 @@ def _verified_member(
         raise ValueError("v4 member checkpoint authorization does not match")
     model, checkpoint = load_checkpoint(checkpoint_path, device=device)
     if (
-        checkpoint.get("schema") != TRAINING_CHECKPOINT_SCHEMA
+        set(checkpoint) != TRAINING_CHECKPOINT_FIELDS
+        or checkpoint.get("schema") != TRAINING_CHECKPOINT_SCHEMA
         or checkpoint.get("role_manifest_sha256") != role_manifest_sha256
         or checkpoint.get("training_artifact_sha256")
         != training_artifact_sha256
         or checkpoint.get("model_metadata") != metadata
         or checkpoint.get("training_config") != config
+        or checkpoint.get("training_data") != training_data_metadata()
+        or checkpoint.get("best_epoch") != report.get("best_epoch")
+        or checkpoint.get("training_environment") != environment
         or checkpoint.get("code_artifacts") != report.get("code_artifacts")
         or checkpoint.get("source_completed_passes")
         != report.get("source_completed_passes")
@@ -475,6 +559,9 @@ def _verified_member(
         "early_stop_selection_key": selection_key,
         "model_metadata": metadata,
         "training_config": config,
+        "training_command": report["command"],
+        "training_environment": environment,
+        "role_counts": report["role_counts"],
         "training_artifact_sha256": checkpoint["training_artifact_sha256"],
         "code_artifacts": current_code_artifacts,
         "source_completed_passes": report.get("source_completed_passes"),
@@ -619,16 +706,49 @@ def _formal_verified_row(member: dict[str, Any]) -> dict[str, Any]:
         "source_requested_passes": member["source_requested_passes"],
         "incomplete_smoke": member["incomplete_smoke"],
         "training_device": member["training_device"],
+        "training_exposure_sha256": member["training_exposure_sha256"],
+        "training_command": member["training_command"],
+        "training_environment": member["training_environment"],
+        "training_config": member["training_config"],
+        "role_counts": member["role_counts"],
+        "training_code_artifacts_sha256": _canonical_sha256(
+            member["code_artifacts"]
+        ),
     }
 
 
 def verify_formal_scaling_artifacts(
     summary: dict[str, Any],
     *,
+    ledger_path: Path,
+    ledger_snapshot: dict[str, Any] | None = None,
     role_manifest_sha256: str,
     training_artifact_sha256: dict[str, str],
 ) -> dict[str, Any]:
     """Verify every real sweep artifact on CPU and recompute the formal winner."""
+    run_contract = validate_run_contract(summary.get("run_contract"))
+    contract_roles = (run_contract.get("training_roles") or {}).get("roles") or {}
+    contract_training_artifacts = {
+        role: details.get("artifact_sha256")
+        for role, details in contract_roles.items()
+    }
+    current_code_artifacts = _current_training_code_artifacts()
+    if (
+        summary.get("run_contract_sha256")
+        != run_contract.get("payload_sha256")
+        or summary.get("requested") != run_contract.get("requested")
+        or summary.get("scaling_tool_sha256")
+        != run_contract.get("scaling_tool_sha256")
+        or run_contract.get("allow_incomplete_smoke") is not False
+        or run_contract.get("role_manifest_sha256") != role_manifest_sha256
+        or contract_training_artifacts != training_artifact_sha256
+        or run_contract.get("training_code_artifacts")
+        != current_code_artifacts
+        or run_contract.get("trainer_sha256")
+        != (current_code_artifacts.get("trainer") or {}).get("sha256")
+        or run_contract.get("ledger") != str(ledger_path.resolve())
+    ):
+        raise ValueError("formal v4 scaling run contract binding changed")
     (
         scales,
         encoders,
@@ -657,15 +777,31 @@ def verify_formal_scaling_artifacts(
         if job not in expected_jobs or job in observed_jobs:
             raise ValueError("formal v4 scaling jobs do not match the requested matrix")
         observed_jobs.add(job)
-        verified_members.append(_verified_member(
+        member = _verified_member(
             raw,
             role_manifest_sha256=role_manifest_sha256,
             training_artifact_sha256=training_artifact_sha256,
             device="cpu",
             retain_model=False,
-        ))
+        )
+        exposure_sha256 = validate_training_job_exposures(
+            ledger_path,
+            run_id=member["run_id"],
+            role_contracts=contract_roles,
+            ledger_snapshot=ledger_snapshot,
+        )
+        if raw.get("training_exposure_sha256") != exposure_sha256:
+            raise ValueError("formal v4 scaling training exposure changed")
+        member["training_exposure_sha256"] = exposure_sha256
+        verified_members.append(member)
     if observed_jobs != expected_jobs or len(raw_rows) != len(expected_jobs):
         raise ValueError("formal v4 scaling jobs do not cover the requested matrix")
+    planned_jobs = {
+        (str(row["scale"]), str(row["encoder"]), int(row["seed"])): row
+        for row in run_contract["jobs"]
+    }
+    if set(planned_jobs) != expected_jobs:
+        raise ValueError("formal v4 scaling plan does not cover the requested matrix")
     if (
         len({member["checkpoint_sha256"] for member in verified_members})
         != len(verified_members)
@@ -678,6 +814,31 @@ def verify_formal_scaling_artifacts(
     reference_base_config: dict[str, Any] | None = None
     group_contracts: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
     for member in verified_members:
+        planned = planned_jobs[
+            (member["scale"], member["encoder"], member["seed"])
+        ]
+        config_arguments = argparse.Namespace(
+            **run_contract["training_options"]
+        )
+        config_arguments.scale = member["scale"]
+        config_arguments.cross_encoder = member["encoder"]
+        config_arguments.seed = member["seed"]
+        expected_training_config = build_training_config(config_arguments)
+        expected_role_counts = {
+            role: {
+                "opponents": details["opponents"],
+                "value": details["files"][f"cf_{role}.jsonl"]["rows"],
+                "behavior": details["files"][
+                    f"opponent_actions_{role}.jsonl"
+                ]["rows"],
+                "provenance": {
+                    "artifact_sha256": details["artifact_sha256"],
+                    "manifest_sha256": role_manifest_sha256,
+                    "candidate_sha256": None,
+                },
+            }
+            for role, details in contract_roles.items()
+        }
         if (
             member["training_device"] != requested_device
             or not _is_cuda_device(member["training_device"])
@@ -692,6 +853,14 @@ def verify_formal_scaling_artifacts(
                 and member["model_metadata"].get("cross_transformer_heads")
                 != requested_transformer_heads
             )
+            or member["run_id"] != planned.get("run_id")
+            or member["output_dir"] != planned.get("output_dir")
+            or member["training_command"] != planned.get("command")
+            or member["training_environment"]
+            != planned.get("training_environment")
+            or member["role_counts"] != expected_role_counts
+            or member["training_config"] != expected_training_config
+            or member["code_artifacts"] != current_code_artifacts
         ):
             raise ValueError("formal v4 scaling artifact is not a complete CUDA run")
         config = dict(member["training_config"])
@@ -734,6 +903,8 @@ def verify_formal_scaling_artifacts(
         "selection_key_order": list(SELECTION_KEY_ORDER),
         "selection_method": SELECTION_METHOD,
         "scaling_tool_sha256": _sha256(_scaling_tool_path()),
+        "scaling_run_contract": summary["run_contract"],
+        "scaling_run_contract_sha256": summary["run_contract_sha256"],
         "verified_runs": verified_rows,
         "configurations": recomputed_configurations,
         "selected_configuration": recomputed_selected,
@@ -748,14 +919,41 @@ def verify_formal_scaling_artifacts(
 def validate_formal_grid_verification(
     raw: Any,
     *,
+    ledger_path: Path,
+    ledger_snapshot: dict[str, Any] | None = None,
     role_manifest_sha256: str,
     training_artifact_sha256: dict[str, str],
     selected_configuration: dict[str, Any],
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("formal v4 ensemble has no grid verification")
+    if set(raw) != FORMAL_GRID_VERIFICATION_FIELDS:
+        raise ValueError("formal v4 grid verification fields changed")
     proof = dict(raw)
     payload_sha256 = str(proof.pop("payload_sha256", ""))
+    run_contract = validate_run_contract(proof.get("scaling_run_contract"))
+    current_code_artifacts = _current_training_code_artifacts()
+    current_scaling_tool_sha256 = _sha256(_scaling_tool_path())
+    contract_roles = run_contract["training_roles"]["roles"]
+    contract_training_artifacts = {
+        role: details["artifact_sha256"]
+        for role, details in contract_roles.items()
+    }
+    expected_role_counts = {
+        role: {
+            "opponents": details["opponents"],
+            "value": details["files"][f"cf_{role}.jsonl"]["rows"],
+            "behavior": details["files"][
+                f"opponent_actions_{role}.jsonl"
+            ]["rows"],
+            "provenance": {
+                "artifact_sha256": details["artifact_sha256"],
+                "manifest_sha256": role_manifest_sha256,
+                "candidate_sha256": None,
+            },
+        }
+        for role, details in contract_roles.items()
+    }
     (
         scales,
         encoders,
@@ -773,12 +971,53 @@ def validate_formal_grid_verification(
     if not isinstance(rows, list):
         raise ValueError("formal v4 grid verification has no verified runs")
     try:
-        observed_jobs = {
+        observed_jobs = [
             (str(row["scale"]), str(row["encoder"]), int(row["seed"]))
             for row in rows
-        }
-        checkpoints = [str(row["checkpoint_sha256"]) for row in rows]
+        ]
+        checkpoints = [
+            _digest(row["checkpoint_sha256"], field="checkpoint_sha256")
+            for row in rows
+        ]
+        run_ids = [str(row["run_id"]) for row in rows]
+        output_dirs = [str(row["output_dir"]) for row in rows]
         normalized_keys = [_finite_selection_key(row["selection_key"]) for row in rows]
+        planned_jobs = {
+            (str(job["scale"]), str(job["encoder"]), int(job["seed"])): job
+            for job in run_contract["jobs"]
+        }
+        contract_rows_valid = True
+        code_artifacts_sha256 = _canonical_sha256(current_code_artifacts)
+        for row, identity in zip(rows, observed_jobs, strict=True):
+            planned = planned_jobs.get(identity)
+            arguments = argparse.Namespace(**run_contract["training_options"])
+            arguments.scale, arguments.cross_encoder, arguments.seed = identity
+            expected_training_config = build_training_config(arguments)
+            exposure_sha256 = validate_training_job_exposures(
+                ledger_path,
+                run_id=str(row["run_id"]),
+                role_contracts=contract_roles,
+                ledger_snapshot=ledger_snapshot,
+            )
+            if (
+                set(row) != FORMAL_VERIFIED_RUN_FIELDS
+                or planned is None
+                or row.get("scale") != planned.get("scale")
+                or row.get("encoder") != planned.get("encoder")
+                or isinstance(row.get("seed"), bool)
+                or row.get("seed") != planned.get("seed")
+                or row.get("run_id") != planned.get("run_id")
+                or row.get("output_dir") != planned.get("output_dir")
+                or row.get("training_command") != planned.get("command")
+                or row.get("training_environment")
+                != planned.get("training_environment")
+                or row.get("training_config") != expected_training_config
+                or row.get("role_counts") != expected_role_counts
+                or row.get("training_exposure_sha256") != exposure_sha256
+                or row.get("training_code_artifacts_sha256")
+                != code_artifacts_sha256
+            ):
+                contract_rows_valid = False
         recomputed_configurations, recomputed_selected = summarize_runs(
             rows, required_seeds=seeds
         )
@@ -789,18 +1028,35 @@ def validate_formal_grid_verification(
         or payload_sha256 != _canonical_sha256(proof)
         or proof.get("role_manifest_sha256") != role_manifest_sha256
         or proof.get("training_artifact_sha256") != training_artifact_sha256
-        or proof.get("training_code_artifacts")
-        != _current_training_code_artifacts()
+        or proof.get("training_code_artifacts") != current_code_artifacts
         or proof.get("selection_key_order") != list(SELECTION_KEY_ORDER)
         or proof.get("selection_method") != SELECTION_METHOD
-        or proof.get("scaling_tool_sha256") != _sha256(_scaling_tool_path())
+        or proof.get("scaling_tool_sha256") != current_scaling_tool_sha256
+        or proof.get("scaling_run_contract_sha256")
+        != run_contract.get("payload_sha256")
+        or proof.get("requested") != run_contract.get("requested")
+        or run_contract.get("allow_incomplete_smoke") is not False
+        or run_contract.get("role_manifest_sha256") != role_manifest_sha256
+        or contract_training_artifacts != training_artifact_sha256
+        or run_contract.get("training_code_artifacts")
+        != current_code_artifacts
+        or run_contract.get("trainer_sha256")
+        != (current_code_artifacts.get("trainer") or {}).get("sha256")
+        or run_contract.get("scaling_tool_sha256")
+        != current_scaling_tool_sha256
+        or run_contract.get("ledger") != str(ledger_path.resolve())
         or proof.get("all_models_loaded_on_cpu_without_retention") is not True
         or proof.get("source_collection_complete") is not True
         or proof.get("deployment_policy_value") is not False
         or proof.get("strength_evidence") is not False
         or len(rows) != len(expected_jobs)
-        or observed_jobs != expected_jobs
+        or len(observed_jobs) != len(set(observed_jobs))
+        or set(observed_jobs) != expected_jobs
+        or set(planned_jobs) != expected_jobs
+        or contract_rows_valid is not True
         or len(checkpoints) != len(set(checkpoints))
+        or len(run_ids) != len(set(run_ids))
+        or len(output_dirs) != len(set(output_dirs))
         or len(normalized_keys) != len(rows)
         or any(
             row.get("completed") is not True
@@ -822,6 +1078,11 @@ def validate_formal_grid_verification(
             or isinstance(row.get("parameters"), bool)
             or int(row["parameters"]) < 1
             for row in rows
+        )
+        or len(recomputed_configurations) != len(scales) * len(encoders)
+        or any(
+            configuration.get("parameters_consistent") is not True
+            for configuration in recomputed_configurations
         )
         or proof.get("configurations") != recomputed_configurations
         or proof.get("selected_configuration") != recomputed_selected
@@ -1126,12 +1387,17 @@ def load_calibrated_ensemble(
     if not isinstance(selected, dict):
         raise ValueError("v4 ensemble manifest has no selected configuration")
     if formal:
-        validate_formal_grid_verification(
-            ensemble.get("formal_grid_verification"),
-            role_manifest_sha256=dataset.manifest_sha256,
-            training_artifact_sha256=expected_training,
-            selected_configuration=selected,
-        )
+        with locked_exposure_ledger_snapshot(
+            dataset.ledger_path
+        ) as ledger_snapshot:
+            validate_formal_grid_verification(
+                ensemble.get("formal_grid_verification"),
+                ledger_path=dataset.ledger_path,
+                ledger_snapshot=ledger_snapshot,
+                role_manifest_sha256=dataset.manifest_sha256,
+                training_artifact_sha256=expected_training,
+                selected_configuration=selected,
+            )
     elif ensemble.get("formal_grid_verification") is not None:
         raise ValueError("incomplete v4 ensemble carries a formal grid proof")
     run_rows = [
@@ -1344,11 +1610,16 @@ def main(argv: list[str] | None = None) -> int:
         }
         formal_grid_verification = None
         if formal:
-            formal_grid_verification = verify_formal_scaling_artifacts(
-                summary,
-                role_manifest_sha256=dataset.manifest_sha256,
-                training_artifact_sha256=training_artifacts,
-            )
+            with locked_exposure_ledger_snapshot(
+                dataset.ledger_path
+            ) as ledger_snapshot:
+                formal_grid_verification = verify_formal_scaling_artifacts(
+                    summary,
+                    ledger_path=dataset.ledger_path,
+                    ledger_snapshot=ledger_snapshot,
+                    role_manifest_sha256=dataset.manifest_sha256,
+                    training_artifact_sha256=training_artifacts,
+                )
             selected = formal_grid_verification["selected_configuration"]
             run_rows = [
                 row
