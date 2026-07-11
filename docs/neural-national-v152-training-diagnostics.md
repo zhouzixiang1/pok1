@@ -489,10 +489,17 @@ therefore adds a separate native-TCP diagnostic: it fixes every card dealt
 before a selected decision, reshuffles only the unseen suffix of that hand,
 and gives the rule and forced branches the same suffix. It checks the complete
 pre-force request/state and sanitized rule action before accepting a replicate,
-then reports conditional catastrophe rate and bootstrap CI. Its deck-prefix,
-context-integrity, and statistical helpers pass unit tests. It has not yet run
-an end-to-end TCP replicate while the four-slot long-run collector is active,
-so it is tooling rather than evidence at this checkpoint.
+then reports conditional catastrophe rate and bootstrap CI. Its optional
+`--through-match` mode continues both branches through hand 70 while preserving
+all future deck seeds, and separately reports immediate-hand, future-tail, and
+full-match deltas. A terminal rule fold may reuse its recorded baseline because
+the reshuffled undealt cards are never exposed; other rule branches are rerun
+under the same conditional deck. Deck-prefix, context-integrity, long-horizon
+accounting, terminal-baseline reuse, and statistical helpers pass unit and
+async integration tests. The queued pass-160 diagnostic uses full-match mode.
+It has not yet run an end-to-end TCP replicate while the four-slot long-run
+collector is active, so it remains tooling rather than evidence at this
+checkpoint.
 
 ## Completed Pass-40 Sweep And Q10 Control
 

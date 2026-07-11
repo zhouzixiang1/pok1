@@ -178,6 +178,40 @@ def _bootstrap_ci(
     }
 
 
+def _metric_summary(
+    values: list[float], *, bootstrap_samples: int, bootstrap_seed: int
+) -> dict[str, Any]:
+    return {
+        "valid_replicates": len(values),
+        "mean": statistics.fmean(values) if values else 0.0,
+        "median": statistics.median(values) if values else 0.0,
+        "stdev": statistics.pstdev(values) if values else 0.0,
+        "p05": _percentile(values, 0.05),
+        "p20": _percentile(values, 0.20),
+        "positive_rate": (
+            sum(value > 0 for value in values) / len(values) if values else 0.0
+        ),
+        "bootstrap_mean_ci": _bootstrap_ci(
+            values, samples=bootstrap_samples, seed=bootstrap_seed
+        ),
+    }
+
+
+def _long_horizon_deltas(
+    *, hand_delta: float | None,
+    baseline_match_value: float | None,
+    forced_match_value: float | None,
+) -> tuple[float | None, float | None]:
+    if (
+        hand_delta is None
+        or baseline_match_value is None
+        or forced_match_value is None
+    ):
+        return None, None
+    match_delta = float(forced_match_value) - float(baseline_match_value)
+    return match_delta, match_delta - float(hand_delta)
+
+
 async def _collect(args: argparse.Namespace) -> dict[str, Any]:
     source = _read_row(args.source, args.row_index)
     candidate = _resolve(args.candidate)
@@ -191,9 +225,23 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
     known_cards = _known_card_count(source)
     original_deck = national_native.Deck
     target_deck_seed = deck_seed_base + hand
+    through_match = bool(getattr(args, "through_match", False))
+    run_hands = max(
+        hand,
+        int((source.get("request") or {}).get("max_hand", hand) or hand),
+    ) if through_match else hand
     fixed_rule_value = (
         float(source["rule_value"])
         if args.reuse_terminal_fold and rule_action == -1 else None
+    )
+    fixed_rule_match_value = None
+    if through_match and fixed_rule_value is not None:
+        raw_match_value = source.get("baseline_match_net_chips")
+        if raw_match_value is not None:
+            fixed_rule_match_value = float(raw_match_value)
+    reuse_terminal_baseline = bool(
+        fixed_rule_value is not None
+        and (not through_match or fixed_rule_match_value is not None)
     )
     rows = []
     for replicate in range(args.replicates):
@@ -205,13 +253,16 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             runout_seed=runout_seed,
         )
         baseline = None
-        baseline_value = fixed_rule_value
-        baseline_ok = fixed_rule_value is not None
+        baseline_value = fixed_rule_value if reuse_terminal_baseline else None
+        baseline_match_value = (
+            fixed_rule_match_value if reuse_terminal_baseline else None
+        )
+        baseline_ok = reuse_terminal_baseline
         if baseline_value is None:
             baseline = await _run_with_deck(
                 candidate,
                 opponent,
-                hands=hand,
+                hands=run_hands,
                 deck_seed_base=deck_seed_base,
                 bot_seed_base=bot_seed_base,
                 timeout_sec=args.timeout_sec,
@@ -222,6 +273,7 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
                 baseline, hand=hand, decision_index=decision_index
             )
             baseline_settlement = _settlement_map(baseline, 0).get(hand)
+            baseline_settlements = _settlement_map(baseline, 0)
             baseline_ok = bool(
                 baseline.get("passed_compliance")
                 and baseline_decision is not None
@@ -235,11 +287,13 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             baseline_value = (
                 float(baseline_settlement) if baseline_settlement is not None else None
             )
+            if through_match and baseline_ok and len(baseline_settlements) == run_hands:
+                baseline_match_value = float(sum(baseline_settlements.values()))
 
         forced = await _run_with_deck(
             candidate,
             opponent,
-            hands=hand,
+            hands=run_hands,
             deck_seed_base=deck_seed_base,
             bot_seed_base=bot_seed_base,
             timeout_sec=args.timeout_sec,
@@ -250,7 +304,8 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
                 "action": forced_action,
             },
         )
-        forced_settlement = _settlement_map(forced, 0).get(hand)
+        forced_settlements = _settlement_map(forced, 0)
+        forced_settlement = forced_settlements.get(hand)
         forced_decision = _decision_trace(
             forced, hand=hand, decision_index=decision_index
         )
@@ -273,13 +328,25 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             float(forced_settlement) - float(baseline_value)
             if baseline_ok and forced_ok and baseline_value is not None else None
         )
+        forced_match_value = None
+        if through_match and forced_ok and len(forced_settlements) == run_hands:
+            forced_match_value = float(sum(forced_settlements.values()))
+        match_delta, tail_delta = _long_horizon_deltas(
+            hand_delta=delta,
+            baseline_match_value=baseline_match_value,
+            forced_match_value=forced_match_value,
+        )
         rows.append({
             "replicate": replicate,
             "runout_seed": runout_seed,
-            "baseline_reused_terminal_fold": fixed_rule_value is not None,
+            "baseline_reused_terminal_fold": reuse_terminal_baseline,
             "baseline_value": baseline_value,
             "forced_value": forced_settlement,
             "delta_vs_rule": delta,
+            "baseline_match_value": baseline_match_value,
+            "forced_match_value": forced_match_value,
+            "match_delta_vs_rule": match_delta,
+            "tail_delta_vs_rule": tail_delta,
             "baseline_ok": baseline_ok,
             "forced_ok": forced_ok,
             "context_match": context_match,
@@ -290,8 +357,31 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
         })
 
     deltas = [float(row["delta_vs_rule"]) for row in rows if row["delta_vs_rule"] is not None]
+    match_deltas = [
+        float(row["match_delta_vs_rule"])
+        for row in rows if row["match_delta_vs_rule"] is not None
+    ]
+    tail_deltas = [
+        float(row["tail_delta_vs_rule"])
+        for row in rows if row["tail_delta_vs_rule"] is not None
+    ]
+    hand_summary = _metric_summary(
+        deltas,
+        bootstrap_samples=args.bootstrap_samples,
+        bootstrap_seed=args.bootstrap_seed,
+    )
+    match_summary = _metric_summary(
+        match_deltas,
+        bootstrap_samples=args.bootstrap_samples,
+        bootstrap_seed=args.bootstrap_seed + 1,
+    )
+    tail_summary = _metric_summary(
+        tail_deltas,
+        bootstrap_samples=args.bootstrap_samples,
+        bootstrap_seed=args.bootstrap_seed + 2,
+    )
     return {
-        "format": "native_tcp_conditional_runout_v1",
+        "format": "native_tcp_conditional_runout_v2",
         "execution_mode": "native_tcp",
         "adapter_used": False,
         "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -309,6 +399,8 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             "forced_action": forced_action,
             "forced_label": args.alternative_label,
             "known_card_count": known_cards,
+            "run_hands": run_hands,
+            "through_match": through_match,
         },
         "candidate": str(candidate),
         "opponent": str(opponent),
@@ -316,24 +408,24 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
         "summary": {
             "requested_replicates": args.replicates,
             "valid_replicates": len(deltas),
-            "mean_delta": statistics.fmean(deltas) if deltas else 0.0,
-            "median_delta": statistics.median(deltas) if deltas else 0.0,
-            "stdev_delta": statistics.pstdev(deltas) if deltas else 0.0,
-            "p05_delta": _percentile(deltas, 0.05),
-            "p20_delta": _percentile(deltas, 0.20),
-            "positive_rate": (
-                sum(value > 0 for value in deltas) / len(deltas) if deltas else 0.0
-            ),
+            "mean_delta": hand_summary["mean"],
+            "median_delta": hand_summary["median"],
+            "stdev_delta": hand_summary["stdev"],
+            "p05_delta": hand_summary["p05"],
+            "p20_delta": hand_summary["p20"],
+            "positive_rate": hand_summary["positive_rate"],
             "catastrophe_threshold": args.catastrophe_threshold,
             "catastrophe_rate": (
                 sum(value <= -args.catastrophe_threshold for value in deltas)
                 / len(deltas) if deltas else 0.0
             ),
-            "bootstrap_mean_ci": _bootstrap_ci(
-                deltas,
-                samples=args.bootstrap_samples,
-                seed=args.bootstrap_seed,
-            ),
+            "bootstrap_mean_ci": hand_summary["bootstrap_mean_ci"],
+            "through_match": through_match,
+            "metrics": {
+                "hand_delta_vs_rule": hand_summary,
+                "tail_delta_vs_rule": tail_summary if through_match else None,
+                "match_delta_vs_rule": match_summary if through_match else None,
+            },
         },
     }
 
@@ -352,6 +444,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bootstrap-seed", type=int, default=20260711)
     parser.add_argument("--timeout-sec", type=float, default=120.0)
     parser.add_argument("--reuse-terminal-fold", action="store_true")
+    parser.add_argument(
+        "--through-match",
+        action="store_true",
+        help="Continue both branches through max_hand and report tail/match deltas.",
+    )
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     if args.replicates <= 0 or args.bootstrap_samples <= 0:
@@ -367,7 +464,15 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
     )
     print(json.dumps(payload["summary"], sort_keys=True))
-    return 0 if payload["summary"]["valid_replicates"] == args.replicates else 2
+    complete = payload["summary"]["valid_replicates"] == args.replicates
+    if args.through_match:
+        match_summary = payload["summary"]["metrics"]["match_delta_vs_rule"]
+        complete = bool(
+            complete
+            and match_summary
+            and match_summary["valid_replicates"] == args.replicates
+        )
+    return 0 if complete else 2
 
 
 if __name__ == "__main__":
