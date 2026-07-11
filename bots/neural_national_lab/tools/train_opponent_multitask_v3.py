@@ -824,6 +824,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--allow-incomplete-smoke", action="store_true")
+    parser.add_argument(
+        "--open-model-calibration",
+        action="store_true",
+        help="Explicitly open model-calibration after the checkpoint freezes.",
+    )
     parser.add_argument("--scale", choices=tuple(MODEL_SCALES), default="medium")
     parser.add_argument(
         "--cross-encoder",
@@ -926,38 +931,58 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_sha256=checkpoint_sha256,
         )
         _write_json(temporary / "checkpoint_authorization.json", authorization)
-        calibration_phase = prepare_model_calibration(
-            dataset, training_phase, authorization
-        )
-        calibration_role = _encoded_role(
-            calibration_phase["roles"]["model_calibration"]
-        )
-        combined = combine_model_development(training_phase, calibration_phase)
-        value_observations, response_rows = calibration_predictions(
-            model,
-            calibration_role,
-            clips=config["clips"],
-            batch_size=config["batch_size"],
-            device=args.device,
-            lower_quantile=args.lower_calibration_quantile,
-        )
-        value_lower = calibrate_value_lower_offsets(
-            value_observations,
-            value_fields=VALUE_FIELDS,
-            num_actions=len(LABELS),
-            quantile=args.lower_calibration_quantile,
-            min_rows_per_action=args.min_calibration_rows_per_action,
-            min_ess_per_action=args.min_calibration_ess_per_action,
-        )
-        value_lower["target_preprocessing"] = "symmetric_clip_before_residual"
-        value_lower["target_clips"] = dict(config["clips"])
-        response_temperature = calibrate_response_temperature(response_rows)
-        calibration = build_calibration_artifact(
-            calibration_phase,
-            value_lower=value_lower,
-            response_temperature=response_temperature,
-        )
-        _write_json(temporary / "calibration.json", calibration)
+        report_roles = training_phase["roles"]
+        opened_roles = list(training_phase["opened_roles"])
+        calibration_payload_sha256 = None
+        calibration_summary = None
+        artifact_files = ["checkpoint.pt", "checkpoint_authorization.json"]
+        if args.open_model_calibration:
+            calibration_phase = prepare_model_calibration(
+                dataset, training_phase, authorization
+            )
+            calibration_role = _encoded_role(
+                calibration_phase["roles"]["model_calibration"]
+            )
+            combined = combine_model_development(
+                training_phase, calibration_phase
+            )
+            report_roles = combined["roles"]
+            opened_roles = list(combined["opened_roles"])
+            value_observations, response_rows = calibration_predictions(
+                model,
+                calibration_role,
+                clips=config["clips"],
+                batch_size=config["batch_size"],
+                device=args.device,
+                lower_quantile=args.lower_calibration_quantile,
+            )
+            value_lower = calibrate_value_lower_offsets(
+                value_observations,
+                value_fields=VALUE_FIELDS,
+                num_actions=len(LABELS),
+                quantile=args.lower_calibration_quantile,
+                min_rows_per_action=args.min_calibration_rows_per_action,
+                min_ess_per_action=args.min_calibration_ess_per_action,
+            )
+            value_lower["target_preprocessing"] = (
+                "symmetric_clip_before_residual"
+            )
+            value_lower["target_clips"] = dict(config["clips"])
+            response_temperature = calibrate_response_temperature(response_rows)
+            calibration = build_calibration_artifact(
+                calibration_phase,
+                value_lower=value_lower,
+                response_temperature=response_temperature,
+            )
+            _write_json(temporary / "calibration.json", calibration)
+            calibration_payload_sha256 = calibration["payload_sha256"]
+            calibration_summary = {
+                "lower_quantile": args.lower_calibration_quantile,
+                "value_observations": len(value_observations),
+                "response_rows": len(response_rows),
+                "response_temperature": response_temperature["temperature"],
+            }
+            artifact_files.append("calibration.json")
         report = {
             "schema": REPORT_SCHEMA,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -974,8 +999,9 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "source_collection_complete": not incomplete,
             "incomplete_smoke": incomplete,
-            "opened_roles": list(combined["opened_roles"]),
-            "policy_roles_opened": combined["policy_roles_opened"],
+            "opened_roles": opened_roles,
+            "model_calibration_opened": bool(args.open_model_calibration),
+            "policy_roles_opened": False,
             "role_counts": {
                 role: {
                     "opponents": list(payload["opponents"]),
@@ -983,7 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
                     "behavior": len(payload["behavior"]),
                     "provenance": payload["provenance"],
                 }
-                for role, payload in combined["roles"].items()
+                for role, payload in report_roles.items()
             },
             "model": model.metadata(),
             "config": config,
@@ -994,24 +1020,14 @@ def main(argv: list[str] | None = None) -> int:
             "early_stop": final_early_stop,
             "checkpoint_sha256": checkpoint_sha256,
             "checkpoint_authorization": authorization,
-            "calibration_payload_sha256": calibration["payload_sha256"],
-            "calibration_summary": {
-                "lower_quantile": args.lower_calibration_quantile,
-                "value_observations": len(value_observations),
-                "response_rows": len(response_rows),
-                "response_temperature": response_temperature["temperature"],
-            },
+            "calibration_payload_sha256": calibration_payload_sha256,
+            "calibration_summary": calibration_summary,
             "deployment_policy_value": False,
             "strength_evidence": False,
             "native_tcp_evaluated": False,
         }
         _write_json(temporary / "training_report.json", report)
-        artifact_files = (
-            "checkpoint.pt",
-            "checkpoint_authorization.json",
-            "calibration.json",
-            "training_report.json",
-        )
+        artifact_files.append("training_report.json")
         _write_json(temporary / "artifact_manifest.json", {
             "schema": ARTIFACT_MANIFEST_SCHEMA,
             "run_id": args.run_id,
@@ -1034,6 +1050,7 @@ def main(argv: list[str] | None = None) -> int:
         "best_epoch": best_epoch,
         "early_stop_score": final_early_stop["selection_score"],
         "checkpoint_sha256": checkpoint_sha256,
+        "model_calibration_opened": bool(args.open_model_calibration),
         "strength_evidence": False,
     }, indent=2, sort_keys=True))
     return 0

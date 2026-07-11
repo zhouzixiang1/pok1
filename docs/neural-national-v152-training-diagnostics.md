@@ -893,9 +893,14 @@ binds the role manifest, train/early-stop artifacts, collection boundary, model
 metadata, training configuration, and SHA-256 values for all seven code modules
 needed to reproduce it. A strict loader reconstructs the architecture and
 rejects metadata or state drift. Incomplete collections are rejected unless the
-caller explicitly enables `--allow-incomplete-smoke`.
+caller explicitly enables `--allow-incomplete-smoke`. The default command stops
+after train/early-stop and leaves model calibration unopened; calibration
+requires a separate explicit `--open-model-calibration` flag. One-epoch
+train-only and explicit-calibration smokes produced byte-identical checkpoints,
+while their ledgers contained two and three roles respectively.
 
-The first real CUDA smoke exposed and fixed a second extreme-value path: the
+The first explicitly calibrated CUDA smoke exposed and fixed a second
+extreme-value path: the
 trainer clipped targets for gradient updates but initially used raw near-20,000
 chip labels for early-stop MAE and lower-value calibration. That produced a
 tail offset near -16,938 and reintroduced all-in domination after training. The
@@ -910,6 +915,20 @@ train, early-stop, and model-calibration events. The report and artifact
 manifest explicitly retain `strength_evidence=false`,
 `deployment_policy_value=false`, and `source_collection_complete=false`; this
 is deterministic pipeline evidence, not model selection or Bot strength.
+
+`run_opponent_multitask_v3_scaling.py` is the protected architecture/seed
+sweep. Every `(scale, encoder, seed)` receives its own run id, checkpoint,
+report, and log. The parent validates that child reports opened exactly train
+and early-stop, wrote no calibration artifact, made no policy or strength
+claim, and completed every requested seed before a configuration can be
+selected. Formal selection requires a complete source, at least three seeds,
+and every requested configuration to finish. An incomplete pass-9 smoke ran
+one small no-cross-hand model and one small Deep Sets model for one epoch. Both
+completed and their ledger contained only train/early-stop events. Although the
+no-cross-hand score was lower in that tiny run, the summary correctly emitted
+only `provisional_best_configuration`, set `selection_eligible=false`, and left
+`selected_configuration=null`; it is orchestration evidence, not an encoder
+result.
 
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
