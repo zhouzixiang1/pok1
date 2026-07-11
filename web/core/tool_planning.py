@@ -1474,6 +1474,120 @@ async def run_master(args):
     direction_audit_str = args.get("direction_audit", "")
     research_proposals = args.get("research_proposals", "")
 
+    # The scheduler owns the evidence bundle.  The outer orchestrator sees the
+    # same text but is not a trusted serializer for it: on v146 it converted a
+    # missing-literal validation error into a contradictory instruction to omit
+    # the valid reference-card id.  Prefer the digest-bound checkpoint copy and
+    # make caller mismatches observable.
+    _checkpoint_master_context = (
+        ((_master_entry_ckpt.get("audit_context") or {}).get("master_context"))
+        if isinstance(_master_entry_ckpt, dict)
+        else None
+    )
+    if _checkpoint_master_context is not None:
+        from master_context_contract import validate_master_context
+
+        _context_errors = validate_master_context(
+            _checkpoint_master_context,
+            next_v=next_v,
+            source_v=source_v,
+        )
+        if _context_errors:
+            log_system_event(
+                "pipeline.master_context_invalid",
+                "error",
+                f"Master context contract invalid for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "errors": _context_errors,
+                },
+            )
+            return _json_tool_result({
+                "error": "MASTER_CONTEXT_CONTRACT_INVALID",
+                "next_v": next_v,
+                "source_v": source_v,
+                "validation_errors": _context_errors,
+                "directive": (
+                    "Do not run Master with caller-reconstructed evidence. Repair or "
+                    "restart the scheduler-owned master context checkpoint first."
+                ),
+            })
+        _incoming_context = {
+            "stagnation_info": str(stagnation_info or ""),
+            "match_analysis": str(match_analysis or ""),
+            "performance_verification": str(performance_verification or ""),
+        }
+        _context_mismatches = [
+            field
+            for field, supplied in _incoming_context.items()
+            if supplied and supplied != _checkpoint_master_context[field]
+        ]
+        stagnation_info = _checkpoint_master_context["stagnation_info"]
+        match_analysis = _checkpoint_master_context["match_analysis"]
+        performance_verification = _checkpoint_master_context["performance_verification"]
+        if _context_mismatches:
+            log_system_event(
+                "pipeline.master_context_caller_mismatch",
+                "warn",
+                f"Ignored caller-reconstructed Master context for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "mismatched_fields": _context_mismatches,
+                    "context_digest": _checkpoint_master_context.get("context_digest"),
+                },
+            )
+
+    # Literature-probe output is likewise checkpoint-owned.  A caller may pass
+    # it for backwards compatibility, but cannot invent or rewrite research in
+    # an active checkpoint.
+    if isinstance(_master_entry_ckpt, dict):
+        _probe = _master_entry_ckpt.get("literature_probe")
+        _probe_identity_matches = False
+        if isinstance(_probe, dict):
+            try:
+                _probe_identity_matches = (
+                    int(_probe.get("next_v", next_v)) == int(next_v)
+                    and (
+                        _probe.get("source_v") is None
+                        or int(_probe.get("source_v")) == int(source_v)
+                    )
+                )
+            except (TypeError, ValueError):
+                _probe_identity_matches = False
+        if _probe is not None:
+            normalized_probe = (
+                _normalize_literature_probe_result(_probe, next_v)
+                if _probe_identity_matches
+                else None
+            )
+            canonical_research = (
+                str(normalized_probe.get("inject_text") or "")
+                if isinstance(normalized_probe, dict)
+                else ""
+            )
+            if research_proposals and research_proposals != canonical_research:
+                log_system_event(
+                    "pipeline.master_research_caller_mismatch",
+                    "warn",
+                    f"Ignored caller-reconstructed research proposal for v{next_v}",
+                    {"next_v": next_v, "source_v": source_v},
+                )
+            research_proposals = canonical_research
+        elif _checkpoint_master_context is not None:
+            # New scheduler-owned checkpoints can distinguish "no probe" from
+            # a lost caller argument.  Legacy checkpoints without this marker
+            # retain their old caller-proposal fallback for crash compatibility.
+            if research_proposals:
+                log_system_event(
+                    "pipeline.master_research_without_checkpoint_probe",
+                    "warn",
+                    f"Ignored research proposal without checkpoint probe for v{next_v}",
+                    {"next_v": next_v, "source_v": source_v},
+                )
+            research_proposals = ""
+
     architecture_assessment = _build_generation_architecture_policy(source_v)
     if architecture_assessment.get("outcome") == "infrastructure_failure":
         from national_runtime_probe import (
@@ -1618,16 +1732,39 @@ async def run_master(args):
             ),
         )
 
-    # Parse direction audit from arg or checkpoint
+    # Direction audit is persisted by its owning tool.  The caller copy is only
+    # a legacy fallback; it cannot override the checkpoint verdict or rewrite
+    # mandatory/exhausted directions.
     direction_audit = None
+    _checkpoint_direction_audit = (
+        _master_entry_ckpt.get("direction_audit")
+        if isinstance(_master_entry_ckpt, dict)
+        else None
+    )
+    _caller_direction_audit = None
     if direction_audit_str:
         try:
-            direction_audit = json.loads(direction_audit_str) if isinstance(direction_audit_str, str) else direction_audit_str
+            _caller_direction_audit = (
+                json.loads(direction_audit_str)
+                if isinstance(direction_audit_str, str)
+                else direction_audit_str
+            )
         except (json.JSONDecodeError, TypeError):
             pass
-    if not direction_audit:
-        _ckpt = _matching_checkpoint(next_v, source_v)
-        direction_audit = _ckpt.get("direction_audit") if _ckpt else None
+    if isinstance(_checkpoint_direction_audit, dict):
+        direction_audit = deepcopy(_checkpoint_direction_audit)
+        if (
+            isinstance(_caller_direction_audit, dict)
+            and _caller_direction_audit != _checkpoint_direction_audit
+        ):
+            log_system_event(
+                "pipeline.direction_audit_caller_mismatch",
+                "warn",
+                f"Ignored caller-reconstructed direction audit for v{next_v}",
+                {"next_v": next_v, "source_v": source_v},
+            )
+    elif isinstance(_caller_direction_audit, dict):
+        direction_audit = _caller_direction_audit
 
     # Inject mandatory constraints into performance_verification if audit found repetition.
     # B-class guard: if the Direction Auditor's LLM call crashed (infrastructure
@@ -4107,6 +4244,75 @@ def _checkpoint_master_plan(ckpt):
         return {}
     plan = ckpt.get("master_plan")
     return plan if isinstance(plan, dict) else {}
+
+
+def _canonical_tasks_digest(tasks):
+    return hashlib.sha256(
+        json.dumps(
+            tasks,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _checkpoint_master_task_authority_errors(ckpt, authoritative_tasks):
+    """Bind initial worker execution to the accepted checkpoint plan/ledger."""
+    if not isinstance(authoritative_tasks, list) or not authoritative_tasks:
+        return ["checkpoint_master_plan_tasks_missing_or_empty"]
+    plan = _checkpoint_master_plan(ckpt)
+    plan_ledger = plan.get("runtime_contract_ledger")
+    checkpoint_ledger = ckpt.get("runtime_contract_ledger") if isinstance(ckpt, dict) else None
+    has_runtime_contract = any(
+        isinstance(task, dict) and isinstance(task.get("runtime_contract"), dict)
+        for task in authoritative_tasks
+    )
+    ledger_required = has_runtime_contract or isinstance(plan.get("architecture_policy"), dict)
+    if not ledger_required and plan_ledger is None and checkpoint_ledger is None:
+        return []
+
+    from runtime_architecture_policy import (
+        build_runtime_contract_ledger,
+        runtime_contract_ledger_digest,
+        validate_runtime_contract_ledger,
+    )
+
+    errors = []
+    if plan_ledger is None:
+        errors.append("master_plan_runtime_contract_ledger_missing")
+    else:
+        errors.extend(
+            f"master_plan:{error}"
+            for error in validate_runtime_contract_ledger(plan_ledger)
+        )
+    if checkpoint_ledger is None:
+        errors.append("checkpoint_runtime_contract_ledger_missing")
+    else:
+        errors.extend(
+            f"checkpoint:{error}"
+            for error in validate_runtime_contract_ledger(checkpoint_ledger)
+        )
+    if errors:
+        return errors
+
+    plan_digest = runtime_contract_ledger_digest(plan_ledger)
+    checkpoint_digest = runtime_contract_ledger_digest(checkpoint_ledger)
+    if plan_digest != checkpoint_digest:
+        errors.append("checkpoint_master_plan_runtime_contract_ledger_mismatch")
+    try:
+        rebuilt = build_runtime_contract_ledger({"tasks": authoritative_tasks})
+        rebuilt_digest = runtime_contract_ledger_digest(rebuilt)
+    except Exception as exc:
+        errors.append(
+            "master_tasks_runtime_contract_ledger_rebuild_failed:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        )
+    else:
+        if rebuilt_digest != plan_digest:
+            errors.append("master_tasks_runtime_contract_ledger_mismatch")
+    return errors
 
 
 def _checkpoint_work_item(ckpt):
@@ -6953,6 +7159,11 @@ def _load_worker_prompt_template(prompts_dir, *, native_tcp=None):
 async def execute_workers(args):
     _t0 = time.time()
     tasks = args.get("tasks", [])
+    if not isinstance(tasks, list):
+        return _json_tool_result({
+            "error": "WORKER_TASKS_NOT_LIST",
+            "directive": "Pass tasks=[] to load the checkpoint-owned Master plan.",
+        })
     tasks_provided = bool(tasks)
     next_v = args.get("next_v")
     source_v = args.get("source_v")
@@ -7024,6 +7235,89 @@ async def execute_workers(args):
             "next_v": next_v,
             "source_v": source_v,
         })
+
+    # Initial execution is owned by the accepted Master checkpoint.  The outer
+    # orchestrator may echo that list (the MCP schema currently requires a tasks
+    # argument) or pass [], but it cannot shorten/rewrite prompts, targets,
+    # checks, or runtime contracts.  Rework stages use their separate,
+    # deterministic synthesis/replacement routes below.
+    if ckpt.get("stage") == "master_planned":
+        if reviewer_feedback:
+            log_system_event(
+                "pipeline.worker_initial_feedback_rejected",
+                "error",
+                f"Rejected caller feedback on initial worker plan for v{next_v}",
+                {"next_v": next_v, "source_v": source_v},
+            )
+            return _json_tool_result({
+                "error": "WORKER_INITIAL_FEEDBACK_FORBIDDEN",
+                "next_v": next_v,
+                "source_v": source_v,
+                "directive": (
+                    "Initial master_planned execution must use the checkpoint task "
+                    "verbatim with empty reviewer_feedback. Feedback is accepted only "
+                    "on an explicit review/quality/precommit rework route."
+                ),
+            })
+        _authoritative_tasks = _checkpoint_master_plan(ckpt).get("tasks")
+        _authority_errors = _checkpoint_master_task_authority_errors(
+            ckpt,
+            _authoritative_tasks,
+        )
+        if _authority_errors:
+            log_system_event(
+                "pipeline.worker_task_authority_invalid",
+                "error",
+                f"Checkpoint worker authority invalid for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "errors": _authority_errors,
+                },
+            )
+            return _json_tool_result({
+                "error": "WORKER_TASK_AUTHORITY_INVALID",
+                "next_v": next_v,
+                "source_v": source_v,
+                "validation_errors": _authority_errors,
+                "directive": (
+                    "Do not execute workers. The accepted Master task/ledger "
+                    "authority must be repaired or the generation abandoned."
+                ),
+            })
+        if tasks_provided and tasks != _authoritative_tasks:
+            _expected_digest = _canonical_tasks_digest(_authoritative_tasks)
+            _supplied_digest = _canonical_tasks_digest(tasks)
+            log_system_event(
+                "pipeline.worker_task_plan_mismatch",
+                "error",
+                f"Rejected caller-rewritten worker tasks for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "expected_digest": _expected_digest,
+                    "supplied_digest": _supplied_digest,
+                    "expected_worker_ids": [
+                        task.get("worker_id") for task in _authoritative_tasks
+                        if isinstance(task, dict)
+                    ],
+                    "supplied_worker_ids": [
+                        task.get("worker_id") for task in tasks if isinstance(task, dict)
+                    ],
+                },
+            )
+            return _json_tool_result({
+                "error": "WORKER_TASK_PLAN_MISMATCH",
+                "next_v": next_v,
+                "source_v": source_v,
+                "expected_digest": _expected_digest,
+                "supplied_digest": _supplied_digest,
+                "directive": (
+                    "Pass tasks=[] to load the checkpoint-owned plan, or pass the "
+                    "exact tasks returned by run_master. Do not paraphrase them."
+                ),
+            })
+        tasks = deepcopy(_authoritative_tasks)
 
     if not reviewer_feedback and ckpt.get("stage") in rework_stages:
         reviewer_feedback = _checkpoint_rework_feedback(ckpt)
@@ -8166,6 +8460,66 @@ async def execute_workers(args):
                     ),
                 },
             }
+        failure_checkpoint_kwargs = {}
+        if failure_stage == "direction_audited":
+            has_runtime_ledger = bool(
+                isinstance(ckpt, dict)
+                and (
+                    ckpt.get("runtime_contract_ledger") is not None
+                    or isinstance(ckpt.get("master_plan"), dict)
+                    and ckpt["master_plan"].get("runtime_contract_ledger") is not None
+                )
+            )
+            if has_runtime_ledger:
+                ledger_digest = _checkpoint_runtime_contract_ledger_digest(ckpt)
+                failure_checkpoint_kwargs = {
+                    "reset_runtime_contract_ledger": True,
+                    "expected_runtime_contract_ledger_digest": ledger_digest,
+                    "runtime_contract_ledger_reset_reason": "master_plan_rejected_replan",
+                }
+        failure_checkpoint_written = write_pipeline_checkpoint(
+            next_v,
+            source_v,
+            failure_stage,
+            master_plan=failure_plan,
+            direction_audit=ckpt.get("direction_audit") if ckpt else None,
+            reviewer_feedback=reviewer_feedback,
+            worker_failure_count=next_failure_count,
+            audit_context=failure_audit_context,
+            precommit_rework_count=precommit_rework_count_for_write,
+            official_rework_count=official_rework_count_for_write,
+            touch_stage_timestamp=True,
+            **failure_checkpoint_kwargs,
+        )
+        if not failure_checkpoint_written:
+            log_system_event(
+                "pipeline.worker_failure_replan_persist_failed",
+                "error",
+                f"Could not persist worker-failure recovery for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "source_stage": ckpt.get("stage") if isinstance(ckpt, dict) else None,
+                    "requested_stage": failure_stage,
+                    "worker_failure_count": next_failure_count,
+                },
+            )
+            return _json_tool_result({
+                "error": "WORKER_FAILURE_RECOVERY_PERSIST_FAILED",
+                "success": False,
+                "next_v": next_v,
+                "source_v": source_v,
+                "message": (
+                    "Workers failed, but the checkpoint recovery transition could "
+                    "not be persisted. The previous checkpoint remains authoritative."
+                ),
+                "directive": (
+                    "Do not report a re-plan/rework route or re-run workers. Repair "
+                    "checkpoint persistence/state synchronization first."
+                ),
+                "logs": ui.get_output(),
+            })
+        if failure_stage == "direction_audited":
             log_system_event(
                 "pipeline.worker_failure_replan_required",
                 "warn",
@@ -8189,16 +8543,6 @@ async def execute_workers(args):
                     ][:5],
                 },
             )
-        write_pipeline_checkpoint(next_v, source_v,
-                                  failure_stage,
-                                  master_plan=failure_plan,
-                                  direction_audit=ckpt.get("direction_audit") if ckpt else None,
-                                  reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=next_failure_count,
-                                  audit_context=failure_audit_context,
-                                  precommit_rework_count=precommit_rework_count_for_write,
-                                  official_rework_count=official_rework_count_for_write,
-                                  touch_stage_timestamp=True)
 
     sev = "success" if success else "error"
     log_system_event("pipeline.workers_done", sev,

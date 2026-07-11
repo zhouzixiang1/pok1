@@ -243,6 +243,19 @@ def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
     assert (tmp_path / task["task_brief_file"]).exists()
     assert compiled["plan_compiler"]["compiled_tasks"][0]["original_chars"] == len(long_prompt)
 
+    # Defense-in-depth callers may compile an already compiled checkpoint plan.
+    # That pass must not delete the only externalized brief and leave a dangling
+    # task_brief_file reference.
+    recompiled, second_meta = plan_compiler.compile_master_plan(
+        compiled,
+        next_v=300,
+        target_dir=tmp_path / "national_v300",
+        project_root=tmp_path,
+    )
+    assert second_meta["preserved_compiled_context"] is True
+    assert recompiled["tasks"][0]["task_brief_file"] == task["task_brief_file"]
+    assert (tmp_path / task["task_brief_file"]).exists()
+
 
 def test_plan_compiler_clears_stale_task_context_for_short_plan(tmp_path):
     import plan_compiler

@@ -76,6 +76,15 @@ Every formal native bot must preserve these boundaries:
 - Master emits a structured `RuntimeContract`; worker target/owner files must
   cover it; reviewer compares it with detector evidence; quality gates rerun
   the detector against parent and candidate.
+- Scheduler-produced stagnation/match/performance evidence is persisted as a
+  digest-bound Master context.  The outer orchestrator may transport or display
+  it but cannot rewrite it into planning instructions.  Persisted direction
+  audit and literature-probe results likewise override caller paraphrases.
+- On the initial `master_planned` worker pass, checkpoint tasks are the sole
+  execution authority.  A non-empty caller task list must be structurally
+  identical; `tasks=[]` loads a defensive copy.  The checkpoint and plan
+  runtime ledgers must validate and rebuild to the same digest before any
+  Worker LLM can edit code.
 - The official EXE remains a protocol/compliance oracle only. Runtime
   architecture and poker strength are evaluated by local native harnesses and
   H2H evidence, never by EXE chip outcomes.

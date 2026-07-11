@@ -1132,10 +1132,7 @@ class TestWorkerFailureCircuitBreaker:
                  patch.object(tool_planning, '_validate_worker_boundaries', return_value=[]), \
                  patch.object(tool_planning, '_py_files_changed_between', return_value=['strategy.py']):
                 mock_exec.return_value = (True, {}, [])
-                await _handler({"tasks": [
-                    {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
-                    {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
-                ], "next_v": 11, "source_v": 10})
+                await _handler({"tasks": [], "next_v": 11, "source_v": 10})
 
         asyncio.run(_run())
 
@@ -3532,10 +3529,7 @@ class TestWorkerFailureCircuitBreaker:
         async def _run():
             with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec:
                 mock_exec.return_value = (False, {}, [])
-                await _handler({"tasks": [
-                    {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
-                    {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
-                ], "next_v": 11, "source_v": 10})
+                await _handler({"tasks": [], "next_v": 11, "source_v": 10})
 
         asyncio.run(_run())
 
@@ -3546,6 +3540,64 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["master_plan"] == {}
         assert next_tool_for_checkpoint(ckpt) == "run_master"
         assert ckpt["audit_context"]["worker_execution_failed_replan"]["worker_failure_count"] == 3
+
+    def test_initial_worker_failure_resets_runtime_ledger_before_replan(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A runtime-contract plan must not get stuck at master_planned when
+        its first worker batch fails and the plan is cleared."""
+        import asyncio
+        import tool_planning
+        from runtime_architecture_policy import attach_runtime_contract_ledger
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
+        state = json.loads(ckpt_file.read_text())
+        plan = attach_runtime_contract_ledger({
+            "analysis": "runtime plan",
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "worker_prompt": "Implement the accepted bounded runtime mechanism and controls.",
+                "runtime_contract": {
+                    "decision": None,
+                    "precompute_artifacts": [],
+                    "match_memory": None,
+                    "state_learning": None,
+                    "reference_pack_id": "",
+                    "official_feedback_refs": [],
+                    "forbidden_runtime_work": [],
+                },
+            }],
+        }, replace=True)
+        state["master_plan"] = plan
+        state["runtime_contract_ledger"] = plan["runtime_contract_ledger"]
+        ckpt_file.write_text(json.dumps(state))
+
+        async def _run():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                new_callable=AsyncMock,
+            ) as mock_exec:
+                mock_exec.return_value = (False, {}, [])
+                return await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+
+        result = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is False
+
+        checkpoint = json.loads(ckpt_file.read_text())
+        assert checkpoint["stage"] == "direction_audited"
+        assert checkpoint["master_plan"] == {}
+        assert checkpoint["runtime_contract_ledger"] is None
+        assert checkpoint["worker_failure_count"] == 1
 
     def test_failed_repair_workers_keep_repair_route(self, tmp_path, monkeypatch):
         """Gate/precommit repair failures keep execute_workers route with feedback."""
@@ -4157,10 +4209,7 @@ class TestWorkerFailureCircuitBreaker:
         _handler = tool_planning.execute_workers.handler
 
         async def _run():
-            return await _handler({"tasks": [
-                {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
-                {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
-            ], "next_v": 11, "source_v": 10})
+            return await _handler({"tasks": [], "next_v": 11, "source_v": 10})
 
         result = asyncio.run(_run())
 
@@ -4184,10 +4233,7 @@ class TestWorkerFailureCircuitBreaker:
             with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec_inner:
                 mock_exec = mock_exec_inner
                 mock_exec_inner.return_value = (True, {}, [])
-                await _handler({"tasks": [
-                    {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
-                    {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
-                ], "next_v": 11, "source_v": 10})
+                await _handler({"tasks": [], "next_v": 11, "source_v": 10})
 
         asyncio.run(_run())
 
@@ -4261,7 +4307,15 @@ class TestWorkerFailureCircuitBreaker:
         import asyncio
         import tool_planning
 
-        self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
+        state = json.loads(ckpt_file.read_text())
+        state["master_plan"]["tasks"] = [{
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy.py"],
+            "worker_prompt": "Adjust the fold margin clamp with parameter tuning.",
+        }]
+        ckpt_file.write_text(json.dumps(state))
         monkeypatch.setattr(
             tool_planning,
             "_extract_exhausted_keywords",
@@ -4280,12 +4334,7 @@ class TestWorkerFailureCircuitBreaker:
                 result = await tool_planning.execute_workers.handler({
                     "next_v": 11,
                     "source_v": 10,
-                    "tasks": [{
-                        "worker_id": 1,
-                        "role": "Algorithmic Logic Architect",
-                        "target_files": ["strategy.py"],
-                        "worker_prompt": "Adjust the fold margin clamp with parameter tuning.",
-                    }],
+                    "tasks": [],
                 })
                 return result, mock_exec
 
@@ -4319,10 +4368,7 @@ class TestWorkerFailureCircuitBreaker:
                  patch.object(tool_planning, '_py_files_changed_between', return_value=['strategy.py']):
                 mock_exec = mock_exec_inner
                 mock_exec.return_value = (True, {}, [])
-                return await _handler({"tasks": [
-                    {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
-                    {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
-                ], "next_v": 11, "source_v": 10})
+                return await _handler({"tasks": [], "next_v": 11, "source_v": 10})
 
         result = asyncio.run(_run())
 
@@ -4342,10 +4388,7 @@ class TestWorkerFailureCircuitBreaker:
         _handler = tool_planning.execute_workers.handler
 
         async def _run():
-            return await _handler({"tasks": [
-                {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
-                {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
-            ], "next_v": 11, "source_v": 10})
+            return await _handler({"tasks": [], "next_v": 11, "source_v": 10})
 
         result = asyncio.run(_run())
 

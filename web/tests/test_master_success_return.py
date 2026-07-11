@@ -17,6 +17,7 @@ mocked) and asserts:
 
 import json
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -100,6 +101,86 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
     assert 'build_phase="module_import"' in rendered_prompt
     assert "runtime_contract.match_memory" in rendered_prompt
     assert '"memory", "confidence", "opponent_runtime"' in rendered_prompt
+
+
+@pytest.mark.asyncio
+async def test_master_binds_valid_structured_contract_without_lexical_retry(monkeypatch):
+    import agent_master
+    from output_schema import RuntimeContract, runtime_contract_worker_prompt_terms
+    from plan_compiler import SYSTEM_OWNED_CONTRACT_HEADER
+
+    root = Path(__file__).resolve().parents[2]
+    prompt = (root / "web/core/prompts/master_prompt.md").read_text(encoding="utf-8")
+    start = prompt.index('{\n  "analysis": "Strategic analysis as a single string.')
+    end = prompt.index("\n\n- Do NOT include `branch_from`", start)
+    structured_plan = json.loads(prompt[start:end])
+    structured_plan["tasks"][0]["worker_prompt"] = (
+        "Implement the selected valid structured runtime mechanism in strategy.py "
+        "and run only the declared checks."
+    )
+    call_count = {"n": 0}
+
+    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None):
+        call_count["n"] += 1
+        return "```json\n" + json.dumps(structured_plan) + "\n```", 0.0, {}
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+
+    # This deliberately repeats the real v146 outer-agent contradiction.  It is
+    # evidence text, not authority over the selected structured reference card.
+    contradictory_context = (
+        "Do not invent custom worker terms like range_weighted_candidate_batch_v1."
+    )
+    result = await agent_master._run_master_analysis(
+        source_v=142,
+        next_v=146,
+        stagnation_info=contradictory_context,
+        ui=_MockUI(),
+    )
+
+    assert result is not None
+    assert call_count["n"] == 1
+    task = result["tasks"][0]
+    bound_prompt = task["worker_prompt"].lower()
+    assert SYSTEM_OWNED_CONTRACT_HEADER.lower() in bound_prompt
+    contract = RuntimeContract.model_validate(task["runtime_contract"])
+    for term in runtime_contract_worker_prompt_terms(contract):
+        assert term.lower() in bound_prompt
+
+
+@pytest.mark.asyncio
+async def test_master_does_not_bind_invalid_work_primitive(monkeypatch):
+    import agent_master
+
+    root = Path(__file__).resolve().parents[2]
+    prompt = (root / "web/core/prompts/master_prompt.md").read_text(encoding="utf-8")
+    start = prompt.index('{\n  "analysis": "Strategic analysis as a single string.')
+    end = prompt.index("\n\n- Do NOT include `branch_from`", start)
+    invalid_plan = json.loads(prompt[start:end])
+    invalid_plan["tasks"][0]["runtime_contract"]["state_learning"]["work_primitive"] = []
+    original_worker_prompt = invalid_plan["tasks"][0]["worker_prompt"]
+    outputs = []
+
+    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None):
+        outputs.append(prompt)
+        return "```json\n" + json.dumps(invalid_plan) + "\n```", 0.0, {}
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    result = await agent_master._run_master_analysis(
+        source_v=142,
+        next_v=146,
+        stagnation_info="stagnant",
+        ui=_MockUI(),
+    )
+
+    assert result is None
+    assert len(outputs) == agent_master.MAX_MASTER_RETRIES
+    assert invalid_plan["tasks"][0]["worker_prompt"] == original_worker_prompt
 
 
 @pytest.mark.asyncio

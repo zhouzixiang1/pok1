@@ -503,7 +503,7 @@ It is sorted by current line count and excludes `__init__.py`,
 
 | File | Lines | Role |
 |---|---|---|
-| `tool_planning.py` | 7727 | Pipeline tools: direction audit, master planning, workers, literature, repair synthesis |
+| `tool_planning.py` | 8560 | Pipeline tools: direction audit, system-owned Master context, worker-task authority, literature, repair synthesis |
 | `official_certification.py` | 3944 | Official EXE policy, identity, evidence validation, signed certificates and explicit one-time bootstrap binding |
 | `tool_gates.py` | 3146 | Pipeline tools: quality gates, code prep, review, advisory critic execution |
 | `orchestrator.py` | 3082 | LLM-driven Orchestrator: pipeline loop and recovery routing |
@@ -511,7 +511,7 @@ It is sorted by current line count and excludes `__init__.py`,
 | `tool_eval.py` | 2708 | Frozen-contract precommit and diagnostic inline evaluation |
 | `llm_query.py` | 2605 | `run_claude_query()` primitive, output parsing, prompt budgets, sandboxing |
 | `evolution_infra.py` | 2405 | Shared infra: constants, git, checkpoints, ratings and publication |
-| `generation_scheduler.py` | 2296 | Three-phase generation scheduler and source selection |
+| `generation_scheduler.py` | 2327 | Three-phase generation scheduler, source selection, and digest-bound Master evidence handoff |
 | `tool_commit.py` | 2036 | Commit, signed official full gate, archivist, crossover |
 | `elo_daemon.py` | 2025 | Background rating daemon: native matches, Glicko-2, H2H and chip telemetry |
 | `national_arena/manager.py` | 1925 | Local diagnostic/presentation Arena session lifecycle |
@@ -545,7 +545,7 @@ It is sorted by current line count and excludes `__init__.py`,
 | `national_acceptance.py` | 566 | In-process national-platform acceptance runner (gate API) |
 | `daemon_management.py` | 525 | Daemon subprocess lifecycle: start/stop/monitor/orphan detect |
 | `tool_status.py` | 522 | Non-pipeline MCP tools: status, daemon control, analysis |
-| `agent_master.py` | 514 | Master Architect plans and runtime contracts |
+| `agent_master.py` | 557 | Master Architect plans, runtime contracts, and pre-schema contract materialization |
 | `event_bus.py` | 497 | Unified event bus with correlation schema |
 | `engine/aivat.py` | 488 | AIVAT all-in variance reduction for heads-up mirror battles |
 | `national_runtime_probe.py` | 487 | Trusted launcher and result contract for runtime probes |
@@ -576,6 +576,8 @@ It is sorted by current line count and excludes `__init__.py`,
 | `web_ui.py` | 314 | `EventBroadcaster` (ring buffer 500) + `WebUI` (terminal + SSE) |
 | `pipeline_infrastructure.py` | 303 | Identity-bound infrastructure retry overlay |
 | `fix_verification.py` | 301 | Structural/runtime verification of mandatory bot fixes |
+| `plan_compiler.py` | 297 | Deterministic Master-plan contract binding and brief-file offload |
+| `strategy_reference_pack.py` | 295 | Typed, source-controlled strategy cards and exact worker execution terms |
 | `glicko2.py` | 294 | Glicko-2 rating implementation, `TAU=0.3` |
 | `official_eligibility.py` | 282 | Official certificate/grandfather pool eligibility |
 | `reset.py` | 282 | Reset evolution state to baseline (v1-v6 only) |
@@ -601,12 +603,12 @@ It is sorted by current line count and excludes `__init__.py`,
 | `nemesis_archive.py` | 134 | FAMOU nemesis archive: persistent nemesis/champion relationships |
 | `commentary.py` | 129 | Lightweight deterministic match commentary generator (no LLM) |
 | `national_bot_launcher.py` | 126 | Shared native bot launch specification |
-| `plan_compiler.py` | 124 | Deterministic Master-plan compilation (brief-file offload) |
 | `national_runtime_probe_scenarios.py` | 122 | Deterministic runtime probe scenarios |
 | `tools.py` | 120 | MCP tools re-export facade + server registration (17 tools) |
 | `protected_contracts.py` | 120 | Protocol-boundary checks for legacy Botzone JSON bot entries |
 | `official_execution_profile.py` | 118 | Tracked official execution profile parser |
 | `workflow_profiles.py` | 117 | Conservative workflow profiles for the evolution pipeline |
+| `master_context_contract.py` | 113 | Identity/digest-bound scheduler evidence handoff to Master planning |
 | `gate_execution.py` | 112 | Process-isolated blocking gate execution |
 | `pipeline_contracts.py` | 111 | Code-level stage contracts registry (single source of truth) |
 | `official_job_envelope.py` | 106 | Signed official worker job envelope |

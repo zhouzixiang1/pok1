@@ -260,6 +260,8 @@ def master_reference_summary() -> str:
             f"action={card.expected_action_family}.",
             f"  required live hand fields={list(card.required_hand_runtime_fields)}; "
             f"one opponent field={list(card.required_any_opponent_runtime_fields)}.",
+            f"  allowed files={list(card.allowed_files)}.",
+            f"  required worker literals={list(card.required_worker_terms)}.",
             f"  proof={card.counterfactual}",
             f"  bound={card.bounded_work}",
         ))
@@ -282,6 +284,7 @@ def worker_reference_card(reference_id: str | None) -> str:
         f"- Purpose: {card.purpose}",
         "- Required live hand fields: " + ", ".join(card.required_hand_runtime_fields),
         "- Required one-of opponent fields: " + ", ".join(card.required_any_opponent_runtime_fields),
+        "- Required worker literals: " + ", ".join(card.required_worker_terms),
         f"- Expected action family: {card.expected_action_family}",
         f"- Counterfactual proof: {card.counterfactual}",
         f"- Bounded-work rule: {card.bounded_work}",
