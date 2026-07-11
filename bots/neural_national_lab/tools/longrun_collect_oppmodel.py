@@ -24,6 +24,7 @@ Check progress:
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -45,6 +46,9 @@ DECK_SEED_SLOTS_PER_PASS = 1024
 DEFAULT_DECK_SEED_BASE = 5_000_000
 DEFAULT_DECK_SEED_GUARD = 10
 DEFAULT_BOT_SEED_BASE = 1_000_000
+COLLECTION_CONTRACT_SCHEMA_VERSION = 5
+RATINGS_SNAPSHOT_SCHEMA_VERSION = 1
+PASS_PLAN_SCHEMA_VERSION = 2
 
 
 def _operator_root() -> Path:
@@ -69,6 +73,110 @@ FALLBACK_POOL = [
 ]
 
 
+def _canonical_json_sha256(payload: dict) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _normalize_ratings(payload: object) -> dict[str, dict[str, float]]:
+    if not isinstance(payload, dict):
+        raise ValueError("ratings payload must be an object")
+    result: dict[str, dict[str, float]] = {}
+    for name, values in payload.items():
+        if not isinstance(values, dict) or not str(name).startswith("national_v"):
+            continue
+        rating = values.get("rating", values.get("r"))
+        rd = values.get("rd")
+        if rating is None or rd is None:
+            continue
+        rating_value = float(rating)
+        rd_value = float(rd)
+        if not math.isfinite(rating_value) or not math.isfinite(rd_value):
+            raise ValueError(f"non-finite rating for {name}")
+        result[str(name)] = {
+            "rating": rating_value,
+            "rd": rd_value,
+            "conservative": rating_value - 2.0 * rd_value,
+        }
+    if not result:
+        raise ValueError("ratings file contains no usable national bots")
+    return result
+
+
+def _capture_ratings_snapshot(path: Path) -> dict:
+    """Read one immutable ratings view for pool choice and pass provenance."""
+    resolved = path.expanduser().resolve()
+    try:
+        raw = resolved.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+        ratings = _normalize_ratings(payload)
+    except (OSError, UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot read live Glicko ratings at {resolved}: {exc}") from exc
+    snapshot = {
+        "schema_version": RATINGS_SNAPSHOT_SCHEMA_VERSION,
+        "source": "live_file",
+        "ratings_path": str(resolved),
+        "ratings_sha256": hashlib.sha256(raw).hexdigest(),
+        "ratings_bytes_base64": base64.b64encode(raw).decode("ascii"),
+        "ratings": ratings,
+    }
+    snapshot["snapshot_sha256"] = _canonical_json_sha256(snapshot)
+    return snapshot
+
+
+def _validate_ratings_snapshot(snapshot: object, ratings_path: Path) -> dict[str, dict[str, float]]:
+    if not isinstance(snapshot, dict):
+        raise RuntimeError("persisted pass plan has no frozen ratings snapshot")
+    if snapshot.get("schema_version") != RATINGS_SNAPSHOT_SCHEMA_VERSION:
+        raise RuntimeError("persisted pass plan has an unsupported ratings snapshot")
+    if snapshot.get("source") != "live_file":
+        raise RuntimeError("persisted ratings snapshot source is not authoritative")
+    expected_path = str(ratings_path.expanduser().resolve())
+    if snapshot.get("ratings_path") != expected_path:
+        raise RuntimeError("persisted ratings snapshot path does not match resume contract")
+    raw_digest = str(snapshot.get("ratings_sha256") or "")
+    if len(raw_digest) != 64 or any(ch not in "0123456789abcdef" for ch in raw_digest):
+        raise RuntimeError("persisted ratings file digest is invalid")
+    try:
+        encoded = snapshot.get("ratings_bytes_base64")
+        if not isinstance(encoded, str):
+            raise ValueError("ratings_bytes_base64 must be a string")
+        raw = base64.b64decode(encoded, validate=True)
+        if hashlib.sha256(raw).hexdigest() != raw_digest:
+            raise ValueError("ratings bytes do not match ratings_sha256")
+        normalized = _normalize_ratings(json.loads(raw.decode("utf-8")))
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"persisted ratings snapshot is invalid: {exc}") from exc
+    if normalized != snapshot.get("ratings"):
+        raise RuntimeError("persisted ratings snapshot rows do not match raw payload")
+    recorded_digest = str(snapshot.get("snapshot_sha256") or "")
+    digest_payload = {
+        key: value for key, value in snapshot.items() if key != "snapshot_sha256"
+    }
+    if recorded_digest != _canonical_json_sha256(digest_payload):
+        raise RuntimeError("persisted ratings snapshot digest mismatch")
+    return normalized
+
+
+def _strongest_from_ratings(
+    ratings: dict[str, dict[str, float]], n: int
+) -> list[str]:
+    rows = sorted(
+        (
+            (name, float(values["conservative"]))
+            for name, values in ratings.items()
+        ),
+        key=lambda row: row[1],
+        reverse=True,
+    )
+    return [name for name, _ in rows[:n]]
+
+
 def _resolve(p: str) -> Path:
     raw = Path(p)
     return raw if raw.is_absolute() else (ROOT / raw).resolve()
@@ -79,25 +187,13 @@ def live_strongest(
 ) -> list[str]:
     """Read the live strongest classic bots by conservative Glicko."""
     try:
-        with ratings_path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        rows = []
-        for name, value in data.items():
-            if not isinstance(value, dict) or not name.startswith("national_v"):
-                continue
-            rating = value.get("rating", value.get("r"))
-            rd = value.get("rd")
-            if rating is None or rd is None:
-                continue
-            rows.append((name, float(rating) - 2.0 * float(rd)))
-        if not rows:
-            raise ValueError("ratings file contains no usable national bots")
-        rows.sort(key=lambda x: x[1], reverse=True)
-        return [k for k, _ in rows[:n]]
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        snapshot = _capture_ratings_snapshot(ratings_path)
+        ratings = _validate_ratings_snapshot(snapshot, ratings_path)
+        return _strongest_from_ratings(ratings, n)
+    except RuntimeError:
         if allow_fallback:
             return list(FALLBACK_POOL[:n])
-        raise RuntimeError(f"cannot read live Glicko ratings at {ratings_path}: {exc}") from exc
+        raise
 
 
 def probe_one(candidate: str, opponent_dir: str, split: str, name: str,
@@ -235,25 +331,6 @@ def _completed_tag_commit(name: str) -> str | None:
         return commit
     except (OSError, subprocess.SubprocessError):
         return None
-
-
-def _ratings_snapshot(path: Path) -> dict[str, dict[str, float]]:
-    with path.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    result = {}
-    for name, values in payload.items():
-        if not isinstance(values, dict) or not name.startswith("national_v"):
-            continue
-        rating = values.get("rating", values.get("r"))
-        rd = values.get("rd")
-        if rating is None or rd is None:
-            continue
-        result[name] = {
-            "rating": float(rating),
-            "rd": float(rd),
-            "conservative": float(rating) - 2.0 * float(rd),
-        }
-    return result
 
 
 def _completed_passes(out_dir: Path) -> int:
@@ -475,9 +552,16 @@ def build_pool(
     allow_fallback: bool,
     val_opponents: set[str],
     held_out_opponents: set[str],
+    frozen_ratings: dict[str, dict[str, float]] | None = None,
 ) -> list[tuple[str, str, str]]:
     """Build a live pool with stable opponent-level partitions."""
-    strong = live_strongest(ratings_path, strongest, allow_fallback=allow_fallback)
+    strong = (
+        _strongest_from_ratings(frozen_ratings, strongest)
+        if frozen_ratings is not None
+        else live_strongest(
+            ratings_path, strongest, allow_fallback=allow_fallback
+        )
+    )
     old = ["national_v2", "national_v3", "national_v5", "national_v7",
            "national_v8", "national_v9", "national_v14", "national_v16"]
     explicit_bots = sorted(val_opponents | held_out_opponents)
@@ -537,6 +621,11 @@ def main(argv=None) -> int:
         help="Comma-separated fractions used to rotate the minimum sampled hand.",
     )
     args = ap.parse_args(argv)
+    if args.allow_fallback_pool:
+        raise SystemExit(
+            "--allow-fallback-pool is incompatible with frozen match-scope "
+            "ratings evidence"
+        )
     args.workers = max(1, min(4, int(args.workers)))
     args.probe_workers = max(1, min(4, int(args.probe_workers)))
     if args.workers * args.probe_workers > 4:
@@ -589,7 +678,7 @@ def main(argv=None) -> int:
     if _directory_digest(candidate_execution_path) != candidate_digest:
         raise RuntimeError("candidate execution snapshot digest mismatch")
     resume_contract = {
-        "schema_version": 4,
+        "schema_version": COLLECTION_CONTRACT_SCHEMA_VERSION,
         "candidate": str(candidate_path),
         "candidate_sha256": candidate_digest,
         "candidate_execution_path": str(candidate_execution_path),
@@ -620,25 +709,30 @@ def main(argv=None) -> int:
             (TOOLS / "cross_hand_sequence.py").read_bytes()
         ).hexdigest(),
     }
+    startup_ratings_snapshot: dict | None = None
     manifest_path = out_dir / "collection_manifest.json"
     if manifest_path.exists():
         try:
-            previous_contract = json.loads(
+            collection_config = json.loads(
                 manifest_path.read_text(encoding="utf-8")
-            ).get("resume_contract")
+            )
+            previous_contract = collection_config.get("resume_contract")
         except (OSError, json.JSONDecodeError):
+            collection_config = None
             previous_contract = None
         if previous_contract != resume_contract:
             raise SystemExit(
                 f"resume contract mismatch for {out_dir}; use a new output directory"
             )
-    collection_config = {
-        "resume_contract": resume_contract,
-        "passes_requested": args.passes,
-        "start_pass": start_pass,
-        "ratings_sha256_at_start": hashlib.sha256(ratings_path.read_bytes()).hexdigest(),
-    }
-    _write_json_atomic(manifest_path, collection_config)
+    else:
+        startup_ratings_snapshot = _capture_ratings_snapshot(ratings_path)
+        collection_config = {
+            "resume_contract": resume_contract,
+            "passes_requested": args.passes,
+            "start_pass": start_pass,
+            "ratings_sha256_at_start": startup_ratings_snapshot["ratings_sha256"],
+        }
+        _write_json_atomic(manifest_path, collection_config)
     t_global = time.time()
     log(f"START: pass={start_pass + 1}/{args.passes} existing_values={total_rows} "
         f"existing_behavior={total_behavior}")
@@ -646,11 +740,21 @@ def main(argv=None) -> int:
         pass_plan_path = out_dir / "pass_plans" / f"pass_{ps + 1:04d}.json"
         if pass_plan_path.exists():
             pass_plan = json.loads(pass_plan_path.read_text(encoding="utf-8"))
+            plan_schema = int(pass_plan.get("schema_version", 0) or 0)
+            if plan_schema != PASS_PLAN_SCHEMA_VERSION:
+                raise RuntimeError(
+                    "persisted pass plan predates frozen ratings evidence; "
+                    "resume with the collector version bound by its collection manifest"
+                )
             if (
                 int(pass_plan.get("pass", 0) or 0) != ps + 1
                 or pass_plan.get("seed_scheme") != "disjoint_match_blocks_v1"
             ):
                 raise RuntimeError(f"invalid persisted pass plan: {pass_plan_path}")
+            pass_ratings_snapshot = pass_plan.get("ratings_snapshot")
+            rating_rows = _validate_ratings_snapshot(
+                pass_ratings_snapshot, ratings_path
+            )
             plan_entries = list(pass_plan.get("tasks") or [])
             pool = [
                 (
@@ -661,12 +765,25 @@ def main(argv=None) -> int:
                 for entry in plan_entries
             ]
         else:
+            # Pool selection and completion provenance use one immutable view.
+            # An evaluation-identity rotation during long probes must not
+            # strand fully written rows before pass completion metadata.
+            pass_ratings_snapshot = (
+                startup_ratings_snapshot
+                if startup_ratings_snapshot is not None
+                else _capture_ratings_snapshot(ratings_path)
+            )
+            startup_ratings_snapshot = None
+            rating_rows = _validate_ratings_snapshot(
+                pass_ratings_snapshot, ratings_path
+            )
             full_pool = build_pool(
                 ratings_path,
                 strongest=max(1, args.strongest),
                 allow_fallback=args.allow_fallback_pool,
                 val_opponents=val_opponents,
                 held_out_opponents=held_out_opponents,
+                frozen_ratings=rating_rows,
             )
             limit = max(0, int(args.opponents_per_pass))
             if 0 < limit < len(full_pool):
@@ -726,11 +843,26 @@ def main(argv=None) -> int:
                     },
                 })
             pass_plan_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_json_atomic(pass_plan_path, {
+            pass_plan_payload = {
+                "schema_version": PASS_PLAN_SCHEMA_VERSION,
                 "pass": ps + 1,
                 "seed_scheme": "disjoint_match_blocks_v1",
+                "ratings_snapshot": pass_ratings_snapshot,
                 "tasks": plan_entries,
-            })
+            }
+            _write_json_atomic(pass_plan_path, pass_plan_payload)
+            persisted_plan = json.loads(
+                pass_plan_path.read_text(encoding="utf-8")
+            )
+            if persisted_plan != pass_plan_payload:
+                raise RuntimeError(
+                    f"persisted pass plan changed during atomic write: {pass_plan_path}"
+                )
+            pass_ratings_snapshot = persisted_plan["ratings_snapshot"]
+            rating_rows = _validate_ratings_snapshot(
+                pass_ratings_snapshot, ratings_path
+            )
+            plan_entries = list(persisted_plan["tasks"])
         for entry in plan_entries:
             name = str(entry["name"])
             _verify_frozen_opponent(entry)
@@ -770,12 +902,12 @@ def main(argv=None) -> int:
             total_rows[sp] = sum(1 for _ in open(cf)) if cf.exists() else 0
             behavior = out_dir / f"opponent_actions_{sp}.jsonl"
             total_behavior[sp] = sum(1 for _ in open(behavior)) if behavior.exists() else 0
-        rating_rows = _ratings_snapshot(ratings_path)
         with open(out_dir / "pool_snapshots.jsonl", "a", encoding="utf-8") as snapshot_file:
             snapshot_file.write(json.dumps({
                 "pass": ps + 1,
-                "ratings_path": str(ratings_path),
-                "ratings_sha256": hashlib.sha256(ratings_path.read_bytes()).hexdigest(),
+                "ratings_path": pass_ratings_snapshot["ratings_path"],
+                "ratings_sha256": pass_ratings_snapshot["ratings_sha256"],
+                "ratings_snapshot_sha256": pass_ratings_snapshot["snapshot_sha256"],
                 "min_hand": min_hand,
                 "hands": args.hands,
                 "workers": args.workers,
