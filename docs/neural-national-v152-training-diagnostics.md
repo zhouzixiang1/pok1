@@ -849,6 +849,39 @@ pass-7 access-chain smoke opened 48/312 policy-selection value/behavior rows and
 only after a fully bound synthetic pass credential, 84/219 v57/v66 policy-gate
 rows; both phases retained false deployment-value and strength-evidence flags.
 
+The next model implementation is isolated in
+`opponent_multitask_model_v3.py`; it does not modify the trainer still used by
+the pass-98 exploratory GPU sweep. Its shared inputs are the versioned
+81-dimensional decision state, 24-dimensional actor-aware current-hand history,
+12-dimensional opponent profile, and up to 32 prior-hand summaries with 16
+public features each. Cross-hand ablations support no encoder, Deep Sets, GRU,
+and GRU+MoE. An explicit opponent interaction conditions both task paths, while
+the 66-dimensional exact rule-strategy context is available only to value
+heads. The value path predicts hand, tail, and match means plus monotonic
+q05/q10/q20/q50 values for every legal action. The response path predicts the
+five nationally legal action classes and two aggressive-size targets, with
+private hero state masked both during row encoding and inside the network.
+
+`opponent_profile_schema.py`, the extended `multitask_training_data.py`, and
+`opponent_multitask_batch_v3.py` form the corresponding strict input path. They
+reject profile/request disagreement, row/request cross-hand disagreement,
+unknown schemas, malformed dimensions, non-finite targets, targets outside
+their masks, illegal rule actions, and non-positive role weights. The tensor
+collator uses explicit lengths for right-zero-padded current-hand and
+cross-hand sequences and produces kwargs that can be passed directly to either
+v3 forward path. With a Deep Sets cross-hand encoder, the declared small,
+medium, and large scales contain 173,185, 646,817, and 2,495,713 parameters.
+
+An atomic pass-9 freeze of the running independent collection contains 638
+value rows and 2,854 canonical response rows. Its role counts are 386/1,729 for
+training, 36/205 for early stopping, 48/232 for model calibration, 60/404 for
+policy selection, and 108/284 for policy gate. All 3,492 rows passed strict v3
+encoding, and complete neural-lab regression testing passed 246 tests. The
+source is still incomplete at 9/160 passes. The v3 network therefore has no
+trained checkpoint, stdlib export, active TCP policy, or strength claim yet;
+these results establish only the model/data interface needed for the future
+independent-corpus scaling run.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched

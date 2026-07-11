@@ -5,8 +5,19 @@ from collections.abc import Mapping, Sequence
 import math
 from typing import Any
 
+from cross_hand_sequence import (
+    CROSS_HAND_SEQUENCE_DIM,
+    CROSS_HAND_SEQUENCE_SCHEMA,
+    FEATURE_NAMES as CROSS_HAND_SEQUENCE_FIELDS,
+    MAX_CROSS_HANDS,
+)
 from feature_spec import LABELS, label_action
 from model_input_schema import encode_model_input, model_input_metadata
+from opponent_profile_schema import (
+    OPPONENT_PROFILE_SCHEMA,
+    encode_opponent_profile,
+    opponent_profile_metadata,
+)
 from opponent_response_schema import (
     OPPONENT_ACTION_LABELS,
     OPPONENT_RESPONSE_SCHEMA,
@@ -41,6 +52,13 @@ HERO_RESPONSE_ACTION_FIELDS = (
 )
 HERO_RESPONSE_ACTION_DIM = len(HERO_RESPONSE_ACTION_FIELDS)
 INITIAL_CHIPS = 20_000.0
+MAX_CURRENT_HAND_HISTORY = 16
+VALUE_FIELDS = (
+    "delta_vs_rule",
+    "tail_delta_vs_rule",
+    "match_delta_vs_rule",
+)
+ENCODED_ROW_SCHEMA = "opponent_multitask_encoded_row_v3"
 
 
 def _finite(value: Any, *, field: str) -> float:
@@ -61,6 +79,111 @@ def _bounded_vector(values: Sequence[Any], *, field: str) -> list[float]:
             raise ValueError(f"{field} values must be in [0, 1]")
         result.append(number)
     return result
+
+
+def _binary_vector(
+    values: Any, *, field: str, dimension: int
+) -> list[int]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        raise ValueError(f"{field} must be a binary sequence")
+    if len(values) != dimension:
+        raise ValueError(f"{field} has the wrong dimension")
+    result = []
+    for value in values:
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{field} must be binary") from exc
+        if number not in (0, 1) or bool(value) != bool(number):
+            raise ValueError(f"{field} must be binary")
+        result.append(number)
+    return result
+
+
+def _validate_cross_hand_sequence(
+    raw: Any, *, schema: Any
+) -> list[list[float]]:
+    if schema != CROSS_HAND_SEQUENCE_SCHEMA:
+        raise ValueError("unsupported cross-hand sequence schema")
+    if not isinstance(raw, list):
+        raise ValueError("cross_hand_sequence must be a list")
+    result = []
+    for row_index, raw_hand in enumerate(raw[-MAX_CROSS_HANDS:]):
+        if not isinstance(raw_hand, Sequence) or isinstance(
+            raw_hand, (str, bytes)
+        ):
+            raise ValueError("cross-hand sequence rows must be numeric sequences")
+        if len(raw_hand) != CROSS_HAND_SEQUENCE_DIM:
+            raise ValueError("cross-hand sequence row has the wrong dimension")
+        hand = []
+        for feature_index, value in enumerate(raw_hand):
+            number = _finite(
+                value,
+                field=f"cross_hand_sequence[{row_index}][{feature_index}]",
+            )
+            lower = -1.0 if feature_index == CROSS_HAND_SEQUENCE_DIM - 1 else 0.0
+            if not lower <= number <= 1.0:
+                raise ValueError("cross-hand sequence feature is out of range")
+            hand.append(number)
+        result.append(hand)
+    return result
+
+
+def _cross_hand_sequence(row: Mapping[str, Any]) -> list[list[float]]:
+    request = row.get("request") if isinstance(row.get("request"), Mapping) else {}
+    sequences = []
+    if "cross_hand_sequence" in row:
+        sequences.append(_validate_cross_hand_sequence(
+            row.get("cross_hand_sequence"),
+            schema=row.get("cross_hand_sequence_schema"),
+        ))
+    if "cross_hand_sequence" in request:
+        sequences.append(_validate_cross_hand_sequence(
+            request.get("cross_hand_sequence"),
+            schema=request.get("cross_hand_sequence_schema"),
+        ))
+    if not sequences:
+        return []
+    if len(sequences) > 1 and sequences[0] != sequences[1]:
+        raise ValueError("row and request cross-hand sequences disagree")
+    return sequences[0]
+
+
+def _value_supervision(
+    row: Mapping[str, Any]
+) -> tuple[dict[str, list[float]], dict[str, list[int]], list[int]]:
+    legal = _binary_vector(
+        row.get("legal_mask"), field="legal_mask", dimension=len(LABELS)
+    )
+    if not any(legal):
+        raise ValueError("value row has no legal action")
+    masks = row.get("target_masks")
+    masks = masks if isinstance(masks, Mapping) else {}
+    targets: dict[str, list[float]] = {}
+    target_masks: dict[str, list[int]] = {}
+    for field in VALUE_FIELDS:
+        raw = row.get(field)
+        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+            raise ValueError(f"{field} must be a numeric target sequence")
+        if len(raw) != len(LABELS):
+            raise ValueError(f"{field} has the wrong dimension")
+        raw_mask = masks.get(field, row.get("target_mask"))
+        mask = _binary_vector(
+            raw_mask, field=f"target_masks.{field}", dimension=len(LABELS)
+        )
+        if any(observed and not legal[index] for index, observed in enumerate(mask)):
+            raise ValueError(f"{field} observes an illegal action")
+        values = []
+        for index, value in enumerate(raw):
+            if mask[index]:
+                values.append(_finite(value, field=f"{field}[{index}]"))
+            else:
+                if value is not None:
+                    raise ValueError(f"{field} has a target outside its mask")
+                values.append(0.0)
+        targets[field] = values
+        target_masks[field] = mask
+    return targets, target_masks, legal
 
 
 def _model_weight_rows(
@@ -300,7 +423,8 @@ def _hero_response_action_features(row: Mapping[str, Any]) -> list[float]:
 
 
 def encode_prepared_row(
-    row: Mapping[str, Any], *, response: bool, max_hist: int = 16
+    row: Mapping[str, Any], *, response: bool,
+    max_hist: int = MAX_CURRENT_HAND_HISTORY,
 ) -> dict[str, Any]:
     """Encode a prepared role row without importing the legacy trainer."""
     base = row.get("state_features", row.get("features"))
@@ -309,12 +433,19 @@ def encode_prepared_row(
     encoded = encode_model_input(
         row, list(base), max_hist=max_hist, response=response
     )
+    encoded["encoded_row_schema"] = ENCODED_ROW_SCHEMA
+    encoded["opponent_profile_schema"] = OPPONENT_PROFILE_SCHEMA
+    encoded["opponent_profile"] = encode_opponent_profile(row)
+    encoded["cross_hand_sequence_schema"] = CROSS_HAND_SEQUENCE_SCHEMA
+    encoded["cross_hand_sequence"] = _cross_hand_sequence(row)
     weight_field = (
         TRAIN_WEIGHT_FIELD if TRAIN_WEIGHT_FIELD in row else EVALUATION_WEIGHT_FIELD
     )
     if weight_field not in row:
         raise ValueError("prepared row is missing its role weight")
     encoded["row_weight"] = _finite(row[weight_field], field=weight_field)
+    if encoded["row_weight"] <= 0.0:
+        raise ValueError("prepared row weight must be positive")
     encoded["row_weight_field"] = weight_field
     encoded["opponent"] = opponent_label(dict(row))
 
@@ -325,25 +456,42 @@ def encode_prepared_row(
             else annotate_response_rows([dict(row)], strict=True)[0]
         )
         legal = prepared.get("response_legal_action_mask")
-        if not isinstance(legal, Sequence) or len(legal) != len(OPPONENT_ACTION_LABELS):
-            raise ValueError("response legal-action mask has the wrong dimension")
-        legal_mask = [1 if bool(value) else 0 for value in legal]
+        legal_mask = _binary_vector(
+            legal,
+            field="response_legal_action_mask",
+            dimension=len(OPPONENT_ACTION_LABELS),
+        )
         target = int(prepared.get("opponent_action_label_id", -1))
-        target_mask = int(prepared.get("response_target_mask", 0) or 0)
+        target_mask = _binary_vector(
+            [prepared.get("response_target_mask", 0)],
+            field="response_target_mask",
+            dimension=1,
+        )[0]
         if target_mask != 1 or not 0 <= target < len(legal_mask) or not legal_mask[target]:
             raise ValueError("response target is absent or illegal")
+        amount_mask = _binary_vector(
+            [prepared.get("response_amount_target_mask", 0)],
+            field="response_amount_target_mask",
+            dimension=1,
+        )[0]
+        size_targets = _bounded_vector(
+            [
+                prepared.get("response_amount_target", 0.0),
+                prepared.get("response_aggressive_stack_fraction", 0.0),
+            ],
+            field="response_size_targets",
+        )
         encoded.update({
             "response_schema": OPPONENT_RESPONSE_SCHEMA,
             "response_target": target,
             "response_target_mask": target_mask,
             "response_legal_action_mask": legal_mask,
-            "response_amount_target": _finite(
-                prepared.get("response_amount_target", 0.0),
-                field="response_amount_target",
-            ),
+            "response_amount_target": size_targets[0],
             "response_amount_target_mask": int(
-                prepared.get("response_amount_target_mask", 0) or 0
+                amount_mask
             ),
+            "response_size_targets": size_targets,
+            "response_size_target_mask": [amount_mask, amount_mask],
             "hero_action_schema": HERO_RESPONSE_ACTION_SCHEMA,
             "hero_action_features": _hero_response_action_features(prepared),
             "strategy_context": [],
@@ -352,8 +500,9 @@ def encode_prepared_row(
     else:
         raw_strategy = row.get("strategy_context_features")
         if raw_strategy is None:
-            strategy = []
+            strategy = [0.0] * STRATEGY_CONTEXT_DIM
             strategy_schema = None
+            strategy_available = False
         else:
             if not isinstance(raw_strategy, Sequence) or isinstance(
                 raw_strategy, (str, bytes)
@@ -367,10 +516,30 @@ def encode_prepared_row(
             )
             if strategy_schema != STRATEGY_CONTEXT_SCHEMA:
                 raise ValueError("unsupported strategy context schema")
+            strategy_available = True
+        targets, target_masks, legal = _value_supervision(row)
+        try:
+            rule_label_id = int(row.get("rule_label_id"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("rule_label_id is missing or invalid") from exc
+        if not 0 <= rule_label_id < len(LABELS) or not legal[rule_label_id]:
+            raise ValueError("rule action is absent or illegal")
+        if any(
+            not target_masks[field][rule_label_id] for field in VALUE_FIELDS
+        ):
+            raise ValueError("rule action must be observed for every value field")
         encoded.update({
             "strategy_context": strategy,
             "strategy_context_schema": strategy_schema,
-            "strategy_context_available": bool(strategy),
+            "strategy_context_available": strategy_available,
+            "rule_label_id": rule_label_id,
+            "rule_action": [
+                1.0 if index == rule_label_id else 0.0
+                for index in range(len(LABELS))
+            ],
+            "legal_action_mask": legal,
+            "value_targets": targets,
+            "value_target_masks": target_masks,
         })
     return encoded
 
@@ -387,7 +556,17 @@ def training_data_metadata() -> dict[str, Any]:
         "behavior_weighting": BEHAVIOR_WEIGHTING,
         "train_weight_field": TRAIN_WEIGHT_FIELD,
         "evaluation_weight_field": EVALUATION_WEIGHT_FIELD,
+        "encoded_row_schema": ENCODED_ROW_SCHEMA,
         "model_input": model_input_metadata(base_state_dim=48),
+        "max_current_hand_history": MAX_CURRENT_HAND_HISTORY,
+        "opponent_profile": opponent_profile_metadata(),
+        "cross_hand_sequence": {
+            "schema": CROSS_HAND_SEQUENCE_SCHEMA,
+            "dim": CROSS_HAND_SEQUENCE_DIM,
+            "fields": list(CROSS_HAND_SEQUENCE_FIELDS),
+            "max_hands": MAX_CROSS_HANDS,
+            "padding": "right_zero_with_explicit_length",
+        },
         "opponent_response": response_schema_metadata(),
         "hero_response_action": {
             "schema": HERO_RESPONSE_ACTION_SCHEMA,

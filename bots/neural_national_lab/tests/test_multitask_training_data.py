@@ -13,6 +13,28 @@ sys.path.insert(0, str(TOOLS))
 import multitask_training_data as data  # noqa: E402
 
 
+def _profile() -> dict:
+    return {
+        "confidence": 0.25,
+        "actions_total_norm": 0.125,
+        "fold_rate": 0.10,
+        "call_rate": 0.30,
+        "check_rate": 0.40,
+        "raise_rate": 0.15,
+        "allin_rate": 0.05,
+        "aggression": 0.20,
+        "preflop_actions_norm": 0.10,
+        "preflop_raise_rate": 0.15,
+        "postflop_actions_norm": 0.15,
+        "postflop_raise_rate": 0.05,
+    }
+
+
+def _cross_hand() -> list[float]:
+    return [0.25, 0.1, 0.3, 0.4, 0.15, 0.05, 0.2, 0.2, 0.2,
+            0.1, 0.2, 1.0, 0.0, 0.0, 1.0, -0.1]
+
+
 def _request() -> dict:
     return {
         "my_id": 0,
@@ -28,12 +50,17 @@ def _request() -> dict:
         "public_cards": [],
         "remaining_hands": 70,
         "total_win_chips": [0, 0],
+        "opponent_profile": _profile(),
+        "cross_hand_sequence": [_cross_hand()],
+        "cross_hand_sequence_schema": "public_opponent_hand_v1",
     }
 
 
 def _value_row(opponent: str, seed: int, *, eligible: int = 24) -> dict:
     selected = 12
     probability = selected / eligible
+    mask = [0, 0, 1, 1, 0, 1]
+    hand = [None, None, 0.0, float(seed), None, -float(seed)]
     return {
         "opponent": opponent,
         "deck_seed_base": seed,
@@ -44,7 +71,20 @@ def _value_row(opponent: str, seed: int, *, eligible: int = 24) -> dict:
         "decision_inclusion_probability": probability,
         "decision_inverse_probability_weight": 1.0 / probability,
         "state_features": [0.5] * 48,
-        "legal_mask": [1, 1, 1, 1, 1, 1],
+        "legal_mask": mask,
+        "rule_label_id": 2,
+        "delta_vs_rule": hand,
+        "tail_delta_vs_rule": hand,
+        "match_delta_vs_rule": hand,
+        "target_masks": {
+            field: mask
+            for field in (
+                "delta_vs_rule", "tail_delta_vs_rule", "match_delta_vs_rule"
+            )
+        },
+        "opponent_profile_features": list(_profile().values()),
+        "cross_hand_sequence_schema": "public_opponent_hand_v1",
+        "cross_hand_sequence": [_cross_hand()],
         "request": _request(),
         "state": {"round": 0, "pot": 150, "to_call": 50},
     }
@@ -64,6 +104,9 @@ def _behavior_row(opponent: str, seed: int) -> dict:
         "opponent_action_amount_norm": 100 / 20_000,
         "opponent_action_pot_ratio": 100 / 150,
         "state_features": [0.5] * 48,
+        "opponent_profile_features": list(_profile().values()),
+        "cross_hand_sequence_schema": "public_opponent_hand_v1",
+        "cross_hand_sequence": [_cross_hand()],
         "request": _request(),
         "state": {"round": 0, "pot": 150, "to_call": 50},
     }
@@ -242,6 +285,11 @@ def test_encoded_response_has_public_state_mask_and_legal_target() -> None:
     assert encoded["response_target"] == 2
     assert encoded["response_legal_action_mask"] == [1, 0, 1, 1, 1]
     assert len(encoded["hero_action_features"]) == 10
+    assert encoded["opponent_profile"] == list(_profile().values())
+    assert encoded["cross_hand_sequence"] == [_cross_hand()]
+    assert encoded["cross_hand_sequence_schema"] == "public_opponent_hand_v1"
+    assert encoded["response_size_targets"] == [0.0, 0.0]
+    assert encoded["response_size_target_mask"] == [0, 0]
     assert all(
         encoded["state"][index] == 0.0
         for index in encoded["response_private_state_masked"]
@@ -262,6 +310,11 @@ def test_encoded_value_accepts_only_versioned_strategy_context() -> None:
     assert encoded["response_mode"] is False
     assert len(encoded["strategy_context"]) == 66
     assert encoded["strategy_context_available"] is True
+    assert encoded["rule_action"] == [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    assert encoded["value_target_masks"]["delta_vs_rule"] == [0, 0, 1, 1, 0, 1]
+    assert encoded["value_targets"]["delta_vs_rule"] == [
+        0.0, 0.0, 0.0, 1.0, 0.0, -1.0
+    ]
 
     row["strategy_context_schema"] = "unknown"
     with pytest.raises(ValueError, match="unsupported strategy"):
@@ -278,6 +331,44 @@ def test_duplicate_opponent_across_model_roles_is_rejected() -> None:
         _prepared(dataset)
 
 
+def test_profile_vector_must_match_request_profile() -> None:
+    dataset = _Dataset()
+    row = _prepared(dataset)["roles"]["train"]["value"][0]
+    row["opponent_profile_features"][3] = 0.99
+
+    with pytest.raises(ValueError, match="disagrees"):
+        data.encode_prepared_row(row, response=False)
+
+
+def test_cross_hand_sequence_requires_versioned_strict_rows() -> None:
+    dataset = _Dataset()
+    row = _prepared(dataset)["roles"]["train"]["value"][0]
+    row["cross_hand_sequence_schema"] = "legacy"
+
+    with pytest.raises(ValueError, match="unsupported cross-hand"):
+        data.encode_prepared_row(row, response=False)
+
+    row["cross_hand_sequence_schema"] = "public_opponent_hand_v1"
+    row["cross_hand_sequence"] = [[0.0] * 15]
+    with pytest.raises(ValueError, match="wrong dimension"):
+        data.encode_prepared_row(row, response=False)
+
+    row["cross_hand_sequence"] = [_cross_hand()]
+    row["cross_hand_sequence"][0][0] = 0.75
+    with pytest.raises(ValueError, match="row and request"):
+        data.encode_prepared_row(row, response=False)
+
+
+def test_missing_strategy_context_is_fixed_zero_vector() -> None:
+    dataset = _Dataset()
+    row = _prepared(dataset)["roles"]["train"]["value"][0]
+
+    encoded = data.encode_prepared_row(row, response=False)
+
+    assert encoded["strategy_context"] == [0.0] * 66
+    assert encoded["strategy_context_available"] is False
+
+
 def test_metadata_freezes_role_and_feature_contracts() -> None:
     metadata = data.training_data_metadata()
 
@@ -287,4 +378,9 @@ def test_metadata_freezes_role_and_feature_contracts() -> None:
     assert metadata["policy_roles_forbidden"] == ["policy_selection", "policy_gate"]
     assert metadata["frozen_checkpoint_schema"] == "frozen_model_checkpoint_v1"
     assert metadata["model_input"]["state_dim"] == 81
+    assert metadata["model_input"]["history_feature_dim"] == 24
+    assert metadata["max_current_hand_history"] == 16
+    assert metadata["opponent_profile"]["dim"] == 12
+    assert metadata["cross_hand_sequence"]["dim"] == 16
+    assert metadata["cross_hand_sequence"]["max_hands"] == 32
     assert metadata["hero_response_action"]["dim"] == 10
