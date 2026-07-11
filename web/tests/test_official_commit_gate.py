@@ -217,6 +217,9 @@ def test_official_full_commit_gate_does_not_reuse_invalid_existing_certificate(
     )
 
     assert result["passed"] is False
+    assert result["outcome"] == "operator_bootstrap_required"
+    assert result["operator_action_required"] is True
+    assert result["action"] == "run_explicit_bootstrap_full"
     assert result["opponent_selection"]["reason"] == "no_official_eligible_opponent"
     assert len(selection_calls) == 1
 
@@ -388,6 +391,47 @@ def test_official_full_gate_records_inconclusive_checkpoint_stage(monkeypatch, t
     assert kwargs["gate_results"]["official_full"]["repairable_by_workers"] is False
 
 
+def test_no_opponent_parks_candidate_for_explicit_operator_bootstrap(monkeypatch):
+    import tool_commit
+
+    writes = []
+    monkeypatch.setattr(
+        tool_commit,
+        "write_pipeline_checkpoint",
+        lambda *args, **kwargs: writes.append((args, kwargs)) or True,
+    )
+    gate = {
+        "passed": False,
+        "outcome": "operator_bootstrap_required",
+        "operator_action_required": True,
+        "action": "run_explicit_bootstrap_full",
+        "opponent_selection": {
+            "selected": False,
+            "reason": "no_official_eligible_opponent",
+        },
+    }
+
+    ok = tool_commit._record_official_bootstrap_required_checkpoint(
+        146,
+        142,
+        {
+            "next_v": 146,
+            "source_v": 142,
+            "stage": "verified",
+            "master_plan": {"strategy": "range-update"},
+            "gate_results": {"precommit_eval": {"passed": True}},
+        },
+        gate,
+    )
+
+    assert ok is True
+    args, kwargs = writes[0]
+    assert args[:3] == (146, 142, "official_bootstrap_required")
+    recorded = kwargs["gate_results"]["official_full"]
+    assert recorded["operator_action_required"] is True
+    assert recorded["repairable_by_workers"] is False
+
+
 def test_mutable_evidence_summary_cannot_route_bot_repair(monkeypatch):
     import tool_commit
 
@@ -479,6 +523,102 @@ def test_official_full_pass_is_persisted_in_verified_gate_ledger(monkeypatch, tm
     assert args[:3] == (143, 142, "verified")
     assert kwargs["gate_results"]["official_full"]["passed"] is True
     assert kwargs["gate_results"]["official_full"]["certificate_digest"] == "cert-digest"
+
+
+def test_bootstrap_full_pass_returns_parked_checkpoint_to_verified(monkeypatch):
+    import tool_commit
+
+    writes = []
+    monkeypatch.setattr(
+        tool_commit,
+        "write_pipeline_checkpoint",
+        lambda *args, **kwargs: writes.append((args, kwargs)) or True,
+    )
+
+    ok = tool_commit._record_official_full_pass_checkpoint(
+        146,
+        142,
+        {
+            "next_v": 146,
+            "source_v": 142,
+            "stage": "official_bootstrap_required",
+            "gate_results": {"precommit_eval": {"passed": True}},
+        },
+        {
+            "passed": True,
+            "status": {"status": STATUS_CERTIFIED, "mode": "full"},
+            "certificate_digest": "bootstrap-cert-digest",
+        },
+    )
+
+    assert ok is True
+    args, kwargs = writes[0]
+    assert args[:3] == (146, 142, "verified")
+    assert kwargs["gate_results"]["official_full"]["passed"] is True
+
+
+def test_commit_bot_parks_no_opponent_without_git(monkeypatch, tmp_path):
+    import tool_commit
+
+    candidate = _native_bot(tmp_path / "bots" / "national_v146")
+    checkpoint = {"next_v": 146, "source_v": 142, "stage": "verified"}
+    gate = {
+        "passed": False,
+        "outcome": "operator_bootstrap_required",
+        "operator_action_required": True,
+        "action": "run_explicit_bootstrap_full",
+        "opponent_selection": {
+            "selected": False,
+            "reason": "no_official_eligible_opponent",
+        },
+    }
+    parked = []
+    monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tool_commit, "_matching_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(
+        tool_commit,
+        "validate_commit_gate_ledger",
+        lambda *_args, **_kwargs: {
+            "missing_gates": [],
+            "failed_gates": [],
+            "gate_results": {},
+            "checkpoint_stage": "verified",
+        },
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "_run_official_full_commit_gate",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=gate),
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "_record_official_bootstrap_required_checkpoint",
+        lambda *args, **kwargs: parked.append((args, kwargs)) or True,
+    )
+    monkeypatch.setattr(tool_commit, "log_system_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tool_commit,
+        "git_commit_bot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("operator bootstrap parking must not mutate Git")
+        ),
+    )
+
+    result = asyncio.run(tool_commit.commit_bot.handler({
+        "version": 146,
+        "source_v": 142,
+        "strategy": "test",
+        "review_approved": True,
+    }))
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["checkpoint_stage"] == "official_bootstrap_required"
+    assert payload["paused"] is True
+    assert payload["committed"] is False
+    assert "error" not in payload
+    assert payload["operator_action_required"] is True
+    assert payload["automatic_bootstrap_forbidden"] is True
+    assert parked
 
 
 def test_commit_bot_never_invokes_git_when_official_gate_fails(monkeypatch, tmp_path):

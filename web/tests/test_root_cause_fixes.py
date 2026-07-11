@@ -77,8 +77,13 @@ class TestP2StageTransition:
     def test_forward_transitions_allowed(self):
         from core.evolution_infra import validate_stage_transition, STAGE_ORDER
         for i in range(len(STAGE_ORDER) - 1):
-            ok, reason = validate_stage_transition(STAGE_ORDER[i], STAGE_ORDER[i + 1])
-            assert ok, f"Forward {STAGE_ORDER[i]} -> {STAGE_ORDER[i+1]} should be valid: {reason}"
+            current, proposed = STAGE_ORDER[i], STAGE_ORDER[i + 1]
+            ok, reason = validate_stage_transition(current, proposed)
+            if current == "official_bootstrap_required":
+                assert ok is False
+                assert reason == "operator_bootstrap_pause_is_durable"
+                continue
+            assert ok, f"Forward {current} -> {proposed} should be valid: {reason}"
 
     def test_backward_transition_blocked(self):
         from core.evolution_infra import validate_stage_transition

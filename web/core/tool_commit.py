@@ -580,6 +580,39 @@ def _record_official_full_gate_checkpoint(
     return stage if recorded else ""
 
 
+def _record_official_bootstrap_required_checkpoint(
+    v: int,
+    source_v: int,
+    ckpt: dict | None,
+    official_full_gate: dict,
+) -> bool:
+    """Park the first candidate without letting automation consume the root."""
+    gate_payload = {
+        **official_full_gate,
+        "passed": False,
+        "operator_action_required": True,
+        "repairable_by_workers": False,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    return bool(write_pipeline_checkpoint(
+        v,
+        source_v,
+        "official_bootstrap_required",
+        master_plan=(ckpt or {}).get("master_plan"),
+        generation_attempt=(ckpt or {}).get("generation_attempt", 0),
+        gate_results={"official_full": gate_payload},
+        worker_failure_count=(ckpt or {}).get("worker_failure_count", 0),
+        parent2_v=(ckpt or {}).get("parent2_v"),
+        direction_audit=(ckpt or {}).get("direction_audit"),
+        audit_context=(ckpt or {}).get("audit_context", {}) or {},
+        audit_attempt=(ckpt or {}).get("audit_attempt", 0),
+        precommit_attempt=(ckpt or {}).get("precommit_attempt", 0),
+        precommit_rework_count=(ckpt or {}).get("precommit_rework_count", 0),
+        literature_probe=(ckpt or {}).get("literature_probe"),
+        prepare_scope_files=(ckpt or {}).get("prepare_scope_files", []) or [],
+    ))
+
+
 def _record_official_full_pass_checkpoint(
     v: int,
     source_v: int,
@@ -715,6 +748,9 @@ async def _run_official_full_commit_gate(
     if not opponent_selection.get("selected"):
         return {
             "passed": False,
+            "outcome": "operator_bootstrap_required",
+            "operator_action_required": True,
+            "action": "run_explicit_bootstrap_full",
             "error": "OFFICIAL FULL CERTIFICATION BLOCKED: no eligible official EXE opponent.",
             "version": v,
             "source_v": source_v,
@@ -866,6 +902,54 @@ async def commit_bot(args):
         gate_results,
         retry_terminal=existing_infra is not None,
     )
+    if official_full_gate.get("outcome") == "operator_bootstrap_required":
+        if not _record_official_bootstrap_required_checkpoint(
+            v,
+            source_v,
+            ckpt,
+            official_full_gate,
+        ):
+            return _json_tool_result({
+                "error": "COMMIT BLOCKED: failed to park candidate for operator bootstrap.",
+                "failure_class": "infrastructure",
+                "version": v,
+                "source_v": source_v,
+                "checkpoint_stage": (ckpt or {}).get("stage"),
+                "official_full_gate": official_full_gate,
+            })
+        try:
+            log_system_event(
+                "pipeline.official_bootstrap_required",
+                "warn",
+                f"v{v} is parked for the explicit one-time official bootstrap",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "checkpoint_stage": "official_bootstrap_required",
+                    "opponent_selection": official_full_gate.get("opponent_selection"),
+                    "operator_action": "run_explicit_bootstrap_full",
+                    "automatic_bootstrap_forbidden": True,
+                },
+            )
+        except Exception:
+            pass
+        return _json_tool_result({
+            "paused": True,
+            "committed": False,
+            "outcome": "operator_bootstrap_required",
+            "operator_action_required": True,
+            "action": "run_explicit_bootstrap_full",
+            "automatic_bootstrap_forbidden": True,
+            "version": v,
+            "source_v": source_v,
+            "checkpoint_stage": "official_bootstrap_required",
+            "official_full_gate": official_full_gate,
+            "directive": (
+                "Stop the orchestrator. Run scripts/official_certify.py bootstrap-full "
+                "with the repository-pinned root and explicit acknowledgement. After it "
+                "succeeds, call commit_bot manually; never let the LLM select or consume the root."
+            ),
+        })
     if official_full_gate.get("pending"):
         job = official_full_gate.get("job") or {}
         if not _record_official_job_checkpoint(v, source_v, ckpt, official_full_gate):

@@ -368,6 +368,7 @@ def test_session_recovery_classification_covers_official_active_stages():
 
     assert "official_certifying" in stages
     assert "official_failed" in stages
+    assert "official_bootstrap_required" not in stages
     assert "official_inconclusive" not in stages
     assert "archived" not in stages
 

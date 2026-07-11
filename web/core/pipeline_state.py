@@ -24,6 +24,7 @@ STAGE_ORDER = [
     "repair_planned",
     "rework_running",
     "verified",
+    "official_bootstrap_required",
     "official_certifying",
     "official_failed",
     "official_inconclusive",
@@ -37,7 +38,7 @@ STAGE_ORDER = [
 SESSION_RECOVERABLE_STAGES = frozenset(
     stage
     for stage in STAGE_ORDER
-    if stage not in {"official_inconclusive", "archived"}
+    if stage not in {"official_bootstrap_required", "official_inconclusive", "archived"}
 )
 
 STAGE_GATE_ALLOWLIST = {
@@ -56,6 +57,7 @@ STAGE_GATE_ALLOWLIST = {
     "repair_planned": {"quality", "review", "critic", "precommit_eval"},
     "rework_running": {"quality", "review", "critic", "precommit_eval"},
     "verified": {"quality", "review", "critic", "precommit_eval", "official_full"},
+    "official_bootstrap_required": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "official_certifying": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "official_failed": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "official_inconclusive": {"quality", "review", "critic", "precommit_eval", "official_full"},
@@ -78,6 +80,7 @@ NEXT_TOOL_BY_STAGE = {
     "repair_planned": "execute_workers",
     "rework_running": "execute_workers",
     "verified": "commit_bot",
+    "official_bootstrap_required": None,
     "official_certifying": "commit_bot",
     "official_failed": "execute_workers",
     "official_inconclusive": None,
@@ -324,17 +327,22 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "no_guard"
     if proposed_stage == current_stage:
         return True, "same_stage"
+    if current_stage == "official_bootstrap_required":
+        if proposed_stage == "verified":
+            return True, "official_bootstrap_certificate_validated"
+        return False, "operator_bootstrap_pause_is_durable"
     if proposed_stage == "timed_out":
         return True, "timeout_override"
     if proposed_stage == "infra_timed_out":
         return True, "infra_timeout_override"
     if proposed_stage in {"selected", "preparing", "prepared"}:
         return True, "fresh_prepare_restart"
+    if current_stage == "official_certifying" and proposed_stage == "verified":
+        return True, "official_profile_refresh"
     if current_stage == "official_certifying" and proposed_stage in {
         "quality_failed",
         "quality_passed",
         "precommit_failed",
-        "verified",
     }:
         return True, "official_profile_refresh"
 
@@ -528,6 +536,8 @@ def route_policy(checkpoint: dict | None) -> dict:
             intent = "precommit_rework"
         elif stage == "official_failed":
             intent = "official_rework"
+        elif stage == "official_bootstrap_required":
+            intent = "operator_bootstrap"
         elif stage == "official_certifying":
             intent = "official_poll"
         elif stage in {"quality_passed", "reviewed"}:
@@ -568,6 +578,13 @@ def route_policy(checkpoint: dict | None) -> dict:
             "Official EXE full certification found a deterministic bot-side compliance, "
             "state-machine, or obvious decision blocker. Call execute_workers with the "
             "official_full evidence; do not retry commit_bot on unchanged code."
+        )
+    elif stage == "official_bootstrap_required":
+        directive = (
+            "No published full-v5 opponent exists. The candidate is parked for the explicit "
+            "one-time operator bootstrap; the orchestrator must stop and must never select or "
+            "consume the bootstrap root. After bootstrap-full succeeds, an operator may call "
+            "commit_bot manually; the runtime guard requires a completely valid existing certificate."
         )
     elif stage == "official_certifying":
         directive = (
@@ -611,6 +628,11 @@ def route_policy(checkpoint: dict | None) -> dict:
     allowed_tools = []
     if next_tool:
         allowed_tools.append(next_tool)
+    if stage == "official_bootstrap_required":
+        # This is a manual-only escape from the parked stage.  The runtime tool
+        # guard additionally requires a fully content-validated existing
+        # certificate before it lets commit_bot enter its body.
+        allowed_tools.append("commit_bot")
     for tool_name in sorted(head_drift_allowed_tools(stage)):
         if tool_name not in allowed_tools:
             allowed_tools.append(tool_name)
