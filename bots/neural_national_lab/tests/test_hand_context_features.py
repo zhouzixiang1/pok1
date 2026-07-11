@@ -12,6 +12,7 @@ sys.path.insert(0, str(TOOLS))
 
 import feature_spec  # noqa: E402
 import hand_context_features as hand_context  # noqa: E402
+import state_feature_schema  # noqa: E402
 
 
 def card(rank: int, suit: int) -> int:
@@ -90,3 +91,33 @@ def test_hand_context_has_stable_bounded_dimension(payload) -> None:
 
     assert len(features) == hand_context.HAND_CONTEXT_DIM
     assert all(0.0 <= value <= 1.0 for value in features)
+
+
+def test_versioned_state_schema_extends_dimension_and_private_mask() -> None:
+    request = {
+        "my_cards": [card(14, 0), card(13, 0)],
+        "public_cards": [card(12, 0), card(7, 0), card(2, 1)],
+    }
+    base = feature_spec.encode_features(request)
+
+    extended = state_feature_schema.extend_state_features(
+        base,
+        request,
+        schema=state_feature_schema.HERO_HAND_STATE_SCHEMA,
+    )
+    metadata = state_feature_schema.feature_schema_metadata(
+        schema=state_feature_schema.HERO_HAND_STATE_SCHEMA,
+        base_dim=len(base),
+    )
+
+    assert len(extended) == len(base) + hand_context.HAND_CONTEXT_DIM
+    assert metadata["state_dim"] == len(extended)
+    assert metadata["response_private_state_masked"][:5] == list(range(5, 10))
+    assert metadata["response_private_state_masked"][5:] == list(
+        range(len(base), len(extended))
+    )
+
+
+def test_versioned_state_schema_rejects_unknown_contract() -> None:
+    with pytest.raises(ValueError, match="unsupported state feature schema"):
+        state_feature_schema.extend_state_features([], {}, schema="unknown")

@@ -571,6 +571,10 @@ straight-window density and hole contribution, and paired/suited board pressure.
 The representation is bounded, stdlib-only, and invariant to arbitrary suit
 renaming. Six focused tests cover the legacy collision, a board-only straight
 flush, suit permutation, malformed/missing cards, and dimension bounds.
+`state_feature_schema.py` binds the legacy and extended state dimensions to the
+same versioned contract and derives the complete response-head private mask;
+the extended schema masks both legacy hole-card fields and all appended
+hand-context fields from OpponentActionNet.
 
 This feature set is not yet strength evidence. A pass-98 snapshot is running the
 existing 48-dimensional model across GRU, GRU+MoE, Deep Sets, and Transformer
