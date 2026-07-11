@@ -742,6 +742,12 @@ on hand, in-hand decision index, and match decision serial; requires the traced
 final action to equal the row's rule action; validates all 66 values; and stores
 a canonical context digest. The joined fields explicitly forbid use by the
 opponent-response head.
+`native_tcp_strategy_context_probe.py` keeps the active legacy probe untouched:
+it first completes the normal counterfactual runs, then replays one trace-only
+baseline with the same deck and bot seeds. Context is attached only if native
+compliance is clean, baseline net chips are identical, and every selected rule
+action matches its trace. This extra replay is why context collection will run
+as a separate dataset rather than being mixed into the active collection.
 
 `freeze_opponent_role_dataset.py` replaces the ambiguous four-way development
 freeze for the next training run. It emits five explicit opponent-disjoint
