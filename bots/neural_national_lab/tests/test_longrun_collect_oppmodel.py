@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import copy
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -22,6 +26,70 @@ def _load_tool():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _ratings_bytes() -> bytes:
+    return (
+        b'{\n  "national_v1": {"r": 1600, "rd": 40},'
+        b'\n  "national_v2": {"rating": 1550, "rd": 50},'
+        b'\n  "national_v3": {"r": 1500, "rd": 60}\n}\n'
+    )
+
+
+def _minimal_bot(path: Path) -> Path:
+    path.mkdir(parents=True)
+    (path / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    return path
+
+
+def _minimal_collection_args(
+    *, candidate: Path, out_dir: Path, ratings: Path, passes: int
+) -> list[str]:
+    return [
+        "--candidate", str(candidate),
+        "--out-dir", str(out_dir),
+        "--passes", str(passes),
+        "--workers", "1",
+        "--probe-workers", "1",
+        "--hands", "1",
+        "--timeout-sec", "1",
+        "--ratings", str(ratings),
+        "--strongest", "3",
+        "--opponents-per-pass", "3",
+        "--max-decisions", "1",
+        "--max-alternatives", "1",
+    ]
+
+
+def _install_minimal_pool(tool, monkeypatch, tmp_path: Path):
+    opponents = {
+        name: _minimal_bot(tmp_path / name)
+        for name in ("national_v1", "national_v2", "national_v3")
+    }
+
+    def fake_build_pool(_ratings_path, **kwargs):
+        assert set(kwargs["frozen_ratings"]) == set(opponents)
+        return [
+            ("national_v1", str(opponents["national_v1"]), "train"),
+            ("national_v2", str(opponents["national_v2"]), "val"),
+            ("national_v3", str(opponents["national_v3"]), "held_out"),
+        ]
+
+    def fake_freeze(name, source_path, _out_dir):
+        digest = tool._directory_digest(source_path)
+        return {
+            "tag_commit": f"commit-{name}",
+            "tag_directory_sha256": digest,
+            "execution_matches_generation_tag": True,
+            "source_path": str(source_path),
+            "source_checkout_commit": "test-checkout",
+            "snapshot_path": str(source_path),
+            "execution_directory_sha256": digest,
+        }
+
+    monkeypatch.setattr(tool, "build_pool", fake_build_pool)
+    monkeypatch.setattr(tool, "_freeze_opponent", fake_freeze)
+    return opponents
 
 
 def test_deck_seed_blocks_do_not_overlap_across_tasks_or_passes() -> None:
@@ -99,3 +167,249 @@ def test_execution_snapshot_excludes_runtime_markers_and_is_read_only(
     assert not (destination / "__pycache__").exists()
     assert destination.stat().st_mode & 0o222 == 0
     assert (destination / "national_bot.py").stat().st_mode & 0o222 == 0
+
+
+def test_ratings_snapshot_binds_exact_bytes_and_normalized_rows(
+    tmp_path: Path,
+) -> None:
+    tool = _load_tool()
+    ratings_path = tmp_path / "glicko_ratings.json"
+    raw = _ratings_bytes()
+    ratings_path.write_bytes(raw)
+
+    snapshot = tool._capture_ratings_snapshot(ratings_path)
+    rows = tool._validate_ratings_snapshot(snapshot, ratings_path)
+
+    assert base64.b64decode(snapshot["ratings_bytes_base64"], validate=True) == raw
+    assert snapshot["ratings_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert snapshot["ratings"] == rows
+    assert rows["national_v1"] == {
+        "rating": 1600.0,
+        "rd": 40.0,
+        "conservative": 1520.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ("bytes", "file_digest", "rows", "path", "snapshot_digest"),
+)
+def test_ratings_snapshot_tampering_fails_closed(
+    tmp_path: Path, tamper: str
+) -> None:
+    tool = _load_tool()
+    ratings_path = tmp_path / "glicko_ratings.json"
+    ratings_path.write_bytes(_ratings_bytes())
+    snapshot = copy.deepcopy(tool._capture_ratings_snapshot(ratings_path))
+
+    if tamper == "bytes":
+        snapshot["ratings_bytes_base64"] = base64.b64encode(b"{}\n").decode("ascii")
+    elif tamper == "file_digest":
+        snapshot["ratings_sha256"] = "0" * 64
+    elif tamper == "rows":
+        snapshot["ratings"]["national_v1"]["rating"] = 9999.0
+    elif tamper == "path":
+        snapshot["ratings_path"] = str(tmp_path / "other.json")
+    elif tamper == "snapshot_digest":
+        snapshot["snapshot_sha256"] = "0" * 64
+
+    if tamper != "snapshot_digest":
+        snapshot["snapshot_sha256"] = tool._canonical_json_sha256({
+            key: value
+            for key, value in snapshot.items()
+            if key != "snapshot_sha256"
+        })
+
+    with pytest.raises(RuntimeError):
+        tool._validate_ratings_snapshot(snapshot, ratings_path)
+
+
+def test_pass_completion_uses_plan_ratings_after_live_file_disappears(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tool = _load_tool()
+    candidate = _minimal_bot(tmp_path / "candidate")
+    ratings_path = tmp_path / "glicko_ratings.json"
+    raw = _ratings_bytes()
+    ratings_path.write_bytes(raw)
+    out_dir = tmp_path / "collection"
+    _install_minimal_pool(tool, monkeypatch, tmp_path)
+
+    capture_calls = 0
+    capture = tool._capture_ratings_snapshot
+
+    def counted_capture(path):
+        nonlocal capture_calls
+        capture_calls += 1
+        return capture(path)
+
+    def fake_probe(_candidate, _opponent, _split, name, *_args):
+        ratings_path.unlink(missing_ok=True)
+        return 0, 0, name
+
+    monkeypatch.setattr(tool, "_capture_ratings_snapshot", counted_capture)
+    monkeypatch.setattr(tool, "probe_one", fake_probe)
+
+    assert tool.main(_minimal_collection_args(
+        candidate=candidate,
+        out_dir=out_dir,
+        ratings=ratings_path,
+        passes=1,
+    )) == 0
+
+    assert capture_calls == 1
+    assert not ratings_path.exists()
+    plan = json.loads(
+        (out_dir / "pass_plans" / "pass_0001.json").read_text(encoding="utf-8")
+    )
+    manifest = json.loads(
+        (out_dir / "collection_manifest.json").read_text(encoding="utf-8")
+    )
+    snapshot = json.loads(
+        (out_dir / "pool_snapshots.jsonl").read_text(encoding="utf-8")
+    )
+    expected_digest = hashlib.sha256(raw).hexdigest()
+    assert manifest["resume_contract"]["schema_version"] == (
+        tool.COLLECTION_CONTRACT_SCHEMA_VERSION
+    )
+    assert plan["schema_version"] == tool.PASS_PLAN_SCHEMA_VERSION
+    assert plan["ratings_snapshot"]["ratings_sha256"] == expected_digest
+    assert snapshot["ratings_sha256"] == expected_digest
+    assert snapshot["ratings_snapshot_sha256"] == plan["ratings_snapshot"]["snapshot_sha256"]
+    assert {row["name"]: row["glicko"] for row in snapshot["pool"]} == plan[
+        "ratings_snapshot"
+    ]["ratings"]
+
+
+def test_persisted_pass_resumes_without_live_ratings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tool = _load_tool()
+    candidate = _minimal_bot(tmp_path / "candidate")
+    ratings_path = tmp_path / "glicko_ratings.json"
+    ratings_path.write_bytes(_ratings_bytes())
+    out_dir = tmp_path / "collection"
+    _install_minimal_pool(tool, monkeypatch, tmp_path)
+    probe_calls = 0
+
+    def fake_probe(_candidate, _opponent, _split, name, *_args):
+        nonlocal probe_calls
+        probe_calls += 1
+        return 0, 0, name
+
+    monkeypatch.setattr(tool, "probe_one", fake_probe)
+    args = _minimal_collection_args(
+        candidate=candidate,
+        out_dir=out_dir,
+        ratings=ratings_path,
+        passes=1,
+    )
+    assert tool.main(args) == 0
+
+    first_plan = json.loads(
+        (out_dir / "pass_plans" / "pass_0001.json").read_text(encoding="utf-8")
+    )
+    second_plan = copy.deepcopy(first_plan)
+    second_plan["pass"] = 2
+    for index, task in enumerate(second_plan["tasks"]):
+        task["deck_seed_base"] = tool._deck_seed_for_task(
+            root=tool.DEFAULT_DECK_SEED_BASE,
+            pass_index=1,
+            task_index=index,
+            hands=1,
+            guard=tool.DEFAULT_DECK_SEED_GUARD,
+        )
+        task["deck_seed_last"] = task["deck_seed_base"]
+        task["bot_seed_base"] = tool._bot_seed_for_task(
+            root=tool.DEFAULT_BOT_SEED_BASE,
+            pass_index=1,
+            task_index=index,
+        )
+    second_plan_path = out_dir / "pass_plans" / "pass_0002.json"
+    second_plan_path.write_text(json.dumps(second_plan), encoding="utf-8")
+    ratings_path.unlink()
+
+    def forbidden_capture(_path):
+        raise AssertionError("resume unexpectedly read live ratings")
+
+    monkeypatch.setattr(tool, "_capture_ratings_snapshot", forbidden_capture)
+    resumed_args = _minimal_collection_args(
+        candidate=candidate,
+        out_dir=out_dir,
+        ratings=ratings_path,
+        passes=2,
+    )
+    assert tool.main(resumed_args) == 0
+    assert probe_calls == 6
+    snapshots = [
+        json.loads(line)
+        for line in (out_dir / "pool_snapshots.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [row["pass"] for row in snapshots] == [1, 2]
+
+
+def test_legacy_plan_without_ratings_snapshot_fails_before_probe_or_live_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tool = _load_tool()
+    candidate = _minimal_bot(tmp_path / "candidate")
+    ratings_path = tmp_path / "glicko_ratings.json"
+    ratings_path.write_bytes(_ratings_bytes())
+    out_dir = tmp_path / "collection"
+    _install_minimal_pool(tool, monkeypatch, tmp_path)
+    probe_calls = 0
+
+    def fake_probe(_candidate, _opponent, _split, name, *_args):
+        nonlocal probe_calls
+        probe_calls += 1
+        return 0, 0, name
+
+    monkeypatch.setattr(tool, "probe_one", fake_probe)
+    assert tool.main(_minimal_collection_args(
+        candidate=candidate,
+        out_dir=out_dir,
+        ratings=ratings_path,
+        passes=1,
+    )) == 0
+
+    first_plan = json.loads(
+        (out_dir / "pass_plans" / "pass_0001.json").read_text(encoding="utf-8")
+    )
+    legacy_plan = {
+        "pass": 2,
+        "seed_scheme": first_plan["seed_scheme"],
+        "tasks": first_plan["tasks"],
+    }
+    legacy_path = out_dir / "pass_plans" / "pass_0002.json"
+    legacy_bytes = json.dumps(legacy_plan, separators=(",", ":")).encode("utf-8")
+    legacy_path.write_bytes(legacy_bytes)
+    ratings_path.unlink()
+    calls_before_resume = probe_calls
+
+    def forbidden_capture(_path):
+        raise AssertionError("legacy plan unexpectedly read live ratings")
+
+    monkeypatch.setattr(tool, "_capture_ratings_snapshot", forbidden_capture)
+    with pytest.raises(RuntimeError, match="predates frozen ratings evidence"):
+        tool.main(_minimal_collection_args(
+            candidate=candidate,
+            out_dir=out_dir,
+            ratings=ratings_path,
+            passes=2,
+        ))
+
+    assert probe_calls == calls_before_resume
+    assert legacy_path.read_bytes() == legacy_bytes
+
+
+def test_durable_collection_rejects_fallback_pool() -> None:
+    tool = _load_tool()
+
+    with pytest.raises(SystemExit, match="incompatible with frozen match-scope"):
+        tool.main([
+            "--candidate", "unused",
+            "--out-dir", "unused",
+            "--allow-fallback-pool",
+        ])

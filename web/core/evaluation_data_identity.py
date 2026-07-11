@@ -42,6 +42,10 @@ AUTHORITATIVE_FILES = (
     "glicko_ratings.json",
     "head_to_head.json",
     "bot_stats.json",
+    "elo_daemon_stats.json",
+    # Compatibility alias from before the daemon stats filename was unified.
+    # No current writer uses it, but an old non-empty payload must still force
+    # an explicit migration instead of silently crossing identities.
     "daemon_stats.json",
     "match_history.jsonl",
     "rating_history.jsonl",

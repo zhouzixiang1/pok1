@@ -31,6 +31,17 @@ def test_existing_unidentified_ratings_fail_closed(tmp_path):
         identity.ensure_evaluation_data_identity(results)
 
 
+def test_existing_unidentified_daemon_stats_fail_closed(tmp_path):
+    results = tmp_path / "results"
+    results.mkdir()
+    (results / "elo_daemon_stats.json").write_text(
+        '{"total_games": 120}\n', encoding="utf-8"
+    )
+
+    with pytest.raises(identity.EvaluationDataIdentityError, match="no evaluation identity"):
+        identity.ensure_evaluation_data_identity(results)
+
+
 def test_runtime_profile_drift_requires_explicit_rotation(tmp_path):
     results = tmp_path / "results"
     identity.ensure_evaluation_data_identity(
@@ -50,15 +61,25 @@ def test_archive_preserves_old_authoritative_data_before_fresh_manifest(tmp_path
     results.mkdir()
     (results / "glicko_ratings.json").write_text('{"national_v1": {}}\n', encoding="utf-8")
     (results / "head_to_head.json").write_text("{}\n", encoding="utf-8")
+    (results / "elo_daemon_stats.json").write_text(
+        '{"total_games": 120}\n', encoding="utf-8"
+    )
+    (results / "daemon_stats.json").write_text(
+        '{"total_games": 80}\n', encoding="utf-8"
+    )
 
     migrated = identity.archive_and_initialize(results, reason="test evaluator migration")
 
     archive = Path(migrated["archive_dir"])
     assert (archive / "glicko_ratings.json").is_file()
     assert (archive / "head_to_head.json").is_file()
+    assert (archive / "elo_daemon_stats.json").is_file()
+    assert (archive / "daemon_stats.json").is_file()
     assert (archive / "migration.json").is_file()
     assert (results / identity.MANIFEST_NAME).is_file()
     assert not (results / "glicko_ratings.json").exists()
+    assert not (results / "elo_daemon_stats.json").exists()
+    assert not (results / "daemon_stats.json").exists()
 
 
 def test_archive_rotates_identity_bound_generation_snapshots(tmp_path, monkeypatch):
