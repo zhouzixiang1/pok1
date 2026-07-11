@@ -52,3 +52,7 @@ data/
 
 # === 打包产物 ===
 *.spec
+bots/
+
+# 稳定性测试产物
+STABILITY_REPORT.json
