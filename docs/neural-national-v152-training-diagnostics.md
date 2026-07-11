@@ -1010,6 +1010,30 @@ averaged about 3.5 ms on the local CPU. The export deliberately carries false
 deployment/strength flags. Formal ensemble runtime, selected-policy binding,
 and native TCP joint-policy evaluation are still required.
 
+`export_opponent_multitask_ensemble_v3.py` and
+`opponent_multitask_ensemble_runtime_v3.py` extend that contract to the full
+calibrated ensemble and selected policy. Every nested member has a canonical
+payload hash and a unique checkpoint binding; members must share identical
+metadata and hidden dimensions. Runtime value aggregation reproduces the Torch
+selection path in chips, response aggregation applies the frozen legal-mask
+temperature, and policy scoring requires calibrated lower values, nonnegative
+hand/tail/match/response weights, and value weights summing to one. A selected
+policy is accepted only when its canonical hash and passing-selection flag
+agree. A calibration-only bundle has no action-selection method in effect.
+Five focused tests cover three-member value and response parity, LCB margin
+selection, member/policy hash drift, and the non-selecting calibration-only
+state; the complete suite now passes 282 tests.
+
+The current incomplete pass-9 artifacts exported twice to byte-identical
+3,464,538-byte bundles with SHA-256
+`87549761e18692eee72919c0ff9fdbdcf0a1dd1773b9c8356d0061ace9d468d2`.
+Its Torch-versus-stdlib calibrated value and response differences on a real
+v98 row were at most `2.44e-4` chips and `4.91e-8`, respectively. Because the
+protected policy selection failed, the bundle records
+`policy_selection_passed=false`, has `selected_policy=null`, and remains unable
+to override the rule policy. This is the required failure-safe behavior, not a
+candidate result.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
