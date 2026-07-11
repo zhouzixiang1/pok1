@@ -10,10 +10,17 @@ def _prompt(name: str) -> str:
     return (PROMPTS / name).read_text(encoding="utf-8")
 
 
+def _native_worker_prompt() -> str:
+    return _prompt("worker_prompt.md").replace(
+        "{execution_profile_contract}",
+        _prompt("worker_profile_national_native.md"),
+    )
+
+
 def test_core_prompts_include_full_national_legality_rules():
     prompt_names = [
         "initial_prompt.md",
-        "worker_prompt.md",
+        "worker_profile_national_native.md",
         "master_prompt.md",
         "reviewer_prompt.md",
         "crossover_prompt.md",
@@ -23,7 +30,8 @@ def test_core_prompts_include_full_national_legality_rules():
     required_phrases = [
         "sever/国赛平台",
         "raise-to-total",
-        "prev * 2 + 1",
+        "Exact `prev * 2` is legal",
+        "conservative",
         "postflop first action cannot be",
         "check is illegal",
         "Preflop BB cannot",
@@ -32,6 +40,14 @@ def test_core_prompts_include_full_national_legality_rules():
     ]
     for phrase in required_phrases:
         assert phrase in combined
+
+    forbidden_legality_claims = [
+        "strictly greater than 2x",
+        "strictly >2x",
+        "minimum valid re-raise after raise X is X*2+1",
+    ]
+    for claim in forbidden_legality_claims:
+        assert claim not in combined
 
 
 def test_active_generation_prompts_use_national_bot_namespace():
@@ -108,8 +124,9 @@ def test_prompts_require_structured_battle_memory_citations():
 
 def test_prompts_require_national_runtime_architecture_contracts():
     master_prompt = _prompt("master_prompt.md")
-    worker_prompt = _prompt("worker_prompt.md")
+    worker_prompt = _native_worker_prompt()
     reviewer_prompt = _prompt("reviewer_prompt.md")
+    critic_prompt = _prompt("critic_prompt.md")
 
     assert "Decision-time budget" in master_prompt
     assert "Official EXE Compliance Feedback" in master_prompt
@@ -118,11 +135,61 @@ def test_prompts_require_national_runtime_architecture_contracts():
     assert "{runtime_feedback}" in master_prompt
     assert "`runtime_contract` object" in master_prompt
     assert '"runtime_contract":' in master_prompt
-    assert "bounded module/startup precomputation" in worker_prompt
-    assert "persistent for a 70-hand match" in worker_prompt
+    assert "bounded module-import precomputation" in worker_prompt
+    assert "process persists for all 70 hands" in worker_prompt
     assert "# Runtime Contract" in worker_prompt
     assert "Runtime architecture check" in reviewer_prompt
     assert "incremental" in reviewer_prompt
+    assert "baseline_passed_check" in reviewer_prompt
+    assert "sparse snapshot" in reviewer_prompt
+    assert "get_baseline_action" in worker_prompt
+    assert "late result" in worker_prompt
+    assert "Official Windows EXE artifacts are compliance evidence only" in critic_prompt
+    assert "Never use EXE" in critic_prompt
+
+
+def test_prompts_never_promote_web_arena_to_official_or_strength_authority():
+    orchestrator = _prompt("orchestrator.md")
+    worker = _prompt("worker_profile_national_native.md")
+    reviewer = _prompt("reviewer_prompt.md")
+    critic = _prompt("critic_prompt.md")
+    official_analyst = _prompt("official_platform_analysis.md")
+
+    assert "Arena completion" in orchestrator
+    assert "Only a valid content-bound certificate" in orchestrator
+    assert "local debugging and presentation harness" in worker
+    assert "do not claim Arena success proves official compliance" in worker
+    assert "Arena THP" in reviewer
+    assert "non-strength, local diagnostic evidence" in critic
+    assert "deterministic EXE verdict" in official_analyst
+
+
+def test_worker_execution_profiles_do_not_mix_native_and_botzone_verification():
+    common = _prompt("worker_prompt.md")
+    native = _native_worker_prompt()
+    legacy = common.replace(
+        "{execution_profile_contract}",
+        _prompt("worker_profile_legacy_adapter.md"),
+    )
+
+    assert common.count("{execution_profile_contract}") == 1
+    assert "current_request_view" in native
+    assert "complete match history" in native
+    assert "require_current_stream_decoder=True" in native
+    assert "require_current_decision_runtime=True" in native
+    assert "smoke_tester.py" not in native
+    assert "emit exactly one JSON" not in native
+    assert "smoke_tester.py" in legacy
+    assert "emit exactly one JSON" in legacy
+
+
+def test_master_and_crossover_prompts_do_not_embed_generation_case_history():
+    for name in ("master_prompt.md", "crossover_prompt.md"):
+        prompt = _prompt(name)
+        assert "Known Mandatory Fixes" not in prompt
+        assert not re.search(r"\bv\d{2,}\b", prompt), name
+        assert not re.search(r"\bL\d{3,}\b", prompt), name
+        assert "Deterministic Invariants" in prompt
 
 
 def test_readonly_review_prompts_ban_temp_redirect_probes():
@@ -172,7 +239,9 @@ def test_regression_guardian_prompt_matches_current_trigger_contract():
     tool_gates = (ROOT / "web" / "core" / "tool_gates.py").read_text(encoding="utf-8")
 
     assert "currently called only from `run_critic`" in guardian_prompt
-    assert "hard-gate critic score is below 4" in guardian_prompt
+    assert "advisory critic score is below 4" in guardian_prompt
+    assert "Neither the Critic nor this Guardian can block or certify" in guardian_prompt
+    assert "local native-TCP precommit evaluation is the strategy hard gate" in guardian_prompt
     assert "do not automatically invoke this Guardian" in guardian_prompt
     assert "Precommit eval blocks a commit" not in guardian_prompt
     assert "2+ consecutive generations show rating decline" not in guardian_prompt

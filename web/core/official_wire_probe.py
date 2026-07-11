@@ -22,7 +22,7 @@ from typing import Any
 CARD_RE = re.compile(r"<(\d+),(\d+)>")
 SERVER_ACTION_RE = re.compile(r"^(raise|bet)\s+(\d+)")
 CLIENT_RAISE_RE = re.compile(r"^raise [1-9]\d*")
-EARN_RE = re.compile(r"^earnChips\s+-?\d+")
+EARN_RE = re.compile(r"^earnChips\s+(-?\d+)")
 SMALL_BLIND = 50
 BIG_BLIND = 100
 INITIAL_CHIPS = 20000
@@ -44,7 +44,7 @@ def _take_card_message(buffer: str, prefix: str, count: int) -> tuple[str | None
     return buffer[:pos], buffer[pos:]
 
 
-def take_server_message(buffer: str) -> tuple[str | None, str]:
+def take_server_message(buffer: str, *, flush_numeric: bool = True) -> tuple[str | None, str]:
     """Take one official server-to-client message from a raw stream buffer."""
     buffer = buffer.lstrip("\r\n\t ")
     if not buffer:
@@ -61,9 +61,13 @@ def take_server_message(buffer: str) -> tuple[str | None, str]:
             return msg, rest
     match = EARN_RE.match(buffer)
     if match:
+        if match.end() == len(buffer) and not flush_numeric:
+            return None, buffer
         return buffer[: match.end()], buffer[match.end() :]
     match = SERVER_ACTION_RE.match(buffer)
     if match:
+        if match.end() == len(buffer) and not flush_numeric:
+            return None, buffer
         return buffer[: match.end()], buffer[match.end() :]
     for word in ("allin", "check", "call", "fold"):
         if buffer.startswith(word):
@@ -71,10 +75,10 @@ def take_server_message(buffer: str) -> tuple[str | None, str]:
     return None, buffer
 
 
-def split_server_messages(buffer: str) -> tuple[list[str], str]:
+def split_server_messages(buffer: str, *, flush_numeric: bool = True) -> tuple[list[str], str]:
     messages: list[str] = []
     while buffer:
-        msg, rest = take_server_message(buffer)
+        msg, rest = take_server_message(buffer, flush_numeric=flush_numeric)
         if msg is None:
             return messages, rest
         messages.append(msg)
@@ -82,7 +86,12 @@ def split_server_messages(buffer: str) -> tuple[list[str], str]:
     return messages, ""
 
 
-def take_client_message(buffer: str, *, allow_name: bool = False) -> tuple[str | None, str]:
+def take_client_message(
+    buffer: str,
+    *,
+    allow_name: bool = False,
+    flush_numeric: bool = True,
+) -> tuple[str | None, str]:
     """Take one bot-to-server message.
 
     Bot actions are intentionally stricter than server action parsing: the
@@ -96,16 +105,27 @@ def take_client_message(buffer: str, *, allow_name: bool = False) -> tuple[str |
             return word, buffer[len(word) :]
     match = CLIENT_RAISE_RE.match(buffer)
     if match:
+        if match.end() == len(buffer) and not flush_numeric:
+            return None, buffer
         return buffer[: match.end()], buffer[match.end() :]
     if allow_name and buffer and not buffer.startswith(("raise", "bet")):
         return buffer.strip(), ""
     return None, buffer
 
 
-def split_client_messages(buffer: str, *, allow_name: bool = False) -> tuple[list[str], str]:
+def split_client_messages(
+    buffer: str,
+    *,
+    allow_name: bool = False,
+    flush_numeric: bool = True,
+) -> tuple[list[str], str]:
     messages: list[str] = []
     while buffer:
-        msg, rest = take_client_message(buffer, allow_name=allow_name)
+        msg, rest = take_client_message(
+            buffer,
+            allow_name=allow_name,
+            flush_numeric=flush_numeric,
+        )
         if msg is None:
             return messages, rest
         messages.append(msg)
@@ -147,6 +167,7 @@ class SeatReplay:
     hand_num: int = 0
     hands_started: int = 0
     settlements: int = 0
+    settlement_records: list[dict[str, int]] = field(default_factory=list)
     player_chips: int = INITIAL_CHIPS
     opponent_chips: int = INITIAL_CHIPS
     player_bet: int = 0
@@ -178,7 +199,6 @@ class SeatReplay:
         self.opponent_bet = 0
         self.player_action_count = 0
         self.actions = []
-        self.allin_occurred = False
         self.expected_since = None
         self.expected_reason = ""
 
@@ -233,18 +253,34 @@ class OfficialWireReplay:
             gap = t - self._last_event_t
             self.max_platform_silent_gap_sec = max(self.max_platform_silent_gap_sec, gap)
             if gap >= self.response_timeout_sec:
-                self.issues.append({
-                    "kind": "platform_silent_timeout_gap",
-                    "conn": str(event.get("conn") or "?"),
-                    "hand": None,
-                    "stage": None,
-                    "message": "",
-                    "dt": event.get("dt"),
-                    "waited_sec": round(gap, 3),
-                    "previous_event": self._last_event_brief,
-                    "next_event": _event_brief(event),
-                    "reason": "official EXE produced no wire traffic for approximately one decision timeout",
-                })
+                pending = [seat for seat in self.seats.values() if seat.expected_since is not None]
+                if pending:
+                    for seat in pending:
+                        self.issues.append({
+                            "kind": "pending_bot_response_timeout",
+                            "conn": seat.label,
+                            "hand": seat.hand_num,
+                            "stage": seat.stage,
+                            "message": "",
+                            "dt": event.get("dt"),
+                            "waited_sec": round(gap, 3),
+                            "expected_reason": seat.expected_reason,
+                            "previous_event": self._last_event_brief,
+                            "next_event": _event_brief(event),
+                        })
+                else:
+                    self.issues.append({
+                        "kind": "platform_silent_idle_gap",
+                        "conn": str(event.get("conn") or "?"),
+                        "hand": None,
+                        "stage": None,
+                        "message": "",
+                        "dt": event.get("dt"),
+                        "waited_sec": round(gap, 3),
+                        "previous_event": self._last_event_brief,
+                        "next_event": _event_brief(event),
+                        "reason": "official EXE produced no wire traffic while no bot action was pending",
+                    })
             elif gap >= self.response_warn_sec:
                 self.warnings.append({
                     "kind": "platform_silent_slow_gap",
@@ -262,6 +298,31 @@ class OfficialWireReplay:
         self._last_event_brief = _event_brief(event)
         label = str(event.get("conn") or "?")
         direction = str(event.get("direction") or "")
+        event_type = str(event.get("event_type") or "data")
+        remaining = str(event.get("remaining") or "")
+        if event_type == "upstream_connect_failed":
+            self.issues.append({
+                "kind": "wire_probe_upstream_connect_failed",
+                "conn": label,
+                "direction": direction,
+                "details": event.get("details") or {},
+            })
+        elif event_type == "stream_error":
+            self.issues.append({
+                "kind": "wire_stream_error",
+                "conn": label,
+                "direction": direction,
+                "remaining": remaining,
+                "details": event.get("details") or {},
+            })
+        elif event_type == "stream_eof" and remaining:
+            self.issues.append({
+                "kind": "wire_stream_eof_remainder",
+                "conn": label,
+                "direction": direction,
+                "remaining": remaining,
+                "reason": "TCP stream closed with an unparseable protocol tail",
+            })
         for message in event.get("messages") or []:
             if direction == "server_to_bot":
                 self._consume_server(label, str(message), t, event)
@@ -307,11 +368,26 @@ class OfficialWireReplay:
         if message.startswith(("flop|", "turn|", "river|")):
             stage = message.split("|", 1)[0]
             seat.reset_street(stage)
-            if not seat.is_small_blind:
+            if not seat.is_small_blind and not seat.allin_occurred:
                 seat.expect(t, f"{stage}_first_action")
             return
         if message.startswith("earnChips"):
-            seat.settlements += 1
+            match = EARN_RE.fullmatch(message)
+            amount = int(match.group(1)) if match else 0
+            expected_hand = seat.settlements + 1
+            if seat.hand_num != expected_hand:
+                self._add_issue(
+                    "settlement_hand_sequence",
+                    seat,
+                    message,
+                    event,
+                    expected_hand=expected_hand,
+                )
+            if any(item["hand"] == seat.hand_num for item in seat.settlement_records):
+                self._add_issue("duplicate_settlement", seat, message, event)
+            else:
+                seat.settlement_records.append({"hand": seat.hand_num, "amount": amount})
+                seat.settlements = len(seat.settlement_records)
             seat.expected_since = None
             seat.expected_reason = ""
             return
@@ -432,8 +508,8 @@ class OfficialWireReplay:
                 return False, "first preflop raise must be at least 200"
             if seat.stage in {"flop", "turn", "river"} and last_raise is None and amount < BIG_BLIND:
                 return False, "first postflop raise must be at least 100"
-            if last_raise is not None and amount <= last_raise * 2:
-                return False, "consecutive raise must be strictly greater than 2x previous raise-to"
+            if last_raise is not None and amount < last_raise * 2:
+                return False, "consecutive raise must be at least 2x previous raise-to"
             return True, ""
         return False, "unrecognized action type"
 
@@ -493,6 +569,7 @@ class OfficialWireReplay:
                 "name": seat.name,
                 "hands_started": seat.hands_started,
                 "settlements": seat.settlements,
+                "settlement_records": list(seat.settlement_records),
                 "max_response_sec": round(seat.max_response_sec, 3),
                 "pending_expected_action": seat.expected_since is not None,
                 "expected_reason": seat.expected_reason,
@@ -545,7 +622,17 @@ class WireEventRecorder:
     def close(self) -> None:
         self._fp.close()
 
-    def record(self, *, conn: str, direction: str, raw: bytes, messages: list[str], remaining: str) -> None:
+    def record(
+        self,
+        *,
+        conn: str,
+        direction: str,
+        raw: bytes,
+        messages: list[str],
+        remaining: str,
+        event_type: str = "data",
+        details: dict[str, Any] | None = None,
+    ) -> None:
         now = time.time()
         event = {
             "ts": _now(),
@@ -553,10 +640,12 @@ class WireEventRecorder:
             "dt": round(now - self.started_at, 6),
             "conn": conn,
             "direction": direction,
+            "event_type": event_type,
             "raw_repr": raw.decode("utf-8", "replace"),
             "raw_hex": raw.hex(),
             "messages": messages,
             "remaining": remaining,
+            "details": details or {},
         }
         self.events.append(event)
         self._fp.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -572,6 +661,7 @@ class TcpWireProbe:
         self._servers: list[asyncio.AbstractServer] = []
         self._tasks: set[asyncio.Task] = set()
         self._buffers: dict[tuple[str, str], str] = {}
+        self._awaiting_name: dict[str, bool] = {"A": True, "B": True}
 
     async def start(self, host: str = "127.0.0.1") -> dict[str, int]:
         ports: dict[str, int] = {}
@@ -600,7 +690,16 @@ class TcpWireProbe:
     async def _accept(self, label: str, bot_reader: asyncio.StreamReader, bot_writer: asyncio.StreamWriter) -> None:
         try:
             server_reader, server_writer = await asyncio.open_connection(self.platform_host, self.platform_port)
-        except Exception:
+        except Exception as exc:
+            self.recorder.record(
+                conn=label,
+                direction="probe_lifecycle",
+                raw=b"",
+                messages=[],
+                remaining="",
+                event_type="upstream_connect_failed",
+                details={"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+            )
             bot_writer.close()
             await bot_writer.wait_closed()
             return
@@ -632,19 +731,68 @@ class TcpWireProbe:
         key = (label, direction)
         try:
             while True:
-                raw = await reader.read(4096)
+                buffered = self._buffers.get(key, "")
+                try:
+                    if buffered:
+                        raw = await asyncio.wait_for(reader.read(4096), timeout=0.05)
+                    else:
+                        raw = await reader.read(4096)
+                except asyncio.TimeoutError:
+                    if direction == "server_to_bot":
+                        messages, remaining = split_server_messages(buffered, flush_numeric=True)
+                    else:
+                        messages, remaining = split_client_messages(
+                            buffered,
+                            allow_name=self._awaiting_name.get(label, False),
+                            flush_numeric=True,
+                        )
+                    if messages:
+                        self._buffers[key] = remaining
+                        if direction == "bot_to_server" and self._awaiting_name.get(label, False):
+                            self._awaiting_name[label] = False
+                        self.recorder.record(
+                            conn=label,
+                            direction=direction,
+                            raw=b"",
+                            messages=messages,
+                            remaining=remaining,
+                            event_type="idle_flush",
+                        )
+                    continue
                 if not raw:
+                    buffered = self._buffers.get(key, "")
+                    if direction == "server_to_bot":
+                        messages, remaining = split_server_messages(buffered, flush_numeric=True)
+                    else:
+                        messages, remaining = split_client_messages(
+                            buffered,
+                            allow_name=self._awaiting_name.get(label, False),
+                            flush_numeric=True,
+                        )
+                    self._buffers[key] = remaining
+                    self.recorder.record(
+                        conn=label,
+                        direction=direction,
+                        raw=b"",
+                        messages=messages,
+                        remaining=remaining,
+                        event_type="stream_eof",
+                    )
                     return
                 writer.write(raw)
                 await writer.drain()
                 text = raw.decode("utf-8", "replace")
                 buffer = self._buffers.get(key, "") + text
                 if direction == "server_to_bot":
-                    messages, remaining = split_server_messages(buffer)
+                    messages, remaining = split_server_messages(buffer, flush_numeric=False)
                 else:
-                    # Name detection is handled by the replay pass. For logging,
-                    # allow a non-action first packet to be emitted as a message.
-                    messages, remaining = split_client_messages(buffer, allow_name=True)
+                    messages, remaining = split_client_messages(
+                        buffer,
+                        allow_name=self._awaiting_name.get(label, False),
+                        flush_numeric=False,
+                    )
+                    if messages and self._awaiting_name.get(label, False):
+                        self._awaiting_name[label] = False
                 self._buffers[key] = remaining
                 self.recorder.record(
                     conn=label,
@@ -655,7 +803,16 @@ class TcpWireProbe:
                 )
         except asyncio.CancelledError:
             raise
-        except (ConnectionError, OSError):
+        except (ConnectionError, OSError) as exc:
+            self.recorder.record(
+                conn=label,
+                direction=direction,
+                raw=b"",
+                messages=[],
+                remaining=self._buffers.get(key, ""),
+                event_type="stream_error",
+                details={"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+            )
             return
 
 

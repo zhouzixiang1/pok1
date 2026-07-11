@@ -60,7 +60,7 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
 6. In legacy/local JSON internals, `main.py` may still output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 7. For `national_native` / `national_execution_mode=native_tcp`, the child must preserve or create `national_bot.py` as the formal submission entry. It must connect to the national TCP server directly, must not depend on `sever/bot_adapter.py`, must not output JSON `response` objects as national communication, must never output `bet`, must send `allin` rather than a positive raise consuming all remaining chips, must preserve raise-to-total semantics, and must preserve the official EXE send throttle (`POK_OFFICIAL_ACTION_DELAY` default near `0.30s`, `_send_wire_action`) in the TCP wire layer.
 8. Do not add timeout-rescue loops that send unsolicited `call` or `check`; generated bots may only send one legal action while the platform is waiting for the current decision.
-9. Preserve full national legality from `sever/国赛平台/`: first preflop raise-to >= 200; first postflop raise-to >= 100; re-raise strictly >2x previous raise-to (`prev * 2 + 1` minimum); postflop first action cannot be call; postflop after any first action, check is illegal; after a postflop check the second pass is call, not check; preflop BB cannot call after SB limps/calls; after all-in the opponent can only call or fold; consecutive all-ins are illegal.
+9. Preserve full national legality from `sever/国赛平台/`: first preflop raise-to >= 200; first postflop raise-to >= 100; re-raise >=2x previous raise-to (exact `prev * 2` is legal; `prev * 2 + 1` is optional conservative headroom); postflop first action cannot be call; postflop after any first action, check is illegal; after a postflop check the second pass is call, not check; preflop BB cannot call after SB limps/calls; after all-in the opponent can only call or fold; consecutive all-ins are illegal.
 10. Preserve file-size gate compliance. Core strategy files (`strategy.py`,
     `postflop.py`) have a 2000-line base limit; helper Python files have a
     1500-line base limit; the hard cap is 2500 lines. If Parent A/source is already over the base limit, the child may match or shrink that file but
@@ -81,13 +81,10 @@ This is protocol correctness, not a strategic tuning choice:
   `next_player(..., 1/2)`.
 </non_negotiable_position_contract>
 
-## Known Mandatory Fixes (DO NOT REMOVE)
+## Deterministic Invariants
 
-The following fixes have been verified as critical and must be preserved in any new bot:
-
-1. **Wheel Straight (A-2-3-4-5)**: In `card_utils.py` `evaluate_5()`, the wheel straight check `elif set(unique_ranks) == {14, 2, 3, 4, 5}:` must be present. Without it, A-2-3-4-5 is misclassified as high card.
-2. **Re-raise Minimum**: In `state.py`, `min_raise_action` must use `2 * last_raise_to + 1 - my_round_bet` (strictly > 2x, not >= 2x).
-3. **TOTAL_HANDS**: In `constants.py`, `TOTAL_HANDS` must be 70.
-4. **National Position Semantics**: In `state.py`, `opponent.py`, and any position helper, dealer is SB and non-dealer is BB. Preserve `sb = dealer_id` and `bb = 1 - dealer_id`; do not reintroduce dealer-derived `next_player(..., 1/2)` formulas.
-
-If you see these fixes in the source code, preserve them. If they are missing, add them.
+Do not infer required edits from generation-specific prompt history. Preserve all
+parent capabilities that pass the current deterministic contracts. The quality
+pipeline independently checks evaluator correctness, official raise semantics,
+70-hand configuration, national position semantics, native TCP behavior, and
+the selected runtime architecture focus.

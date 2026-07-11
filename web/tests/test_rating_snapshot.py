@@ -7,18 +7,36 @@ def _write_jsonl(path, rows):
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
 
 
+def _history_row(bot0, bot1, bot0_wins, bot1_wins, draws=0):
+    samples = [100] * bot0_wins + [-100] * bot1_wins + [0] * draws
+    return {
+        "bot0": bot0,
+        "bot1": bot1,
+        "bot0_wins": bot0_wins,
+        "bot1_wins": bot1_wins,
+        "draws": draws,
+        "strength_sample_unit": "70_hand_match",
+        "hands_per_strength_sample": 70,
+        "strength_admitted": True,
+        "strength_complete": True,
+        "strength_compliance_passed": True,
+        "strength_sample_count": len(samples),
+        "net_chips_bot0": samples,
+    }
+
+
 def test_rebuilds_active_h2h_from_match_history(tmp_path):
     from rating_snapshot import choose_h2h_source
 
-    active = ["claude_v1", "claude_v2", "claude_v3"]
+    active = ["national_v1", "national_v2", "national_v3"]
     stored = {
-        "claude_v1 vs claude_v2": {"games": 50, "a_wins": 50, "b_wins": 0, "draws": 0},
+        "national_v1 vs national_v2": {"games": 50, "a_wins": 50, "b_wins": 0, "draws": 0},
     }
     history = tmp_path / "match_history.jsonl"
     _write_jsonl(history, [
-        {"bot0": "claude_v1", "bot1": "claude_v2", "bot0_wins": 10, "bot1_wins": 40, "draws": 0},
-        {"bot0": "claude_v1", "bot1": "claude_v3", "bot0_wins": 10, "bot1_wins": 40, "draws": 0},
-        {"bot0": "claude_v2", "bot1": "claude_v3", "bot0_wins": 40, "bot1_wins": 10, "draws": 0},
+        _history_row("national_v1", "national_v2", 10, 40),
+        _history_row("national_v1", "national_v3", 10, 40),
+        _history_row("national_v2", "national_v3", 40, 10),
     ])
 
     selected = choose_h2h_source(active, stored, history)
@@ -26,31 +44,31 @@ def test_rebuilds_active_h2h_from_match_history(tmp_path):
     assert selected["source"] == "match_history_rebuilt"
     assert selected["coverage"]["covered_pairs"] == 3
     assert selected["stored_coverage"]["covered_pairs"] == 1
-    assert selected["h2h"]["claude_v1 vs claude_v2"]["a_wins"] == 10
+    assert selected["h2h"]["national_v1 vs national_v2"]["a_wins"] == 10
 
 
 def test_strength_rows_sort_by_rebuilt_active_pool_not_sparse_stored_h2h(tmp_path):
     from rating_snapshot import build_strength_rows
 
     ratings = {
-        "claude_v1": {"r": 1500, "rd": 80, "sigma": 0.06},
-        "claude_v2": {"r": 1500, "rd": 80, "sigma": 0.06},
-        "claude_v3": {"r": 1500, "rd": 80, "sigma": 0.06},
+        "national_v1": {"r": 1500, "rd": 80, "sigma": 0.06},
+        "national_v2": {"r": 1500, "rd": 80, "sigma": 0.06},
+        "national_v3": {"r": 1500, "rd": 80, "sigma": 0.06},
     }
     stored = {
-        "claude_v1 vs claude_v2": {"games": 10, "a_wins": 10, "b_wins": 0, "draws": 0},
+        "national_v1 vs national_v2": {"games": 10, "a_wins": 10, "b_wins": 0, "draws": 0},
     }
     stats = {name: {"games": 100, "win_rate": 0.5} for name in ratings}
     history = tmp_path / "match_history.jsonl"
     _write_jsonl(history, [
-        {"bot0": "claude_v1", "bot1": "claude_v2", "bot0_wins": 10, "bot1_wins": 40, "draws": 0},
-        {"bot0": "claude_v1", "bot1": "claude_v3", "bot0_wins": 10, "bot1_wins": 40, "draws": 0},
-        {"bot0": "claude_v2", "bot1": "claude_v3", "bot0_wins": 40, "bot1_wins": 10, "draws": 0},
+        _history_row("national_v1", "national_v2", 10, 40),
+        _history_row("national_v1", "national_v3", 10, 40),
+        _history_row("national_v2", "national_v3", 40, 10),
     ])
 
     rows = build_strength_rows(ratings, stats, stored, active_bots=list(ratings), match_history_path=history)
 
-    assert rows[0]["name"] == "claude_v2"
+    assert rows[0]["name"] == "national_v2"
     assert rows[0]["h2h_source"] == "match_history_rebuilt"
     assert rows[0]["h2h_coverage"] == 1.0
     assert rows[0]["h2h_avg_wr"] == 0.8

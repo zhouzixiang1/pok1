@@ -2,9 +2,14 @@ from core.pipeline_state import (
     generic_abandon_block,
     next_tool_for_checkpoint,
     route_policy,
+    session_recoverable_stages,
     validate_stage_transition,
 )
-from core.tool_helpers import _critic_gate_ok
+from core.tool_helpers import _critic_gate_ok, _prepare_official_profile_refresh
+from core.pipeline_infrastructure import (
+    build_infrastructure_failure,
+    infrastructure_attempt_key,
+)
 
 
 def test_precommit_failed_is_forward_and_reworkable():
@@ -94,6 +99,32 @@ def test_critic_force_advanced_no_longer_bypasses_gate():
     assert _critic_gate_ok(checkpoint) is False
 
 
+def test_completed_critic_advice_does_not_replace_native_precommit_gate():
+    checkpoint = {
+        "gate_results": {
+            "critic": {
+                "approved": True,
+                "raw_approved": False,
+                "advisory_approved": False,
+                "score": 2,
+                "action": "proceed_to_precommit",
+            }
+        }
+    }
+
+    assert _critic_gate_ok(checkpoint) is True
+
+    routed = {
+        "stage": "critic_checked",
+        "next_v": 264,
+        "source_v": 244,
+        **checkpoint,
+    }
+    route = route_policy(routed)
+    assert route["next_tool"] == "run_precommit_eval"
+    assert route["intent"] == "precommit_eval"
+
+
 def test_precommit_failed_blocks_abandon_until_hard_limit():
     checkpoint = {
         "stage": "precommit_failed",
@@ -132,6 +163,81 @@ def test_precommit_infra_stays_on_precommit_retry():
     assert next_tool_for_checkpoint(checkpoint) == "run_precommit_eval"
     blocked = generic_abandon_block(checkpoint, max_precommit_retries=3)
     assert blocked["next_tool"] == "run_precommit_eval"
+
+
+def test_quality_probe_infra_retries_are_identity_bound():
+    key = infrastructure_attempt_key(
+        component="national_runtime_probe",
+        candidate_fingerprint="candidate-a",
+        source_fingerprint="source-a",
+        harness_identity="probe-v1",
+    )
+    kwargs = {
+        "component": "national_runtime_probe",
+        "code": "probe_unavailable",
+        "owner_tool": "run_quality_gates",
+        "resume_stage": "workers_done",
+        "attempt_key": key,
+        "issues": ["candidate: bwrap unavailable"],
+        "max_attempts": 3,
+    }
+
+    first = build_infrastructure_failure(None, now=1, **kwargs)
+    second = build_infrastructure_failure(first, now=2, **kwargs)
+    terminal = build_infrastructure_failure(second, now=3, **kwargs)
+
+    assert first["attempt"] == 1
+    assert first["action"] == "retry_same_tool"
+    assert second["attempt"] == 2
+    assert terminal["attempt"] == 3
+    assert terminal["action"] == "abandon_generation"
+    assert terminal["retryable"] is False
+
+    changed = build_infrastructure_failure(
+        terminal,
+        now=4,
+        **{**kwargs, "attempt_key": infrastructure_attempt_key(
+            component="national_runtime_probe",
+            candidate_fingerprint="candidate-b",
+            source_fingerprint="source-a",
+            harness_identity="probe-v1",
+        )},
+    )
+    assert changed["attempt"] == 1
+
+
+def test_quality_probe_infra_state_machine_never_requests_bot_repair():
+    key = infrastructure_attempt_key(component="national_runtime_probe")
+    common = {
+        "component": "national_runtime_probe",
+        "code": "probe_unavailable",
+        "owner_tool": "run_quality_gates",
+        "resume_stage": "workers_done",
+        "attempt_key": key,
+        "issues": ["bwrap unavailable"],
+        "max_attempts": 2,
+    }
+    first = build_infrastructure_failure(None, now=1, **common)
+    exhausted = build_infrastructure_failure(first, now=2, **common)
+    retry = {
+        "stage": "workers_done",
+        "next_v": 301,
+        "source_v": 300,
+        "gate_results": {},
+        "infra_failure": first,
+    }
+    terminal = {**retry, "infra_failure": exhausted}
+
+    retry_route = route_policy(retry)
+    assert retry_route["next_tool"] == "run_quality_gates"
+    assert retry_route["intent"] == "infra_retry"
+    assert "execute_workers" not in retry_route["allowed_tools"]
+
+    terminal_route = route_policy(terminal)
+    assert terminal_route["next_tool"] == "run_quality_gates"
+    assert terminal_route["allowed_tools"] == ["run_quality_gates"]
+    assert terminal_route["intent"] == "infra_abandon"
+    assert "do not edit bot code" in terminal_route["directive"].lower()
 
 
 def test_selected_next_tool_distinguishes_master_and_crossover():
@@ -248,3 +354,55 @@ def test_verified_old_adapter_precommit_revalidates_under_native_profile(monkeyp
 
     assert route["next_tool"] == "run_precommit_eval"
     assert route["intent"] == "precommit_profile_refresh"
+
+
+def test_official_certifying_profile_refresh_transitions_are_legal():
+    for target in ("quality_failed", "quality_passed", "precommit_failed", "verified"):
+        ok, reason = validate_stage_transition("official_certifying", target)
+        assert ok, (target, reason)
+        assert reason == "official_profile_refresh"
+
+
+def test_session_recovery_classification_covers_official_active_stages():
+    stages = session_recoverable_stages()
+
+    assert "official_certifying" in stages
+    assert "official_failed" in stages
+    assert "official_inconclusive" not in stages
+    assert "archived" not in stages
+
+
+def test_profile_refresh_cancels_attached_official_job(monkeypatch):
+    import official_certification_job
+
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+    calls = []
+    monkeypatch.setattr(
+        official_certification_job,
+        "cancel_job",
+        lambda job_id, **kwargs: calls.append((job_id, kwargs)) or {
+            "job_id": job_id,
+            "state": "cancelled",
+        },
+    )
+    checkpoint = {
+        "stage": "official_certifying",
+        "next_v": 300,
+        "source_v": 299,
+        "official_job": {"job_id": "official-job-1"},
+        "gate_results": {
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+                "workflow_profile_id": "national_primary",
+                "national_execution_mode": "adapter",
+            },
+        },
+    }
+
+    result = _prepare_official_profile_refresh(checkpoint, "run_quality_gates")
+
+    assert result["ok"] is True
+    assert result["needed"] is True
+    assert result["job_state"] == "cancelled"
+    assert calls[0][0] == "official-job-1"

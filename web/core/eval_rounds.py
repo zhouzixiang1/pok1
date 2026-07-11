@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from evolution_infra import RESULTS_DIR, locked_file, pair_key
+from strength_order import match_score
 
 log = logging.getLogger("pok.eval_rounds")
 
@@ -156,7 +157,9 @@ class EvalRoundManager:
             if v["games"] == 0:
                 continue
             a, b = k.split(" vs ")
-            wr_a = v["wins_a"] / v["games"]
+            wr_a = match_score(v["wins_a"], v.get("draws", 0), v["games"])
+            if wr_a is None:
+                continue
 
             # Store per-pair result
             bot_results.setdefault(a, {})[b] = {
@@ -187,9 +190,12 @@ class EvalRoundManager:
                 if hist_games >= 10:
                     # Compute historical WR from bot's perspective
                     if bot < opp:
-                        hist_wr = hist.get("a_wins", 0) / hist_games
+                        hist_wins = hist.get("a_wins", 0)
                     else:
-                        hist_wr = hist.get("b_wins", 0) / hist_games
+                        hist_wins = hist.get("b_wins", 0)
+                    hist_wr = match_score(hist_wins, hist.get("draws", 0), hist_games)
+                    if hist_wr is None:
+                        continue
                     delta_sum += res["wr"] - hist_wr
                     delta_count += 1
             avg_wr = total_wr / total_games if total_games > 0 else 0.5

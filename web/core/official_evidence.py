@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from official_attribution import attribute_round, attribute_suite
+
 
 SCHEMA_VERSION = 1
 MAX_TEXT_TAIL_CHARS = 6000
@@ -70,6 +72,7 @@ HARNESS_MARKERS = (
     "wineprefix_missing",
     "official_platform_lock_timeout",
     "wire_probe",
+    "official_full_settlement_incomplete",
     "connection reset",
     "connectionreseterror",
 )
@@ -141,7 +144,13 @@ def _tail_text(path: Path, *, max_chars: int = MAX_TEXT_TAIL_CHARS) -> str:
     return text[-max_chars:]
 
 
-def _artifact(path_value: Any, *, label: str, kind: str) -> dict[str, Any] | None:
+def _artifact(
+    path_value: Any,
+    *,
+    label: str,
+    kind: str,
+    artifact_root: Path | None = None,
+) -> dict[str, Any] | None:
     if not path_value:
         return None
     path = Path(str(path_value))
@@ -153,6 +162,16 @@ def _artifact(path_value: Any, *, label: str, kind: str) -> dict[str, Any] | Non
     }
     if path.exists() and path.is_file():
         try:
+            if path.is_symlink():
+                item["issue"] = "artifact_symlink_forbidden"
+                return item
+            if artifact_root is not None:
+                try:
+                    relative = path.resolve().relative_to(artifact_root.resolve())
+                except ValueError:
+                    item["issue"] = "artifact_outside_suite"
+                    return item
+                item["archive_path"] = relative.as_posix()
             stat = path.stat()
             item["size_bytes"] = stat.st_size
             item["sha256"] = _sha256(path)
@@ -392,24 +411,43 @@ def _extract_replay_summary(receipt: dict[str, Any]) -> dict[str, Any] | None:
         }
 
 
-def _artifact_map(receipt: dict[str, Any]) -> dict[str, Any]:
+def _artifact_map(
+    receipt: dict[str, Any],
+    *,
+    artifact_root: Path | None = None,
+) -> dict[str, Any]:
     raw_artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
     artifacts: dict[str, Any] = {}
     for key in ARTIFACT_KEYS:
-        item = _artifact(raw_artifacts.get(key), label=key, kind="jsonl" if key == "wire_events" else "log")
+        item = _artifact(
+            raw_artifacts.get(key),
+            label=key,
+            kind="jsonl" if key == "wire_events" else "log",
+            artifact_root=artifact_root,
+        )
         if item:
             artifacts[key] = item
     screenshots = raw_artifacts.get("screenshots") or []
     artifacts["screenshots"] = [
         item for item in (
-            _artifact(path, label=f"screenshot_{idx}", kind="image")
+            _artifact(
+                path,
+                label=f"screenshot_{idx}",
+                kind="image",
+                artifact_root=artifact_root,
+            )
             for idx, path in enumerate(screenshots, start=1)
         )
         if item
     ]
     artifacts["thp_files"] = [
         item for item in (
-            _artifact(path, label=f"thp_{idx}", kind="thp")
+            _artifact(
+                path,
+                label=f"thp_{idx}",
+                kind="thp",
+                artifact_root=artifact_root,
+            )
             for idx, path in enumerate(raw_artifacts.get("thp_files") or [], start=1)
         )
         if item
@@ -426,17 +464,47 @@ def _log_excerpt(path_value: Any, *, max_chars: int) -> str:
     return _tail_text(path, max_chars=max_chars)
 
 
-def _round_evidence(receipt: dict[str, Any], *, max_log_chars: int) -> dict[str, Any]:
+def _round_evidence(
+    receipt: dict[str, Any],
+    *,
+    max_log_chars: int,
+    artifact_root: Path | None = None,
+) -> dict[str, Any]:
     artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
+    artifact_map = _artifact_map(receipt, artifact_root=artifact_root)
+    artifact_issues = []
+    for key, value in artifact_map.items():
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if isinstance(item, dict) and item.get("issue"):
+                artifact_issues.append(f"evidence_artifact_{key}:{item['issue']}")
     replay_summary = _extract_replay_summary(receipt)
     issues = [
         *_wire_artifact_issues(receipt),
+        *artifact_issues,
         *[str(issue) for issue in receipt.get("issues") or []],
     ]
     if replay_summary:
         for issue in replay_summary.get("issues") or []:
             kind = issue.get("kind") if isinstance(issue, dict) else str(issue)
             issues.append(f"wire_replay: {kind}")
+    attributed = attribute_round({
+        **receipt,
+        "wire_replay_summary": replay_summary or receipt.get("wire_replay_summary") or {},
+        "issues": list(dict.fromkeys(issues)),
+    })
+    if attributed["candidate_verdict"] == "fail":
+        classification = next(
+            (item.get("category") for item in attributed["findings"] if item.get("candidate_impact") == "block"),
+            "protocol",
+        )
+    elif attributed["candidate_verdict"] == "inconclusive":
+        classification = next(
+            (item.get("category") for item in attributed["findings"] if item.get("candidate_impact") == "retry"),
+            "harness",
+        )
+    else:
+        classification = "pass"
     return {
         "round_id": receipt.get("round_id", ""),
         "round_kind": receipt.get("round_kind", ""),
@@ -446,11 +514,14 @@ def _round_evidence(receipt: dict[str, Any], *, max_log_chars: int) -> dict[str,
         "duration_sec": receipt.get("duration_sec"),
         "bot_returncodes": receipt.get("bot_returncodes", {}),
         "issues": list(dict.fromkeys(issues))[:MAX_ISSUES],
-        "classification": classify_round_receipt({**receipt, "issues": list(dict.fromkeys(issues))})["classification"],
+        "classification": classification,
+        "attribution": attributed,
         "log_summary": receipt.get("log_summary", {}),
+        "completion_evidence": receipt.get("completion_evidence"),
         "thp_summaries": artifacts.get("thp_summaries", []),
+        "canonical_thp": artifacts.get("canonical_thp"),
         "wire_replay_summary": replay_summary,
-        "artifacts": _artifact_map(receipt),
+        "artifacts": artifact_map,
         "log_tails": {
             "bot_a_log": _log_excerpt(artifacts.get("bot_a_log"), max_chars=max_log_chars),
             "bot_b_log": _log_excerpt(artifacts.get("bot_b_log"), max_chars=max_log_chars),
@@ -480,43 +551,72 @@ def build_official_evidence_bundle(
     report = _round_report(payload)
     rounds = [dict(item) for item in (report.get("rounds") or []) if isinstance(item, dict)]
     summary = _suite_summary(payload, report)
+    suite_dir = summary.get("suite_dir")
+    artifact_root = Path(str(suite_dir)).resolve() if suite_dir else None
     issues = _all_issues(payload, report, rounds)
-    evidence_rounds = [_round_evidence(receipt, max_log_chars=max_log_chars) for receipt in rounds]
-    round_verdicts = [
-        classify_round_receipt({**receipt, "issues": round_item.get("issues") or receipt.get("issues") or []})
-        for receipt, round_item in zip(rounds, evidence_rounds)
+    evidence_rounds = [
+        _round_evidence(
+            receipt,
+            max_log_chars=max_log_chars,
+            artifact_root=artifact_root,
+        )
+        for receipt in rounds
     ]
+    for round_item in evidence_rounds:
+        issues.extend(str(issue) for issue in round_item.get("issues") or [])
+    issues = list(dict.fromkeys(issues))[:MAX_ISSUES]
+    suite_attribution = attribute_suite([
+        {
+            **receipt,
+            "wire_replay_summary": round_item.get("wire_replay_summary") or {},
+            "issues": round_item.get("issues") or receipt.get("issues") or [],
+        }
+        for receipt, round_item in zip(rounds, evidence_rounds)
+    ])
+    round_verdicts = []
+    for round_item in evidence_rounds:
+        attributed = round_item.get("attribution") or {}
+        round_verdicts.append({
+            "classification": round_item.get("classification") or "inconclusive",
+            "blocking": bool(attributed.get("candidate_blocking")),
+            "inconclusive": attributed.get("candidate_verdict") == "inconclusive",
+            "violation": bool(attributed.get("candidate_blocking")),
+            "countable": bool(attributed.get("countable")),
+            "candidate_verdict": attributed.get("candidate_verdict"),
+            "policy_id": attributed.get("policy_id"),
+        })
     wire_required_rounds = sum(1 for receipt in rounds if _wire_evidence_required(receipt))
     wire_complete_rounds = sum(
         1
         for receipt in rounds
         if _wire_evidence_required(receipt) and not _wire_artifact_issues(receipt)
     )
-    verdict = classify_issues(issues)
-    if any(item.get("blocking") for item in round_verdicts):
-        blocking_round = next(item for item in round_verdicts if item.get("blocking"))
-        verdict = {
-            **verdict,
-            "classification": blocking_round.get("classification") or verdict.get("classification"),
-            "buckets": list(dict.fromkeys([
-                *(blocking_round.get("buckets") or []),
-                *(verdict.get("buckets") or []),
-            ])),
-            "blocking": True,
-            "inconclusive": False,
-            "violation": bool(verdict.get("violation")) or bool(blocking_round.get("violation")),
-            "blocking_issue_count": max(int(verdict.get("blocking_issue_count") or 0), 1),
-        }
-    elif round_verdicts and all(item.get("inconclusive") for item in round_verdicts if item):
-        verdict = {
-            **verdict,
-            "classification": "harness",
-            "buckets": ["harness"],
-            "blocking": False,
+    candidate_verdict = suite_attribution.get("candidate_verdict")
+    if candidate_verdict == "pass" and issues:
+        candidate_verdict = "inconclusive"
+        suite_attribution = {
+            **suite_attribution,
+            "candidate_verdict": "inconclusive",
             "inconclusive": True,
-            "violation": False,
-            "blocking_issue_count": 0,
         }
+    if candidate_verdict == "fail":
+        first = (suite_attribution.get("candidate_findings") or [{}])[0]
+        classification = first.get("category") or "protocol"
+    elif candidate_verdict == "inconclusive":
+        first = (suite_attribution.get("retry_findings") or [{}])[0]
+        classification = first.get("category") or "harness"
+    else:
+        classification = "pass"
+    verdict = {
+        "classification": classification,
+        "buckets": [classification],
+        "blocking": candidate_verdict == "fail",
+        "inconclusive": candidate_verdict == "inconclusive",
+        "violation": candidate_verdict == "fail",
+        "blocking_issue_count": len(suite_attribution.get("candidate_findings") or []),
+        "candidate_verdict": candidate_verdict,
+        "attribution_policy_id": suite_attribution.get("policy_id"),
+    }
     raw_passed_value = payload.get("passed", report.get("passed"))
     raw_passed = (
         bool(raw_passed_value)
@@ -524,7 +624,6 @@ def build_official_evidence_bundle(
         else bool(rounds) and not issues and all(bool(receipt.get("passed")) for receipt in rounds)
     )
     passed = raw_passed and not verdict["blocking"] and not verdict.get("inconclusive")
-    suite_dir = summary.get("suite_dir")
     bundle = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -543,13 +642,14 @@ def build_official_evidence_bundle(
             "passed": passed,
             "issues": issues,
             "round_classifications": round_verdicts,
+            "attribution": suite_attribution,
             "rounds_requested": summary.get("rounds_requested"),
             "rounds_run": summary.get("rounds_run", len(rounds)),
             "target_hands": summary.get("target_hands") or payload.get("hands_per_pair"),
             **verdict,
         },
         "rounds": evidence_rounds,
-        "artifact_root": suite_dir or "",
+        "artifact_root": str(artifact_root) if artifact_root is not None else "",
     }
     if output_path is not None:
         _write_json(Path(output_path), bundle)

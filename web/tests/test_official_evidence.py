@@ -168,7 +168,48 @@ def test_full_evidence_requires_wire_probe_artifacts_when_probe_enabled(tmp_path
     assert any("wire_probe_missing_replay_summary_artifact" in issue for issue in bundle["rounds"][0]["issues"])
 
 
-def test_evidence_classifies_full_incomplete_after_progress_as_obvious_decision_blocker(tmp_path):
+def test_evidence_rejects_artifact_outside_suite(tmp_path):
+    suite = tmp_path / "suite"
+    round_dir = suite / "self_play_01"
+    round_dir.mkdir(parents=True)
+    external = tmp_path / "external-platform.log"
+    external.write_text("platform output", encoding="utf-8")
+    report = {
+        "candidate": "/tmp/national_v1",
+        "passed": True,
+        "summary": {
+            "suite_dir": str(suite),
+            "rounds_requested": 1,
+            "rounds_run": 1,
+            "target_hands": 10,
+        },
+        "rounds": [{
+            "round_id": "self_play_01",
+            "round_kind": "self_play",
+            "round_index": 1,
+            "target_hands": 10,
+            "passed": True,
+            "issues": [],
+            "log_summary": {"hands_started_min": 10, "settlements_min": 9},
+            "artifacts": {"platform_log": str(external)},
+        }],
+        "issues": [],
+    }
+
+    bundle = build_official_evidence_bundle(report)
+
+    artifact = bundle["rounds"][0]["artifacts"]["platform_log"]
+    assert artifact["issue"] == "artifact_outside_suite"
+    assert "archive_path" not in artifact
+    assert bundle["summary"]["passed"] is False
+    assert bundle["deterministic"]["inconclusive"] is True
+    assert any(
+        "evidence_artifact_platform_log:artifact_outside_suite" in issue
+        for issue in bundle["deterministic"]["issues"]
+    )
+
+
+def test_evidence_keeps_ambiguous_full_incomplete_round_inconclusive(tmp_path):
     report = {
         "candidate": "/tmp/national_v134",
         "summary": {
@@ -204,10 +245,11 @@ def test_evidence_classifies_full_incomplete_after_progress_as_obvious_decision_
 
     bundle = build_official_evidence_bundle(report)
 
-    assert bundle["deterministic"]["classification"] == "obvious_decision_error"
-    assert bundle["deterministic"]["blocking"] is True
-    assert bundle["deterministic"]["inconclusive"] is False
-    assert bundle["deterministic"]["round_classifications"][0]["classification"] == "obvious_decision_error"
+    assert bundle["deterministic"]["classification"] == "harness"
+    assert bundle["deterministic"]["blocking"] is False
+    assert bundle["deterministic"]["inconclusive"] is True
+    assert bundle["deterministic"]["round_classifications"][0]["classification"] == "harness"
+    assert bundle["deterministic"]["attribution"]["candidate_verdict"] == "inconclusive"
     assert bundle["strength_evaluation"] == "not_applicable"
 
 

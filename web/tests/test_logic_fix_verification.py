@@ -137,11 +137,13 @@ def get_state(last_raise_to, my_round_bet):
 '''
 
     def test_min_raise_plus_one_ok(self, fv, make_bot):
+        """The verifier enforces retained policy headroom, not official legality."""
         bot_dir = make_bot(state=self.STATE_FIXED)
         r = fv.verify_fixes(bot_dir)["BOT-002a"]
         assert r["ok"] is True
 
     def test_min_raise_missing_plus_one_not_ok(self, fv, make_bot):
+        """Exact 2x is official-legal but still outside this compatibility policy."""
         bot_dir = make_bot(state=self.STATE_UNFIXED)
         r = fv.verify_fixes(bot_dir)["BOT-002a"]
         assert r["ok"] is False
@@ -184,8 +186,7 @@ class TestExceptionSafety:
         for fix_id, r in results.items():
             assert r["ok"] is True, f"{fix_id} must not block on missing files: {r}"
 
-    def test_verifier_exception_returns_ok(self, fv, monkeypatch, make_bot):
-        """If a verifier raises, verify_fixes swallows it and returns ok=True."""
+    def test_verifier_exception_is_infrastructure_failure(self, fv, monkeypatch, make_bot):
         bot_dir = make_bot(constants="TOTAL_HANDS = 70\n")
 
         def boom(_bot_dir):
@@ -193,7 +194,8 @@ class TestExceptionSafety:
 
         monkeypatch.setitem(fv._VERIFIERS, "BOT-004", boom)
         r = fv.verify_fixes(bot_dir)["BOT-004"]
-        assert r["ok"] is True
+        assert r["ok"] is False
+        assert r["outcome"] == "infrastructure_failure"
         assert "RuntimeError" in r["reason"]
 
 
@@ -202,6 +204,6 @@ class TestResultShape:
         results = fv.verify_fixes(tmp_path)
         assert set(results) == {"BOT-001a", "BOT-002a", "BOT-004"}
         for r in results.values():
-            assert set(r) == {"ok", "reason"}
+            assert set(r) == {"ok", "reason", "outcome"}
             assert isinstance(r["ok"], bool)
             assert isinstance(r["reason"], str)

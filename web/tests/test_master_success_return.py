@@ -16,6 +16,7 @@ mocked) and asserts:
 """
 
 import json
+import asyncio
 
 import pytest
 
@@ -113,3 +114,55 @@ async def test_master_retries_on_genuinely_malformed_json(monkeypatch):
 
     assert result is None, "Genuinely malformed output should yield None"
     assert call_count["n"] == agent_master.MAX_MASTER_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_master_fails_closed_after_structured_schema_errors(monkeypatch):
+    """Valid JSON with an invalid worker contract must never be returned raw."""
+    import agent_master
+
+    invalid_plan = json.loads(json.dumps(VALID_PLAN))
+    invalid_plan["tasks"][0].pop("skill_layer")
+    call_count = {"n": 0}
+
+    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None):
+        call_count["n"] += 1
+        return "```json\n" + json.dumps(invalid_plan) + "\n```", 0.0, {}
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    result = await agent_master._run_master_analysis(
+        source_v=111,
+        next_v=127,
+        stagnation_info="declining",
+        ui=_MockUI(),
+    )
+
+    assert result is None
+    assert call_count["n"] == agent_master.MAX_MASTER_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_master_transport_failure_is_not_an_invalid_plan(monkeypatch):
+    import agent_master
+
+    async def unavailable(*_args, **_kwargs):
+        raise ConnectionError("sdk backend unavailable")
+
+    monkeypatch.setattr(agent_master, "run_claude_query", unavailable)
+
+    with pytest.raises(agent_master.MasterInfrastructureError) as caught:
+        await agent_master._run_master_analysis(
+            source_v=111,
+            next_v=127,
+            stagnation_info="declining",
+            ui=_MockUI(),
+        )
+
+    assert caught.value.source_v == 111
+    assert caught.value.next_v == 127
+    assert len(caught.value.prompt_digest) == 64

@@ -16,6 +16,7 @@ from typing import Annotated, TypedDict
 from claude_agent_sdk import tool
 
 from bot_namespace import ACTIVE_BOT_PREFIX, active_bot_glob, bot_name as active_bot_name, parse_bot_version
+from strength_order import match_score
 from evolution_core import (
     MAX_ACTIVE_BOTS,
     get_active_bots,
@@ -180,6 +181,7 @@ async def get_match_history(args):
         return _json_tool_result({"matches": []})
 
     entries = []
+    from rating_snapshot import _admitted_70_hand_history_sample
     with locked_file(history_file, "r") as f:
         for line in f:
             line = line.strip()
@@ -188,6 +190,8 @@ async def get_match_history(args):
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if _admitted_70_hand_history_sample(entry) is None:
                 continue
             if entry.get("bot0") == bot_name or entry.get("bot1") == bot_name:
                 entries.append(entry)
@@ -359,9 +363,18 @@ async def get_h2h(args):
         g = v.get("games", 0)
         bot_wins = v.get("a_wins", 0) if bot_name == a else v.get("b_wins", 0)
         opp_wins = v.get("b_wins", 0) if bot_name == a else v.get("a_wins", 0)
-        wr = bot_wins / g if g > 0 else 0.5
+        draws = v.get("draws", 0)
+        wr = match_score(bot_wins, draws, g)
+        wr = wr if wr is not None else 0.5
         tag = "STRENGTH" if wr > 0.60 else ("WEAKNESS" if wr < 0.40 else "neutral")
-        results[opp] = {"wins": bot_wins, "losses": opp_wins, "games": g, "win_rate": round(wr, 4), "tag": tag}
+        results[opp] = {
+            "wins": bot_wins,
+            "losses": opp_wins,
+            "draws": draws,
+            "games": g,
+            "win_rate": round(wr, 4),
+            "tag": tag,
+        }
 
     if not results:
         return _json_tool_result({"bot_name": bot_name, "opponents": {}, "message": "No H2H data found"})

@@ -12,6 +12,7 @@ import ControlPanel from "./pages/ControlPanel";
 import BotManager from "./pages/BotManager";
 import ExperiencePool from "./pages/ExperiencePool";
 import PromptEditor from "./pages/PromptEditor";
+import NationalArena from "./pages/NationalArena";
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
             <Route index path="/" element={<Overview />} />
             <Route path="/evolution" element={<EvolutionMonitor />} />
             <Route path="/matches" element={<MatchReplay />} />
+            <Route path="/arena" element={<NationalArena />} />
             <Route path="/rating-trends" element={<RatingTrends />} />
             <Route path="/match-matrix" element={<MatchMatrix />} />
             <Route path="/logs" element={<Logs />} />

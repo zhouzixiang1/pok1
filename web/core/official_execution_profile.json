@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "profile_id": "official-exe-2021-wine9-bwrap-v2",
+  "official_exe": {
+    "repository_path": "sever/国赛平台/德州扑克对弈平台限时一分钟2021版/德州扑克对弈平台限时一分钟2021版.exe",
+    "sha256": "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
+  },
+  "tools": {
+    "wine": {
+      "command_path": "/usr/bin/wine",
+      "resolved_path": "/usr/bin/wine-stable",
+      "sha256": "96d2e3a50f09760fd38ad083d57fbe3d07f7fe92308b81db2335b57bb36d98f9"
+    },
+    "Xvfb": {
+      "command_path": "/usr/bin/Xvfb",
+      "resolved_path": "/usr/bin/Xvfb",
+      "sha256": "2c7f5a9534410fed5092d782a69ca7ffd9fce80e98b81ffe4944d703dd11d3b1"
+    },
+    "xdotool": {
+      "command_path": "/usr/bin/xdotool",
+      "resolved_path": "/usr/bin/xdotool",
+      "sha256": "a21dba4297e197ef27035071f6a36061cc8604ac360df19792db99ad3fd9a5f5"
+    },
+    "bwrap": {
+      "command_path": "/usr/bin/bwrap",
+      "resolved_path": "/usr/bin/bwrap",
+      "sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
+    },
+    "python": {
+      "command_path": "/usr/bin/python3.12",
+      "resolved_path": "/usr/bin/python3.12",
+      "sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118"
+    }
+  },
+  "sandbox": {
+    "required": true,
+    "network": "isolated-netns-preconnected-socket-fd",
+    "filesystem": "sealed-bot-readonly-plus-single-log",
+    "pid_namespace": true,
+    "user_namespace": true,
+    "python_flags": ["-I", "-B"]
+  }
+}

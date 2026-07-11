@@ -13,15 +13,26 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from engine.deck import Deck, Card, cards_to_str
-from engine.evaluator import best_hand, compare_hands, hand_name
-from engine.validator import validate_action, SMALL_BLIND, BIG_BLIND
-from engine.thp_recorder import THPRecorder
-from server.protocol import (
-    format_preflop, format_flop, format_turn, format_river,
-    format_earn_chips, format_oppo_hands, format_opponent_action,
-    parse_action,
-)
+try:
+    from .deck import Deck, Card, cards_to_str
+    from .evaluator import best_hand, compare_hands, hand_name
+    from .validator import validate_action, SMALL_BLIND, BIG_BLIND
+    from .thp_recorder import THPRecorder
+    from ..server.protocol import (
+        format_preflop, format_flop, format_turn, format_river,
+        format_earn_chips, format_oppo_hands, format_opponent_action,
+        parse_action,
+    )
+except ImportError:  # Standalone ``cd sever && python main.py`` compatibility.
+    from engine.deck import Deck, Card, cards_to_str
+    from engine.evaluator import best_hand, compare_hands, hand_name
+    from engine.validator import validate_action, SMALL_BLIND, BIG_BLIND
+    from engine.thp_recorder import THPRecorder
+    from server.protocol import (
+        format_preflop, format_flop, format_turn, format_river,
+        format_earn_chips, format_oppo_hands, format_opponent_action,
+        parse_action,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +166,15 @@ class GameEngine:
         # 发送 preflop
         await self.send(sb.idx, format_preflop(sb.hand_cards, "SMALLBLIND"))
         await self.send(bb.idx, format_preflop(bb.hand_cards, "BIGBLIND"))
-        await self._emit("cards_dealt", {"hand": hand_num})
+        await self._emit("cards_dealt", {
+            "hand": hand_num,
+            # Internal observer payload only. These cards are never sent to the
+            # opposing TCP client by the protocol transport.
+            "hole_cards": [
+                [card.to_str() for card in self.players[0].hand_cards],
+                [card.to_str() for card in self.players[1].hand_cards],
+            ],
+        })
 
         community = []
 
@@ -271,12 +290,22 @@ class GameEngine:
 
             # 接收玩家行为，并记录平台实际等待时长。这个事实源用于
             # 区分 bot 决策慢、TCP 通信慢、官方 throttle 和真实超时。
+            timeout_budget = float(getattr(self, "action_timeout_sec", 60.0))
+            await self._emit("action_requested", {
+                "player_idx": current_idx,
+                "stage": stage,
+                "hand": self.hand_num,
+                "pot": pot,
+                "player_bets": [bets[0], bets[1]],
+                "timeout_budget_sec": timeout_budget,
+                "deadline_epoch_ms": round((time.time() + timeout_budget) * 1000),
+            })
             decision_wait_started = time.perf_counter()
             raw = await self._recv_action(current_idx)
             decision_wait_sec = max(0.0, time.perf_counter() - decision_wait_started)
             decision_timing = {
                 "decision_wait_sec": round(decision_wait_sec, 6),
-                "timeout_budget_sec": float(getattr(self, "action_timeout_sec", 60.0)),
+                "timeout_budget_sec": timeout_budget,
             }
 
             if raw is None:

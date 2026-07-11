@@ -199,9 +199,9 @@ def audit_scenario_legality(scenario):
         if action_type == "raise":
             raise_to = _history_raise_to(item)
             previous = last_raise_to.get(round_id)
-            if raise_to is not None and previous is not None and raise_to <= 2 * previous:
+            if raise_to is not None and previous is not None and raise_to < 2 * previous:
                 failures.append(
-                    f"Round {round_id} re-raise-to {raise_to} must be strictly greater than 2x previous {previous}"
+                    f"Round {round_id} re-raise-to {raise_to} must be at least 2x previous {previous}"
                 )
             if raise_to is not None:
                 last_raise_to[round_id] = raise_to

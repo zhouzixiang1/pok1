@@ -1,6 +1,5 @@
 """Pipeline tools: commit, archivist, and crossover."""
 
-import asyncio
 import json
 import os
 import time
@@ -36,6 +35,7 @@ from evolution_infra import (
     _git,
     _git_ensure_main_branch,
     evolution_git_push_enabled,
+    evolution_git_push_required,
     git_push_refs,
     publish_runtime_expected_head,
 )
@@ -47,8 +47,13 @@ from tool_helpers import (
     compute_h2h_avg_winrate, _load_h2h_data,
     read_pipeline_checkpoint,
     _py_files_changed_between,
+    _execute_exhausted_infrastructure_failure,
+    _owned_infrastructure_failure,
+    _record_infrastructure_failure,
 )
 from system_log import log_system_event
+from pipeline_infrastructure import infrastructure_failure_digest
+from blocking_runtime import run_blocking_isolated
 
 # ──────────────────────────────────────────────
 # Commit Stage
@@ -59,6 +64,39 @@ class CommitBotInput(TypedDict):
     source_v: Annotated[int, "Parent version"]
     strategy: Annotated[str, "Strategy description"]
     review_approved: Annotated[bool, "Must be true — confirms run_review() returned approved:true"]
+
+
+def _existing_local_bot_tag_matches_certificate(version, certificate):
+    """Validate a local commit/tag left behind by an interrupted required push."""
+    tag = bot_tag(version)
+    if not git_has_tag(version) or not git_dir_is_committed(version):
+        return False, "local tag or committed bot directory is missing"
+    expected = {
+        "official-certificate": str(certificate.get("certificate_digest") or ""),
+        "official-candidate-hash": str(certificate.get("candidate_hash") or ""),
+        "official-policy": str(certificate.get("policy_id") or ""),
+    }
+    certificate_path = f"official_certificates/{bot_name(version)}.json"
+    from bot_artifact import validate_completion_tag
+
+    validation = validate_completion_tag(
+        get_bot_dir(version),
+        expected_metadata=expected,
+        certificate_path=certificate_path,
+    )
+    if not validation.get("valid"):
+        return False, ", ".join(validation.get("issues") or [f"invalid {tag}"])
+    return True, ""
+
+
+def _push_existing_bot_refs(version):
+    refs = ["main", bot_tag(version)]
+    high_water = f"national-high-water-v{int(version)}"
+    if _git("tag", "-l", high_water, check=False).strip():
+        refs.append(high_water)
+    ok = git_push_refs(*refs)
+    publish_runtime_expected_head("bot_commit_push_retry", version=version)
+    return ok
 
 
 def _position_semantics_failed_gate(errors: list[str]) -> dict:
@@ -107,9 +145,11 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
             workflow_profile = get_workflow_profile()
             expected_profile_id = getattr(workflow_profile, "profile_id", "")
             expected_execution_mode = getattr(workflow_profile, "national_execution_mode", "adapter")
+            expected_evaluation_protocol = getattr(workflow_profile, "evaluation_protocol", "local_json")
         except Exception:
             expected_profile_id = ""
             expected_execution_mode = ""
+            expected_evaluation_protocol = ""
         checkpoint_profile_id = str(ckpt.get("workflow_profile_id") or "")
         checkpoint_execution_mode = str(ckpt.get("national_execution_mode") or "")
         if expected_profile_id and checkpoint_profile_id and checkpoint_profile_id != expected_profile_id:
@@ -188,6 +228,64 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
                     "expected": quality_fingerprint,
                     "current": current_code_fingerprint,
                 })
+            if expected_execution_mode == "native_tcp":
+                try:
+                    from national_runtime_probe import (
+                        RUNTIME_PROBE_LIMITS_DIGEST,
+                        RUNTIME_PROBE_IDENTITY_DIGEST,
+                        RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+                        RUNTIME_PROBE_SCENARIO_DIGEST,
+                        RUNTIME_PROBE_SCHEMA_VERSION,
+                    )
+                    from runtime_architecture_policy import (
+                        runtime_contract_ledger_digest,
+                        validate_runtime_contract_ledger,
+                    )
+
+                    checkpoint_ledger = ckpt.get("runtime_contract_ledger")
+                    plan_ledger = (
+                        (ckpt.get("master_plan") or {}).get("runtime_contract_ledger")
+                        if isinstance(ckpt.get("master_plan"), dict)
+                        else None
+                    )
+                    ledger_errors = [
+                        *(f"checkpoint:{item}" for item in validate_runtime_contract_ledger(checkpoint_ledger)),
+                        *(f"master_plan:{item}" for item in validate_runtime_contract_ledger(plan_ledger)),
+                    ]
+                    checkpoint_ledger_digest = runtime_contract_ledger_digest(checkpoint_ledger)
+                    plan_ledger_digest = runtime_contract_ledger_digest(plan_ledger)
+                    if checkpoint_ledger_digest != plan_ledger_digest:
+                        ledger_errors.append("checkpoint_master_plan_ledger_digest_mismatch")
+                    if ledger_errors:
+                        failed_gates.append({
+                            "gate": "runtime_contract_identity",
+                            "reason": "runtime contract ledger is invalid",
+                            "errors": ledger_errors[:10],
+                        })
+                    expected_runtime_identity = {
+                        "runtime_contract_ledger_digest": checkpoint_ledger_digest,
+                        "runtime_probe_schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+                        "runtime_probe_orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+                        "runtime_probe_scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+                        "runtime_probe_limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+                        "runtime_probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+                    }
+                    mismatches = {
+                        key: {"expected": value, "quality": quality.get(key)}
+                        for key, value in expected_runtime_identity.items()
+                        if quality.get(key) != value
+                    }
+                    if mismatches:
+                        failed_gates.append({
+                            "gate": "runtime_probe_identity",
+                            "reason": "quality evidence does not match current runtime probe/ledger identity",
+                            "mismatches": mismatches,
+                        })
+                except Exception as exc:
+                    failed_gates.append({
+                        "gate": "runtime_probe_identity",
+                        "reason": f"identity validation error: {type(exc).__name__}: {str(exc)[:200]}",
+                    })
 
         review = gate_results.get("review")
         if not review:
@@ -198,25 +296,12 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
         critic = gate_results.get("critic")
         if not critic:
             missing_gates.append("critic")
-        else:
-            critic_score = critic.get("score", critic.get("advisory_score"))
-            critic_score_ok = True
-            if critic_score is not None:
-                try:
-                    critic_score_ok = float(critic_score) >= 6.0
-                except (TypeError, ValueError):
-                    critic_score_ok = False
-            if (
-                critic.get("approved") is not True
-                or critic.get("raw_approved") is False
-                or critic.get("advisory_approved") is False
-                or not critic_score_ok
-            ):
-                failed_gates.append({
-                    "gate": "critic",
-                    "reason": "critic hard gate did not approve",
-                    "value": critic,
-                })
+        elif critic.get("approved") is not True:
+            failed_gates.append({
+                "gate": "critic",
+                "reason": "critic advisory role did not complete successfully",
+                "value": critic,
+            })
 
         precommit = gate_results.get("precommit_eval")
         if not precommit:
@@ -250,11 +335,59 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
                     "expected": precommit_fingerprint,
                     "current": current_code_fingerprint,
                 })
+            if expected_execution_mode == "native_tcp":
+                try:
+                    from precommit_eval_contract import (
+                        validate_evaluation_contract,
+                        validate_precommit_plan,
+                    )
+
+                    precommit_plan = (
+                        (ckpt.get("audit_context") or {}).get("precommit_eval_plan")
+                    )
+                    plan_issues = validate_precommit_plan(
+                        precommit_plan,
+                        candidate_version=v,
+                        source_version=source_v,
+                        profile_id=expected_profile_id,
+                        execution_mode=expected_execution_mode,
+                        evaluation_protocol=expected_evaluation_protocol,
+                    )
+                    contract_issues = (
+                        validate_evaluation_contract(
+                            precommit.get("precommit_eval_contract"),
+                            precommit_plan,
+                            candidate_code_fingerprint=current_code_fingerprint,
+                        )
+                        if not plan_issues
+                        else []
+                    )
+                    contract = precommit.get("precommit_eval_contract") or {}
+                    if precommit.get("precommit_eval_contract_digest") != contract.get("contract_digest"):
+                        contract_issues.append("precommit_evaluation_contract_digest_mismatch")
+                    if plan_issues or contract_issues:
+                        failed_gates.append({
+                            "gate": "precommit_eval_contract",
+                            "reason": "frozen precommit evaluator/opponent contract is invalid or drifted",
+                            "errors": [*plan_issues, *contract_issues][:12],
+                        })
+                except Exception as exc:
+                    failed_gates.append({
+                        "gate": "precommit_eval_contract",
+                        "reason": (
+                            "precommit contract validation error: "
+                            f"{type(exc).__name__}: {str(exc)[:200]}"
+                        ),
+                    })
 
         if expected_execution_mode == "native_tcp":
             try:
                 from national_native import check_native_contract
-                native_contract_errors = check_native_contract(bot_dir)
+                native_contract_errors = check_native_contract(
+                    bot_dir,
+                    require_current_stream_decoder=True,
+                    require_current_decision_runtime=True,
+                )
             except Exception as exc:
                 native_contract_errors = [f"{type(exc).__name__}: {str(exc)[:200]}"]
             if native_contract_errors:
@@ -303,11 +436,7 @@ def _truthy_env(name: str, default: str = "1") -> bool:
 
 
 def _official_preferred_opponent() -> str | None:
-    configured = os.environ.get("POK_OFFICIAL_OPPONENT", "").strip()
-    if configured:
-        return configured
-    fallback = PROJECT_ROOT / "bots" / "national_v70"
-    return str(fallback) if fallback.exists() else None
+    return os.environ.get("POK_OFFICIAL_OPPONENT", "").strip() or None
 
 
 def _official_gate_feedback(official_full_gate: dict) -> str:
@@ -320,8 +449,8 @@ def _official_gate_feedback(official_full_gate: dict) -> str:
         "The official platform is a compliance/state-machine oracle here, not a strength rating source.",
         f"status={status.get('status')} mode={status.get('mode')} "
         f"classification={verdict.get('classification') or evidence_summary.get('classification')} "
-        f"blocking={bool(verdict.get('blocking') or evidence_summary.get('blocking'))} "
-        f"inconclusive={bool(verdict.get('inconclusive') or evidence_summary.get('inconclusive'))}",
+        f"blocking={bool(verdict.get('blocking'))} "
+        f"inconclusive={bool(verdict.get('inconclusive'))}",
     ]
     evidence_path = official_full_gate.get("official_evidence_path")
     if evidence_path:
@@ -340,24 +469,75 @@ def _official_gate_feedback(official_full_gate: dict) -> str:
 
 
 def _official_gate_is_bot_blocker(official_full_gate: dict) -> bool:
+    """Return only the deterministic oracle's content-bound block decision."""
     verdict = official_full_gate.get("verdict") or {}
-    evidence_summary = official_full_gate.get("official_evidence_summary") or {}
-    if bool(verdict.get("blocking")):
-        return True
-    if bool(evidence_summary.get("blocking")) and not bool(evidence_summary.get("inconclusive")):
-        return True
-    classification = str(verdict.get("classification") or evidence_summary.get("classification") or "").lower()
-    return classification in {
-        "protocol_violation",
-        "official_full_incomplete",
-        "obvious_decision_error",
-        "state_machine",
-        "communication",
-        "timeout",
+    return bool(verdict.get("blocking")) and not bool(verdict.get("inconclusive"))
+
+
+def _official_job_projection(official_full_gate: dict) -> dict:
+    from official_certification import _spec_from_mapping, certification_identity
+
+    job = official_full_gate.get("job") or {}
+    spec = _spec_from_mapping(official_full_gate.get("spec") or {})
+    identity = certification_identity(spec)
+    progress = job.get("progress") or {}
+    opponent = ((official_full_gate.get("opponent_selection") or {}).get("opponent") or {})
+    return {
+        "schema_version": 1,
+        "job_id": str(job.get("job_id") or ""),
+        "identity_digest": str(identity.get("identity_digest") or ""),
+        "candidate_hash": str(identity.get("candidate_hash") or ""),
+        "opponent_hash": str(identity.get("opponent_hash") or ""),
+        "opponent": str(opponent.get("bot") or ""),
+        "policy_id": spec.policy_id,
+        "state": str(job.get("state") or ""),
+        "phase": str(job.get("phase") or ""),
+        "revision": int(job.get("revision", 0) or 0),
+        "attempt": int(job.get("attempt", 0) or 0),
+        "heartbeat_at_epoch": float(job.get("heartbeat_at_epoch", 0.0) or 0.0),
+        "rounds_completed": int(progress.get("rounds_completed", 0) or 0),
+        "rounds_requested": int(progress.get("rounds_requested", 0) or 0),
     }
 
 
-def _record_official_full_gate_checkpoint(v: int, source_v: int, ckpt: dict | None, official_full_gate: dict) -> str:
+def _record_official_job_checkpoint(
+    v: int,
+    source_v: int,
+    ckpt: dict | None,
+    official_full_gate: dict,
+) -> bool:
+    projection = _official_job_projection(official_full_gate)
+    existing = (ckpt or {}).get("official_job")
+    expected_job_id = str(existing.get("job_id") or "") if isinstance(existing, dict) else ""
+    return bool(write_pipeline_checkpoint(
+        v,
+        source_v,
+        "official_certifying",
+        master_plan=(ckpt or {}).get("master_plan"),
+        generation_attempt=(ckpt or {}).get("generation_attempt", 0),
+        worker_failure_count=(ckpt or {}).get("worker_failure_count", 0),
+        parent2_v=(ckpt or {}).get("parent2_v"),
+        direction_audit=(ckpt or {}).get("direction_audit"),
+        audit_context=(ckpt or {}).get("audit_context", {}) or {},
+        audit_attempt=(ckpt or {}).get("audit_attempt", 0),
+        precommit_attempt=(ckpt or {}).get("precommit_attempt", 0),
+        precommit_rework_count=(ckpt or {}).get("precommit_rework_count", 0),
+        literature_probe=(ckpt or {}).get("literature_probe"),
+        prepare_scope_files=(ckpt or {}).get("prepare_scope_files", []) or [],
+        official_job=projection,
+        expected_official_job_id=expected_job_id,
+    ))
+
+
+def _record_official_full_gate_checkpoint(
+    v: int,
+    source_v: int,
+    ckpt: dict | None,
+    official_full_gate: dict,
+    *,
+    clear_infra_failure: bool = False,
+    clear_official_job: bool = False,
+) -> str:
     """Persist a non-reentrant official-full outcome and return the new stage."""
     bot_blocker = _official_gate_is_bot_blocker(official_full_gate)
     stage = "official_failed" if bot_blocker else "official_inconclusive"
@@ -367,7 +547,7 @@ def _record_official_full_gate_checkpoint(v: int, source_v: int, ckpt: dict | No
         "repairable_by_workers": bot_blocker,
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    write_pipeline_checkpoint(
+    recorded = write_pipeline_checkpoint(
         v,
         source_v,
         stage,
@@ -384,8 +564,21 @@ def _record_official_full_gate_checkpoint(v: int, source_v: int, ckpt: dict | No
         precommit_rework_count=(ckpt or {}).get("precommit_rework_count", 0),
         literature_probe=(ckpt or {}).get("literature_probe"),
         prepare_scope_files=(ckpt or {}).get("prepare_scope_files", []) or [],
+        clear_infra_failure=clear_infra_failure,
+        infra_failure_owner="commit_bot" if clear_infra_failure else None,
+        expected_infra_failure_digest=(
+            infrastructure_failure_digest((ckpt or {}).get("infra_failure"))
+            if clear_infra_failure
+            else None
+        ),
+        clear_official_job=clear_official_job,
+        expected_official_job_id=(
+            str(((ckpt or {}).get("official_job") or {}).get("job_id") or "")
+            if clear_official_job
+            else None
+        ),
     )
-    return stage
+    return stage if recorded else ""
 
 
 def _record_official_full_pass_checkpoint(
@@ -393,6 +586,9 @@ def _record_official_full_pass_checkpoint(
     source_v: int,
     ckpt: dict | None,
     official_full_gate: dict,
+    *,
+    clear_infra_failure: bool = False,
+    clear_official_job: bool = False,
 ) -> bool:
     """Persist the exact content-bound certificate before any Git mutation."""
     gate_payload = {
@@ -403,7 +599,11 @@ def _record_official_full_pass_checkpoint(
     return bool(write_pipeline_checkpoint(
         v,
         source_v,
-        "verified",
+        (
+            "official_certifying"
+            if (ckpt or {}).get("stage") == "official_certifying"
+            else "verified"
+        ),
         master_plan=(ckpt or {}).get("master_plan"),
         gate_results={"official_full": gate_payload},
         worker_failure_count=(ckpt or {}).get("worker_failure_count", 0),
@@ -415,10 +615,31 @@ def _record_official_full_pass_checkpoint(
         precommit_rework_count=(ckpt or {}).get("precommit_rework_count", 0),
         literature_probe=(ckpt or {}).get("literature_probe"),
         prepare_scope_files=(ckpt or {}).get("prepare_scope_files", []) or [],
+        clear_infra_failure=clear_infra_failure,
+        infra_failure_owner="commit_bot" if clear_infra_failure else None,
+        expected_infra_failure_digest=(
+            infrastructure_failure_digest((ckpt or {}).get("infra_failure"))
+            if clear_infra_failure
+            else None
+        ),
+        clear_official_job=clear_official_job,
+        expected_official_job_id=(
+            str(((ckpt or {}).get("official_job") or {}).get("job_id") or "")
+            if clear_official_job
+            else None
+        ),
     ))
 
 
-async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, gate_results) -> dict:
+async def _run_official_full_commit_gate(
+    v: int,
+    source_v: int,
+    bot_dir,
+    ckpt,
+    gate_results,
+    *,
+    retry_terminal: bool = False,
+) -> dict:
     execution_mode = _checkpoint_execution_mode(ckpt, gate_results)
     if execution_mode != "native_tcp":
         return {
@@ -435,9 +656,9 @@ async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, g
         build_spec,
         official_compliance_verdict,
         official_full_certified,
-        run_certification,
         select_official_opponent,
     )
+    from official_certification_job import start_or_poll_job
 
     opponent_selection = select_official_opponent(
         bot_dir,
@@ -458,15 +679,45 @@ async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, g
     opponent_path = opponent["path"]
 
     spec = build_spec("full", bot_dir, opponent=opponent_path)
-    status = await asyncio.to_thread(
-        run_certification,
+    job = await run_blocking_isolated(
+        start_or_poll_job,
         spec,
-        force=False,
-        queue_on_busy=False,
+        thread_name_prefix="official-commit",
+        opponent_selection=opponent_selection,
+        source_v=source_v,
+        retry_terminal=retry_terminal,
     )
+    if job.get("pending"):
+        return {
+            "passed": False,
+            "pending": True,
+            "outcome": "pending",
+            "version": v,
+            "source_v": source_v,
+            "spec": asdict(spec),
+            "job": job,
+            "opponent_selection": opponent_selection,
+            "issues": [],
+        }
+    if job.get("state") != "completed" or not isinstance(job.get("status"), dict):
+        return {
+            "passed": False,
+            "pending": False,
+            "outcome": "infrastructure_failure",
+            "failure_class": "infrastructure",
+            "version": v,
+            "source_v": source_v,
+            "spec": asdict(spec),
+            "job": job,
+            "opponent_selection": opponent_selection,
+            "issues": list(job.get("issues") or [
+                str(job.get("failure") or "official certification job failed")
+            ]),
+        }
+    status = job["status"]
     verdict = official_compliance_verdict(status)
     passed = official_full_certified(status, bot_dir)
-    return {
+    result = {
         "passed": passed,
         "version": v,
         "source_v": source_v,
@@ -480,7 +731,19 @@ async def _run_official_full_commit_gate(v: int, source_v: int, bot_dir, ckpt, g
         "certificate_path": status.get("certificate_path"),
         "certification_identity": status.get("certification_identity"),
         "issues": status.get("issues") or [],
+        "job": job,
     }
+    if not passed:
+        result["outcome"] = (
+            "candidate_failure"
+            if _official_gate_is_bot_blocker(result)
+            else "infrastructure_failure"
+        )
+        if result["outcome"] == "infrastructure_failure":
+            result["failure_class"] = "infrastructure"
+    else:
+        result["outcome"] = "passed"
+    return result
 
 
 @tool("commit_bot", "Commit a bot generation with git commit and tag. review_approved must be true (set after run_review returns approved:true).", {"version": int, "source_v": int, "strategy": str, "review_approved": bool})
@@ -493,6 +756,27 @@ async def commit_bot(args):
     source_v = int(source_v)
     strategy = args.get("strategy", "")
     review_approved = args.get("review_approved", False)
+
+    active_ckpt = _matching_checkpoint(v, source_v)
+    existing_infra, infra_error = _owned_infrastructure_failure(active_ckpt, "commit_bot")
+    if infra_error:
+        return _json_tool_result({
+            "error": f"STATE BLOCKED: {infra_error}",
+            "version": v,
+            "source_v": source_v,
+            "failure_class": "infrastructure",
+        })
+    exhausted_result = await _execute_exhausted_infrastructure_failure(
+        v,
+        source_v,
+        owner_tool="commit_bot",
+    )
+    if exhausted_result is not None:
+        return _json_tool_result({
+            **exhausted_result,
+            "version": v,
+            "source_v": source_v,
+        })
 
     _set_pipeline_status(f"Committing v{v}")
 
@@ -528,9 +812,111 @@ async def commit_bot(args):
         })
 
     official_certification_status = {}
-    official_full_gate = await _run_official_full_commit_gate(v, source_v, bot_dir, ckpt, gate_results)
+    official_full_gate = await _run_official_full_commit_gate(
+        v,
+        source_v,
+        bot_dir,
+        ckpt,
+        gate_results,
+        retry_terminal=existing_infra is not None,
+    )
+    if official_full_gate.get("pending"):
+        job = official_full_gate.get("job") or {}
+        if not _record_official_job_checkpoint(v, source_v, ckpt, official_full_gate):
+            return _json_tool_result({
+                "error": "COMMIT BLOCKED: failed to attach durable official job to checkpoint.",
+                "failure_class": "infrastructure",
+                "version": v,
+                "source_v": source_v,
+                "checkpoint_stage": (ckpt or {}).get("stage"),
+                "official_full_gate": official_full_gate,
+            })
+        try:
+            log_system_event(
+                "pipeline.official_full_pending",
+                "info",
+                f"Official EXE certification is running for v{v}",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "job_id": job.get("job_id"),
+                    "attempt": job.get("attempt"),
+                    "progress": job.get("progress"),
+                },
+            )
+        except Exception:
+            pass
+        return _json_tool_result({
+            "pending": True,
+            "action": "poll_commit_bot",
+            "retry_after_sec": 30,
+            "version": v,
+            "source_v": source_v,
+            "checkpoint_stage": "official_certifying",
+            "official_full_gate": official_full_gate,
+        })
+    if official_full_gate.get("outcome") == "infrastructure_failure":
+        from pipeline_infrastructure import infrastructure_attempt_key
+
+        job = official_full_gate.get("job") or {}
+        attempt_key = infrastructure_attempt_key(
+            component="official_exe_full",
+            candidate_fingerprint=str(ledger.get("current_code_fingerprint") or ""),
+            source_fingerprint="",
+            harness_identity=str(job.get("job_id") or "official-job-selection"),
+            contract_identity=str((official_full_gate.get("spec") or {}).get("policy_id") or ""),
+            extra={
+                "opponent": ((official_full_gate.get("opponent_selection") or {}).get("opponent") or {}).get("artifact_hash"),
+            },
+        )
+        resume_stage = (
+            "official_certifying"
+            if (ckpt or {}).get("stage") == "official_certifying"
+            else "verified"
+        )
+        infra_result = await _record_infrastructure_failure(
+            v,
+            source_v,
+            owner_tool="commit_bot",
+            resume_stage=resume_stage,
+            component="official_exe_full",
+            code="official_certification_infrastructure_failure",
+            attempt_key=attempt_key,
+            issues=official_full_gate.get("issues") or ["official certification inconclusive"],
+            max_attempts=3,
+            metadata={
+                "job_id": job.get("job_id"),
+                "job_dir": job.get("job_dir"),
+                "job_attempt": job.get("attempt"),
+                "opponent_selection": official_full_gate.get("opponent_selection"),
+            },
+        )
+        return _json_tool_result({
+            **infra_result,
+            "error": "COMMIT BLOCKED: official EXE infrastructure is inconclusive.",
+            "version": v,
+            "source_v": source_v,
+            "checkpoint_stage": resume_stage,
+            "official_full_gate": official_full_gate,
+        })
     if not official_full_gate.get("passed"):
-        official_stage = _record_official_full_gate_checkpoint(v, source_v, ckpt, official_full_gate)
+        official_stage = _record_official_full_gate_checkpoint(
+            v,
+            source_v,
+            ckpt,
+            official_full_gate,
+            clear_infra_failure=existing_infra is not None,
+            clear_official_job=bool((ckpt or {}).get("official_job")),
+        )
+        if not official_stage:
+            return _json_tool_result({
+                "error": "COMMIT BLOCKED: official terminal result could not be recorded atomically.",
+                "failure_class": "infrastructure",
+                "version": v,
+                "source_v": source_v,
+                "checkpoint_stage": (ckpt or {}).get("stage"),
+                "official_full_gate": official_full_gate,
+            })
         try:
             log_system_event(
                 "pipeline.commit_blocked_official_full",
@@ -562,6 +948,8 @@ async def commit_bot(args):
         source_v,
         ckpt,
         official_full_gate,
+        clear_infra_failure=existing_infra is not None,
+        clear_official_job=bool((ckpt or {}).get("official_job")),
     ):
         return _json_tool_result({
             "error": "COMMIT BLOCKED: failed to persist official full certificate in checkpoint ledger.",
@@ -637,23 +1025,72 @@ async def commit_bot(args):
             "certificate_digest": official_certification_status.get("certificate_digest"),
             "candidate_hash": identity.get("candidate_hash"),
             "policy_id": official_certification_status.get("policy_id"),
+            "certificate_path": official_certification_status.get("certificate_path"),
+            "certification_identity": identity,
         }
 
     parent2_v = ckpt.get("parent2_v") if ckpt else None
-    push_ok = git_commit_bot(
-        v,
-        source_v,
-        strategy,
-        rating_info=rating_info,
-        parent2_v=parent2_v,
-        official_certificate=official_certificate,
-    )
+    local_publish_retry = git_has_tag(v)
+    if local_publish_retry:
+        tag_matches, mismatch = _existing_local_bot_tag_matches_certificate(
+            v,
+            official_certificate or {},
+        )
+        if not tag_matches:
+            return _json_tool_result({
+                "error": "COMMIT BLOCKED: existing local bot tag does not match the current certified artifact.",
+                "version": v,
+                "source_v": source_v,
+                "reason": mismatch,
+            })
+        push_ok = (
+            _push_existing_bot_refs(v)
+            if evolution_git_push_enabled() or evolution_git_push_required()
+            else False
+        )
+    else:
+        push_ok = git_commit_bot(
+            v,
+            source_v,
+            strategy,
+            rating_info=rating_info,
+            parent2_v=parent2_v,
+            official_certificate=official_certificate,
+        )
 
     # Verify tag was created
     if not git_has_tag(v):
         return _json_tool_result({
             "error": f"Git tag {bot_tag(v)} not found after commit. Git operations may have failed.",
             "version": v,
+        })
+
+    if evolution_git_push_required() and not push_ok:
+        log_system_event(
+            "pipeline.bot_publish_required_failed",
+            "error",
+            f"v{v} is committed and tagged locally but required origin publication failed",
+            {
+                "version": v,
+                "source_v": source_v,
+                "tag": bot_tag(v),
+                "local_publish_retry": local_publish_retry,
+                "checkpoint_preserved": True,
+            },
+        )
+        return _json_tool_result({
+            "error": "COMMIT PENDING: required push to origin failed.",
+            "version": v,
+            "source_v": source_v,
+            "committed": False,
+            "local_committed": True,
+            "push_ok": False,
+            "checkpoint_preserved": True,
+            "completed_sentinel_written": False,
+            "directive": (
+                "Keep the verified checkpoint and retry commit_bot after origin is reachable. "
+                "The retry will verify the existing tag/certificate and push refs without creating another commit."
+            ),
         })
 
     (bot_dir / ".completed").touch()
@@ -1264,10 +1701,75 @@ async def run_crossover(args):
 
     ui = _get_ui()
 
+    architecture_policy = None
+    capability_context = {}
+    try:
+        from workflow_profiles import get_workflow_profile
+
+        native_tcp = getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp"
+        if native_tcp and (parent_a_dir / "national_bot.py").exists():
+            from national_capability_contract import evaluate_national_capabilities
+            from runtime_architecture_policy import build_architecture_policy
+
+            parent_a_capabilities = evaluate_national_capabilities(parent_a_dir)
+            parent_b_capabilities = evaluate_national_capabilities(parent_b_dir)
+            architecture_policy = build_architecture_policy(
+                parent_a_dir,
+                source_capabilities=parent_a_capabilities,
+            )
+
+            def _compact_capabilities(payload):
+                return {
+                    "detector_version": payload.get("detector_version"),
+                    "checks": {
+                        item.get("check_id"): bool(item.get("passed"))
+                        for item in payload.get("checks") or []
+                        if item.get("check_id")
+                    },
+                    "decision_path_risks": {
+                        key: (payload.get("decision_path_risks") or {}).get(key, [])[:5]
+                        for key in ("external_io", "history_scans", "large_runtime_tables")
+                    },
+                }
+
+            capability_context = {
+                bot_name(parent_a): _compact_capabilities(parent_a_capabilities),
+                bot_name(parent_b): _compact_capabilities(parent_b_capabilities),
+            }
+    except Exception as exc:
+        log_system_event(
+            "pipeline.crossover_architecture_policy_failed",
+            "error",
+            f"Crossover architecture policy failed for v{parent_a}×v{parent_b}: {type(exc).__name__}: {str(exc)[:240]}",
+            {"parent_a": parent_a, "parent_b": parent_b, "target_v": target_v, "error": str(exc)[:500]},
+        )
+        return _json_tool_result({
+            "error": "CROSSOVER_ARCHITECTURE_POLICY_FAILED",
+            "success": False,
+            "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
+            "directive": "Do not synthesize a crossover child without a stable parent capability contract.",
+        })
+
     # --- P1-3: Crossover Parent Compatibility Audit ---
+    compat = {
+        "compatible": True,
+        "compatibility_score": None,
+        "conflict_areas": [],
+        "suggested_merge_approach": "",
+        "audit_unavailable": True,
+    }
     try:
         from audit_agents import _run_crossover_compatibility_audit
-        compat = await _run_crossover_compatibility_audit(parent_a, parent_b, ui)
+        compat = await _run_crossover_compatibility_audit(
+            parent_a,
+            parent_b,
+            ui,
+            target_v=target_v,
+            architecture_context={
+                "architecture_policy": architecture_policy,
+                "parent_capabilities": capability_context,
+            },
+        )
         if not compat.get("compatible", True):
             log_system_event("pipeline.crossover_incompatible", "warn",
                              f"Parents v{parent_a}×v{parent_b} may be incompatible: {compat.get('conflict_areas', [])[:3]}",
@@ -1330,7 +1832,15 @@ async def run_crossover(args):
     except Exception as e:
         _log.warning("Crossover compat audit error (skipping): %s", e)
 
-    success = await _run_crossover(parent_a, parent_b, target_v, ui)
+    success = await _run_crossover(
+        parent_a,
+        parent_b,
+        target_v,
+        ui,
+        compatibility=compat,
+        architecture_policy=architecture_policy,
+        capability_context=capability_context,
+    )
 
     # Write checkpoint so quality gates → review → critic → commit can proceed
     if success:
@@ -1363,8 +1873,32 @@ async def run_crossover(args):
             "parents": [parent_a, parent_b],
             "source_v": parent_a,
             "next_v": target_v,
+            "architecture_policy": architecture_policy,
+            "crossover_compatibility": compat,
+            "parent_capabilities": capability_context,
             "note": "Crossover already generated bot code. Skip run_master and execute_workers; proceed to run_quality_gates.",
         }
+        from runtime_architecture_policy import build_runtime_contract_ledger
+        from tool_planning import _architecture_default_runtime_contract
+
+        crossover_focus = (architecture_policy or {}).get("selected_focus") or {}
+        crossover_floor_checks = list(
+            (architecture_policy or {}).get("runtime_floor_checks") or []
+        )
+        crossover_contract_task = {
+            "worker_id": "system_crossover_runtime_floor",
+            "skill_layer": "runtime_architecture",
+            "architecture_focus_id": str(crossover_focus.get("focus_id") or ""),
+            "runtime_contract": _architecture_default_runtime_contract(
+                str(crossover_focus.get("focus_id") or ""),
+                "runtime_architecture",
+                "strategy.py",
+                required_checks=crossover_floor_checks,
+            ),
+        }
+        crossover_plan["runtime_contract_ledger"] = build_runtime_contract_ledger({
+            "tasks": [crossover_contract_task],
+        })
         try:
             from national_position_contract import detect_position_semantics_errors
             target_position_errors = detect_position_semantics_errors(get_bot_dir(target_v))
@@ -1382,7 +1916,14 @@ async def run_crossover(args):
                 reviewer_feedback=feedback,
                 parent2_v=parent_b,
                 prepare_scope_files=prepare_scope_files,
-                audit_context={"crossover": {"parent_a": parent_a, "parent_b": parent_b}},
+                audit_context={
+                    "crossover": {
+                        "parent_a": parent_a,
+                        "parent_b": parent_b,
+                        "compatibility": compat,
+                        "architecture_policy": architecture_policy,
+                    }
+                },
             )
             try:
                 log_system_event(
@@ -1414,7 +1955,14 @@ async def run_crossover(args):
                                   master_plan=crossover_plan,
                                   parent2_v=parent_b,
                                   prepare_scope_files=prepare_scope_files,
-                                  audit_context={"crossover": {"parent_a": parent_a, "parent_b": parent_b}})
+                                  audit_context={
+                                      "crossover": {
+                                          "parent_a": parent_a,
+                                          "parent_b": parent_b,
+                                          "compatibility": compat,
+                                          "architecture_policy": architecture_policy,
+                                      }
+                                  })
         try:
             log_system_event('pipeline.crossover_done', 'info',
                 f'Crossover v{parent_a}×v{parent_b} → v{target_v} succeeded',

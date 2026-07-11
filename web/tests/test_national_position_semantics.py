@@ -163,3 +163,24 @@ def test_scenario_legality_rejects_nested_dynamic_payload():
 
     errors = decision_tester.audit_scenario_legality(scenario)
     assert errors == ["Scenario input must be a single request dict, not a full bot payload"]
+
+
+def test_scenario_legality_uses_official_inclusive_2x_reraise_boundary():
+    scenario = {
+        "id": "official_exact_2x",
+        "input": {
+            "my_id": 0,
+            "dealer_id": 0,
+            "num_players": 2,
+            "public_cards": [],
+            "history": [
+                {"round": 0, "player_id": 0, "action_type": "raise", "action": 200},
+                {"round": 0, "player_id": 1, "action_type": "raise", "action": 400},
+            ],
+        },
+    }
+
+    assert decision_tester.audit_scenario_legality(scenario) == []
+    scenario["input"]["history"][1]["action"] = 399
+    errors = decision_tester.audit_scenario_legality(scenario)
+    assert any("must be at least 2x previous 200" in error for error in errors)

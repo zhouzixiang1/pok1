@@ -38,6 +38,7 @@ get a nemesis_of entry. Bots that are nobody's nemesis get no champions entry.
 import time
 
 from evolution_infra import RESULTS_DIR, read_locked_json, write_locked_json, H2H_FILE
+from strength_order import match_score
 
 NEMESIS_ARCHIVE_FILE = RESULTS_DIR / "nemesis_archive.json"
 
@@ -59,7 +60,8 @@ def _h2h_winrate(bot_name, opponent, h2h):
         if games <= 0:
             return None
         bot_wins = value.get("a_wins", 0) if bot_name == a else value.get("b_wins", 0)
-        return (bot_wins / games, games)
+        win_rate = match_score(bot_wins, value.get("draws", 0), games)
+        return (win_rate, games) if win_rate is not None else None
     return None
 
 

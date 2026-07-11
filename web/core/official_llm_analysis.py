@@ -15,10 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 PROMPT_PATH = ROOT / "web" / "core" / "prompts" / "official_platform_analysis.md"
 DEFAULT_MAX_EVIDENCE_CHARS = 45000
 
-ComplianceVerdict = str
 AnalysisRunner = Callable[[str], str | Awaitable[str]]
 
-ALLOWED_VERDICTS = {"pass", "fail", "inconclusive"}
+ALLOWED_ANALYSIS_STATUSES = {"explained", "no_findings", "insufficient_evidence"}
 ALLOWED_FAILURE_CLASSES = {
     "protocol",
     "communication",
@@ -81,6 +80,7 @@ _WIRE_FINDING_KINDS = {
     "pending_bot_response_timeout",
     "pending_bot_response_slow",
     "platform_silent_timeout_gap",
+    "platform_silent_idle_gap",
     "platform_silent_slow_gap",
     "unknown_server_message",
     "illegal_call",
@@ -90,6 +90,9 @@ _WIRE_FINDING_KINDS = {
     "illegal_raise",
     "illegal_unknown",
     "wire_replay_error",
+    "wire_stream_eof_remainder",
+    "wire_stream_error",
+    "wire_probe_upstream_connect_failed",
     "unknown",
 }
 _EVENT_TYPES = {
@@ -118,6 +121,14 @@ _EXPECTED_RULE_BY_KIND = {
     "illegal_unknown": "recognized_action_token",
     "platform_silent_timeout_gap": "platform_progress_or_harness_attribution",
 }
+
+_STRENGTH_TEXT_RE = re.compile(
+    r"(?i)(?:\brating\b|\bwin[ _-]?rate\b|\bwon\b|\blost\b|"
+    r"\bprofit\b|\bnet[ _-]?chips?\b|\bchip outcome\b|\bstronger\b|"
+    r"\bweaker\b|\bimprove strategy\b|\bweak calls?\b|\bexploit(?:ation)?\b|"
+    r"\bEV\b|\bequity\b|\bbluff(?:ing)?\b|\baggression\b|\baggressive\b|"
+    r"胜率|强度|收益|盈利|筹码优势|权益|诈唬|激进|剥削)"
+)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -555,6 +566,63 @@ def _compact_round(round_item: dict[str, Any], *, ordinal: int) -> dict[str, Any
             round_evidence_id=round_evidence_id,
         ),
     }
+    attribution = round_item.get("attribution") if isinstance(round_item.get("attribution"), dict) else {}
+    compact_findings: list[dict[str, Any]] = []
+    for finding in (attribution.get("findings") or [])[:MAX_WIRE_ISSUES]:
+        if not isinstance(finding, dict):
+            continue
+        finding_id = str(finding.get("finding_id") or "")
+        if not finding_id:
+            continue
+        raw_finding_evidence = finding.get("evidence") if isinstance(finding.get("evidence"), dict) else {}
+        compact_finding = {
+            "evidence_id": finding_id,
+            "round_evidence_id": round_evidence_id,
+            "round_id": round_id,
+            "code": _sanitize_issue_text(finding.get("code")),
+            "category": _allowed_enum(
+                finding.get("category"),
+                ALLOWED_FAILURE_CLASSES | {"runtime", "platform"},
+                default="harness",
+            ),
+            "subject_domain": _allowed_enum(
+                finding.get("subject_domain"),
+                {"candidate", "opponent", "platform", "harness"},
+                default="harness",
+            ),
+            "subject_instance_id": _sanitize_issue_text(finding.get("subject_instance_id")),
+            "candidate_impact": _allowed_enum(
+                finding.get("candidate_impact"),
+                {"block", "retry", "review", "none"},
+                default="review",
+            ),
+            "connection": _connection_label(finding.get("connection")),
+        }
+        hand = _bounded_int(raw_finding_evidence.get("hand"))
+        if hand is not None:
+            compact_finding["hand"] = hand
+        compact_finding["street"] = _allowed_enum(
+            raw_finding_evidence.get("stage", raw_finding_evidence.get("street")),
+            _STREETS,
+            default="unknown",
+        )
+        action = _summarize_action(
+            raw_finding_evidence.get("message", raw_finding_evidence.get("observed_action"))
+        )
+        compact_finding["observed_action"] = action["action"]
+        compact_findings.append(compact_finding)
+    compact["attribution"] = {
+        "policy_id": _sanitize_issue_text(attribution.get("policy_id")),
+        "candidate_verdict": _allowed_enum(
+            attribution.get("candidate_verdict"),
+            {"pass", "fail", "inconclusive"},
+            default="inconclusive",
+        ),
+        "candidate_blocking": bool(attribution.get("candidate_blocking")),
+        "countable": bool(attribution.get("countable")),
+        "retry_required": bool(attribution.get("retry_required")),
+        "findings": compact_findings,
+    }
     return compact
 
 
@@ -686,22 +754,30 @@ def build_official_analysis_prompt(evidence: dict[str, Any], *, prompt_template:
 def safe_default_analysis(evidence: dict[str, Any], *, reason: str = "llm_not_run") -> dict[str, Any]:
     deterministic = evidence.get("deterministic") or {}
     blocking = bool(deterministic.get("blocking"))
+    inconclusive = bool(deterministic.get("inconclusive"))
+    passed = bool(deterministic.get("passed"))
     classification = str(deterministic.get("classification") or "none")
-    failure_class = classification if classification in ALLOWED_FAILURE_CLASSES else "none"
+    hypothesis_class = classification if classification in ALLOWED_FAILURE_CLASSES else "none"
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "analysis_source": "default",
-        "compliance_verdict": "fail" if blocking else ("pass" if deterministic.get("passed") else "inconclusive"),
-        "failure_class": failure_class,
-        "blocking": blocking,
+        "authority": "advisory_only",
+        "analysis_status": "no_findings" if passed and not blocking and not inconclusive else "insufficient_evidence",
+        "hypothesis_class": hypothesis_class,
         "confidence": 0.0,
-        "deterministic_blocking": blocking,
+        "deterministic_context": {
+            "passed": passed,
+            "blocking": blocking,
+            "inconclusive": inconclusive,
+            "classification": classification,
+        },
         "evidence": [],
-        "root_cause": reason,
+        "root_cause_hypothesis": "",
         "repair_guidance": "",
         "prompt_feedback": "",
         "strength_evaluation": "not_applicable",
         "ignored_strength_fields": [],
+        "ignored_authority_fields": [],
         "notes": [reason],
     }
 
@@ -720,18 +796,55 @@ def _parse_json_output(text: str) -> tuple[dict[str, Any] | None, str]:
             return None, "PARSE_ERROR"
 
 
+def _authoritative_evidence_index(evidence: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    compact = compact_evidence_for_llm(evidence)
+    result: dict[str, dict[str, Any]] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            evidence_id = value.get("evidence_id")
+            if isinstance(evidence_id, str) and evidence_id:
+                result[evidence_id] = value
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(compact)
+    return result
+
+
+def _compliance_text(value: Any, *, field: str, ignored: list[str]) -> str:
+    text = str(value or "").strip()
+    if text and _STRENGTH_TEXT_RE.search(text):
+        ignored.append(field)
+        return ""
+    return text
+
+
 def normalize_official_analysis(raw: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
     deterministic = evidence.get("deterministic") or {}
     deterministic_blocking = bool(deterministic.get("blocking"))
     deterministic_passed = bool(deterministic.get("passed"))
+    deterministic_inconclusive = bool(deterministic.get("inconclusive"))
     deterministic_class = str(deterministic.get("classification") or "none")
 
-    verdict = str(raw.get("compliance_verdict") or "inconclusive").lower()
-    if verdict not in ALLOWED_VERDICTS:
-        verdict = "inconclusive"
-    failure_class = str(raw.get("failure_class") or "none").lower()
-    if failure_class not in ALLOWED_FAILURE_CLASSES:
-        failure_class = deterministic_class if deterministic_class in ALLOWED_FAILURE_CLASSES else "none"
+    default_status = (
+        "no_findings"
+        if deterministic_passed and not deterministic_blocking and not deterministic_inconclusive
+        else "insufficient_evidence"
+    )
+    analysis_status = str(raw.get("analysis_status") or default_status).lower()
+    if analysis_status not in ALLOWED_ANALYSIS_STATUSES:
+        analysis_status = default_status
+    hypothesis_class = str(
+        raw.get("hypothesis_class") or raw.get("failure_class") or "none"
+    ).lower()
+    if hypothesis_class not in ALLOWED_FAILURE_CLASSES:
+        hypothesis_class = (
+            deterministic_class if deterministic_class in ALLOWED_FAILURE_CLASSES else "none"
+        )
     try:
         confidence = float(raw.get("confidence", 0.0))
     except Exception:
@@ -739,39 +852,152 @@ def normalize_official_analysis(raw: dict[str, Any], evidence: dict[str, Any]) -
     confidence = max(0.0, min(1.0, confidence))
 
     notes: list[str] = []
-    if deterministic_blocking and verdict != "fail":
-        verdict = "fail"
-        if deterministic_class in ALLOWED_FAILURE_CLASSES:
-            failure_class = deterministic_class
-        notes.append("llm_pass_overridden_by_deterministic_blocking_evidence")
-    elif deterministic_passed and verdict == "fail":
-        verdict = "inconclusive"
-        notes.append("llm_failure_without_deterministic_confirmation_is_advisory")
+    ignored_authority_fields = sorted(
+        key for key in raw if key in {"blocking", "compliance_verdict", "verdict", "passed"}
+    )
+    if ignored_authority_fields:
+        notes.append("llm_authority_fields_ignored")
 
     evidence_items = raw.get("evidence")
     if not isinstance(evidence_items, list):
         evidence_items = []
+    authoritative = _authoritative_evidence_index(evidence)
+    normalized_evidence: list[dict[str, Any]] = []
+    rejected_evidence_ids: list[str] = []
+    allowed_fields = (
+        "evidence_id",
+        "round_id",
+        "hand",
+        "street",
+        "connection",
+        "observed_action",
+        "expected_rule",
+        "subject_domain",
+        "subject_instance_id",
+        "candidate_impact",
+        "code",
+        "category",
+    )
+    for item in evidence_items[:20]:
+        if not isinstance(item, dict):
+            continue
+        evidence_id = str(item.get("evidence_id") or "")
+        source = authoritative.get(evidence_id)
+        if source is None:
+            rejected_evidence_ids.append(evidence_id or "<missing>")
+            continue
+        normalized_evidence.append({
+            key: source[key]
+            for key in allowed_fields
+            if key in source
+        })
+    if rejected_evidence_ids:
+        notes.append("llm_evidence_ids_rejected:" + ",".join(rejected_evidence_ids[:10]))
     ignored_strength_fields = sorted(
         key for key in raw
         if key.lower() in {"strength", "strength_score", "rating", "rating_delta", "winrate", "win_rate"}
     )
+    ignored_strength_text_fields: list[str] = []
+    root_cause_hypothesis = _compliance_text(
+        raw.get("root_cause_hypothesis", raw.get("root_cause")),
+        field="root_cause_hypothesis",
+        ignored=ignored_strength_text_fields,
+    )
+    repair_guidance = _compliance_text(
+        raw.get("repair_guidance"),
+        field="repair_guidance",
+        ignored=ignored_strength_text_fields,
+    )
+    prompt_feedback = _compliance_text(
+        raw.get("prompt_feedback"),
+        field="prompt_feedback",
+        ignored=ignored_strength_text_fields,
+    )
+    # Explanations and repair instructions must cite an allowlisted deterministic
+    # evidence id.  A clean deterministic pass or an uncited hypothesis cannot
+    # create feedback that later workers might mistake for a proven defect.
+    grounded = bool(normalized_evidence)
+    clean_pass = deterministic_passed and not deterministic_blocking and not deterministic_inconclusive
+    if clean_pass:
+        analysis_status = "no_findings"
+        # A deterministic clean pass contains no defect for an advisory model
+        # to repair. Even a valid round citation cannot manufacture one.
+        if root_cause_hypothesis or repair_guidance or prompt_feedback:
+            notes.append("clean_pass_llm_feedback_removed")
+        root_cause_hypothesis = ""
+        repair_guidance = ""
+        prompt_feedback = ""
+        hypothesis_class = "none"
+    elif analysis_status == "no_findings":
+        analysis_status = "insufficient_evidence"
+    if not grounded:
+        if root_cause_hypothesis or repair_guidance or prompt_feedback:
+            notes.append("ungrounded_llm_feedback_removed")
+        root_cause_hypothesis = ""
+        repair_guidance = ""
+        prompt_feedback = ""
+        if not clean_pass:
+            analysis_status = "insufficient_evidence"
+    elif analysis_status == "insufficient_evidence" and root_cause_hypothesis:
+        analysis_status = "explained"
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "analysis_source": "llm",
-        "compliance_verdict": verdict,
-        "failure_class": failure_class,
-        "blocking": deterministic_blocking,
+        "authority": "advisory_only",
+        "analysis_status": analysis_status,
+        "hypothesis_class": hypothesis_class,
         "confidence": confidence,
-        "deterministic_blocking": deterministic_blocking,
-        "evidence": evidence_items[:20],
-        "root_cause": str(raw.get("root_cause") or ""),
-        "repair_guidance": str(raw.get("repair_guidance") or ""),
-        "prompt_feedback": str(raw.get("prompt_feedback") or ""),
+        "deterministic_context": {
+            "passed": deterministic_passed,
+            "blocking": deterministic_blocking,
+            "inconclusive": deterministic_inconclusive,
+            "classification": deterministic_class,
+        },
+        "evidence": normalized_evidence,
+        "root_cause_hypothesis": root_cause_hypothesis,
+        "repair_guidance": repair_guidance,
+        "prompt_feedback": prompt_feedback,
         "strength_evaluation": "not_applicable",
         "ignored_strength_fields": ignored_strength_fields,
+        "ignored_strength_text_fields": sorted(set(ignored_strength_text_fields)),
+        "ignored_authority_fields": ignored_authority_fields,
         "notes": notes,
     }
+
+
+def advisory_analysis_contract_issues(analysis: Any) -> list[str]:
+    """Validate that an LLM sidecar cannot masquerade as a gate verdict."""
+    if not isinstance(analysis, dict):
+        return ["official_llm_analysis_not_object"]
+    issues: list[str] = []
+    if analysis.get("schema_version") != 2:
+        issues.append("official_llm_analysis_schema_mismatch")
+    if analysis.get("authority") != "advisory_only":
+        issues.append("official_llm_analysis_authority_mismatch")
+    forbidden = sorted(
+        key
+        for key in {"blocking", "compliance_verdict", "passed", "verdict"}
+        if key in analysis
+    )
+    if forbidden:
+        issues.append("official_llm_analysis_forbidden_authority_fields:" + ",".join(forbidden))
+    if analysis.get("analysis_status") not in ALLOWED_ANALYSIS_STATUSES:
+        issues.append("official_llm_analysis_status_invalid")
+    if analysis.get("hypothesis_class") not in ALLOWED_FAILURE_CLASSES:
+        issues.append("official_llm_analysis_hypothesis_class_invalid")
+    if analysis.get("strength_evaluation") != "not_applicable":
+        issues.append("official_llm_analysis_strength_boundary_missing")
+    evidence_items = analysis.get("evidence")
+    if not isinstance(evidence_items, list):
+        issues.append("official_llm_analysis_evidence_invalid")
+        evidence_items = []
+    if not evidence_items and any(
+        str(analysis.get(field) or "").strip()
+        for field in ("root_cause_hypothesis", "repair_guidance", "prompt_feedback")
+    ):
+        issues.append("official_llm_analysis_feedback_without_evidence")
+    return issues
 
 
 async def run_official_llm_analysis(

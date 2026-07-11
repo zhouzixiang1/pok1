@@ -11,6 +11,7 @@ _log = get_logger("review")
 
 from bot_namespace import bot_name
 from llm_failure import is_llm_infra_error, infra_payload
+from strength_order import match_score
 
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
@@ -29,12 +30,17 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
     The Critic evaluates whether the diff will actually improve poker win rate.
 
     Returns a dict: {score, approved, strategic_assessment, feedback, local_optima_warning}.
-    Returns a safe default on failure so the pipeline can always proceed.
+    Returns ``llm_failed`` on role/tooling failure so the caller can retry the
+    same gate without fabricating a strategic rejection.
     """
     critic_prompt_path = PROMPTS_DIR / "critic_prompt.md"
     if not critic_prompt_path.exists():
-        ui.log_history("Critic prompt not found — defaulting to REJECTED.", "error")
-        return {"score": 0, "approved": False, "feedback": "Critic prompt not found — defaulting to rejected."}
+        ui.log_history("Critic prompt not found; critic verdict is unavailable.", "error")
+        return {
+            "llm_failed": True,
+            "error": "critic_prompt_missing",
+            "approved": None,
+        }
 
     critic_prompt = critic_prompt_path.read_text()
     critic_prompt = substitute_template(critic_prompt, {
@@ -42,6 +48,21 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
         "version": str(next_v),
         "parent_version": str(source_v),
     })
+    try:
+        from evidence_snapshot import h2h_snapshot_contract_text
+
+        critic_prompt += "\n\n" + h2h_snapshot_contract_text(
+            next_v,
+            source_v=source_v,
+            include_json=True,
+            max_chars=12000,
+        )
+    except Exception as exc:
+        critic_prompt += (
+            "\n\n# Stable H2H Snapshot Contract\n"
+            "The generation snapshot is unavailable. Treat all matchup strength "
+            f"claims as unknown; do not read live H2H files. ({type(exc).__name__})\n"
+        )
 
     if prev_critic_result:
         prev_score = prev_critic_result.get("score", 0)
@@ -114,11 +135,8 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             data.setdefault("local_optima_warning", False)
             return data
     except Exception as e:
-        if is_llm_infra_error(e):
-            ui.log_history(f"Critic LLM infrastructure error (NOT a strategic rejection): {e}", "warn")
-            return infra_payload(e, approved=False)   # llm_failed=True, no score=0
-        ui.log_history(f"Critic error: {e}. Defaulting to rejected.", "warn")
-        return {"score": 0, "approved": False, "feedback": str(e), "local_optima_warning": False}
+        ui.log_history(f"Critic execution error (NOT a strategic rejection): {e}", "warn")
+        return infra_payload(e, approved=None)
 
     # Parse collapse: reaching here means the LLM output failed to parse
     # (NO_JSON/NO_FENCE/PARSE_ERROR) or lacked the score key, OR an exception
@@ -133,7 +151,13 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
              version=next_v, source_v=source_v, failure_mode=_fm, output_len=len(_out))
     except Exception:
         pass
-    return {"score": 0, "approved": False, "feedback": "Critic output was not valid JSON.", "local_optima_warning": False, "parse_failed": True}
+    return {
+        "llm_failed": True,
+        "approved": None,
+        "error": f"critic_output_unusable:{_fm}",
+        "feedback": "Critic output was not valid JSON.",
+        "parse_failed": True,
+    }
 
 
 # ──────────────────────────────────────────────
@@ -274,34 +298,51 @@ async def _run_performance_verification(source_v, ratings, ui):
     win_rate_lines = []
     if MATCH_HISTORY_FILE.exists():
         try:
-            wins, losses = 0, 0
+            wins, losses, draws = 0, 0, 0
+            from rating_snapshot import _admitted_70_hand_history_sample
             with locked_file(MATCH_HISTORY_FILE, "r") as mf:
                 all_lines = mf.readlines()
             for line in all_lines[-100:]:
                 try:
                     entry = json.loads(line.strip())
+                    if _admitted_70_hand_history_sample(entry) is None:
+                        continue
                     b0, b1 = entry.get("bot0"), entry.get("bot1")
                     w0, w1 = entry.get("bot0_wins", 0), entry.get("bot1_wins", 0)
+                    d = entry.get("draws", 0)
                     if b0 == source_bot_name:
-                        wins += w0; losses += w1
+                        wins += w0; losses += w1; draws += d
                     elif b1 == source_bot_name:
-                        wins += w1; losses += w0
+                        wins += w1; losses += w0; draws += d
                 except (json.JSONDecodeError, KeyError):
                     continue
-            total = wins + losses
-            if total > 0:
-                win_rate_lines.append(f"  {source_bot_name} recent: {wins}W / {losses}L ({wins*100//total}% win rate)")
+            total = wins + losses + draws
+            win_rate = match_score(wins, draws, total)
+            if win_rate is not None:
+                win_rate_lines.append(
+                    f"  {source_bot_name} recent: {wins}W / {losses}L / "
+                    f"{draws}D ({win_rate:.0%} score)"
+                )
         except Exception as e:
             _log.warning("Failed to read match history for perf verification: %s", e)
 
     # ── Top-5 active bots for context ──
     active_bots = get_active_bots()
-    from tool_helpers import load_h2h_avg_winrates, load_strength_scores
+    from tool_helpers import (
+        load_h2h_avg_winrates,
+        load_selection_order_keys,
+        load_selection_scores,
+    )
     h2h_winrates = load_h2h_avg_winrates()
-    strength_scores = load_strength_scores()
+    strength_scores = load_selection_scores()
+    selection_order_keys = load_selection_order_keys()
     sorted_bots = sorted(
         [(b, ratings.get(b, Glicko2Player())) for b in active_bots],
-        key=lambda x: strength_scores.get(x[0], 0.0), reverse=True
+        key=lambda x: selection_order_keys.get(
+            x[0],
+            (strength_scores.get(x[0], 0.0),),
+        ),
+        reverse=True,
     )[:5]
     ratings_lines = [
         f"  {b}: score={strength_scores.get(b, 0.0):.4f}, h2h_avg_wr={h2h_winrates.get(b, 0.0):.2%} (r={p.r:.0f} rd={p.rd:.0f})"
@@ -330,14 +371,17 @@ async def _run_performance_verification(source_v, ratings, ui):
                     bot_w = v.get("a_wins", 0)
                 else:
                     bot_w = v.get("b_wins", 0)
-                opp_w = g - bot_w - v.get("draws", 0)
-                wr = bot_w / g
+                draws = v.get("draws", 0)
+                opp_w = g - bot_w - draws
+                wr = match_score(bot_w, draws, g)
+                if wr is None:
+                    continue
                 tag = ""
                 if wr < 0.40:
                     tag = " ← WEAKNESS"
                 elif wr > 0.60:
                     tag = " ← STRENGTH"
-                h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L ({wr:.0%}){tag}"))
+                h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L-{draws}D ({wr:.0%}){tag}"))
             h2h_lines.sort(key=lambda x: x[0])
         except Exception as e:
             _log.warning("Failed to read H2H data for perf verification: %s", e)
@@ -428,7 +472,16 @@ async def _run_performance_verification(source_v, ratings, ui):
     return ""
 
 
-async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
+async def _run_crossover(
+    parent_a_v,
+    parent_b_v,
+    target_v,
+    ui,
+    *,
+    compatibility=None,
+    architecture_policy=None,
+    capability_context=None,
+):
     """Run crossover between two elite bots to create a new child bot."""
     import shutil
     crossover_prompt_path = PROMPTS_DIR / "crossover_prompt.md"
@@ -445,11 +498,27 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         "parent_b_version": str(parent_b_v),
         "version": str(target_v),
     })
+    crossover_prompt += (
+        "\n\n# Authoritative Crossover Evidence\n"
+        + json.dumps(
+            {
+                "compatibility": compatibility or {},
+                "parent_capabilities": capability_context or {},
+            },
+            indent=2,
+            ensure_ascii=False,
+        )[:12000]
+    )
+    if isinstance(architecture_policy, dict):
+        from runtime_architecture_policy import architecture_policy_prompt
+
+        crossover_prompt += "\n\n" + architecture_policy_prompt(architecture_policy)
 
     target_dir = get_bot_dir(target_v)
     parent_a_dir = get_bot_dir(parent_a_v)
     log_file = get_logs_dir(target_v) / "crossover_io.txt"
 
+    architecture_retry_feedback = ""
     for attempt in range(MAX_CROSSOVER_RETRIES):
         try:
             from evolution_infra import write_pipeline_checkpoint
@@ -501,7 +570,7 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         ui.set_status(f"Crossover v{parent_a_v}×v{parent_b_v}→v{target_v} (Try {attempt+1})", is_working=True)
         try:
             await run_claude_query(
-                crossover_prompt, [], ui,
+                crossover_prompt + architecture_retry_feedback, [], ui,
                 f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v}",
                 log_file,
                 tools=["Bash", "Read", "Edit"],
@@ -573,6 +642,63 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         if smoke_errors:
             ui.log_history("Crossover smoke test failed, retrying...", "warn")
             continue
+
+        if isinstance(architecture_policy, dict):
+            try:
+                from runtime_architecture_policy import evaluate_architecture_transition
+
+                transition = evaluate_architecture_transition(
+                    parent_a_dir,
+                    target_dir,
+                    expected_policy=architecture_policy,
+                )
+            except Exception as exc:
+                transition = {
+                    "ok": False,
+                    "policy_identity_errors": [
+                        f"transition_exception:{type(exc).__name__}:{str(exc)[:200]}"
+                    ],
+                    "regressions": [],
+                    "unresolved_focus_checks": [],
+                }
+            if not transition.get("ok"):
+                architecture_retry_feedback = (
+                    "\n\n# Previous Attempt Rejected By Runtime Architecture Gate\n"
+                    "Rebuild from parent A and correct every item below. Do not merely add labels.\n"
+                    + json.dumps(
+                        {
+                            "policy_identity_errors": transition.get("policy_identity_errors") or [],
+                            "regressions": transition.get("regressions") or [],
+                            "unresolved_focus_checks": transition.get("unresolved_focus_checks") or [],
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )[:5000]
+                )
+                try:
+                    from system_log import log_system_event
+
+                    log_system_event(
+                        "pipeline.crossover_architecture_rejected",
+                        "warn",
+                        f"Crossover v{target_v} attempt {attempt + 1} failed runtime architecture policy",
+                        {
+                            "target_v": target_v,
+                            "parent_a": parent_a_v,
+                            "parent_b": parent_b_v,
+                            "attempt": attempt + 1,
+                            "regressions": transition.get("regressions") or [],
+                            "unresolved_focus_checks": transition.get("unresolved_focus_checks") or [],
+                            "policy_identity_errors": transition.get("policy_identity_errors") or [],
+                        },
+                    )
+                except Exception:
+                    pass
+                ui.log_history(
+                    "Crossover runtime architecture policy failed, retrying from parent A baseline...",
+                    "warn",
+                )
+                continue
 
         # LOG GAP FIX (2026-06-30): record which files the crossover LLM actually
         # changed vs parent_a, so the modification is auditable (parity with the

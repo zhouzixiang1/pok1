@@ -157,6 +157,8 @@ class NationalAcceptanceResult(BaseModel):
     opponents: list[str] = Field(default_factory=list)
     hands_per_pair: int
     passed: bool
+    outcome: Literal["passed", "candidate_failure", "infrastructure_failure"] = "passed"
+    failure_side: str = ""
     issues: list[str] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
     matrix: dict[str, Any] = Field(default_factory=dict)

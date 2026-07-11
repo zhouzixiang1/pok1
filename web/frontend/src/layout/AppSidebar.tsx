@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { Link, useLocation } from "react-router";
-import { GridIcon, PieChartIcon, TableIcon, PageIcon, BoltIcon, ChatIcon, PlugInIcon, BoxIcon, DocsIcon, FileIcon } from "../icons";
+import { GridIcon, PieChartIcon, TableIcon, PageIcon, BoltIcon, ChatIcon, PlugInIcon, BoxIcon, DocsIcon, FileIcon, VideoIcon } from "../icons";
 import { useSidebar } from "../context/SidebarContext";
 import { cn } from "../lib/utils";
 
@@ -15,6 +15,7 @@ const navItems: NavItem[] = [
   { icon: <GridIcon />, name: "总览", path: "/", group: "概览" },
   { icon: <BoltIcon />, name: "进化监控", path: "/evolution", group: "概览" },
   { icon: <ChatIcon />, name: "对局回放", path: "/matches", group: "对局" },
+  { icon: <VideoIcon />, name: "国赛对弈", path: "/arena", group: "对局" },
   { icon: <PieChartIcon />, name: "评分趋势", path: "/rating-trends", group: "对局" },
   { icon: <TableIcon />, name: "对局矩阵", path: "/match-matrix", group: "对局" },
   { icon: <PageIcon />, name: "迭代日志", path: "/logs", group: "管理" },

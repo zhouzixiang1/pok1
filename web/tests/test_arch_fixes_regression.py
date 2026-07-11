@@ -246,15 +246,23 @@ def test_validate_master_plan_accepts_runtime_layer_with_contract_in_prompt():
             _valid_task(
                 skill_layer="runtime_architecture",
                 worker_prompt=(
-                    "Add a bounded decision budget and fallback path. "
+                    "Build the legal baseline before the monotonic deadline, then use "
+                    "a bounded decision budget and fallback path. "
                     "Do not add file IO or full-history scans."
                 ),
                 runtime_contract={
-                    "decision_budget_ms": 250,
-                    "fallback_action": "use existing legal action sanitizer",
-                    "decision_path_bound": "no full-history scan; at most one bounded lookup",
+                    "decision": {
+                        "clock": "time.monotonic",
+                        "hard_deadline_ms": 55_000,
+                        "baseline_target_ms": 250,
+                        "refinement_budget_ms": 54_000,
+                        "baseline_path": "existing legal action sanitizer",
+                        "fallback_action": "use existing legal action sanitizer",
+                        "refinement_bound": "no full-history scan; at most one bounded lookup",
+                        "max_samples": 64,
+                    },
                     "precompute_artifacts": [],
-                    "state_lifecycle": "",
+                    "match_memory": None,
                     "official_feedback_refs": [],
                     "forbidden_runtime_work": ["file_io_in_decision"],
                 },

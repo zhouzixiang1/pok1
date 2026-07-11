@@ -172,11 +172,10 @@ def _startup_recovery(ui=None) -> dict:
 
     # Watchdog recovery: if checkpoint is stale (no stage change for > WATCHDOG_TIMEOUT)
     # and we're at a recoverable stage, treat as stale session and force new LLM session.
-    recoverable_stages = {"selected", "preparing", "prepared", "crossover_running",
-                          "direction_audited", "master_planned", "workers_done",
-                          "quality_failed", "quality_passed", "reviewed",
-                          "critic_checked", "precommit_failed", "repair_planned",
-                          "rework_running", "verified"}
+    # The classification is owned by pipeline_state so official-certification and
+    # future stages cannot drift from this recovery path.
+    from pipeline_state import session_recoverable_stages
+    recoverable_stages = session_recoverable_stages()
     last_stage_ts = checkpoint.get("last_stage_change_ts", 0.0)
     if stage in recoverable_stages and last_stage_ts > 0:
         from evolution_infra import WATCHDOG_TIMEOUT
@@ -280,12 +279,9 @@ def _startup_recovery(ui=None) -> dict:
     from evolution_infra import git_has_tag
     if next_v is not None and not git_has_tag(next_v):
         ckpt_ts = checkpoint.get("timestamp")
-        # Stages with real work — don't abort even if old
-        recoverable_stages = {"selected", "preparing", "prepared", "crossover_running",
-                              "direction_audited", "master_planned", "workers_done",
-                              "quality_failed", "quality_passed", "reviewed",
-                              "critic_checked", "precommit_failed", "repair_planned",
-                              "rework_running", "verified"}
+        # Stages with durable work are classified by the state machine; don't
+        # abort them merely because their tag has not been created yet.
+        recoverable_stages = session_recoverable_stages()
         if stage in recoverable_stages:
             if ui:
                 ui.log_history(f"[Recovery] v{next_v} at stage '{stage}' — preserving for resume (no 30-min abort).", "warn")

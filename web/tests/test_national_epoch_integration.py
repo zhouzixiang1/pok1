@@ -91,7 +91,7 @@ def test_git_commit_registry_preflight_blocks_before_any_git(monkeypatch, tmp_pa
             official_certificate={
                 "certificate_digest": "cert-digest",
                 "candidate_hash": "candidate-hash",
-                "policy_id": "official-full-v2",
+                "policy_id": "official-full-v5",
             },
         )
 

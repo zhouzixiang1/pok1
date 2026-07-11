@@ -449,15 +449,15 @@ async def _run_precommit_semantic(v, source_v, matchups, master_plan, ui):
         # Build H2H context
         h2h_text = ""
         try:
-            from evolution_infra import H2H_FILE
-            if H2H_FILE.exists():
-                h2h_data = json.loads(H2H_FILE.read_text())
-                relevant = {}
-                v_str = str(v)
-                for key, val in h2h_data.items():
-                    if v_str in key:
-                        relevant[key] = val
-                h2h_text = json.dumps(relevant, indent=2, ensure_ascii=False)[:2000]
+            from evidence_snapshot import load_generation_h2h_snapshot
+
+            h2h_data = load_generation_h2h_snapshot(v)
+            relevant = {}
+            v_str = str(v)
+            for key, val in h2h_data.items():
+                if v_str in key:
+                    relevant[key] = val
+            h2h_text = json.dumps(relevant, indent=2, ensure_ascii=False)[:2000]
         except Exception:
             pass
 
@@ -567,7 +567,14 @@ async def _run_degeneration_diagnosis(source_v, recent_commits, strategy_changes
 # P1-3: Crossover Parent Compatibility Audit
 # ──────────────────────────────────────────────
 
-async def _run_crossover_compatibility_audit(parent_a_v, parent_b_v, ui):
+async def _run_crossover_compatibility_audit(
+    parent_a_v,
+    parent_b_v,
+    ui,
+    *,
+    target_v=None,
+    architecture_context=None,
+):
     """Audit compatibility of two crossover parent bots.
 
     Returns CrossoverCompatibilityResult dict.
@@ -605,8 +612,29 @@ async def _run_crossover_compatibility_audit(parent_a_v, parent_b_v, ui):
         ratings = load_ratings() or {}
         ra = ratings.get(bot_name(parent_a_v))
         rb = ratings.get(bot_name(parent_b_v))
-        rating_a = f"{ra.rating:.1f}" if ra and hasattr(ra, 'rating') else "unknown"
-        rating_b = f"{rb.rating:.1f}" if rb and hasattr(rb, 'rating') else "unknown"
+        rating_a = f"{ra.r:.1f} ± {ra.rd:.1f}" if ra and hasattr(ra, "r") else "unknown"
+        rating_b = f"{rb.r:.1f} ± {rb.rd:.1f}" if rb and hasattr(rb, "r") else "unknown"
+
+        h2h_context = "Stable H2H snapshot unavailable. Treat matchup strength as unknown."
+        if target_v is not None:
+            try:
+                from evidence_snapshot import load_generation_h2h_snapshot
+                from evolution_infra import pair_key
+
+                h2h = load_generation_h2h_snapshot(target_v)
+                key = pair_key(bot_name(parent_a_v), bot_name(parent_b_v))
+                row = h2h.get(key) if isinstance(h2h, dict) else None
+                if isinstance(row, dict):
+                    h2h_context = (
+                        f"{key}: games={int(row.get('games', 0) or 0)}, "
+                        f"a_wins={int(row.get('a_wins', 0) or 0)}, "
+                        f"b_wins={int(row.get('b_wins', 0) or 0)}, "
+                        f"draws={int(row.get('draws', 0) or 0)}"
+                    )
+                else:
+                    h2h_context = f"Stable snapshot has no row for {key}; matchup is sparse/unknown."
+            except Exception as exc:
+                h2h_context = f"Stable H2H snapshot read failed: {type(exc).__name__}: {str(exc)[:160]}"
 
         prompt = substitute_template(template, {
             "parent_a_version": str(parent_a_v),
@@ -615,7 +643,12 @@ async def _run_crossover_compatibility_audit(parent_a_v, parent_b_v, ui):
             "parent_b_code": json.dumps(parent_b_code, indent=2, ensure_ascii=False)[:5000],
             "parent_a_rating": str(rating_a),
             "parent_b_rating": str(rating_b),
-            "h2h_a_vs_b": "See ratings above",
+            "h2h_a_vs_b": h2h_context,
+            "architecture_context": json.dumps(
+                architecture_context or {},
+                indent=2,
+                ensure_ascii=False,
+            )[:8000],
         })
 
         log_file = get_logs_dir(parent_a_v) / f"crossover_compat_{parent_a_v}x{parent_b_v}_io.txt"

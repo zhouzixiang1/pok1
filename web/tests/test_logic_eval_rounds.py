@@ -233,6 +233,25 @@ class TestFinishRound:
         assert summary["bot_deltas"]["a"]["avg_delta"] == pytest.approx(0.2, abs=0.01)
         assert summary["bot_deltas"]["b"]["avg_delta"] == pytest.approx(-0.2, abs=0.01)
 
+    def test_draws_score_half_in_round_and_historical_delta(self, mgr, results_dir):
+        mgr.start_round(["a", "b"])
+        mgr.record_result("a", "b", 0, 0, 10)
+        h2h = {
+            _pair_key("a", "b"): {
+                "games": 20,
+                "a_wins": 0,
+                "b_wins": 0,
+                "draws": 20,
+            },
+        }
+
+        summary = mgr.finish_round(h2h_data=h2h)
+
+        assert summary["bot_deltas"]["a"]["avg_wr"] == 0.5
+        assert summary["bot_deltas"]["b"]["avg_wr"] == 0.5
+        assert summary["bot_deltas"]["a"]["avg_delta"] == 0.0
+        assert summary["bot_deltas"]["b"]["avg_delta"] == 0.0
+
     def test_total_rounds_completed_increments(self, mgr, results_dir):
         mgr.start_round(["a", "b"])
         mgr.record_result("a", "b", 6, 4, 0)

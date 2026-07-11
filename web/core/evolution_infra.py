@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import re
 import asyncio
+import threading
 
 
 # Phase 4 feature flag (default OFF). PSRO = Pipeline Policy Response Operator
@@ -121,7 +122,9 @@ from pipeline_state import (
     STAGE_ORDER,
     STAGE_GATE_ALLOWLIST,
     validate_stage_transition,
+    validate_runtime_contract_ledger_reset,
     is_rework_reset_transition,
+    invalidates_official_job_transition,
 )
 
 EVOLUTION_BRANCH = "main"
@@ -193,8 +196,18 @@ def _get_worker_semaphore() -> "asyncio.Semaphore":
     return sem
 
 
+_FILE_THREAD_LOCKS: dict[str, threading.RLock] = {}
+_FILE_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock_for(path) -> threading.RLock:
+    key = str(Path(path).resolve())
+    with _FILE_THREAD_LOCKS_GUARD:
+        return _FILE_THREAD_LOCKS.setdefault(key, threading.RLock())
+
+
 @contextmanager
-def locked_file(path, mode='r', lock_type=None, encoding=None):
+def _locked_file_os(path, mode='r', lock_type=None, encoding=None):
     """Context manager for file operations with fcntl locking.
 
     For mode='w': opens with 'r+' if file exists (to avoid truncating before
@@ -230,6 +243,19 @@ def locked_file(path, mode='r', lock_type=None, encoding=None):
             yield f
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+
+
+@contextmanager
+def locked_file(path, mode='r', lock_type=None, encoding=None):
+    """Serialize same-process threads by path and processes with ``flock``."""
+    with _thread_lock_for(path):
+        with _locked_file_os(
+            path,
+            mode=mode,
+            lock_type=lock_type,
+            encoding=encoding,
+        ) as handle:
+            yield handle
 
 
 def read_locked_json(path, default=None):
@@ -295,7 +321,10 @@ def update_bot_stats(bot_stats, name, wins, losses, draws=0):
     entry["draws"] += draws
     entry["games"] += wins + losses + draws
     if entry["games"] > 0:
-        entry["win_rate"] = round(entry["wins"] / entry["games"], 4)
+        entry["win_rate"] = round(
+            (entry["wins"] + 0.5 * entry["draws"]) / entry["games"],
+            4,
+        )
 
 
 def substitute_template(template, replacements):
@@ -363,6 +392,7 @@ _REPO_BASELINE_VALIDATION_STAGES = frozenset({
     "quality_passed",
     "precommit_failed",
     "verified",
+    "official_certifying",
     "official_failed",
     "official_inconclusive",
 })
@@ -371,6 +401,7 @@ _REPO_BASELINE_VALIDATION_GATES = {
     "quality_passed": "quality",
     "precommit_failed": "precommit_eval",
     "verified": "precommit_eval",
+    "official_certifying": "official_full",
     "official_failed": "official_full",
     "official_inconclusive": "official_full",
 }
@@ -428,11 +459,22 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                precommit_attempt=None, reset_precommit_attempt=False,
                                precommit_rework_count=None,
                                timeout_extensions=None, touch_stage_timestamp=False,
-                               literature_probe=None, prepare_scope_files=None):
+                               literature_probe=None, prepare_scope_files=None,
+                               clear_reviewer_feedback=False,
+                               infra_failure=None, clear_infra_failure=False,
+                               infra_failure_owner=None,
+                               expected_infra_failure_digest=None,
+                               official_job=None, clear_official_job=False,
+                               expected_official_job_id=None,
+                               reset_runtime_contract_ledger=False,
+                               expected_runtime_contract_ledger_digest=None,
+                               runtime_contract_ledger_reset_reason=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
-    read-merge-write races (POSIX guarantees os.replace is atomic).
+    read-merge-write races (POSIX guarantees os.replace is atomic). Runtime
+    contract ledgers remain append-only unless a state-machine-authorized plan
+    rejection supplies an explicit reset reason and expected ledger digest.
     """
     try:
         from workflow_profiles import get_workflow_profile
@@ -453,6 +495,14 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing = json.loads(raw)
             except Exception:
                 existing = None
+        if isinstance(existing, dict):
+            try:
+                from pipeline_infrastructure import normalize_checkpoint_infrastructure
+
+                existing = normalize_checkpoint_infrastructure(existing)
+            except Exception as exc:
+                log.error("Checkpoint infrastructure normalization failed closed: %s", exc)
+                return False
 
         # Merge with existing — preserve gate_results, master_plan, etc.
         existing_gate_results = {}
@@ -470,6 +520,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_literature_probe = None
         existing_repo_baseline = None
         existing_prepare_scope_files = []
+        existing_runtime_contract_ledger = None
+        existing_infra_failure = None
+        existing_official_job = None
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
@@ -477,7 +530,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_timeout_extensions = existing.get("timeout_extensions", 0)
             if master_plan is None:
                 existing_master_plan = existing.get("master_plan")
-            if not reviewer_feedback:
+            if clear_reviewer_feedback:
+                existing_reviewer_feedback = ""
+            elif not reviewer_feedback:
                 existing_reviewer_feedback = existing.get("reviewer_feedback", "")
             if generation_attempt == 0:
                 existing_generation_attempt = existing.get("generation_attempt", 0)
@@ -500,6 +555,15 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 for item in existing.get("prepare_scope_files", []) or []
                 if str(item).strip()
             ]
+            existing_runtime_contract_ledger = existing.get("runtime_contract_ledger")
+            if existing_runtime_contract_ledger is None:
+                legacy_master_plan = existing.get("master_plan")
+                if isinstance(legacy_master_plan, dict):
+                    existing_runtime_contract_ledger = legacy_master_plan.get(
+                        "runtime_contract_ledger"
+                    )
+            existing_infra_failure = existing.get("infra_failure")
+            existing_official_job = existing.get("official_job")
         elif existing:
             active_stage = existing.get("stage")
             dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
@@ -562,6 +626,199 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 ),
             })
 
+        if infra_failure is not None or clear_infra_failure:
+            from pipeline_infrastructure import infrastructure_failure_digest
+
+            current_infra_digest = infrastructure_failure_digest(existing_infra_failure)
+            if expected_infra_failure_digest is None:
+                log.error("Infrastructure overlay mutation requires an expected digest")
+                return False
+            if str(expected_infra_failure_digest) != current_infra_digest:
+                log.warning(
+                    "Infrastructure overlay compare-and-swap rejected: expected=%s current=%s",
+                    expected_infra_failure_digest,
+                    current_infra_digest,
+                )
+                return False
+        if clear_infra_failure:
+            if not isinstance(existing_infra_failure, dict):
+                log.error("Refusing to clear absent infrastructure overlay")
+                return False
+            if not infra_failure_owner or existing_infra_failure.get("owner_tool") != infra_failure_owner:
+                log.error(
+                    "Refusing infrastructure clear by %s; owner is %s",
+                    infra_failure_owner,
+                    existing_infra_failure.get("owner_tool"),
+                )
+                return False
+            existing_infra_failure = None
+        elif infra_failure is not None:
+            try:
+                from pipeline_infrastructure import validate_infrastructure_failure
+
+                infra_errors = validate_infrastructure_failure(infra_failure)
+                if infra_errors:
+                    log.error("Refusing invalid infrastructure overlay: %s", infra_errors)
+                    return False
+                existing_infra_failure = dict(infra_failure)
+            except Exception as exc:
+                log.error("Infrastructure overlay validation failed closed: %s", exc)
+                return False
+        if isinstance(existing_infra_failure, dict):
+            resume_stage = str(existing_infra_failure.get("resume_stage") or "")
+            if stage != resume_stage:
+                log.error(
+                    "Refusing checkpoint stage %s while infrastructure recovery is bound to %s",
+                    stage,
+                    resume_stage,
+                )
+                return False
+
+        if official_job is not None or clear_official_job:
+            current_official_job_id = (
+                str(existing_official_job.get("job_id") or "")
+                if isinstance(existing_official_job, dict)
+                else ""
+            )
+            if expected_official_job_id is None:
+                log.error("Official job attachment mutation requires an expected job id")
+                return False
+            if str(expected_official_job_id) != current_official_job_id:
+                log.warning(
+                    "Official job attachment compare-and-swap rejected: expected=%s current=%s",
+                    expected_official_job_id,
+                    current_official_job_id,
+                )
+                return False
+        if clear_official_job:
+            if not isinstance(existing_official_job, dict):
+                log.error("Refusing to clear absent official job attachment")
+                return False
+            existing_official_job = None
+        elif official_job is not None:
+            if not isinstance(official_job, dict):
+                log.error("Official job attachment must be an object")
+                return False
+            required_official_job_fields = (
+                "schema_version",
+                "job_id",
+                "identity_digest",
+                "candidate_hash",
+                "policy_id",
+                "state",
+                "revision",
+            )
+            if any(not str(official_job.get(key, "")).strip() for key in required_official_job_fields):
+                log.error("Official job attachment is missing required identity fields")
+                return False
+            existing_official_job = dict(official_job)
+
+        incoming_runtime_contract_ledger = (
+            existing_master_plan.get("runtime_contract_ledger")
+            if isinstance(existing_master_plan, dict)
+            else None
+        )
+        if reset_runtime_contract_ledger:
+            old_stage = existing.get("stage") if isinstance(existing, dict) else None
+            reset_allowed, reset_reason = validate_runtime_contract_ledger_reset(
+                old_stage,
+                stage,
+            )
+            if not reset_allowed:
+                log.error(
+                    "Refusing runtime contract ledger reset for %s -> %s: %s",
+                    old_stage,
+                    stage,
+                    reset_reason,
+                )
+                return False
+            if str(runtime_contract_ledger_reset_reason or "") != reset_reason:
+                log.error(
+                    "Runtime contract ledger reset reason mismatch: requested=%s required=%s",
+                    runtime_contract_ledger_reset_reason,
+                    reset_reason,
+                )
+                return False
+            if master_plan != {} or incoming_runtime_contract_ledger is not None:
+                log.error(
+                    "Runtime contract ledger reset requires an explicitly empty master_plan"
+                )
+                return False
+            if expected_runtime_contract_ledger_digest is None:
+                log.error(
+                    "Runtime contract ledger reset requires an expected ledger digest"
+                )
+                return False
+            try:
+                from runtime_architecture_policy import validate_runtime_contract_ledger
+
+                if existing_runtime_contract_ledger is not None:
+                    existing_errors = validate_runtime_contract_ledger(
+                        existing_runtime_contract_ledger
+                    )
+                    if existing_errors:
+                        log.error(
+                            "Refusing reset of invalid runtime contract ledger: %s",
+                            existing_errors,
+                        )
+                        return False
+                current_ledger_digest = str(
+                    (existing_runtime_contract_ledger or {}).get("ledger_digest") or ""
+                )
+            except Exception as exc:
+                log.error(
+                    "Runtime contract ledger reset validation failed closed: %s",
+                    exc,
+                )
+                return False
+            if str(expected_runtime_contract_ledger_digest) != current_ledger_digest:
+                log.warning(
+                    "Runtime contract ledger reset compare-and-swap rejected: "
+                    "expected=%s current=%s",
+                    expected_runtime_contract_ledger_digest,
+                    current_ledger_digest,
+                )
+                return False
+            existing_runtime_contract_ledger = None
+
+        if incoming_runtime_contract_ledger is not None or existing_runtime_contract_ledger is not None:
+            try:
+                from runtime_architecture_policy import validate_runtime_contract_ledger
+
+                if incoming_runtime_contract_ledger is not None:
+                    incoming_errors = validate_runtime_contract_ledger(incoming_runtime_contract_ledger)
+                    if incoming_errors:
+                        log.error("Refusing invalid runtime contract ledger: %s", incoming_errors)
+                        return False
+                if existing_runtime_contract_ledger is not None:
+                    existing_errors = validate_runtime_contract_ledger(existing_runtime_contract_ledger)
+                    if existing_errors:
+                        log.error("Existing runtime contract ledger is invalid: %s", existing_errors)
+                        return False
+                    if incoming_runtime_contract_ledger is None and master_plan is not None:
+                        log.error("Refusing master_plan rewrite that drops runtime contract ledger")
+                        return False
+                    if incoming_runtime_contract_ledger is not None:
+                        previous_entries = {
+                            str(item.get("contract_digest") or "")
+                            for item in existing_runtime_contract_ledger.get("entries") or []
+                        }
+                        incoming_entries = {
+                            str(item.get("contract_digest") or "")
+                            for item in incoming_runtime_contract_ledger.get("entries") or []
+                        }
+                        if not previous_entries.issubset(incoming_entries):
+                            log.error(
+                                "Refusing runtime contract ledger rewrite/removal: missing=%s",
+                                sorted(previous_entries - incoming_entries),
+                            )
+                            return False
+                if incoming_runtime_contract_ledger is not None:
+                    existing_runtime_contract_ledger = incoming_runtime_contract_ledger
+            except Exception as exc:
+                log.error("Runtime contract ledger validation failed closed: %s", exc)
+                return False
+
         # Merge last_stage_change_ts: take max of existing vs current time.
         # This preserves the most recent genuine stage-change time on partial re-writes
         # (e.g. gate_results update without stage change).
@@ -600,6 +857,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         # Any regression to a code-regeneration stage means this is new bot code,
         # so counters against the previous code snapshot must restart.
         rework_resets_counters = is_rework_reset_transition(old_stage, stage)
+        official_job_invalidated = invalidates_official_job_transition(old_stage, stage)
         refresh_repo_baseline = (
             rework_resets_counters
             or _stage_refreshes_repo_baseline(old_stage, stage, existing_gate_results)
@@ -607,6 +865,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         if rework_resets_counters:
             existing_precommit_attempt = 0
             existing_timeout_extensions = 0
+        if rework_resets_counters or official_job_invalidated:
+            existing_official_job = None
+            existing_gate_results.pop("official_full", None)
 
         # Ensure int type invariants for persisted counters. None arises on a
         # fresh checkpoint when the caller did not pass a counter; defaulting
@@ -671,6 +932,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "national_execution_mode": current_national_execution_mode,
             "repo_baseline": existing_repo_baseline,
             "prepare_scope_files": existing_prepare_scope_files,
+            "runtime_contract_ledger": existing_runtime_contract_ledger,
+            "infra_failure": existing_infra_failure,
+            "official_job": existing_official_job,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write
@@ -710,7 +974,10 @@ def read_pipeline_checkpoint():
         return None
     try:
         with locked_file(PIPELINE_STATE_FILE) as f:
-            return json.load(f)
+            checkpoint = json.load(f)
+        from pipeline_infrastructure import normalize_checkpoint_infrastructure
+
+        return normalize_checkpoint_infrastructure(checkpoint)
     except Exception:
         return None
 
@@ -1040,7 +1307,11 @@ def _target_rel(path, version):
     return raw
 
 
-def get_active_bots():
+def _discover_active_bots(
+    *,
+    repair_completed_sentinels: bool,
+    require_completed_sentinel: bool = True,
+) -> list[str]:
     """Active bots = tagged, completed, and protocol-eligible bots.
 
     Trust model mirrors find_current_v(): the git tag for the active epoch is the single
@@ -1074,7 +1345,8 @@ def get_active_bots():
         except Exception:
             pass
         return []
-    _ensure_completed_sentinels_for_tagged_bots(tag_versions, reaped_versions)
+    if repair_completed_sentinels:
+        _ensure_completed_sentinels_for_tagged_bots(tag_versions, reaped_versions)
 
     bots = []
     if BOTS_DIR.exists():
@@ -1082,7 +1354,10 @@ def get_active_bots():
             v = parse_bot_version(d)
             if v is None or not d.startswith(ACTIVE_BOT_PREFIX):
                 continue
-            if os.path.isdir(BOTS_DIR / d) and (BOTS_DIR / d / ".completed").exists():
+            completed = (BOTS_DIR / d / ".completed").exists()
+            if os.path.isdir(BOTS_DIR / d) and (
+                completed or not require_completed_sentinel
+            ):
                 if (
                     v in tag_versions
                     and v not in reaped_versions
@@ -1091,6 +1366,36 @@ def get_active_bots():
                 ):
                     bots.append(d)
     return sorted(bots, key=version_sort_key)
+
+
+def get_active_bots():
+    """Return active bots and repair missing sentinels for trusted tagged bots."""
+
+    return _discover_active_bots(repair_completed_sentinels=True)
+
+
+def get_active_bots_read_only():
+    """Return active bots without performing any filesystem repair.
+
+    Read-only HTTP/catalog code must use this API so a GET request cannot create
+    completion sentinels or otherwise mutate the evolution checkout.
+    """
+
+    return _discover_active_bots(repair_completed_sentinels=False)
+
+
+def get_published_active_bots_read_only():
+    """Return tagged active artifacts without requiring a local sentinel.
+
+    View-only clones do not carry the gitignored ``.completed`` cache. Git tag,
+    artifact, protocol, lifecycle, and official eligibility checks remain
+    mandatory, so omitting that cache does not weaken completion authority.
+    """
+
+    return _discover_active_bots(
+        repair_completed_sentinels=False,
+        require_completed_sentinel=False,
+    )
 
 
 def _official_parent_eligible(bot_dir: Path) -> bool:
@@ -1161,6 +1466,9 @@ def find_latest_active_v():
 
 def load_ratings():
     """Load Glicko-2 ratings with shared lock."""
+    from evaluation_data_identity import ensure_evaluation_data_identity
+
+    ensure_evaluation_data_identity(RESULTS_DIR)
     data = read_locked_json(RATINGS_FILE)
     if not data:
         return {}
@@ -1785,7 +2093,12 @@ def git_commit_bot(
         )
     if not (certificate_digest and expected_bot_hash and certificate_policy):
         raise RuntimeError("official certificate metadata is incomplete")
-    if certificate_policy != "official-full-v2":
+    # Import lazily so the foundational infrastructure module does not create a
+    # module-load cycle with official certification.  The policy identifier has
+    # one owner; commit/tag code must not drift from certificate issuance.
+    from official_certification import FULL_POLICY_ID
+
+    if certificate_policy != FULL_POLICY_ID:
         raise RuntimeError(
             f"unsupported official certificate policy: {certificate_policy or '<missing>'}"
         )
@@ -1849,17 +2162,26 @@ def git_commit_bot(
             + ", ".join(preexisting_blocking[:10])
         )
 
+    from official_certification import publish_certificate_attestation
+
+    publication = publish_certificate_attestation(certificate, get_bot_dir(version))
+    if publication.get("certificate_digest") != certificate_digest:
+        raise RuntimeError("published official attestation changed certificate digest")
+    certificate_path = str(publication.get("relative_path") or "")
+    if not certificate_path:
+        raise RuntimeError("published official attestation path is missing")
+
     # LOG GAP FIX (2026-06-29): record what gets staged so a hand-edit bypass
     # (orchestrator LLM mutating bot code outside execute_workers) is visible.
-    _staged = _git("add", "--", bot_path, check=False)
+    _staged = _git("add", "--", bot_path, certificate_path, check=False)
     staged_bot_hash = hash_path(get_bot_dir(version))
     if staged_bot_hash != expected_bot_hash:
-        _git("restore", "--staged", "--", bot_path, check=False)
+        _git("restore", "--staged", "--", bot_path, certificate_path, check=False)
         raise RuntimeError(
             "candidate changed while staging official-certified artifact: "
             f"expected {expected_bot_hash}, current {staged_bot_hash}"
         )
-    allowed_paths = [bot_path]
+    allowed_paths = [bot_path, certificate_path]
     # Capture the staged file list right before commit for auditability.
     _staged_files = _git("diff", "--cached", "--name-only", check=False).strip().splitlines()
     allowed_exact = set(allowed_paths)
@@ -1879,6 +2201,12 @@ def git_commit_bot(
     )
     if not commit_staged_files:
         raise RuntimeError(f"Refusing git_commit_bot with no staged files under {bot_path}")
+    if certificate_path not in _staged_files:
+        for path in allowed_paths:
+            _git("restore", "--staged", "--", path, check=False)
+        raise RuntimeError(
+            f"Refusing git_commit_bot without staged official attestation {certificate_path}"
+        )
     if unexpected_staged:
         for path in allowed_paths:
             _git("restore", "--staged", "--", path, check=False)
@@ -1927,6 +2255,23 @@ def git_commit_bot(
         f"\nofficial-policy: {certificate_policy}"
     )
     _git("tag", tag, "-m", tag_message)
+    from bot_artifact import validate_completion_tag
+
+    tag_validation = validate_completion_tag(
+        get_bot_dir(version),
+        expected_metadata={
+            "official-certificate": certificate_digest,
+            "official-candidate-hash": expected_bot_hash,
+            "official-policy": certificate_policy,
+        },
+        certificate_path=certificate_path,
+    )
+    if not tag_validation.get("valid"):
+        _git("tag", "-d", tag, check=False)
+        raise RuntimeError(
+            "new completion tag failed structural validation: "
+            + ", ".join(tag_validation.get("issues") or [])
+        )
     try:
         from official_eligibility import clear_registry_state_cache
 
@@ -1944,7 +2289,7 @@ def git_commit_bot(
         pass
 
     push_ok = False
-    if evolution_git_push_enabled():
+    if evolution_git_push_enabled() or evolution_git_push_required():
         push_ok = git_push_refs("main", tag, *high_water_refs)
         publish_runtime_expected_head("bot_commit_push", version=version)
     return push_ok

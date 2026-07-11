@@ -62,7 +62,7 @@ records/                   # THP 棋谱文件输出目录
 - **Match**: 70 hands, 20000 chips per hand (reset each hand), blinds 50/100
 - **Action order**: Preflop SB first; Flop/Turn/River BB first
 - **Client actions**: `raise <amount>`, `fold`, `call`, `check`, `allin`; `raise` 与金额之间有且只有一个空格，`bet` 永远非法
-- **Raise semantics**: `raise X` = raise TO X (total stage bet), consecutive > 2× previous (strictly greater)
+- **Raise semantics**: `raise X` = raise TO X (total stage bet), consecutive ≥ 2× previous. The official EXE accepts exact 2×; `2×+1` remains optional conservative headroom.
 - **Postflop pass**: postflop 第一个行动不能 `call`；第一个玩家 `check` 后，第二个玩家必须用 `call` 结束该街，不能再发 `check`
 - **All-in runout**: `allin` 被 `call` 后只发剩余公共牌、`earnChips` 和必要的 `oppo_hands`，客户端不得继续行动
 - **Timeout**: 60 seconds per action → fold

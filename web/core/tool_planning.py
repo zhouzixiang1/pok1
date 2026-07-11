@@ -1,6 +1,7 @@
 """Pipeline tools: direction audit, master planning, and worker execution."""
 
 import ast
+from copy import deepcopy
 import io
 import json
 import os
@@ -31,6 +32,8 @@ from evolution_core import (
 from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _state_blocked,
+    _execute_exhausted_infrastructure_failure, _owned_infrastructure_failure,
+    _record_infrastructure_failure,
     _validate_worker_boundaries,
     _target_rel, _py_files_changed_between, _resolve_version_args,
     PROJECT_ROOT,
@@ -575,6 +578,66 @@ async def _handle_master_analysis_failure(next_v, source_v, ui, *, message,
     })
 
 
+async def _handle_master_llm_infrastructure(
+    next_v,
+    source_v,
+    ui,
+    *,
+    component,
+    issue,
+    prompt_digest,
+):
+    """Persist a neutral, identity-bound retry for Master-side LLM transport."""
+    from national_runtime_probe import _bot_code_fingerprint
+    from pipeline_infrastructure import infrastructure_attempt_key
+
+    checkpoint = _matching_checkpoint(next_v, source_v) or {}
+    backend_contract = {
+        key: os.environ.get(key, "")
+        for key in (
+            "ANTHROPIC_MODEL",
+            "CLAUDE_MODEL",
+            "POK_LLM_MODEL",
+            "ANTHROPIC_BASE_URL",
+        )
+    }
+    attempt_key = infrastructure_attempt_key(
+        component=component,
+        candidate_fingerprint=_bot_code_fingerprint(get_bot_dir(next_v)),
+        source_fingerprint=_bot_code_fingerprint(get_bot_dir(source_v)),
+        harness_identity=prompt_digest,
+        contract_identity=str(
+            ((checkpoint.get("runtime_contract_ledger") or {}).get("ledger_digest") or "")
+        ),
+        extra={"backend_contract": backend_contract},
+    )
+    infra_result = await _record_infrastructure_failure(
+        next_v,
+        source_v,
+        owner_tool="run_master",
+        resume_stage="direction_audited",
+        component=component,
+        code=f"{component}_unavailable",
+        attempt_key=attempt_key,
+        issues=[issue],
+        max_attempts=3,
+        metadata={
+            "prompt_digest": prompt_digest,
+            "backend_contract": backend_contract,
+        },
+    )
+    return _json_tool_result({
+        **infra_result,
+        "llm_failed": True,
+        "directive": (
+            "Master-side LLM infrastructure exhausted and the generation was abandoned."
+            if infra_result.get("abandoned")
+            else "Retry run_master for the same generation; do not count this as an invalid plan."
+        ),
+        "logs": ui.get_output() if ui else "",
+    })
+
+
 def _normalize_master_plan_paths(plan, source_v, next_v):
     """Rewrite parent bot paths in a Master plan to the target bot path.
 
@@ -1011,13 +1074,22 @@ def _validate_master_plan(
     except Exception:
         pass  # never let the gate itself crash the pipeline
 
+    try:
+        from runtime_architecture_policy import validate_plan_architecture_focus
+        errors.extend(validate_plan_architecture_focus(plan))
+    except Exception as exc:
+        if isinstance(plan, dict) and isinstance(plan.get("architecture_policy"), dict):
+            errors.append(
+                f"Architecture focus validation failed closed: {type(exc).__name__}: {str(exc)[:200]}"
+            )
+
     return errors, warnings
 
 
 def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
     """Return hard Master-plan errors for runtime-architecture task contracts."""
     try:
-        from output_schema import runtime_contract_required_layers
+        from output_schema import RuntimeContract, runtime_contract_required_layers
         required_layers = runtime_contract_required_layers()
     except Exception:
         required_layers = {
@@ -1027,60 +1099,162 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
             "opponent_model",
             "native_tcp",
         }
-    if layer not in required_layers:
+    focus_id = str(task.get("architecture_focus_id") or "").strip()
+    if layer not in required_layers and not focus_id:
         return []
 
     contract = task.get("runtime_contract")
     if not isinstance(contract, dict):
         return [
             f"Task {index}: runtime_contract is required for skill_layer={layer!r}. "
-            "Declare decision_budget_ms/fallback_action, precompute_artifacts, "
-            "state_lifecycle, and official_feedback_refs as applicable, and mirror "
+            "Declare decision, precompute_artifacts, match_memory, and "
+            "official_feedback_refs as applicable, and mirror "
             "the concrete work into worker_prompt."
         ]
 
+    try:
+        validated = RuntimeContract.model_validate(contract)
+    except Exception as exc:
+        details: list[str] = []
+        if hasattr(exc, "errors"):
+            for item in exc.errors()[:8]:
+                location = ".".join(str(part) for part in item.get("loc") or [])
+                details.append(f"{location}: {item.get('msg')}")
+        else:
+            details.append(str(exc))
+        return [
+            f"Task {index}: runtime_contract schema invalid: {'; '.join(details)}"
+        ]
+
     missing: list[str] = []
-    if layer in {"runtime_architecture", "native_tcp"}:
-        budget = contract.get("decision_budget_ms")
-        try:
-            budget_int = int(budget)
-        except (TypeError, ValueError):
-            budget_int = 0
-        if budget_int <= 0 or budget_int >= 60_000:
-            missing.append("decision_budget_ms(<60000)")
-        if not str(contract.get("fallback_action") or "").strip():
-            missing.append("fallback_action")
-        if not str(contract.get("decision_path_bound") or "").strip():
-            missing.append("decision_path_bound")
-    if layer == "precompute" and not contract.get("precompute_artifacts"):
+    if layer in {"runtime_architecture", "native_tcp"} and validated.decision is None:
+        missing.append("decision")
+    if layer == "precompute" and not validated.precompute_artifacts:
         missing.append("precompute_artifacts")
-    if layer in {"match_memory", "opponent_model"} and not str(contract.get("state_lifecycle") or "").strip():
-        missing.append("state_lifecycle")
+    if layer in {"match_memory", "opponent_model"} and validated.match_memory is None:
+        missing.append("match_memory")
+    focus_required = {
+        "incremental_match_model": ("match_memory",),
+        "reusable_precompute": ("precompute_artifacts",),
+        "deadline_refinement": ("decision",),
+        "bounded_runtime_enumeration": ("precompute_artifacts",),
+        "decision_path_purity": ("decision",),
+    }
+    for field in focus_required.get(focus_id, ()):
+        if field == "decision" and validated.decision is None:
+            missing.append(field)
+        elif field == "precompute_artifacts" and not validated.precompute_artifacts:
+            missing.append(field)
+        elif field == "match_memory" and validated.match_memory is None:
+            missing.append(field)
+    missing = list(dict.fromkeys(missing))
     if missing:
         return [
             f"Task {index}: runtime_contract for skill_layer={layer!r} is missing "
             f"{', '.join(missing)}"
         ]
 
+    declared_scope = {
+        Path(str(item)).name
+        for item in [
+            *(task.get("target_files") or []),
+            *(task.get("files_allowed") or []),
+        ]
+        if str(item).strip()
+    }
+    owners = []
+    if validated.match_memory is not None:
+        owners.append(validated.match_memory.owner_file)
+    owners.extend(item.owner_file for item in validated.precompute_artifacts)
+    missing_owners = sorted({owner for owner in owners if owner not in declared_scope})
+    if missing_owners:
+        return [
+            f"Task {index}: runtime_contract owner file(s) {missing_owners} are outside "
+            f"target_files/files_allowed={sorted(declared_scope)}. The worker must be "
+            "allowed to implement and verify every declared artifact owner."
+        ]
+
     prompt = str(task.get("worker_prompt", task.get("instruction", ""))).lower()
     contract_terms = []
-    if contract.get("decision_budget_ms") is not None:
-        contract_terms.append("budget")
-    if contract.get("fallback_action"):
-        contract_terms.append("fallback")
-    if contract.get("precompute_artifacts"):
+    if validated.decision is not None:
+        contract_terms.extend(("budget", "fallback", "baseline", "deadline"))
+    if validated.precompute_artifacts:
         contract_terms.append("precompute")
-    if contract.get("state_lifecycle"):
-        contract_terms.append("memory")
-    if contract.get("official_feedback_refs"):
+    if validated.match_memory is not None:
+        contract_terms.extend(("memory", "confidence", "opponent_runtime"))
+    if validated.official_feedback_refs:
         contract_terms.append("official")
-    if contract_terms and not any(term in prompt for term in contract_terms):
+    missing_terms = [term for term in dict.fromkeys(contract_terms) if term not in prompt]
+    if missing_terms:
         return [
             f"Task {index}: runtime_contract is declared but worker_prompt does not "
-            "mention budget/fallback/precompute/memory/official feedback execution. "
-            "Mirror the contract into the worker instructions so it reaches the worker."
+            f"mention required execution term(s) {missing_terms}. Mirror every contract "
+            "boundary into the worker instructions so it reaches the implementation."
         ]
     return []
+
+
+def _build_generation_architecture_policy(source_v: int) -> dict:
+    """Assess and build the system-owned policy for a native source artifact."""
+
+    from workflow_profiles import get_workflow_profile
+
+    profile = get_workflow_profile()
+    if getattr(profile, "national_execution_mode", "") != "native_tcp":
+        return {"outcome": "skipped", "policy": None, "capabilities": None}
+    source_dir = get_bot_dir(source_v)
+    if not (source_dir / "national_bot.py").exists():
+        return {
+            "outcome": "source_invalid",
+            "policy": None,
+            "capabilities": None,
+            "issues": [f"{source_dir.name}/national_bot.py is missing"],
+        }
+    from national_capability_contract import evaluate_national_capabilities
+    from runtime_architecture_policy import build_architecture_policy
+
+    try:
+        capabilities = evaluate_national_capabilities(source_dir)
+    except Exception as exc:
+        return {
+            "outcome": "infrastructure_failure",
+            "policy": None,
+            "capabilities": None,
+            "infrastructure_failures": [{
+                "component": "national_runtime_probe",
+                "failure_class": "internal_infrastructure",
+                "issues": [f"{type(exc).__name__}: {str(exc)[:300]}"],
+            }],
+        }
+    infrastructure_failures = capabilities.get("infrastructure_failures") or []
+    if capabilities.get("outcome") == "infrastructure_failure" or infrastructure_failures:
+        return {
+            "outcome": "infrastructure_failure",
+            "policy": None,
+            "capabilities": capabilities,
+            "infrastructure_failures": infrastructure_failures or [{
+                "component": "national_runtime_probe",
+                "failure_class": "internal_infrastructure",
+                "issues": ["source capability probe was inconclusive"],
+            }],
+        }
+    try:
+        policy = build_architecture_policy(
+            source_dir,
+            source_capabilities=capabilities,
+        )
+    except Exception as exc:
+        return {
+            "outcome": "infrastructure_failure",
+            "policy": None,
+            "capabilities": capabilities,
+            "infrastructure_failures": [{
+                "component": "runtime_architecture_policy",
+                "failure_class": "internal_infrastructure",
+                "issues": [f"{type(exc).__name__}: {str(exc)[:300]}"],
+            }],
+        }
+    return {"outcome": "passed", "policy": policy, "capabilities": capabilities}
 
 
 @tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str, "direction_audit": str, "research_proposals": str})
@@ -1134,6 +1308,25 @@ async def run_master(args):
                 source_v = _entry_ckpt["source_v"]
     except Exception:
         pass
+    _master_entry_ckpt = _matching_checkpoint(next_v, source_v)
+    _master_infra, _master_infra_error = _owned_infrastructure_failure(
+        _master_entry_ckpt,
+        "run_master",
+    )
+    if _master_infra_error:
+        return _state_blocked(
+            _master_infra_error,
+            next_v,
+            source_v,
+            _master_entry_ckpt,
+        )
+    _master_exhausted = await _execute_exhausted_infrastructure_failure(
+        next_v,
+        source_v,
+        owner_tool="run_master",
+    )
+    if _master_exhausted is not None:
+        return _json_tool_result(_master_exhausted)
     # fix-4: idempotency guard — if master already planned for this (next_v, source_v),
     # return cached result instead of re-running (LLM intermittently violates
     # orchestrator.md:43, causing duplicate run_master calls in the same cycle).
@@ -1204,6 +1397,117 @@ async def run_master(args):
     performance_verification = args.get("performance_verification", "")
     direction_audit_str = args.get("direction_audit", "")
     research_proposals = args.get("research_proposals", "")
+
+    architecture_assessment = _build_generation_architecture_policy(source_v)
+    if architecture_assessment.get("outcome") == "infrastructure_failure":
+        from national_runtime_probe import (
+            RUNTIME_PROBE_IDENTITY_DIGEST,
+            _bot_code_fingerprint as _runtime_probe_bot_fingerprint,
+        )
+        from pipeline_infrastructure import infrastructure_attempt_key
+
+        source_dir = get_bot_dir(source_v)
+        source_fingerprint = _runtime_probe_bot_fingerprint(source_dir)
+        failures = architecture_assessment.get("infrastructure_failures") or []
+        infra_component = str(
+            failures[0].get("component")
+            if failures and isinstance(failures[0], dict)
+            else "national_runtime_probe"
+        )
+        issues = [
+            f"{item.get('component', 'national_runtime_probe')}: "
+            + ", ".join(str(issue) for issue in (item.get("issues") or [])[:8])
+            for item in failures
+            if isinstance(item, dict)
+        ] or ["source national runtime capability probe was inconclusive"]
+        attempt_key = infrastructure_attempt_key(
+            component=infra_component,
+            source_fingerprint=source_fingerprint,
+            harness_identity=RUNTIME_PROBE_IDENTITY_DIGEST,
+            extra={"source_v": source_v, "next_v": next_v, "phase": "master_policy"},
+        )
+        infra_result = await _record_infrastructure_failure(
+            next_v,
+            source_v,
+            owner_tool="run_master",
+            resume_stage="direction_audited",
+            component=infra_component,
+            code=f"{infra_component}_infrastructure_failure",
+            attempt_key=attempt_key,
+            issues=issues,
+            max_attempts=3,
+            metadata={
+                "source_fingerprint": source_fingerprint,
+                "runtime_probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+                "phase": "master_policy",
+            },
+        )
+        attempt = (infra_result.get("infra_failure") or {}).get("attempt")
+        log_system_event(
+            "pipeline.architecture_policy_infrastructure",
+            "error" if infra_result.get("action") == "abandon_generation" else "warn",
+            f"Source runtime probe unavailable for v{next_v} policy (attempt {attempt or '?'}/3)",
+            {
+                "source_v": source_v,
+                "next_v": next_v,
+                "issues": issues,
+                **infra_result,
+            },
+        )
+        return _json_tool_result({
+            **infra_result,
+            "error": "ARCHITECTURE_POLICY_INFRASTRUCTURE",
+            "source_v": source_v,
+            "next_v": next_v,
+            "directive": (
+                "Source capability infrastructure retry exhausted; generation was safely abandoned."
+                if infra_result.get("action") == "abandon_generation"
+                else "Retry run_master for the same generation; do not execute workers."
+            ),
+        })
+    if architecture_assessment.get("outcome") == "source_invalid":
+        ui = _get_ui()
+        return await _abandon_master_generation(
+            next_v,
+            source_v,
+            error="ARCHITECTURE_POLICY_SOURCE_INVALID",
+            fail_count=0,
+            reason=f"architecture_source_invalid v{source_v}",
+            event_type="pipeline.architecture_policy_source_invalid",
+            event_message=(
+                f"Native architecture source v{source_v} is invalid; abandoning v{next_v}"
+            ),
+            ui=ui,
+            payload={"issues": architecture_assessment.get("issues") or []},
+            directive=(
+                "The selected native source lacks the required national entry. The generation "
+                "was abandoned; repair source eligibility instead of running workers."
+            ),
+        )
+    architecture_policy = architecture_assessment.get("policy")
+    if (
+        _master_infra is not None
+        and _master_infra.get("component")
+        not in {"master_llm", "master_plan_audit_llm"}
+    ):
+        from pipeline_infrastructure import infrastructure_failure_digest
+
+        cleared = write_pipeline_checkpoint(
+            next_v,
+            source_v,
+            "direction_audited",
+            clear_infra_failure=True,
+            infra_failure_owner="run_master",
+            expected_infra_failure_digest=infrastructure_failure_digest(_master_infra),
+            touch_stage_timestamp=True,
+        )
+        if not cleared:
+            return _state_blocked(
+                "source runtime probe recovered but its infrastructure overlay could not be cleared",
+                next_v,
+                source_v,
+                _matching_checkpoint(next_v, source_v),
+            )
 
     _set_pipeline_status(f"Master planning for v{next_v}")
     _touch_master_checkpoint(next_v, source_v, phase="run_master_start")
@@ -1548,17 +1852,32 @@ async def run_master(args):
         # block. Log it so a corrupt/missing exploitability.json stays observable.
         _log.warning("Exploitability probe read failed for source_v=%s: %s", source_v, e)
 
-    data = await _run_master_analysis(
-        source_v, next_v, stagnation_info, ui,
-        match_analysis=match_analysis,
-        performance_verification=performance_verification,
-        replay_spotlight=replay_spotlight,
-        bot_action_stats=bot_action_stats,
-        battle_experience=battle_experience,
-        exploitability_weaknesses=exploitability_weaknesses,
-        opponent_profiles=opponent_profiles,
-        research_proposals=research_proposals,
-    )
+    try:
+        data = await _run_master_analysis(
+            source_v, next_v, stagnation_info, ui,
+            match_analysis=match_analysis,
+            performance_verification=performance_verification,
+            replay_spotlight=replay_spotlight,
+            bot_action_stats=bot_action_stats,
+            battle_experience=battle_experience,
+            exploitability_weaknesses=exploitability_weaknesses,
+            opponent_profiles=opponent_profiles,
+            research_proposals=research_proposals,
+            architecture_policy=architecture_policy,
+        )
+    except Exception as exc:
+        from agent_master import MasterInfrastructureError
+
+        if not isinstance(exc, MasterInfrastructureError):
+            raise
+        return await _handle_master_llm_infrastructure(
+            next_v,
+            source_v,
+            ui,
+            component="master_llm",
+            issue=exc.issue,
+            prompt_digest=exc.prompt_digest,
+        )
 
     if data is None:
         return await _handle_master_analysis_failure(
@@ -1568,6 +1887,8 @@ async def run_master(args):
             message="Master failed to produce a valid plan after retries or LLM failure",
             reason=f"master_analysis_failed v{next_v}",
         )
+    if architecture_policy is not None:
+        data["architecture_policy"] = architecture_policy
 
     async def _compile_and_hard_validate_master_plan(plan, *, phase: str):
         """Normalize, compile, and hard-validate a Master plan before LLM audit."""
@@ -1610,7 +1931,9 @@ async def run_master(args):
             except Exception:
                 pass
         if not plan_errors:
-            return plan, None
+            from runtime_architecture_policy import attach_runtime_contract_ledger
+
+            return attach_runtime_contract_ledger(plan, replace=True), None
 
         _validation_ctx = {
             "master_validation": {
@@ -1762,7 +2085,7 @@ async def run_master(args):
                     "overall_pass": False,
                     "feedback": (
                         "Master plan H2H citations disagree with the stable generation "
-                        "H2H snapshot. Correct the cited raw games/a_wins/b_wins counts "
+                        "H2H snapshot. Correct the cited raw games/a_wins/b_wins/draws counts "
                         "against web/core/results/v{}/evidence_snapshot/head_to_head.json: "
                         "{}{}{}".format(
                             next_v,
@@ -1782,6 +2105,26 @@ async def run_master(args):
                         raise
                     audit_result = await _run_master_plan_audit(data, source_v, ui)
             master_audit_ctx = audit_result  # Save for audit_context chain
+            if (
+                not isinstance(audit_result, dict)
+                or audit_result.get("llm_failed")
+                or audit_result.get("parse_failed")
+            ):
+                issue = (
+                    str((audit_result or {}).get("error") or "master plan audit output unavailable")
+                    if isinstance(audit_result, dict)
+                    else f"master_plan_audit_not_object:{type(audit_result).__name__}"
+                )
+                return await _handle_master_llm_infrastructure(
+                    next_v,
+                    source_v,
+                    ui,
+                    component="master_plan_audit_llm",
+                    issue=issue,
+                    prompt_digest=hashlib.sha256(
+                        json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                    ).hexdigest(),
+                )
             if audit_result.get("overall_pass", True):
                 break  # plan passed audit
             # Rejected
@@ -1847,17 +2190,32 @@ async def run_master(args):
                     )
                 except Exception:
                     pass
-            data = await _run_master_analysis(
-                source_v, next_v, stagnation_info, ui,
-                match_analysis=match_analysis,
-                performance_verification=performance_verification,
-                replay_spotlight=replay_spotlight,
-                bot_action_stats=bot_action_stats,
-                battle_experience=battle_experience,
-                exploitability_weaknesses=exploitability_weaknesses,
-                opponent_profiles=opponent_profiles,
-                research_proposals=research_proposals,
-            )
+            try:
+                data = await _run_master_analysis(
+                    source_v, next_v, stagnation_info, ui,
+                    match_analysis=match_analysis,
+                    performance_verification=performance_verification,
+                    replay_spotlight=replay_spotlight,
+                    bot_action_stats=bot_action_stats,
+                    battle_experience=battle_experience,
+                    exploitability_weaknesses=exploitability_weaknesses,
+                    opponent_profiles=opponent_profiles,
+                    research_proposals=research_proposals,
+                    architecture_policy=architecture_policy,
+                )
+            except Exception as exc:
+                from agent_master import MasterInfrastructureError
+
+                if not isinstance(exc, MasterInfrastructureError):
+                    raise
+                return await _handle_master_llm_infrastructure(
+                    next_v,
+                    source_v,
+                    ui,
+                    component="master_llm",
+                    issue=exc.issue,
+                    prompt_digest=exc.prompt_digest,
+                )
             if data is None:
                 return await _handle_master_analysis_failure(
                     next_v,
@@ -1867,6 +2225,8 @@ async def run_master(args):
                     reason=f"master_analysis_failed_after_audit_retry v{next_v}",
                     payload={"audit_attempt": _audit_attempt},
                 )
+            if architecture_policy is not None:
+                data["architecture_policy"] = architecture_policy
             data, _early_validation_result = await _compile_and_hard_validate_master_plan(
                 data, phase="master_retry_plan_ready"
             )
@@ -1895,13 +2255,23 @@ async def run_master(args):
                              f"Master re-planned after audit rejection for v{next_v} (attempt {_audit_attempt})",
                              {"next_v": next_v})
     except Exception as e:
-        _log.warning("Master plan audit error (skipping): %s", e)
+        _log.warning("Master plan audit infrastructure error: %s", e)
         try:
             log_system_event('pipeline.master_audit_error', 'warn',
                 f'Master plan audit error for v{next_v}: {e}',
                 {"next_v": next_v, "source_v": source_v, "error": str(e)})
         except Exception:
             pass
+        return await _handle_master_llm_infrastructure(
+            next_v,
+            source_v,
+            ui,
+            component="master_plan_audit_llm",
+            issue=f"{type(e).__name__}: {str(e)[:400]}",
+            prompt_digest=hashlib.sha256(
+                json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+        )
 
     # ── fix-5: Cross-gen direction pivot check ──
     # Three conditions must ALL be true to force re-planning:
@@ -2002,13 +2372,35 @@ async def run_master(args):
     # Mark direction_audit as resolved now that Master has produced a plan
     if existing_audit and existing_audit.get("repetition_detected"):
         existing_audit["resolved"] = True
-    write_pipeline_checkpoint(next_v, source_v, "master_planned",
-                              master_plan=data,
-                              direction_audit=existing_audit,
-                              worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
-                              audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None,
-                              reset_generation_attempt=True,
-                              reset_audit_attempt=True)
+    checkpoint_kwargs = {}
+    current_master_infra = (_ckpt or {}).get("infra_failure")
+    if isinstance(current_master_infra, dict):
+        from pipeline_infrastructure import infrastructure_failure_digest
+
+        checkpoint_kwargs = {
+            "clear_infra_failure": True,
+            "infra_failure_owner": "run_master",
+            "expected_infra_failure_digest": infrastructure_failure_digest(current_master_infra),
+        }
+    recorded = write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "master_planned",
+        master_plan=data,
+        direction_audit=existing_audit,
+        worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
+        audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None,
+        reset_generation_attempt=True,
+        reset_audit_attempt=True,
+        **checkpoint_kwargs,
+    )
+    if not recorded:
+        return _state_blocked(
+            "Master plan passed but checkpoint publication was rejected",
+            next_v,
+            source_v,
+            _matching_checkpoint(next_v, source_v),
+        )
 
     try:
         log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
@@ -2997,14 +3389,121 @@ def _incremental_reset_next_dir(next_dir, source_dir):
     return preserved
 
 
+def _full_reset_next_dir(next_dir, source_dir):
+    """Restore an invalid-policy candidate exactly from its authoritative source."""
+    from evolution_infra import copy_bot_tree_for_candidate
+
+    next_dir = Path(next_dir)
+    source_dir = Path(source_dir)
+    if not source_dir.is_dir():
+        raise FileNotFoundError(f"source bot directory missing: {source_dir}")
+    if next_dir.exists():
+        shutil.rmtree(next_dir)
+    copy_bot_tree_for_candidate(source_dir, next_dir)
+
+
+def _checkpoint_architecture_policy_identity_errors(ckpt):
+    if not isinstance(ckpt, dict):
+        return []
+    quality = (ckpt.get("gate_results") or {}).get("quality") or {}
+    transition = quality.get("national_architecture_transition") or {}
+    if not isinstance(transition, dict):
+        return []
+    return [str(item) for item in transition.get("policy_identity_errors") or [] if str(item)]
+
+
+def _checkpoint_runtime_contract_ledger_digest(ckpt):
+    ledger = ckpt.get("runtime_contract_ledger") if isinstance(ckpt, dict) else None
+    if ledger is None and isinstance(ckpt, dict):
+        master_plan = ckpt.get("master_plan")
+        if isinstance(master_plan, dict):
+            ledger = master_plan.get("runtime_contract_ledger")
+    return str((ledger or {}).get("ledger_digest") or "")
+
+
+def _recover_architecture_policy_identity(ckpt, next_dir, source_dir):
+    """Discard stale-policy code and route through a fresh system-owned Master plan."""
+    errors = _checkpoint_architecture_policy_identity_errors(ckpt)
+    if not errors:
+        return None
+    next_v = ckpt.get("next_v")
+    source_v = ckpt.get("source_v")
+    ledger_digest = _checkpoint_runtime_contract_ledger_digest(ckpt)
+    _full_reset_next_dir(next_dir, source_dir)
+    existing_audit = ckpt.get("audit_context") or {}
+    audit_context = {
+        **(existing_audit if isinstance(existing_audit, dict) else {}),
+        "architecture_policy_identity_replan": {
+            "source_stage": ckpt.get("stage"),
+            "identity_errors": errors,
+            "candidate_reset_to_source": True,
+            "runtime_contract_ledger_reset": True,
+            "previous_runtime_contract_ledger_digest": ledger_digest,
+            "directive": (
+                "The persisted architecture policy no longer matches the source contract. "
+                "Build a fresh system-owned policy and Master plan before editing bot code."
+            ),
+        },
+    }
+    written = write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "direction_audited",
+        master_plan={},
+        direction_audit=ckpt.get("direction_audit"),
+        audit_context=audit_context,
+        worker_failure_count=ckpt.get("worker_failure_count", 0),
+        clear_reviewer_feedback=True,
+        touch_stage_timestamp=True,
+        reset_runtime_contract_ledger=True,
+        expected_runtime_contract_ledger_digest=ledger_digest,
+        runtime_contract_ledger_reset_reason="architecture_policy_identity_replan",
+    )
+    if not written:
+        raise RuntimeError("checkpoint rejected architecture policy identity replan")
+    log_system_event(
+        "pipeline.architecture_policy_identity_replan",
+        "error",
+        f"Reset v{next_v} to source v{source_v}; stale architecture policy requires re-planning",
+        {
+            "next_v": next_v,
+            "source_v": source_v,
+            "source_stage": ckpt.get("stage"),
+            "identity_errors": errors,
+        },
+    )
+    return _json_tool_result({
+        "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN",
+        "next_v": next_v,
+        "source_v": source_v,
+        "identity_errors": errors,
+        "candidate_reset_to_source": True,
+        "next_tool": "run_master",
+        "directive": (
+            "The stale architecture policy cannot be repaired by a bot worker. "
+            "The candidate was reset to its source and the checkpoint moved to "
+            "direction_audited. Call run_master to build a fresh policy-bound plan."
+        ),
+    })
+
+
 def _checkpoint_plan_with_tasks(ckpt, tasks, replace_existing_tasks=False):
     """Return a checkpoint master_plan that can resume the given worker tasks."""
     existing_plan = ckpt.get("master_plan") if ckpt else None
     if isinstance(existing_plan, dict):
         if existing_plan.get("tasks") and not replace_existing_tasks:
             return existing_plan
-        return {**existing_plan, "tasks": tasks}
-    return {"tasks": tasks}
+        plan = {**existing_plan, "tasks": tasks}
+    else:
+        plan = {"tasks": tasks}
+    try:
+        from runtime_architecture_policy import attach_runtime_contract_ledger
+
+        return attach_runtime_contract_ledger(plan)
+    except Exception:
+        # Keep the original ledger intact. Quality validation will fail closed
+        # with its precise integrity error rather than silently replacing it.
+        return plan
 
 
 def _task_declared_scope_files(task, next_v):
@@ -3137,6 +3636,8 @@ def _task_quality_recheck_blockers(task):
         blockers.add("position_semantics")
     if blocker == "national_native_contract" or _is_national_native_contract_failure_text(text):
         blockers.add("national_native_contract")
+    if blocker == "runtime_architecture" or "architecture_focus" in text or "architecture_regression" in text:
+        blockers.add("runtime_architecture")
     if (
         "protected_contract" in text
         or "tcp action text" in text
@@ -3158,6 +3659,13 @@ def _normalize_repair_blocker(value):
         return "national_native_contract"
     if text in {"official_smoke", "official_platform", "official_platform_compliance"}:
         return "official_smoke"
+    if text in {
+        "runtime_architecture",
+        "architecture_focus",
+        "architecture_regression",
+        "national_capability_contract",
+    }:
+        return "runtime_architecture"
     if text in {"quality", "quality_gate", "protected_contract", "compile", "smoke_test"}:
         return "quality_gate"
     return text
@@ -3243,6 +3751,28 @@ def _quality_task_contract_refresh_reason(task, current_contract):
         return ""
     signature = _quality_contract_signature(current_contract)
     blocker, filename = signature
+    if blocker == "runtime_architecture":
+        expected_focus = str(current_contract.get("focus_id") or "")
+        if str(task.get("architecture_focus_id") or "") != expected_focus:
+            return f"{blocker}:{filename}:architecture_focus_changed"
+        expected_layer = str(current_contract.get("skill_layer") or "")
+        if str(task.get("skill_layer") or "") != expected_layer:
+            return f"{blocker}:{filename}:skill_layer_changed"
+        if task.get("runtime_contract") != current_contract.get("runtime_contract"):
+            return f"{blocker}:{filename}:runtime_contract_changed"
+        expected_checks = [str(item) for item in current_contract.get("required_checks") or []]
+        actual_checks = [str(item) for item in task.get("checks_required") or []]
+        if actual_checks != expected_checks:
+            return f"{blocker}:{filename}:required_checks_changed"
+        expected_targets = {
+            Path(str(item)).name for item in current_contract.get("files") or [filename]
+        }
+        actual_targets = {
+            Path(str(item)).name for item in task.get("target_files") or []
+        }
+        if actual_targets != expected_targets:
+            return f"{blocker}:{filename}:target_files_changed"
+        return ""
     if blocker != "file_size":
         return ""
 
@@ -3366,7 +3896,15 @@ def _quality_failure_target_files(ckpt, reviewer_feedback=""):
     return set(files)
 
 
-def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
+def _quality_rework_skipper(
+    next_dir,
+    source_dir,
+    next_v,
+    source_v,
+    *,
+    expected_architecture_policy=None,
+    master_plan=None,
+):
     """Return a per-task skip callback for cheap quality-repair rechecks.
 
     Full quality validation remains owned by run_quality_gates. This callback
@@ -3403,7 +3941,11 @@ def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
             pass
         try:
             from national_native import check_native_contract
-            native_errors = check_native_contract(next_dir)
+            native_errors = check_native_contract(
+                next_dir,
+                require_current_stream_decoder=True,
+                require_current_decision_runtime=True,
+            )
             checked.add("national_native_contract")
             if native_errors:
                 files = _extract_quality_failure_files(native_errors)
@@ -3422,6 +3964,30 @@ def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
             if reachability:
                 files = _extract_quality_failure_files(reachability)
                 blockers["reachability"] = set(files)
+        except Exception:
+            pass
+        try:
+            from runtime_architecture_policy import (
+                evaluate_architecture_transition,
+                validate_runtime_contract_implementation,
+            )
+
+            transition = evaluate_architecture_transition(
+                source_dir,
+                next_dir,
+                expected_policy=expected_architecture_policy,
+            )
+            contract_errors = validate_runtime_contract_implementation(
+                master_plan if isinstance(master_plan, dict) else {},
+                transition.get("candidate_capabilities") or {},
+            )
+            transition["runtime_contract_implementation_errors"] = contract_errors
+            if contract_errors:
+                transition["ok"] = False
+            checked.add("runtime_architecture")
+            if not transition.get("ok"):
+                files = set(_architecture_transition_repair_files(transition, next_dir))
+                blockers["runtime_architecture"] = files or {"strategy.py"}
         except Exception:
             pass
         return blockers, checked
@@ -4183,6 +4749,36 @@ def _quality_failure_items(ckpt):
         for filename, lines in oversized.items():
             add(f"file_size({filename}:{lines}L)")
 
+    transition = quality.get("national_architecture_transition") or {}
+    if isinstance(transition, dict) and not transition.get("ok", True):
+        candidate_checks = (
+            (transition.get("candidate_capabilities") or {}).get("checks_by_id") or {}
+        )
+        for error in transition.get("policy_identity_errors") or []:
+            add(f"runtime_architecture_policy_identity: {error}")
+        for regression in transition.get("regressions") or []:
+            check_id = str(regression.get("check_id") or "unknown")
+            guidance = regression.get("guidance") or (
+                (candidate_checks.get(check_id) or {}).get("guidance")
+                or "Restore the source capability."
+            )
+            add(f"runtime_architecture_regression:{check_id}: {guidance}")
+        for failure in transition.get("runtime_floor_failures") or []:
+            check_id = str(failure.get("check_id") or "unknown")
+            check = candidate_checks.get(check_id) or {}
+            add(
+                f"runtime_architecture_floor:{check_id}: "
+                f"{failure.get('guidance') or check.get('guidance') or 'Complete the mandatory runtime floor.'}"
+            )
+        for check_id in transition.get("unresolved_focus_checks") or []:
+            check = candidate_checks.get(str(check_id)) or {}
+            add(
+                f"runtime_architecture_focus:{check_id}: "
+                f"{check.get('guidance') or 'Complete the selected architecture focus.'}"
+            )
+        if transition.get("error"):
+            add(f"runtime_architecture_error: {transition.get('error')}")
+
     deduped = []
     seen = set()
     for item in items:
@@ -4280,6 +4876,17 @@ def _is_official_smoke_protocol_failure_text(item):
     )):
         return True
     return "illegal" in text and "official" in text
+
+
+def _is_runtime_architecture_failure_text(item):
+    text = str(item or "").lower()
+    return any(marker in text for marker in (
+        "runtime_architecture",
+        "architecture_focus:",
+        "architecture_regression:",
+        "architecture_policy_",
+        "national_capability_contract",
+    ))
 
 
 def _declared_scope_ledger_files(ckpt, reviewer_feedback=""):
@@ -4534,6 +5141,312 @@ def _official_smoke_contracts(quality, failures):
     }]
 
 
+_ARCHITECTURE_FOCUS_LAYERS = {
+    "national_runtime_v3_migration": "runtime_architecture",
+    "incremental_match_model": "opponent_model",
+    "reusable_precompute": "precompute",
+    "deadline_refinement": "runtime_architecture",
+    "bounded_runtime_enumeration": "precompute",
+    "decision_path_purity": "runtime_architecture",
+}
+
+_ARCHITECTURE_CHECK_FILES = {
+    "official_safe_wire_send": ["national_bot.py"],
+    "clean_diagnostics_channel": ["national_bot.py"],
+    "decision_time_budget_visible": ["strategy.py", "simulation.py"],
+    "killable_decision_runtime": ["national_bot.py"],
+    "fast_strategy_baseline": ["strategy.py"],
+    "incremental_refinement_protocol": ["strategy.py"],
+    "decision_path_no_external_io": ["strategy.py", "postflop.py", "opponent.py"],
+    "decision_path_no_full_history_scan": ["strategy.py", "opponent.py", "state.py"],
+    "decision_path_no_large_runtime_tables": ["simulation.py", "card_utils.py", "strategy.py"],
+    "precompute_lookup_path": ["precompute.py", "card_utils.py", "simulation.py", "strategy.py"],
+    "persistent_match_memory": ["national_bot.py"],
+    "incremental_opponent_model": ["strategy.py", "opponent.py", "state.py"],
+}
+
+
+def _architecture_default_runtime_contract(
+    focus_id,
+    skill_layer,
+    owner_file,
+    required_checks=(),
+):
+    """Return a strict fallback contract for deterministic/crossover repair plans."""
+    required_checks = {str(item) for item in required_checks or []}
+    contract = {
+        "decision": None,
+        "precompute_artifacts": [],
+        "match_memory": None,
+        "official_feedback_refs": [],
+        "forbidden_runtime_work": [
+            "full-match requests/responses/showdowns scan inside the decision path",
+            "file, network, or subprocess I/O inside the decision path",
+            "unbounded combinatorial construction per decision",
+        ],
+    }
+    if (
+        skill_layer in {"match_memory", "opponent_model"}
+        or focus_id in {"incremental_match_model", "national_runtime_v3_migration"}
+        or required_checks.intersection({
+            "persistent_match_memory",
+            "incremental_opponent_model",
+            "decision_path_no_full_history_scan",
+        })
+    ):
+        contract["match_memory"] = {
+            "tracker_class": "OpponentTracker",
+            "owner_file": "national_bot.py",
+            "reset_boundary": "tcp_connection",
+            "update_events": [
+                "hand_start",
+                "street_start",
+                "opponent_action",
+                "settlement",
+                "showdown",
+            ],
+            "snapshot_field": "opponent_runtime",
+            "max_recent_hands": 8,
+            "prior_rule": "Beta-style prior with weight 8 before observed actions",
+            "confidence_rule": "actions / (actions + 24)",
+            "adaptation_cap": 0.65,
+            "consumer": "strategy.get_baseline_action",
+        }
+    if (
+        skill_layer == "precompute"
+        or focus_id in {
+            "reusable_precompute",
+            "bounded_runtime_enumeration",
+            "national_runtime_v3_migration",
+        }
+        or required_checks.intersection({
+            "precompute_lookup_path",
+            "decision_path_no_large_runtime_tables",
+        })
+    ):
+        contract["precompute_artifacts"] = [{
+            "name": "bounded_decision_lookup",
+            "owner_file": owner_file,
+            "build_phase": "module_import",
+            "max_build_ms": 500,
+            "max_entries": 65_536,
+            "max_bytes": 8 * 1024 * 1024,
+            "key_shape": "tuple[int,int,bool]",
+            "consumer": "strategy.get_baseline_action",
+            "fallback": "legal_baseline",
+        }]
+    if (
+        skill_layer in {"runtime_architecture", "native_tcp"}
+        or focus_id in {
+            "deadline_refinement",
+            "decision_path_purity",
+            "national_runtime_v3_migration",
+        }
+        or required_checks.intersection({
+            "decision_time_budget_visible",
+            "killable_decision_runtime",
+            "fast_strategy_baseline",
+            "incremental_refinement_protocol",
+            "decision_path_no_external_io",
+        })
+    ):
+        contract["decision"] = {
+            "clock": "time.monotonic",
+            "hard_deadline_ms": 55_000,
+            "baseline_target_ms": 250,
+            "refinement_budget_ms": 54_000,
+            "baseline_path": "compute a legal deterministic action before optional refinement",
+            "fallback_action": "check when legal, otherwise call or fold",
+            "refinement_bound": "stop on the monotonic deadline and an explicit finite sample cap",
+            "max_samples": 4_096,
+        }
+    return contract
+
+
+def _merge_runtime_contract_floor(inherited, floor_contract):
+    """Preserve the accepted contract while adding newly proven floor debt."""
+    result = deepcopy(floor_contract)
+    if not isinstance(inherited, dict):
+        return result
+    if inherited.get("decision") is not None:
+        result["decision"] = deepcopy(inherited["decision"])
+    if inherited.get("match_memory") is not None:
+        result["match_memory"] = deepcopy(inherited["match_memory"])
+    inherited_artifacts = [
+        deepcopy(item)
+        for item in inherited.get("precompute_artifacts") or []
+        if isinstance(item, dict)
+    ]
+    if inherited_artifacts:
+        by_identity = {
+            (str(item.get("owner_file")), str(item.get("name"))): item
+            for item in result.get("precompute_artifacts") or []
+            if isinstance(item, dict)
+        }
+        for item in inherited_artifacts:
+            by_identity[(str(item.get("owner_file")), str(item.get("name")))] = item
+        result["precompute_artifacts"] = list(by_identity.values())
+    for key in ("official_feedback_refs", "forbidden_runtime_work"):
+        result[key] = list(dict.fromkeys([
+            *(result.get(key) or []),
+            *(inherited.get(key) or []),
+        ]))[:8]
+    return result
+
+
+def _architecture_repair_context(ckpt, focus_id):
+    plan = _checkpoint_master_plan(ckpt)
+    for task in plan.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        if focus_id and str(task.get("architecture_focus_id") or "") != focus_id:
+            continue
+        contract = task.get("runtime_contract")
+        if isinstance(contract, dict):
+            return str(task.get("skill_layer") or ""), contract
+    return "", None
+
+
+def _architecture_transition_failure_ids(transition):
+    candidate = transition.get("candidate_capabilities") or {}
+    failing_ids = []
+    for item in candidate.get("required_failures") or []:
+        check_id = str(item.get("check_id") or item.get("name") or "")
+        if check_id and check_id not in failing_ids:
+            failing_ids.append(check_id)
+    for item in transition.get("regressions") or []:
+        check_id = str(item.get("check_id") or "")
+        if check_id and check_id not in failing_ids:
+            failing_ids.append(check_id)
+    for item in transition.get("runtime_floor_failures") or []:
+        check_id = str(item.get("check_id") or "")
+        if check_id and check_id not in failing_ids:
+            failing_ids.append(check_id)
+    for check_id in transition.get("unresolved_focus_checks") or []:
+        check_id = str(check_id)
+        if check_id and check_id not in failing_ids:
+            failing_ids.append(check_id)
+    if transition.get("runtime_contract_implementation_errors"):
+        failing_ids.append("runtime_contract_implementation")
+    return failing_ids
+
+
+def _architecture_transition_repair_files(transition, candidate_dir=None):
+    candidate = transition.get("candidate_capabilities") or {}
+    checks_by_id = candidate.get("checks_by_id") or {}
+    policy = transition.get("policy") or {}
+    focus = transition.get("selected_focus") or policy.get("selected_focus") or {}
+    require_existing = bool(candidate_dir and Path(candidate_dir).is_dir())
+    files = []
+
+    def add_file(value):
+        rel = Path(str(value)).name
+        if not rel or not rel.endswith(".py") or rel in files:
+            return
+        if require_existing and not (Path(candidate_dir) / rel).is_file():
+            return
+        files.append(rel)
+
+    for check_id in _architecture_transition_failure_ids(transition):
+        check = checks_by_id.get(check_id) or {}
+        locations = [str(item) for item in (check.get("evidence") or {}).get("locations") or []]
+        for rel in _extract_quality_failure_files(locations):
+            add_file(rel)
+        for rel in _ARCHITECTURE_CHECK_FILES.get(check_id, []):
+            add_file(rel)
+    for rel in focus.get("suggested_files") or []:
+        add_file(rel)
+    return files
+
+
+def _architecture_contracts(quality, ckpt):
+    """Build one evidence-scoped repair contract for the transition hard gate.
+
+    Runtime architecture is deliberately repaired as one coherent task. Splitting
+    provider, consumer, and decision-path cleanup across generic workers can make
+    each edit look plausible while the end-to-end AST capability still fails.
+    """
+    transition = quality.get("national_architecture_transition") or {}
+    if not isinstance(transition, dict) or transition.get("ok", True):
+        return []
+    if transition.get("runtime_probe_infra"):
+        return []
+    if transition.get("policy_identity_errors"):
+        return []
+
+    candidate = transition.get("candidate_capabilities") or {}
+    checks_by_id = candidate.get("checks_by_id") or {}
+    policy = transition.get("policy") or {}
+    focus = transition.get("selected_focus") or policy.get("selected_focus") or {}
+    focus_id = str(focus.get("focus_id") or "")
+
+    failing_ids = _architecture_transition_failure_ids(transition)
+
+    # A policy identity mismatch is repository/checkpoint drift, not bot code
+    # debt. Do not waste a worker edit trying to change a digest.
+    if not failing_ids:
+        return []
+
+    inherited_layer, inherited_contract = _architecture_repair_context(ckpt, focus_id)
+    skill_layer = inherited_layer or _ARCHITECTURE_FOCUS_LAYERS.get(focus_id, "")
+    if not skill_layer:
+        for check_id in failing_ids:
+            candidate_layer = str((checks_by_id.get(check_id) or {}).get("skill_layer") or "")
+            if candidate_layer:
+                skill_layer = candidate_layer
+                break
+    skill_layer = skill_layer or "runtime_architecture"
+
+    candidate_dir = get_bot_dir(ckpt.get("next_v")) if ckpt.get("next_v") is not None else None
+    target_files = _architecture_transition_repair_files(transition, candidate_dir)
+
+    evidence_lines = []
+    for check_id in failing_ids:
+        check = checks_by_id.get(check_id) or {}
+        evidence = check.get("evidence") or {}
+        guidance = check.get("guidance") or "Satisfy this capability with code consumed by the decision path."
+        locations = [str(item) for item in evidence.get("locations") or []]
+        summary = str(evidence.get("summary") or "no detector summary")
+        location_text = f"; locations={locations[:3]}" if locations else ""
+        evidence_lines.append(f"{check_id}: {summary}; required={guidance}{location_text}")
+    for error in transition.get("runtime_contract_implementation_errors") or []:
+        evidence_lines.append(f"runtime_contract_implementation: {error}")
+
+    if not target_files:
+        target_files = ["strategy.py"]
+    if not target_files:
+        return []
+    target_files = target_files[:3]
+    primary = target_files[0]
+    precompute_owner = next(
+        (
+            item for item in target_files
+            if item in {"strategy.py", "simulation.py", "card_utils.py", "constants.py"}
+        ),
+        primary,
+    )
+    floor_contract = _architecture_default_runtime_contract(
+        focus_id,
+        skill_layer,
+        precompute_owner,
+        required_checks=failing_ids,
+    )
+    runtime_contract = _merge_runtime_contract_floor(inherited_contract, floor_contract)
+    return [{
+        "blocker": "runtime_architecture",
+        "file": primary,
+        "files": target_files,
+        "must_change_files": [primary],
+        "focus_id": focus_id,
+        "required_checks": failing_ids,
+        "preserve_checks": list(policy.get("baseline_passed_checks") or []),
+        "skill_layer": skill_layer,
+        "evidence": "\n".join(evidence_lines),
+        "architecture_policy": policy,
+        "runtime_contract": runtime_contract,
+    }]
+
+
 def _split_reviewer_quality_feedback(feedback):
     """Return actionable reviewer issue snippets, excluding positive check text."""
     text = str(feedback or "").strip()
@@ -4715,7 +5628,12 @@ def _feedback_quality_contracts(feedback):
     return contracts
 
 
-def _generic_quality_contracts(quality, failures, claimed_files):
+def _generic_quality_contracts(
+    quality,
+    failures,
+    claimed_files,
+    architecture_contracts=None,
+):
     """Build file-scoped fallback contracts for non-mechanical quality blockers."""
     evidence_items = []
     for key in (
@@ -4735,6 +5653,7 @@ def _generic_quality_contracts(quality, failures, claimed_files):
         if not _is_declared_scope_failure_text(item)
         and not _is_national_native_contract_failure_text(item)
         and not _is_official_smoke_protocol_failure_text(item)
+        and not _is_runtime_architecture_failure_text(item)
     ]
     if not evidence_items:
         evidence_items = [
@@ -4744,12 +5663,14 @@ def _generic_quality_contracts(quality, failures, claimed_files):
             and not _is_declared_scope_failure_text(item)
             and not _is_national_native_contract_failure_text(item)
             and not _is_official_smoke_protocol_failure_text(item)
+            and not _is_runtime_architecture_failure_text(item)
         ]
     evidence_files = _extract_quality_failure_files(evidence_items)
     mechanical_files = {c["file"] for c in _line_count_contracts(quality, failures)}
     mechanical_files.update(c["file"] for c in _position_contracts(quality))
     mechanical_files.update(c["file"] for c in _national_native_contracts(quality, failures))
     mechanical_files.update(c["file"] for c in _official_smoke_contracts(quality, failures))
+    mechanical_files.update(c["file"] for c in architecture_contracts or [])
     if not evidence_items:
         return []
     generic_files = evidence_files or [f for f in claimed_files if f not in mechanical_files]
@@ -4778,13 +5699,22 @@ def _quality_repair_contracts(ckpt, feedback=""):
     ledger_files = _declared_scope_ledger_files(ckpt, feedback)
     if ledger_files:
         claimed_files = [filename for filename in claimed_files if filename not in ledger_files]
+    architecture_contracts = _architecture_contracts(quality, ckpt)
     contracts = []
     contracts.extend(_line_count_contracts(quality, failures))
     contracts.extend(_position_contracts(quality))
     contracts.extend(_national_native_contracts(quality, failures))
     contracts.extend(_official_smoke_contracts(quality, failures))
+    contracts.extend(architecture_contracts)
     contracts.extend(_feedback_quality_contracts(feedback))
-    contracts.extend(_generic_quality_contracts(quality, failures, claimed_files))
+    contracts.extend(
+        _generic_quality_contracts(
+            quality,
+            failures,
+            claimed_files,
+            architecture_contracts=architecture_contracts,
+        )
+    )
 
     ordered = []
     seen = set()
@@ -4946,6 +5876,70 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "task_kind": task_kind,
             "repair_blocker": "official_smoke",
             "repair_contract": contract,
+        }
+    if blocker == "runtime_architecture":
+        targets = [Path(str(item)).name for item in contract.get("files") or [filename]]
+        targets = list(dict.fromkeys(item for item in targets if item.endswith(".py")))[:3]
+        must_change = [
+            Path(str(item)).name
+            for item in contract.get("must_change_files") or [filename]
+            if str(item).endswith(".py")
+        ]
+        must_change = list(dict.fromkeys(must_change)) or [filename]
+        focus_id = str(contract.get("focus_id") or "")
+        policy = contract.get("architecture_policy") or {}
+        focus = policy.get("selected_focus") or {}
+        required_checks = [str(item) for item in contract.get("required_checks") or []]
+        preserve_checks = [str(item) for item in contract.get("preserve_checks") or []]
+        skill_layer = str(contract.get("skill_layer") or "runtime_architecture")
+        runtime_contract = contract.get("runtime_contract") or {}
+        owner_files = []
+        match_memory = runtime_contract.get("match_memory") or {}
+        if isinstance(match_memory, dict) and match_memory.get("owner_file"):
+            owner_files.append(Path(str(match_memory["owner_file"])).name)
+        for artifact in runtime_contract.get("precompute_artifacts") or []:
+            if isinstance(artifact, dict) and artifact.get("owner_file"):
+                owner_files.append(Path(str(artifact["owner_file"])).name)
+        files_allowed = list(dict.fromkeys([*targets, *owner_files]))
+        if skill_layer in {"match_memory", "opponent_model"}:
+            role = "Opponent Modeler"
+        else:
+            role = "Algorithmic Runtime Architect"
+        prompt = (
+            f"{preservation.format(next_v=next_v)}\n\n"
+            "Repair contract: runtime_architecture\n"
+            f"- Architecture focus: `{focus_id or 'parent_capability_regression'}`\n"
+            f"- Focus rationale: {focus.get('rationale') or 'Restore evidence-backed runtime behavior.'}\n"
+            f"- Required AST checks: {', '.join(required_checks)}\n"
+            f"- Parent checks that must not regress: {', '.join(preserve_checks)}\n"
+            f"- Target files: {', '.join(f'`{item}`' for item in targets)}\n"
+            f"- Files that must change: {', '.join(f'`{item}`' for item in must_change)}\n"
+            f"- Detector evidence:\n{contract.get('evidence') or 'transition hard gate failed'}\n\n"
+            "Executable RuntimeContract (implement it; do not merely copy its names):\n"
+            f"```json\n{json.dumps(runtime_contract, ensure_ascii=False, indent=2)}\n```\n\n"
+            "Required method:\n"
+            "- Read every target plus the source-parent counterpart before editing. Preserve the legal fast baseline.\n"
+            "- Implement the provider-to-consumer behavior in the real get_action call graph. A class, cache, label, comment, or telemetry field that the decision path does not consume is failure.\n"
+            "- For opponent memory, consume `opponent_runtime` incrementally and scale adaptation by `confidence`; do not rescan full-match requests/responses/showdowns.\n"
+            "- For precompute, bound entries and bytes, construct outside the hot path, and prove a reachable decision helper performs the lookup.\n"
+            "- For deadline refinement, compute a legal fallback first, use a monotonic deadline with headroom below 60 seconds, and keep a finite work cap.\n"
+            "- Do not weaken native TCP, official wire, card mapping, or any parent capability to make the selected check pass.\n"
+            "- Run `evaluate_national_capabilities` on the candidate and report the required check states before finishing."
+        )
+        return {
+            "worker_id": f"auto_runtime_architecture_{_task_id_suffix(focus_id or filename)}",
+            "role": role,
+            "target_files": targets,
+            "files_allowed": files_allowed,
+            "must_change_files": must_change,
+            "worker_prompt": prompt,
+            "task_kind": task_kind,
+            "repair_blocker": "runtime_architecture",
+            "repair_contract": contract,
+            "skill_layer": skill_layer,
+            "architecture_focus_id": focus_id,
+            "runtime_contract": runtime_contract,
+            "checks_required": required_checks,
         }
     evidence = contract.get('evidence') or 'quality gate failed'
     if contract.get("role_hint") == "tuner":
@@ -5557,6 +6551,31 @@ def _should_reset_before_rework(ckpt, tasks):
     return True
 
 
+def _load_worker_prompt_template(prompts_dir, *, native_tcp=None):
+    """Compose the worker harness from common policy and one execution profile."""
+    prompts_dir = Path(prompts_dir)
+    if native_tcp is None:
+        from workflow_profiles import get_workflow_profile
+
+        native_tcp = (
+            getattr(get_workflow_profile(), "national_execution_mode", "adapter")
+            == "native_tcp"
+        )
+    profile_name = (
+        "worker_profile_national_native.md"
+        if native_tcp
+        else "worker_profile_legacy_adapter.md"
+    )
+    common = (prompts_dir / "worker_prompt.md").read_text(encoding="utf-8")
+    marker = "{execution_profile_contract}"
+    if common.count(marker) != 1:
+        raise RuntimeError(
+            "worker_prompt.md must contain exactly one execution profile marker"
+        )
+    profile = (prompts_dir / profile_name).read_text(encoding="utf-8")
+    return common.replace(marker, profile)
+
+
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
 async def execute_workers(args):
     _t0 = time.time()
@@ -5574,7 +6593,7 @@ async def execute_workers(args):
 
     next_dir = get_bot_dir(next_v)
     prompts_dir = PROJECT_ROOT / "web" / "core" / "prompts"
-    worker_template = (prompts_dir / "worker_prompt.md").read_text()
+    worker_template = _load_worker_prompt_template(prompts_dir)
 
     ckpt = _matching_checkpoint(next_v, source_v)
     if not ckpt:
@@ -5583,6 +6602,48 @@ async def execute_workers(args):
             next_v,
             source_v,
         )
+    _worker_infra, _worker_infra_error = _owned_infrastructure_failure(
+        ckpt,
+        "execute_workers",
+    )
+    if _worker_infra_error:
+        infra_route = route_policy(ckpt)
+        return _state_blocked(
+            _worker_infra_error + f"; next tool is {infra_route.get('next_tool')}",
+            next_v,
+            source_v,
+            checkpoint=ckpt,
+        )
+    _worker_exhausted = await _execute_exhausted_infrastructure_failure(
+        next_v,
+        source_v,
+        owner_tool="execute_workers",
+    )
+    if _worker_exhausted is not None:
+        return _json_tool_result(_worker_exhausted)
+    if _checkpoint_architecture_policy_identity_errors(ckpt):
+        try:
+            recovery = _recover_architecture_policy_identity(
+                ckpt,
+                next_dir,
+                get_bot_dir(source_v),
+            )
+        except Exception as exc:
+            log_system_event(
+                "pipeline.architecture_policy_identity_replan_failed",
+                "error",
+                f"Could not reset stale-policy candidate v{next_v}: {type(exc).__name__}: {exc}",
+                {"next_v": next_v, "source_v": source_v, "stage": ckpt.get("stage")},
+            )
+            return _json_tool_result({
+                "error": "ARCHITECTURE_POLICY_IDENTITY_RECOVERY_FAILED",
+                "next_v": next_v,
+                "source_v": source_v,
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "directive": "Do not run bot workers; repair checkpoint/source synchronization first.",
+            })
+        if recovery is not None:
+            return recovery
     rework_stages = {"quality_failed", "precommit_failed", "official_failed", "repair_planned", "rework_running"}
     if not ckpt.get("master_plan") and ckpt.get("stage") not in rework_stages:
         return _json_tool_result({
@@ -6238,7 +7299,18 @@ async def execute_workers(args):
             and ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}
         ):
             force_sequential_rework = True
-            task_skipper = _quality_rework_skipper(next_dir, source_dir_r, next_v, source_v)
+            task_skipper = _quality_rework_skipper(
+                next_dir,
+                source_dir_r,
+                next_v,
+                source_v,
+                expected_architecture_policy=(
+                    (_checkpoint_master_plan(ckpt).get("architecture_policy"))
+                    if isinstance(_checkpoint_master_plan(ckpt).get("architecture_policy"), dict)
+                    else None
+                ),
+                master_plan=retry_plan,
+            )
             mechanical_trim_results = _apply_mechanical_file_size_trims(
                 tasks,
                 next_dir,
@@ -6315,13 +7387,16 @@ async def execute_workers(args):
     )
     if exhausted_violations and ckpt.get("stage") == "master_planned" and not reviewer_feedback:
         audit_attempt = int(ckpt.get("audit_attempt") or 0) + 1
+        ledger_digest = _checkpoint_runtime_contract_ledger_digest(ckpt)
         audit_context = {
             "worker_exhausted_plan_blocked": {
                 "validation_errors": exhausted_violations,
                 "source_stage": ckpt.get("stage"),
+                "runtime_contract_ledger_reset": True,
+                "previous_runtime_contract_ledger_digest": ledger_digest,
             }
         }
-        write_pipeline_checkpoint(
+        written = write_pipeline_checkpoint(
             next_v,
             source_v,
             "direction_audited",
@@ -6331,7 +7406,37 @@ async def execute_workers(args):
             audit_attempt=audit_attempt,
             audit_context=audit_context,
             touch_stage_timestamp=True,
+            reset_runtime_contract_ledger=True,
+            expected_runtime_contract_ledger_digest=ledger_digest,
+            runtime_contract_ledger_reset_reason="master_plan_rejected_replan",
         )
+        if not written:
+            log_system_event(
+                "pipeline.worker_exhausted_plan_recovery_failed",
+                "error",
+                f"Could not persist exhausted-plan rollback for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "source_stage": ckpt.get("stage"),
+                    "runtime_contract_ledger_digest": ledger_digest,
+                },
+            )
+            return _json_tool_result({
+                "error": "WORKER_EXHAUSTED_PLAN_RECOVERY_FAILED",
+                "next_v": next_v,
+                "source_v": source_v,
+                "validation_errors": exhausted_violations,
+                "message": (
+                    "The invalid exhausted plan was blocked, but its checkpoint "
+                    "rollback could not be persisted. No re-planning transition "
+                    "has been recorded."
+                ),
+                "directive": (
+                    "Do not run workers or report a new Master-plan route; repair "
+                    "checkpoint persistence/state synchronization first."
+                ),
+            })
         log_system_event(
             "pipeline.worker_exhausted_plan_blocked",
             "error",
@@ -6391,13 +7496,91 @@ async def execute_workers(args):
                                   precommit_rework_count=precommit_rework_count_for_write)
 
     ui = _get_ui()
-    success, worker_snapshots, audit_focus_areas = await _execute_workers(
-        tasks, worker_template, next_dir, next_v,
-        [], ui, reviewer_feedback=reviewer_feedback,
-        source_v=source_v,
-        force_sequential=force_sequential_rework,
-        task_skipper=task_skipper,
-    )
+    from worker_boundary import diff_snapshot, restore_python_files, snapshot_python_files
+
+    worker_batch_snapshot = snapshot_python_files(next_dir)
+    try:
+        success, worker_snapshots, audit_focus_areas = await _execute_workers(
+            tasks, worker_template, next_dir, next_v,
+            [], ui, reviewer_feedback=reviewer_feedback,
+            source_v=source_v,
+            force_sequential=force_sequential_rework,
+            task_skipper=task_skipper,
+        )
+    except Exception as exc:
+        from agent_workers import WorkerInfrastructureError
+
+        if not isinstance(exc, WorkerInfrastructureError):
+            raise
+        restore_python_files(
+            next_dir,
+            worker_batch_snapshot,
+            diff_snapshot(next_dir, worker_batch_snapshot),
+        )
+        from national_runtime_probe import _bot_code_fingerprint
+        from pipeline_infrastructure import infrastructure_attempt_key
+
+        current = _matching_checkpoint(next_v, source_v) or ckpt
+        resume_stage = str(current.get("stage") or "master_planned")
+        task_digest = hashlib.sha256(json.dumps({
+            "tasks": tasks,
+            "reviewer_feedback": reviewer_feedback,
+            "worker_template": worker_template,
+        }, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        backend_contract = {
+            key: os.environ.get(key, "")
+            for key in (
+                "ANTHROPIC_MODEL",
+                "CLAUDE_MODEL",
+                "POK_LLM_MODEL",
+                "ANTHROPIC_BASE_URL",
+            )
+        }
+        attempt_key = infrastructure_attempt_key(
+            component="worker_llm",
+            candidate_fingerprint=_bot_code_fingerprint(next_dir),
+            source_fingerprint=_bot_code_fingerprint(get_bot_dir(source_v)),
+            harness_identity=task_digest,
+            contract_identity=str(
+                ((current.get("runtime_contract_ledger") or {}).get("ledger_digest") or "")
+            ),
+            extra={"backend_contract": backend_contract, "resume_stage": resume_stage},
+        )
+        infra_result = await _record_infrastructure_failure(
+            next_v,
+            source_v,
+            owner_tool="execute_workers",
+            resume_stage=resume_stage,
+            component="worker_llm",
+            code="worker_llm_unavailable",
+            attempt_key=attempt_key,
+            issues=exc.issues,
+            max_attempts=3,
+            metadata={
+                "task_digest": task_digest,
+                "backend_contract": backend_contract,
+                "worker_id": exc.worker_id,
+                "role": exc.role,
+            },
+            master_plan=current.get("master_plan"),
+            reviewer_feedback=reviewer_feedback,
+        )
+        log_system_event(
+            "pipeline.worker_infrastructure",
+            "error" if infra_result.get("action") == "abandon_generation" else "warn",
+            f"Worker LLM infrastructure unavailable for v{next_v}",
+            {"next_v": next_v, "source_v": source_v, **infra_result},
+        )
+        return _json_tool_result({
+            **infra_result,
+            "success": False,
+            "directive": (
+                "Worker infrastructure exhausted and the generation was abandoned."
+                if infra_result.get("abandoned")
+                else "Retry execute_workers with the same tasks; do not re-plan or edit bot code."
+            ),
+            "logs": ui.get_output(),
+        })
 
     boundary_errors = []
     if success:
@@ -6470,11 +7653,21 @@ async def execute_workers(args):
         if audit_focus_areas:
             _existing_audit = ckpt.get("audit_context", {}) if ckpt else {}
             _audit_ctx = {**_existing_audit, "worker_cot_focus_areas": audit_focus_areas}
+        checkpoint_kwargs = {}
+        if _worker_infra is not None:
+            from pipeline_infrastructure import infrastructure_failure_digest
+
+            checkpoint_kwargs = {
+                "clear_infra_failure": True,
+                "infra_failure_owner": "execute_workers",
+                "expected_infra_failure_digest": infrastructure_failure_digest(_worker_infra),
+            }
         write_pipeline_checkpoint(next_v, source_v, "workers_done",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
                                   worker_failure_count=failure_count,
                                   audit_context=_audit_ctx,
-                                  precommit_rework_count=precommit_rework_count_for_write)
+                                  precommit_rework_count=precommit_rework_count_for_write,
+                                  **checkpoint_kwargs)
     else:
         # Increment failure count on worker failure; successful batches do not
         # consume the budget. Initial Master-plan worker failures must not write

@@ -582,7 +582,8 @@ class BotAdapter:
         Rules:
         - Preflop first raise: >= 200
         - Postflop first raise: >= 100
-        - Re-raise: > 2 * last_raise_to (strictly greater)
+        - Official legality: re-raise >= 2 * last_raise_to (exact 2x is legal)
+        - Adapter policy: retain one-chip headroom at 2 * last_raise_to + 1
         - If raise needs all chips, should use allin instead (server rule 11)
         """
         MIN_RAISE_PREFLOP = 200
@@ -600,13 +601,17 @@ class BotAdapter:
                 last_raise_to = h["action"]
                 break
 
-        # Determine minimum legal raise-to
+        # Separate official legality from this legacy bridge's conservative
+        # cross-path policy.  The +1 is retained for compatibility with legacy
+        # local judges; it must not be reported as an official-illegality fix.
         if last_raise_to is not None:
-            # Re-raise: must be > 2 * last_raise_to
+            legal_min_raise = last_raise_to * 2
             min_raise = last_raise_to * 2 + 1
         elif self._stage == "preflop":
+            legal_min_raise = MIN_RAISE_PREFLOP
             min_raise = MIN_RAISE_PREFLOP
         else:
+            legal_min_raise = MIN_RAISE_POSTFLOP
             min_raise = MIN_RAISE_POSTFLOP
 
         # Clamp. The adapter keeps the bot alive for compatibility, but records
@@ -614,7 +619,8 @@ class BotAdapter:
         # works because the bridge rewrote an illegal raise.
         if raise_to < min_raise:
             self.telemetry["clamped_raises"] += 1
-            self.telemetry["would_be_illegal_raise"] += 1
+            if raise_to < legal_min_raise:
+                self.telemetry["would_be_illegal_raise"] += 1
             raise_to = min_raise
 
         return raise_to

@@ -121,8 +121,14 @@ running = True
 PICK_MATCH_LOG_INTERVAL_SEC = float(os.environ.get("POK_PICK_MATCH_LOG_INTERVAL_SEC", "30"))
 ACTION_STATS_REFRESH_INTERVAL_SEC = float(os.environ.get("POK_ACTION_STATS_REFRESH_INTERVAL_SEC", "30"))
 _pick_match_log_state: dict[str, object] = {"last_signature": None, "last_ts": 0.0}
-OFFICIAL_CERT_QUEUE_INTERVAL_SEC = float(os.environ.get("POK_OFFICIAL_QUEUE_INTERVAL_SEC", "60"))
-OFFICIAL_CERT_QUEUE_LIMIT = max(1, int(os.environ.get("POK_OFFICIAL_QUEUE_LIMIT", "1")))
+OFFICIAL_JOB_RECONCILE_INTERVAL_SEC = float(os.environ.get(
+    "POK_OFFICIAL_JOB_INTERVAL_SEC",
+    os.environ.get("POK_OFFICIAL_QUEUE_INTERVAL_SEC", "60"),
+))
+OFFICIAL_JOB_RECONCILE_LIMIT = max(1, int(os.environ.get(
+    "POK_OFFICIAL_JOB_LIMIT",
+    os.environ.get("POK_OFFICIAL_QUEUE_LIMIT", "1"),
+)))
 
 
 def _write_heartbeat(scheduler_capable=True):
@@ -166,23 +172,27 @@ def _write_heartbeat(scheduler_capable=True):
 
 def start_official_certification_thread():
     """Process official EXE certification jobs without blocking quality gates."""
-    if os.environ.get("POK_OFFICIAL_QUEUE_WORKER", "1").strip().lower() in {"0", "false", "off", "no"}:
-        log.info("Official certification queue worker disabled")
+    enabled = os.environ.get(
+        "POK_OFFICIAL_JOB_RECONCILER",
+        os.environ.get("POK_OFFICIAL_QUEUE_WORKER", "1"),
+    )
+    if enabled.strip().lower() in {"0", "false", "off", "no"}:
+        log.info("Official certification job reconciler disabled")
         return None
 
-    interval = max(5.0, OFFICIAL_CERT_QUEUE_INTERVAL_SEC)
-    limit = OFFICIAL_CERT_QUEUE_LIMIT
+    interval = max(5.0, OFFICIAL_JOB_RECONCILE_INTERVAL_SEC)
+    limit = OFFICIAL_JOB_RECONCILE_LIMIT
 
     def _worker():
-        log.info("Official certification queue worker started (interval=%ss, limit=%s)", interval, limit)
+        log.info("Official certification job reconciler started (interval=%ss, limit=%s)", interval, limit)
         while running:
             try:
-                from official_certification import process_certification_queue
+                from official_certification_job import reconcile_jobs
 
-                result = process_certification_queue(limit=limit)
+                result = reconcile_jobs(limit=limit)
                 if result.get("processed") or result.get("errors"):
                     log.info(
-                        "Official certification queue processed=%s remaining=%s errors=%s lock_busy=%s",
+                        "Official certification jobs processed=%s remaining=%s errors=%s lock_busy=%s",
                         result.get("processed"),
                         result.get("remaining"),
                         result.get("errors") or [],
@@ -190,9 +200,9 @@ def start_official_certification_thread():
                     )
                     try:
                         log_system_event(
-                            "official_certification.queue_processed",
+                            "official_certification.jobs_reconciled",
                             "warn" if result.get("errors") else "info",
-                            "Official certification queue processed in daemon background worker",
+                            "Official certification jobs reconciled in daemon background worker",
                             {
                                 "processed": result.get("processed"),
                                 "remaining": result.get("remaining"),
@@ -204,12 +214,12 @@ def start_official_certification_thread():
                     except Exception:
                         pass
             except Exception as exc:
-                log.warning("Official certification queue worker failed: %s", exc)
+                log.warning("Official certification job reconciler failed: %s", exc)
                 try:
                     log_system_event(
-                        "official_certification.queue_worker_failed",
+                        "official_certification.job_reconciler_failed",
                         "warn",
-                        f"Official certification queue worker failed: {type(exc).__name__}",
+                        f"Official certification job reconciler failed: {type(exc).__name__}",
                         {"error": str(exc)[:500]},
                     )
                 except Exception:
@@ -219,7 +229,7 @@ def start_official_certification_thread():
             while running and time.time() < deadline:
                 time.sleep(min(1.0, deadline - time.time()))
 
-    thread = threading.Thread(target=_worker, name="official-certification-queue", daemon=True)
+    thread = threading.Thread(target=_worker, name="official-certification-jobs", daemon=True)
     thread.start()
     return thread
 
@@ -279,7 +289,10 @@ def bot_path(bot_name):
 
 
 def save_ratings(ratings, save_num=None):
+    from evaluation_data_identity import current_evaluation_digest
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    evaluation_identity_digest = current_evaluation_digest(RESULTS_DIR)
     data = {}
     for name, p in ratings.items():
         d = p.to_dict()
@@ -337,6 +350,7 @@ def save_ratings(ratings, save_num=None):
             "period": save_num,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "daemon_run_id": daemon_run_id,  # None for ad-hoc calls; set in main()
+            "evaluation_identity_digest": evaluation_identity_digest,
             "ratings": {name: {"r": p.r, "rd": p.rd, "sigma": p.sigma} for name, p in ratings.items()},
             "win_rates": win_rates,
         }
@@ -353,11 +367,17 @@ def save_stats(stats):
 
 
 def load_h2h():
+    from evaluation_data_identity import ensure_evaluation_data_identity
+
+    ensure_evaluation_data_identity(RESULTS_DIR)
     return read_locked_json(H2H_FILE, default={})
 
 
 def save_h2h(h2h):
+    from evaluation_data_identity import ensure_evaluation_data_identity
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    ensure_evaluation_data_identity(RESULTS_DIR)
     # Prune low-sample entries (games < 2 have no statistical value)
     h2h = {k: v for k, v in h2h.items() if v.get("games", 0) >= 2}
     write_locked_json(H2H_FILE, h2h)
@@ -514,10 +534,47 @@ def pick_matches(active_bots, h2h, ratings, n_picks=None):
     return selected
 
 
-def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
+def save_match_replay(
+    a,
+    b,
+    wins_a,
+    wins_b,
+    draws,
+    replay_data,
+    net_chips_samples=None,
+    strength_sample_unit=None,
+):
+    from evaluation_data_identity import current_evaluation_digest
+
+    evaluation_identity_digest = current_evaluation_digest(RESULTS_DIR)
     os.makedirs(REPLAY_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     fname = f"{timestamp}_{a}_vs_{b}.json"
+    net_chips_values = [int(value) for value in (net_chips_samples or [])]
+    strength_summary = None
+    if strength_sample_unit == "70_hand_match":
+        from strength_order import summarize_70_hand_net_chips
+
+        if not net_chips_values:
+            raise ValueError("70-hand strength replay must contain at least one sample")
+        if len(replay_data or []) != len(net_chips_values):
+            raise ValueError("70-hand strength replay rows disagree with sample count")
+        for index, replay in enumerate(replay_data or []):
+            if not isinstance(replay, dict):
+                raise ValueError(f"70-hand strength replay {index} is not an object")
+            if int(replay.get("hands_played", 0) or 0) != 70:
+                raise ValueError(f"70-hand strength replay {index} is incomplete")
+            if replay.get("passed_compliance") is not True:
+                raise ValueError(f"70-hand strength replay {index} failed compliance")
+            if replay.get("wrapper_used") is True:
+                raise ValueError(f"70-hand strength replay {index} used a legacy wrapper")
+        strength_summary = summarize_70_hand_net_chips(net_chips_values)
+        if (
+            strength_summary["positive_matches"] != int(wins_a)
+            or strength_summary["negative_matches"] != int(wins_b)
+            or strength_summary["zero_matches"] != int(draws)
+        ):
+            raise ValueError("70-hand net-chip samples disagree with recorded match outcomes")
     match_data = {
         "id": fname,
         "timestamp": timestamp,
@@ -526,6 +583,15 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
         "bot0_wins": wins_a,
         "bot1_wins": wins_b,
         "draws": draws,
+        "evaluation_identity_digest": evaluation_identity_digest,
+        "strength_sample_unit": strength_sample_unit,
+        "hands_per_strength_sample": 70 if strength_summary is not None else None,
+        "strength_admitted": strength_summary is not None,
+        "strength_complete": strength_summary is not None,
+        "strength_compliance_passed": strength_summary is not None,
+        "strength_sample_count": strength_summary.get("samples", 0) if strength_summary else 0,
+        "net_chips_bot0": net_chips_values,
+        "strength_order": strength_summary,
         "games": replay_data,
     }
 
@@ -546,6 +612,15 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
             "bot0_wins": wins_a,
             "bot1_wins": wins_b,
             "draws": draws,
+            "evaluation_identity_digest": evaluation_identity_digest,
+            "strength_sample_unit": strength_sample_unit,
+            "hands_per_strength_sample": 70 if strength_summary is not None else None,
+            "strength_admitted": strength_summary is not None,
+            "strength_complete": strength_summary is not None,
+            "strength_compliance_passed": strength_summary is not None,
+            "strength_sample_count": strength_summary.get("samples", 0) if strength_summary else 0,
+            "net_chips_bot0": net_chips_values,
+            "strength_order": strength_summary,
         }
         append_locked_jsonl(MATCH_HISTORY_FILE, summary)
     except Exception as e:
@@ -618,10 +693,17 @@ def _rating_protocol_config(n_pairs=None):
         getattr(profile, "rating_protocol", "local_json"),
     )
     protocol = protocol if protocol in {"local_json", "national"} else "local_json"
-    national_hands = int(os.environ.get(
-        "POK_NATIONAL_RATING_HANDS",
-        str(getattr(profile, "national_rating_hands", 70)),
-    ))
+    national_execution_mode = getattr(profile, "national_execution_mode", "adapter")
+    if national_execution_mode == "native_tcp":
+        # Production strength identity is immutable: an environment variable
+        # may change sample count, but cannot switch backend or shorten a match.
+        protocol = "national"
+        national_hands = 70
+    else:
+        national_hands = int(os.environ.get(
+            "POK_NATIONAL_RATING_HANDS",
+            str(getattr(profile, "national_rating_hands", 70)),
+        ))
     matches_override = "POK_NATIONAL_RATING_MATCHES" in os.environ
     national_matches = int(os.environ.get(
         "POK_NATIONAL_RATING_MATCHES",
@@ -639,7 +721,7 @@ def _rating_protocol_config(n_pairs=None):
     return {
         "profile_id": getattr(profile, "profile_id", "default"),
         "protocol": protocol,
-        "national_execution_mode": getattr(profile, "national_execution_mode", "adapter"),
+        "national_execution_mode": national_execution_mode,
         "national_hands": national_hands,
         "national_matches": national_matches,
         "strict": strict_bool,
@@ -704,7 +786,16 @@ def _run_local_json_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pair
 
     # Save replay inside worker to avoid ~2MB cross-process transfer
     try:
-        save_match_replay(bot_a_name, bot_b_name, games_a, games_b, games_draw, all_logs)
+        save_match_replay(
+            bot_a_name,
+            bot_b_name,
+            games_a,
+            games_b,
+            games_draw,
+            all_logs,
+            list(net_chips_list or []),
+            "legacy_mirror_pair",
+        )
     except Exception as e:
         log.debug("Replay save failed: %s", e)
 
@@ -724,6 +815,17 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
     matches = int(config["national_matches"])
     strict = bool(config["strict"])
     native_tcp_mode = config.get("national_execution_mode") == "native_tcp"
+    if native_tcp_mode and hands != 70:
+        return (
+            bot_a_name,
+            bot_b_name,
+            0,
+            0,
+            0,
+            0,
+            f"native_rating_contract: expected exactly 70 hands, got {hands}",
+            [],
+        )
     if native_tcp_mode:
         from national_native import run_native_tcp_pair
     else:
@@ -746,6 +848,20 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
             ))
         else:
             result = asyncio.run(run_pair(bot_a, bot_b, hands, strict=strict))
+        replay = dict(result)
+        replay["rating_protocol"] = "national_native_tcp" if native_tcp_mode else "national"
+        replay["repeat"] = repeat + 1
+        replays.append(replay)
+        hands_played = int(result.get("hands_played", 0) or 0)
+        if hands_played != hands:
+            issues.append(f"repeat={repeat + 1}: hands_played={hands_played}/{hands}")
+        if result.get("passed_compliance") is not True:
+            reported = [str(item) for item in (result.get("issues") or [])]
+            issues.extend(reported or [f"repeat={repeat + 1}: compliance_failed"])
+        if native_tcp_mode and result.get("wrapper_used") is True:
+            issues.append(f"repeat={repeat + 1}: native_wrapper_used")
+        if issues:
+            continue
         net = int(result.get("net_chips_a", 0) or 0)
         net_chips_list.append(net)
         if net > 0:
@@ -754,30 +870,37 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
             wins_b += 1
         else:
             draws += 1
-        if not result.get("passed_compliance", False):
-            issues.extend(str(item) for item in (result.get("issues") or []))
-        replay = dict(result)
-        replay["rating_protocol"] = "national_native_tcp" if native_tcp_mode else "national"
-        replay["repeat"] = repeat + 1
-        replays.append(replay)
 
     total = wins_a + wins_b + draws
-    try:
-        save_match_replay(bot_a_name, bot_b_name, wins_a, wins_b, draws, replays)
-    except Exception as e:
-        log.debug("National replay save failed: %s", e)
-
     if issues:
+        # Fail the whole daemon batch closed.  In particular, do not write a
+        # replay/history row that reconstruction could later mistake for
+        # authoritative H2H evidence.
         return (
+            bot_a_name,
+            bot_b_name,
+            0,
+            0,
+            0,
+            0,
+            ("native_rating_contract: " if native_tcp_mode else "national_rating_contract: ")
+            + "; ".join(issues[:8]),
+            [],
+        )
+    try:
+        save_match_replay(
             bot_a_name,
             bot_b_name,
             wins_a,
             wins_b,
             draws,
-            total,
-            ("native_rating_compliance: " if native_tcp_mode else "national_rating_compliance: ") + "; ".join(issues[:5]),
+            replays,
             net_chips_list,
+            f"{hands}_hand_match",
         )
+    except Exception as e:
+        log.debug("National replay save failed: %s", e)
+
     return (bot_a_name, bot_b_name, wins_a, wins_b, draws, total, None, net_chips_list)
 
 
@@ -786,11 +909,30 @@ def run_single_match(args):
     bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs = args
     try:
         config = _rating_protocol_config(n_pairs=n_pairs)
-        if config["protocol"] == "national":
+        if (
+            config["protocol"] == "national"
+            and config.get("national_execution_mode") == "native_tcp"
+        ):
+            # The native runner is the single capacity owner for every caller
+            # (daemon, quality gate, and precommit). Acquiring here as well can
+            # deadlock all workers when every process holds an outer lease.
             return _run_national_rating_match(
                 bot_a_name, bot_b_name, bot_a_path, bot_b_path, config
             )
-        return _run_local_json_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs)
+
+        from runtime_capacity import acquire_match_slots
+
+        with acquire_match_slots(
+            f"daemon:{bot_a_name}:{bot_b_name}:{os.getpid()}",
+            count=1,
+        ):
+            if config["protocol"] == "national":
+                return _run_national_rating_match(
+                    bot_a_name, bot_b_name, bot_a_path, bot_b_path, config
+                )
+            return _run_local_json_match(
+                bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs
+            )
     except Exception as e:
         return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e), [])
 
@@ -1205,6 +1347,12 @@ def main():
     log.info("Starting rating daemon (workers=%d, pairs=%d)", args.workers, args.pairs)
     log.info("Elo ranking + Head-to-Head matrix + per-game updates")
     _backend_config = _rating_protocol_config(n_pairs=args.pairs)
+    from evaluation_data_identity import ensure_evaluation_data_identity
+
+    ensure_evaluation_data_identity(
+        RESULTS_DIR,
+        runtime_profile=_backend_config,
+    )
     log.info(
         "Rating backend: profile=%s protocol=%s execution=%s national_hands=%s national_matches=%s strict=%s",
         _backend_config["profile_id"],
@@ -1289,7 +1437,7 @@ def main():
     try:
         start_official_certification_thread()
     except Exception as e:
-        log.warning("Official certification queue worker failed to start (non-fatal): %s", e)
+        log.warning("Official certification job reconciler failed to start (non-fatal): %s", e)
 
     # 预留 worker slot 给 external(precommit) job。root-cause-audit 2026-06-21: daemon
     # 启动即用 internal matches 填满全部 n_workers 槽 → 外部 precommit job 只能在某个

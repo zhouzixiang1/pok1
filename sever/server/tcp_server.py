@@ -10,8 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from engine.game import GameEngine, HANDS_PER_MATCH, TIMEOUT_SECONDS
-from engine.thp_recorder import THPRecorder
+try:
+    from ..engine.game import GameEngine, HANDS_PER_MATCH, TIMEOUT_SECONDS
+    from ..engine.thp_recorder import THPRecorder
+except ImportError:  # Standalone ``cd sever`` compatibility.
+    from engine.game import GameEngine, HANDS_PER_MATCH, TIMEOUT_SECONDS
+    from engine.thp_recorder import THPRecorder
 
 logger = logging.getLogger(__name__)
 

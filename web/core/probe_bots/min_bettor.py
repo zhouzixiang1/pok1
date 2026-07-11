@@ -129,7 +129,7 @@ def get_action(req):
         baseline = 50  # big blind // 2
 
     if last_raise_to > baseline:
-        min_raise_to = last_raise_to * 2 + 1  # strictly > 2x last raise
+        min_raise_to = last_raise_to * 2 + 1  # conservative +1; official exact 2x is legal
     else:
         min_raise_to = baseline * 2  # first raise: >= 2x baseline
 

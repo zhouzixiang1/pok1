@@ -234,7 +234,12 @@ def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
     commit_oid = ""
     completion_tree_oid = ""
     current_tree_oid = ""
+    main_commit_oid = ""
+    main_tree_oid = ""
+    tag_commit_on_main = False
+    completion_tree_matches_main = False
     tracked_tree_matches = False
+    working_tree_matches_main = False
     untracked_files: list[str] = []
     if version is None:
         issues.append("invalid_national_bot_label")
@@ -246,8 +251,12 @@ def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
             issues.append("missing_annotated_completion_tag")
         object_result = _git("rev-parse", ref)
         tag_object = object_result.stdout.strip() if object_result.returncode == 0 else ""
+        if len(tag_object) != 40:
+            issues.append("completion_tag_object_invalid")
         commit_result = _git("rev-list", "-n", "1", tag)
         commit_oid = commit_result.stdout.strip() if commit_result.returncode == 0 else ""
+        if len(commit_oid) != 40:
+            issues.append("completion_tag_commit_invalid")
         tree_result = _git("rev-parse", f"{tag}^{{commit}}:{relative.as_posix()}")
         completion_tree_oid = tree_result.stdout.strip() if tree_result.returncode == 0 else ""
         current_tree_result = _git("rev-parse", f"HEAD:{relative.as_posix()}")
@@ -256,6 +265,59 @@ def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
             if current_tree_result.returncode == 0
             else ""
         )
+        main_commit_result = _git(
+            "rev-parse",
+            "--verify",
+            "refs/heads/main^{commit}",
+        )
+        main_commit_oid = (
+            main_commit_result.stdout.strip()
+            if main_commit_result.returncode == 0
+            else ""
+        )
+        if not main_commit_oid:
+            issues.append("main_branch_commit_unavailable")
+        else:
+            tag_commit_on_main = bool(
+                commit_oid
+                and _git(
+                    "merge-base",
+                    "--is-ancestor",
+                    commit_oid,
+                    main_commit_oid,
+                ).returncode
+                == 0
+            )
+            if commit_oid and not tag_commit_on_main:
+                issues.append("completion_tag_commit_not_on_main")
+            main_tree_result = _git(
+                "rev-parse",
+                f"{main_commit_oid}:{relative.as_posix()}",
+            )
+            main_tree_oid = (
+                main_tree_result.stdout.strip()
+                if main_tree_result.returncode == 0
+                else ""
+            )
+            if not main_tree_oid:
+                issues.append("main_missing_bot_tree")
+            completion_tree_matches_main = bool(
+                completion_tree_oid
+                and main_tree_oid
+                and completion_tree_oid == main_tree_oid
+            )
+            if completion_tree_oid and main_tree_oid and not completion_tree_matches_main:
+                issues.append("completion_tag_bot_tree_differs_from_main")
+            working_main_diff = _git(
+                "diff",
+                "--quiet",
+                main_commit_oid,
+                "--",
+                relative.as_posix(),
+            )
+            working_tree_matches_main = working_main_diff.returncode == 0
+            if not working_tree_matches_main:
+                issues.append("working_bot_differs_from_main")
         if not commit_oid or not completion_tree_oid:
             issues.append("completion_tag_missing_bot_tree")
         if not current_tree_oid:
@@ -280,10 +342,17 @@ def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
     published = bool(
         path.is_dir()
         and tag_type == "tag"
+        and len(tag_object) == 40
+        and len(commit_oid) == 40
         and commit_oid
         and completion_tree_oid
         and current_tree_oid
+        and main_commit_oid
+        and main_tree_oid
+        and tag_commit_on_main
+        and completion_tree_matches_main
         and tracked_tree_matches
+        and working_tree_matches_main
         and not untracked_files
     )
     return {
@@ -297,6 +366,11 @@ def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
         "commit_oid": commit_oid,
         "completion_tree_oid": completion_tree_oid,
         "current_tree_oid": current_tree_oid,
+        "main_commit_oid": main_commit_oid,
+        "main_tree_oid": main_tree_oid,
+        "tag_commit_on_main": tag_commit_on_main,
+        "completion_tree_matches_main": completion_tree_matches_main,
+        "working_tree_matches_main": working_tree_matches_main,
         "migrated_since_completion": bool(
             completion_tree_oid
             and current_tree_oid
@@ -305,4 +379,68 @@ def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
         "tag_metadata": _tag_metadata(tag) if tag else {},
         "published": published,
         "issues": list(dict.fromkeys(issues)),
+    }
+
+
+def validate_completion_tag(
+    path_or_token: str | Path,
+    *,
+    expected_metadata: dict[str, str],
+    certificate_path: str,
+) -> dict[str, Any]:
+    """Validate the exact annotated publication tag used by commit recovery."""
+    identity = published_bot_identity(path_or_token)
+    issues = list(identity.get("issues") or [])
+    tag = str(identity.get("tag") or "")
+    if identity.get("tag_type") != "tag":
+        issues.append("completion_tag_not_annotated")
+    tag_object = str(identity.get("tag_object") or "")
+    if len(tag_object) != 40:
+        issues.append("completion_tag_object_invalid")
+    if identity.get("migrated_since_completion"):
+        issues.append("completion_tag_bot_tree_differs_from_head")
+    expected_hash = str(expected_metadata.get("official-candidate-hash") or "")
+    if not expected_hash or identity.get("artifact_hash") != expected_hash:
+        issues.append("completion_tag_candidate_hash_mismatch")
+
+    contents_result = _git(
+        "for-each-ref",
+        "--format=%(contents)",
+        f"refs/tags/{tag}",
+    )
+    metadata_values: dict[str, list[str]] = {}
+    if contents_result.returncode != 0:
+        issues.append("completion_tag_contents_unavailable")
+    else:
+        for line in contents_result.stdout.splitlines():
+            key, separator, value = line.partition(":")
+            normalized = key.strip().lower().replace("_", "-")
+            if separator and normalized.startswith("official-"):
+                metadata_values.setdefault(normalized, []).append(value.strip())
+    for key, expected in expected_metadata.items():
+        if metadata_values.get(key, []) != [str(expected)]:
+            issues.append(f"completion_tag_metadata_mismatch:{key}")
+
+    commit_oid = str(identity.get("commit_oid") or "")
+    if not commit_oid:
+        issues.append("completion_tag_commit_missing")
+    elif _git("merge-base", "--is-ancestor", commit_oid, "main").returncode != 0:
+        issues.append("completion_tag_commit_not_on_main")
+    if certificate_path:
+        listed = _git(
+            "ls-tree",
+            "-r",
+            "--name-only",
+            f"{tag}^{{commit}}",
+            "--",
+            certificate_path,
+        )
+        if listed.returncode != 0 or listed.stdout.strip() != certificate_path:
+            issues.append("completion_tag_certificate_missing")
+        if _git("diff", "--quiet", tag, "--", certificate_path).returncode != 0:
+            issues.append("completion_tag_certificate_differs_from_head")
+    return {
+        "valid": not issues,
+        "issues": list(dict.fromkeys(issues)),
+        "identity": identity,
     }

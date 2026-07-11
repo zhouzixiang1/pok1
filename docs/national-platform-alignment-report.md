@@ -2,6 +2,12 @@
 
 日期：2026-06-30
 
+> 2026-07-11 实测更正：官方 Windows EXE 受控双座位实测确认，
+> `raise 200` 后的精确 `raise 400` 会被平台接受并转发，因此官方
+> re-raise 合法下界是包含 2x，不是严格大于 2x。本更正覆盖本
+> 报告中早期的相反判断；证据哈希与回归 fixture 见
+> `docs/official-raise-boundary-oracle-2026-07-11.md`。
+
 ## 范围
 
 这个仓库里有两套仍在使用的德州扑克协议，后续改动必须把它们分清楚：
@@ -26,7 +32,9 @@ Web 进化系统本身不是原生 TCP bot 平台。它面向国赛的路径是�
 - 解析器只接受恰好一个空格的 `raise <amount>`。行首/行尾空格、Tab、多空格都属于非法协议格式。
 - Postflop 首个行为不能是 `call`。Postflop 在任何首个行为之后，`check` 都非法；如果第一个玩家 `check`，第二个玩家要用 `call` 结束该街。
 - `allin` 被 `call` 后，服务端发完剩余公共牌并结算该手；客户端在 `earnChips` 前不应再行动。
-- 仓库当前统一采用严格 re-raise 规则：再次加注必须大于上一次 raise-to 的 2 倍。这个选择来自 `raise 400` 后需要 `raise 801` 的示例；文档文字本身容易被误读成允许等于 2 倍。
+- 官方 EXE 的 re-raise 下界是包含 2 倍：`raise 200` 后
+  `raise 400` 合法，低于 400 才非法。`2x + 1` 可作为 bot 的保守
+  headroom 策略，但不是官方合法性要求。
 
 ## TCP 全流程
 
@@ -83,7 +91,7 @@ Web 应用仍以本地 JSON 子进程 bot 和 mirror battle 为核心。国赛 T
 - `engine/judge.py` 和 `web/core/engine/judge.py`：Botzone 整数动作仍保持 `0=call/check`，但 postflop 首个玩家 check 后，第二个玩家用 `0` 过街时，history 记录为 `action_type="call"`，与国赛 TCP 协议保持一致。
 - `sever/bot_adapter.py`：增加 adapter telemetry，记录 bot 子进程失败、不可转换动作、实际发送动作数，方便区分“服务器判非法”和“bot/adapter 自身失败”。
 - `scripts/national_acceptance_matrix.py`：新增国赛验收矩阵工具。它不走本地 `engine/battle.py`，而是把 Botzone JSON bot 放进 `sever/bot_adapter.py`，再用 `sever/engine/game.py` 与 `sever/engine/validator.py` 的国赛规则实跑 pairwise match。
-- `web/core/prompts/`：Master、Worker、Reviewer、Crossover、Initial、Dynamic Test 以及相关审计 prompt 已嵌入 `sever/国赛平台/` 的完整非法行为约束，包括 `bet` 禁用、raise-to-total、严格 re-raise、postflop `check/call`、BB 不能在 SB limp 后 call、all-in 后只能 call/fold 等规则。
+- `web/core/prompts/`：Master、Worker、Reviewer、Crossover、Initial、Dynamic Test 以及相关审计 prompt 已嵌入 `sever/国赛平台/` 的完整非法行为约束，包括 `bet` 禁用、raise-to-total、包含 2x 的 re-raise 下界、postflop `check/call`、BB 不能在 SB limp 后 call、all-in 后只能 call/fold 等规则。
 - `web/core/decision_tester.py`：旧的 postflop `check/check` 动态场景模板改为 `check/call`，避免质量门继续生成与国赛协议相反的历史样例。
 
 推荐验收命令：

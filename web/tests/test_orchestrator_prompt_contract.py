@@ -16,13 +16,13 @@ def test_orchestrator_prompt_uses_checkpoint_attempt_contract():
     assert "Total intra_gen_attempts must not exceed" not in prompt
 
 
-def test_orchestrator_prompt_treats_critic_rejection_as_hard_gate():
+def test_orchestrator_prompt_keeps_critic_advisory_before_native_precommit():
     prompt = (PROMPTS / "orchestrator.md").read_text(encoding="utf-8")
 
-    assert "Critic rejection is a hard strategy gate" in prompt
-    assert "Do NOT call `run_precommit_eval` or `commit_bot` on unchanged critic-rejected code" in prompt
-    assert "Critic score is ADVISORY ONLY" not in prompt
-    assert "ALWAYS proceed to run_precommit_eval regardless of critic score" not in prompt
+    assert "Critic score is advisory" in prompt
+    assert "always call `run_precommit_eval`" in prompt
+    assert "native-TCP precommit" in prompt
+    assert "Critic rejection is a hard strategy gate" not in prompt
 
 
 def test_orchestrator_prompt_treats_master_error_as_blocking():

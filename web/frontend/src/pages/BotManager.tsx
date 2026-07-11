@@ -283,6 +283,11 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
         </div>
         <div className="flex items-center gap-4 text-sm text-gray-500">
           <span className="text-xs text-gray-500">选择分 {strength}</span>
+          {bot.secondary_net_chips_mean != null && (
+            <span className="text-xs text-gray-500 tabular-nums">
+              净筹码/70手 {bot.secondary_net_chips_mean >= 0 ? "+" : ""}{bot.secondary_net_chips_mean.toFixed(0)}
+            </span>
+          )}
           <span className="text-xs text-gray-400">{strengthConfidenceText(bot.strength_confidence)}</span>
           {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} h2hWr={bot.h2h_avg_wr} games={bot.games} />}
           <span className="text-xs text-gray-400">{bot.total_lines} 行</span>
@@ -446,9 +451,9 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                   const isA = parts[0] === bot.name;
                   const opp = isA ? parts[1] : parts[0];
                   if (!isA && parts[1] !== bot.name) continue;
-                  const wr = isA ? val.a_wins / val.games : val.b_wins / val.games;
                   const wins = isA ? val.a_wins : val.b_wins;
                   const losses = isA ? val.b_wins : val.a_wins;
+                  const wr = (wins + 0.5 * val.draws) / val.games;
                   if (val.games > 0 && isFinite(wr)) opponents.push({ name: opp, wr, games: val.games, wins, losses, draws: val.draws });
                 }
                 if (opponents.length === 0) return null;

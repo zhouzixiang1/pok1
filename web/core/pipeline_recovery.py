@@ -30,6 +30,7 @@ TARGET_DIR_STAGES = {
     "repair_planned",
     "rework_running",
     "verified",
+    "official_certifying",
     "official_failed",
     "official_inconclusive",
     "infra_timed_out",
@@ -46,6 +47,7 @@ HEAD_DRIFT_POST_QUALITY_STAGES = {
     "reviewed",
     "critic_checked",
     "verified",
+    "official_certifying",
 }
 HEAD_DRIFT_GATE_STAGES = {
     "master_planned",

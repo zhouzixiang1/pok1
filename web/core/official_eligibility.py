@@ -28,12 +28,32 @@ _REGISTRY_CACHE: dict[str, Any] = {"loaded_at": 0.0, "head": "", "state": None}
 def load_grandfather_policy(path: str | Path | None = None) -> dict[str, Any]:
     policy_path = Path(path) if path is not None else POLICY_PATH
     payload = json.loads(policy_path.read_text(encoding="utf-8"))
-    if int(payload.get("schema_version", 0) or 0) != 1:
+    schema_version = int(payload.get("schema_version", 0) or 0)
+    if schema_version not in {1, 2, 3}:
         raise ValueError("unsupported official grandfather policy schema")
     if not str(payload.get("policy_id") or "").strip():
         raise ValueError("official grandfather policy is missing policy_id")
     if not isinstance(payload.get("grants"), list):
         raise ValueError("official grandfather policy grants must be a list")
+    labels: set[str] = set()
+    for grant in payload["grants"]:
+        if not isinstance(grant, dict):
+            raise ValueError("official grandfather grant must be an object")
+        label = str(grant.get("bot") or "")
+        if not label or label in labels:
+            raise ValueError(f"duplicate or missing official grandfather grant: {label!r}")
+        labels.add(label)
+        roles = grant.get("roles")
+        if not isinstance(roles, list) or not roles or not set(map(str, roles)) <= ALLOWED_ROLES:
+            raise ValueError(f"invalid roles in official grandfather grant: {label}")
+        artifact_hash = str(grant.get("artifact_hash") or "")
+        if len(artifact_hash) != 64:
+            raise ValueError(f"invalid artifact hash in official grandfather grant: {label}")
+        if schema_version >= 3:
+            for field in ("tag_object", "completion_tree_oid"):
+                value = str(grant.get(field) or "")
+                if len(value) != 40 or any(char not in "0123456789abcdef" for char in value.lower()):
+                    raise ValueError(f"invalid {field} in official grandfather grant: {label}")
     return payload
 
 
@@ -121,6 +141,7 @@ def grandfather_eligibility(
     *,
     target_version: int | None = None,
     policy: dict[str, Any] | None = None,
+    readiness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if role not in ALLOWED_ROLES:
         return {"eligible": False, "reason": "unknown_eligibility_role", "role": role}
@@ -184,9 +205,41 @@ def grandfather_eligibility(
             "expected_hash": grant.get("artifact_hash"),
             "current_hash": identity.get("artifact_hash"),
         }
+    if int(active_policy.get("schema_version", 0) or 0) >= 3:
+        if grant.get("tag_object") != identity.get("tag_object"):
+            return {
+                "eligible": False,
+                "reason": "grandfather_tag_object_mismatch",
+                "role": role,
+            }
+        if grant.get("completion_tree_oid") != identity.get("completion_tree_oid"):
+            return {
+                "eligible": False,
+                "reason": "grandfather_completion_tree_mismatch",
+                "role": role,
+            }
     roles = {str(item) for item in grant.get("roles", [])}
     if role not in roles:
         return {"eligible": False, "reason": "role_not_granted", "role": role}
+
+    readiness_rules = active_policy.get("readiness_rules") or {}
+    readiness_rule = (
+        readiness_rules.get(role)
+        if isinstance(readiness_rules, dict)
+        else None
+    )
+    readiness_count = int((readiness or {}).get("certified_alternatives", 0) or 0)
+    readiness_minimum = int(
+        (readiness_rule or {}).get("minimum_certified_alternatives", 0) or 0
+    )
+    if readiness_minimum and readiness_count >= readiness_minimum:
+        return {
+            "eligible": False,
+            "reason": "grandfather_readiness_satisfied",
+            "role": role,
+            "certified_alternatives": readiness_count,
+            "minimum_certified_alternatives": readiness_minimum,
+        }
 
     try:
         target = current_target_version(target_version)
@@ -205,7 +258,7 @@ def grandfather_eligibility(
         )
         or 0
     )
-    if sunset and target > sunset:
+    if sunset and target > sunset and not readiness_minimum:
         return {
             "eligible": False,
             "reason": "grandfather_grant_expired",
@@ -220,6 +273,8 @@ def grandfather_eligibility(
         "priority": 1,
         "target_version": target,
         "sunset_version": sunset,
+        "certified_alternatives": readiness_count,
+        "minimum_certified_alternatives": readiness_minimum,
         "policy_id": active_policy.get("policy_id"),
         "policy_digest": canonical_digest(active_policy),
         "grant": grant,

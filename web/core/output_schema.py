@@ -1,7 +1,7 @@
 """Pydantic models for validating structured LLM output from each pipeline agent."""
 
-from typing import Optional
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Literal, Optional
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from skill_library import valid_skill_layers
 
@@ -19,29 +19,126 @@ def runtime_contract_required_layers() -> set[str]:
     return set(RUNTIME_CONTRACT_REQUIRED_LAYERS)
 
 
-class RuntimeContract(BaseModel):
-    """Structured plan contract for national-native runtime architecture work."""
+class DecisionRuntimeContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    decision_budget_ms: Optional[int] = Field(
-        default=None,
+    clock: Literal["time.monotonic", "time.perf_counter"]
+    hard_deadline_ms: int = Field(
         ge=1,
-        le=59_000,
-        description="Worst-case per-action work budget before fallback; must stay under the official 60s limit.",
+        le=55_000,
+        description=(
+            "Socket-owned hard return deadline. The 55 second ceiling reserves at least "
+            "five seconds of the official 60 second turn for logging and wire handling."
+        ),
     )
-    fallback_action: str = Field(default="", description="Legal pending-action fallback if bounded work cannot finish.")
-    decision_path_bound: str = Field(default="", description="Concrete bound for loops/search/history scans in the decision path.")
-    precompute_artifacts: list[str] = Field(default_factory=list, max_length=8)
-    state_lifecycle: str = Field(default="", description="How match memory resets on connection and persists across 70 hands.")
+    baseline_target_ms: int = Field(
+        ge=1,
+        le=5_000,
+        description=(
+            "Target latency for publishing a strategy-derived legal baseline; an always-legal "
+            "socket fallback must already exist before strategy code starts."
+        ),
+    )
+    refinement_budget_ms: int = Field(
+        ge=1,
+        le=54_500,
+        description=(
+            "Elapsed-time budget from decision start for optional bounded refinement, ending "
+            "strictly before the socket hard deadline."
+        ),
+    )
+    baseline_path: str = Field(min_length=5, description="Fast legal action path computed before refinement.")
+    fallback_action: str = Field(min_length=3, description="Legal pending-action fallback on deadline/error.")
+    refinement_bound: str = Field(min_length=5, description="Concrete loop/sample/search cap after baseline.")
+    max_samples: Optional[int] = Field(default=None, ge=1, le=100_000)
+
+    @field_validator("baseline_path", "fallback_action", "refinement_bound")
+    @classmethod
+    def _trim_text(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _ordered_decision_budgets(self):
+        if self.baseline_target_ms >= self.refinement_budget_ms:
+            raise ValueError("baseline_target_ms must be below refinement_budget_ms")
+        if self.refinement_budget_ms >= self.hard_deadline_ms:
+            raise ValueError("refinement_budget_ms must be below hard_deadline_ms")
+        return self
+
+
+class PrecomputeArtifactContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=2)
+    owner_file: str = Field(pattern=r"^[^/\\]+\.py$")
+    build_phase: Literal["module_import"]
+    max_build_ms: int = Field(ge=1, le=2_500)
+    max_entries: int = Field(ge=1, le=65_536)
+    max_bytes: int = Field(ge=1, le=8 * 1024 * 1024)
+    key_shape: str = Field(
+        pattern=r"^(int|str|tuple\[(int|str|bool)(,(int|str|bool)){0,4}\])$"
+    )
+    consumer: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
+    fallback: Literal["legal_baseline"]
+
+    @field_validator("name", "owner_file", "key_shape", "consumer", "fallback")
+    @classmethod
+    def _trim_artifact_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class MatchMemoryRuntimeContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tracker_class: str = Field(min_length=3)
+    owner_file: str = Field(pattern=r"^[^/\\]+\.py$")
+    reset_boundary: Literal["tcp_connection"]
+    update_events: list[Literal[
+        "hand_start",
+        "street_start",
+        "hero_action",
+        "opponent_action",
+        "settlement",
+        "showdown",
+    ]] = Field(min_length=4, max_length=6)
+    snapshot_field: Literal["opponent_runtime"]
+    max_recent_hands: int = Field(ge=0, le=70)
+    prior_rule: str = Field(min_length=5)
+    confidence_rule: str = Field(min_length=5)
+    adaptation_cap: float = Field(gt=0.0, le=1.0)
+    consumer: str = Field(min_length=3)
+
+    @field_validator("tracker_class", "owner_file", "prior_rule", "confidence_rule", "consumer")
+    @classmethod
+    def _trim_memory_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("update_events")
+    @classmethod
+    def _unique_update_events(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("update_events must be unique")
+        required = {"hand_start", "opponent_action", "settlement", "showdown"}
+        if not required.issubset(value):
+            raise ValueError(f"update_events must include {sorted(required)}")
+        return value
+
+
+class RuntimeContract(BaseModel):
+    """Executable contract shared by Master, worker prompt, and quality policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Optional[DecisionRuntimeContract] = None
+    precompute_artifacts: list[PrecomputeArtifactContract] = Field(default_factory=list, max_length=4)
+    match_memory: Optional[MatchMemoryRuntimeContract] = None
     official_feedback_refs: list[str] = Field(default_factory=list, max_length=8)
     forbidden_runtime_work: list[str] = Field(default_factory=list, max_length=8)
 
-    @field_validator("fallback_action", "decision_path_bound", "state_lifecycle")
-    @classmethod
-    def _trim_text(cls, value: str) -> str:
-        return (value or "").strip()
-
 
 class WorkerTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     worker_id: int = Field(ge=1, le=3)
     role: str = Field(description="Algorithmic Logic Architect, Hyperparameter Tuner, or Opponent Modeler")
     target_files: list[str] = Field(min_length=1)
@@ -53,6 +150,7 @@ class WorkerTask(BaseModel):
     behavior_hypothesis: str = ""
     checks_required: list[str] = Field(default_factory=list)
     merge_policy: str = "disjoint_target_files"
+    architecture_focus_id: str = ""
     worker_prompt: str = Field(min_length=20, description="Detailed instructions for this worker")
     runtime_contract: Optional[RuntimeContract] = Field(
         default=None,
@@ -82,16 +180,12 @@ class WorkerTask(BaseModel):
 
         missing: list[str] = []
         if self.skill_layer in {"runtime_architecture", "native_tcp"}:
-            if contract.decision_budget_ms is None:
-                missing.append("decision_budget_ms")
-            if not contract.fallback_action:
-                missing.append("fallback_action")
-            if not contract.decision_path_bound:
-                missing.append("decision_path_bound")
+            if contract.decision is None:
+                missing.append("decision")
         if self.skill_layer == "precompute" and not contract.precompute_artifacts:
             missing.append("precompute_artifacts")
-        if self.skill_layer in {"match_memory", "opponent_model"} and not contract.state_lifecycle:
-            missing.append("state_lifecycle")
+        if self.skill_layer in {"match_memory", "opponent_model"} and contract.match_memory is None:
+            missing.append("match_memory")
         if missing:
             raise ValueError(
                 f"runtime_contract for skill_layer={self.skill_layer!r} is missing "
@@ -101,10 +195,12 @@ class WorkerTask(BaseModel):
 
 
 class MasterPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     analysis: str = Field(min_length=10)
     targeted_failure: str = Field(min_length=5)
     expected_behavior_change: str = ""
-    do_not_touch: list[str] = []
+    do_not_touch: list[str] = Field(default_factory=list)
     measurement_plan: str = ""
     tasks: list[WorkerTask] = Field(min_length=1, max_length=3)
 

@@ -34,6 +34,17 @@ LLM_INFRA_SENTINEL_MSG = (
 )
 
 
+class MasterInfrastructureError(RuntimeError):
+    """The Master role produced no plan because its LLM transport failed."""
+
+    def __init__(self, source_v, next_v, prompt_digest, issue):
+        self.source_v = source_v
+        self.next_v = next_v
+        self.prompt_digest = prompt_digest
+        self.issue = str(issue)[:500]
+        super().__init__(self.issue)
+
+
 def _render_analysis_section(text: str, default_msg: str) -> str:
     """Map an analyst's raw return into the text injected into the Master prompt.
 
@@ -87,7 +98,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                                match_analysis="", performance_verification="",
                                replay_spotlight="", bot_action_stats="",
                                battle_experience="", exploitability_weaknesses="",
-                               opponent_profiles="", research_proposals=""):
+                               opponent_profiles="", research_proposals="",
+                               architecture_policy=None):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
     # Apply section budgets to avoid experience_pool crowding out match_analysis.
@@ -137,6 +149,16 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         )
     except Exception as exc:
         runtime_feedback = f"National runtime architecture feedback unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+    if isinstance(architecture_policy, dict):
+        try:
+            from runtime_architecture_policy import architecture_policy_prompt
+            architecture_policy_text = architecture_policy_prompt(architecture_policy)
+        except Exception as exc:
+            architecture_policy_text = (
+                f"Runtime architecture policy rendering failed: {type(exc).__name__}: {str(exc)[:200]}"
+            )
+    else:
+        architecture_policy_text = "System-owned runtime architecture policy: not active for this source."
     try:
         from workflow_profiles import get_workflow_profile, profile_summary
         workflow_profile = get_workflow_profile()
@@ -201,6 +223,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"\n{frontier_trimmed}\n"
         f"\nOfficial EXE Compliance Feedback:\n{official_feedback}\n"
         f"\nNational Runtime Architecture Feedback:\n{runtime_feedback}\n"
+        f"\n{architecture_policy_text}\n"
         f"\n{line_budget_text}\n"
     )
     master_log_file = get_logs_dir(next_v) / "master_io.txt"
@@ -242,7 +265,16 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 )
             except Exception:
                 pass
-            return None
+            import hashlib
+
+            raise MasterInfrastructureError(
+                source_v,
+                next_v,
+                hashlib.sha256(
+                    (master_prompt + "\n" + master_ctx).encode("utf-8")
+                ).hexdigest(),
+                f"{type(exc).__name__}: {str(exc)[:400]}",
+            ) from exc
         # A2 (v125 retry-storm fix): classify the parse failure so the log
         # distinguishes NO_FENCE (model never emitted JSON) / NO_JSON (empty) /
         # PARSE_ERROR (had JSON but unparseable) — instead of the undifferentiated
@@ -289,11 +321,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                     import asyncio
                     await asyncio.sleep(2)
                     continue
-                # Retries exhausted: graceful-degradation — keep the last plan
-                # but record a hard error so the gate is visible downstream.
+                # Retries exhausted: fail closed. A malformed plan cannot become
+                # an executable worker contract merely because retries ran out.
                 ui.log_history(
                     f"Master plan still violates schema after {MAX_MASTER_RETRIES} retries; "
-                    "accepting degraded plan.",
+                    "rejecting generation plan.",
                     "error"
                 )
                 try:
@@ -305,10 +337,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                     )
                 except Exception:
                     pass
-                # Graceful degradation: return the last plan (downstream gates
-                # re-validate independently). Do NOT log "complete" success —
-                # the authoritative signal is the error-level system_event above.
-                return data
+                return None
             # SUCCESS path (BUGFIX, root cause of the v107–v127 Master deadlock):
             # the plan parsed with `tasks`, carries no branch_from override, and
             # passed schema validation with NO errors. This `return data` was
@@ -392,6 +421,7 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
 
     recent_losses = []
     close_wins = []
+    from rating_snapshot import _admitted_70_hand_history_sample
 
     with locked_file(MATCH_HISTORY_FILE, "r") as f:
         for line in f:
@@ -401,6 +431,8 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if _admitted_70_hand_history_sample(entry) is None:
                 continue
 
             b0, b1 = entry.get("bot0"), entry.get("bot1")

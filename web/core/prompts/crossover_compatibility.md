@@ -24,6 +24,9 @@ For each parent pair:
 - Parent A rating: {parent_a_rating}
 - Parent B rating: {parent_b_rating}
 - H2H A vs B: {h2h_a_vs_b}
+
+## Runtime Architecture Context
+{architecture_context}
 </data>
 
 <compatibility_rules>
@@ -32,10 +35,14 @@ For each parent pair:
 - Different raise-to-total semantics = HARD CONFLICT
 - Different national protocol legality assumptions = HARD CONFLICT, including
   raise-by-increment, wire-level `bet`, positive raise for all-in, postflop
-  TCP `check-check`, or non-strict re-raise minimums.
+  TCP `check-check`, or re-raises below the official inclusive 2x minimum.
 - Opposite aggression philosophies = SOFT CONFLICT (can merge with careful selection)
 - Different constant naming conventions = SOFT CONFLICT (renaming needed)
 - Complementary strengths (A strong preflop, B strong postflop) = IDEAL merge
+- The child must preserve every parent-A baseline capability and close the
+  system-selected runtime focus. Flag a merge approach that would discard the
+  native stream decoder, bounded match tracker, precompute consumer, or deadline
+  fallback contract.
 </compatibility_rules>
 
 <output_format>

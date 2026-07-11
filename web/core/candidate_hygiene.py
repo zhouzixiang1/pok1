@@ -44,7 +44,11 @@ def sanitize_candidate_dir(
         should_overwrite = overwrite_native_entry
         entry_path = root / "national_bot.py"
         if not should_overwrite and entry_path.exists():
-            contract_errors = check_native_contract(root)
+            contract_errors = check_native_contract(
+                root,
+                require_current_stream_decoder=True,
+                require_current_decision_runtime=True,
+            )
             result["native_entry_contract_errors"] = contract_errors[:20]
             should_overwrite = bool(contract_errors)
         entry = ensure_native_entry(root, overwrite=should_overwrite)

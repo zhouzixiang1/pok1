@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 import re
-from engine.deck import Card, cards_to_str, str_to_cards
+try:
+    from ..engine.deck import Card, cards_to_str, str_to_cards
+except ImportError:  # Standalone ``cd sever`` compatibility.
+    from engine.deck import Card, cards_to_str, str_to_cards
 
 
 # ── 服务器 → 客户端 ────────────────────────────────────────

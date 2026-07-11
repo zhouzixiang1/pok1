@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,77 @@ def _eligible_test_parents(monkeypatch):
 
 def _tool_json(result):
     return json.loads(result["content"][0]["text"])
+
+
+def test_crossover_compatibility_uses_glicko_r_stable_h2h_and_architecture_context(
+    tmp_path,
+    monkeypatch,
+):
+    import audit_agents
+    import evidence_snapshot
+    import evolution_infra
+
+    parent_a = tmp_path / "national_v7"
+    parent_b = tmp_path / "national_v1"
+    for path in (parent_a, parent_b):
+        path.mkdir()
+        for name in ("strategy.py", "postflop.py", "constants.py"):
+            (path / name).write_text(f"# {path.name} {name}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        audit_agents,
+        "get_bot_dir",
+        lambda version: parent_a if int(version) == 7 else parent_b,
+    )
+    monkeypatch.setattr(audit_agents, "get_logs_dir", lambda _version: tmp_path)
+    monkeypatch.setattr(
+        evolution_infra,
+        "load_ratings",
+        lambda: {
+            "national_v7": SimpleNamespace(r=1600.0, rd=55.0),
+            "national_v1": SimpleNamespace(r=1510.0, rd=70.0),
+        },
+    )
+    monkeypatch.setattr(
+        evidence_snapshot,
+        "load_generation_h2h_snapshot",
+        lambda _target: {
+            "national_v1 vs national_v7": {
+                "games": 120,
+                "a_wins": 52,
+                "b_wins": 68,
+                "draws": 0,
+            }
+        },
+    )
+    captured = {}
+
+    async def fake_query(prompt, *_args, **_kwargs):
+        captured["prompt"] = prompt
+        return json.dumps({
+            "compatible": True,
+            "compatibility_score": 8,
+            "conflict_areas": [],
+            "suggested_merge_approach": "Preserve parent A runtime and import one strategy helper.",
+            "files_to_take_from_a": ["strategy.py"],
+            "files_to_take_from_b": ["postflop.py"],
+        }), 0.0, {}
+
+    monkeypatch.setattr(audit_agents, "run_claude_query", fake_query)
+
+    result = asyncio.run(audit_agents._run_crossover_compatibility_audit(
+        7,
+        1,
+        SimpleNamespace(),
+        target_v=25,
+        architecture_context={"selected_focus": "incremental_match_model"},
+    ))
+
+    assert result["compatible"] is True
+    assert "1600.0 ± 55.0" in captured["prompt"]
+    assert "games=120, a_wins=52, b_wins=68" in captured["prompt"]
+    assert "incremental_match_model" in captured["prompt"]
+    assert "See ratings above" not in captured["prompt"]
 
 
 def test_crossover_incompatibility_cache_roundtrip():
@@ -113,7 +185,7 @@ def test_run_crossover_incompatible_pair_records_and_abandons(tmp_path, monkeypa
             25: target_dir,
         }[int(version)]
 
-    async def _compat(_parent_a, _parent_b, _ui):
+    async def _compat(_parent_a, _parent_b, _ui, **_kwargs):
         return {
             "compatible": False,
             "compatibility_score": 3,
@@ -189,7 +261,7 @@ def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
             25: target_dir,
         }[int(version)]
 
-    async def _compat(_parent_a, _parent_b, _ui):
+    async def _compat(_parent_a, _parent_b, _ui, **_kwargs):
         # Compatibility passes; the failure is the LLM itself timing out.
         return {"compatible": True, "compatibility_score": 8}
 
@@ -261,7 +333,7 @@ def test_run_crossover_records_prepare_scope_files(tmp_path, monkeypatch):
             25: target_dir,
         }[int(version)]
 
-    async def _compat(_parent_a, _parent_b, _ui):
+    async def _compat(_parent_a, _parent_b, _ui, **_kwargs):
         return {"compatible": True, "compatibility_score": 8}
 
     async def _crossover_ok(*_args, **_kwargs):
@@ -323,7 +395,7 @@ def test_run_crossover_routes_position_semantics_failure_to_repair(tmp_path, mon
             25: target_dir,
         }[int(version)]
 
-    async def _compat(_parent_a, _parent_b, _ui):
+    async def _compat(_parent_a, _parent_b, _ui, **_kwargs):
         return {"compatible": True, "compatibility_score": 8}
 
     async def _crossover_ok(*_args, **_kwargs):

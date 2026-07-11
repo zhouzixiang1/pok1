@@ -17,13 +17,13 @@ LogFunc = Callable[[str, str, str, dict[str, Any]], None]
 
 
 def _push_once(git: GitFunc, refs: tuple[str, ...]) -> tuple[bool, list[dict[str, str]]]:
-    errors: list[dict[str, str]] = []
-    for ref in refs:
-        try:
-            git("push", "origin", ref)
-        except Exception as exc:
-            errors.append({"ref": ref, "error": str(exc)[:500]})
-    return not errors, errors
+    if not refs:
+        return True, []
+    try:
+        git("push", "--atomic", "origin", *refs)
+        return True, []
+    except Exception as exc:
+        return False, [{"refs": " ".join(refs), "error": str(exc)[:500]}]
 
 
 def _rev_count(git: GitFunc) -> tuple[int, int]:

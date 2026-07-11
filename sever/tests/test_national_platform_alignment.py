@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -58,6 +59,34 @@ def test_postflop_first_raise_after_check_has_minimum_and_positive_amount():
         assert not ok
 
     assert validate_action("raise", 100, checked) == (True, "")
+
+
+def test_official_oracle_accepts_exact_2x_reraise_and_rejects_below_boundary():
+    fixture_path = ROOT / "sever" / "tests" / "fixtures" / "official_raise_boundary_oracle_20260711.json"
+    oracle = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    assert oracle["official_exe_sha256"] == (
+        "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
+    )
+    assert oracle["exact_2x_raw_wire_sha256"] == (
+        "dc9dffa1121bee77bab1478842b7f336e1d4a72686e2ad7cbf322ed077bf85f3"
+    )
+    assert {row["big_blind_conn"] for row in oracle["observations"]} == {"A", "B"}
+    assert all(sum(row["settlements"].values()) == 0 for row in oracle["observations"])
+
+    facing_raise = _state(
+        stage="preflop",
+        actions=[("raise", 200)],
+        player_bet=100,
+        opponent_bet=200,
+        is_small_blind=False,
+        is_big_blind=True,
+        player_action_count=0,
+    )
+    assert validate_action("raise", 400, facing_raise) == (True, "")
+    ok, reason = validate_action("raise", 399, facing_raise)
+    assert not ok
+    assert ">= 2x" in reason
 
 
 def test_thp_hand_line_uses_big_blind_order_for_cards_earnings_and_players():
@@ -120,13 +149,47 @@ def test_game_engine_action_event_records_server_wait_and_timeout_budget():
 
         engine._recv_action = recv_action
         await engine._run_hand(1)
-        return next(event for event in events if event.get("type") == "action")
+        return events
 
-    event = asyncio.run(run())
+    events = asyncio.run(run())
+    request = next(event for event in events if event.get("type") == "action_requested")
+    event = next(event for event in events if event.get("type") == "action")
 
+    assert request["player_idx"] == 0
+    assert request["deadline_epoch_ms"] > 0
+    assert request["timeout_budget_sec"] == 60.0
     assert event["action"] == "fold"
     assert event["decision_wait_sec"] >= 0.0
     assert event["timeout_budget_sec"] == 60.0
+
+
+def test_game_engine_observer_hole_cards_do_not_change_tcp_payloads():
+    async def run():
+        sent = []
+        events = []
+
+        async def send(player_idx, message):
+            sent.append((player_idx, message))
+
+        async def broadcast(event):
+            events.append(event)
+
+        engine = GameEngine(send_func=send, broadcast_func=broadcast)
+        engine.players[0].name = "A"
+        engine.players[1].name = "B"
+
+        async def recv_action(_player_idx):
+            return "fold"
+
+        engine._recv_action = recv_action
+        await engine._run_hand(1)
+        cards = next(event for event in events if event.get("type") == "cards_dealt")
+        return sent, cards
+
+    sent, cards = asyncio.run(run())
+    assert len(cards["hole_cards"]) == 2
+    assert all(len(hand) == 2 for hand in cards["hole_cards"])
+    assert all("hole_cards" not in message for _idx, message in sent)
 
 
 def test_allin_runout_records_public_cards_in_thp():

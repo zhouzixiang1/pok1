@@ -19,6 +19,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version
+from strength_order import match_score
 from system_log import log_system_event, SYSTEM_EVENTS_FILE
 
 log = logging.getLogger("pok.scheduler")
@@ -53,7 +54,7 @@ def _save_committed_bot_fingerprint(committed_v: int) -> str:
     return committed_bot
 
 
-def _wilson_lower_bound(wins, games, z=1.96):
+def _wilson_lower_bound(points, games, z=1.96):
     """95% lower confidence bound on the true win rate (Wilson score interval).
 
     Used by the H2H anomaly detector (prepare_generation) so small-sample
@@ -64,7 +65,7 @@ def _wilson_lower_bound(wins, games, z=1.96):
     """
     if games <= 0:
         return 0.0
-    p = wins / games
+    p = points / games
     denom = 1.0 + z * z / games
     center = (p + z * z / (2 * games)) / denom
     margin = z * ((p * (1 - p) + z * z / (4 * games)) / games) ** 0.5 / denom
@@ -345,6 +346,44 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
+    # Freeze all H2H facts before any planning/analysis role runs. The rating
+    # daemon remains asynchronous, but this generation now has one immutable,
+    # digest-checked cutoff for combined analysis, anomaly detection, Master,
+    # audits, Reviewer, and Critic.
+    try:
+        from evidence_snapshot import (
+            ensure_generation_h2h_snapshot,
+            load_generation_h2h_snapshot,
+        )
+
+        h2h_snapshot = ensure_generation_h2h_snapshot(_planned_next_v)
+        if not h2h_snapshot.get("available"):
+            log_system_event(
+                "pipeline.h2h_snapshot_unavailable",
+                "error",
+                f"Cannot freeze H2H evidence for v{_planned_next_v}",
+                {
+                    "next_v": _planned_next_v,
+                    "reason": h2h_snapshot.get("reason"),
+                    "issues": h2h_snapshot.get("issues", [])[:10],
+                },
+            )
+            if ui:
+                ui.log_history(
+                    f"H2H evidence snapshot unavailable: {h2h_snapshot.get('reason')}",
+                    "error",
+                )
+            return None
+        frozen_h2h = load_generation_h2h_snapshot(_planned_next_v)
+    except Exception as exc:
+        log_system_event(
+            "pipeline.h2h_snapshot_failed",
+            "error",
+            f"H2H evidence snapshot failed for v{_planned_next_v}",
+            {"next_v": _planned_next_v, "error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+        )
+        return None
+
     # Load prev critic insights from archive
     prev_critic_info = ""
     try:
@@ -370,7 +409,14 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     from agent_master import _analyze_recent_matches
 
     combined_result, match_result = await asyncio.gather(
-        _run_combined_analysis(active_v, active_bots, ratings, ui, prev_critic_info),
+        _run_combined_analysis(
+            active_v,
+            active_bots,
+            ratings,
+            ui,
+            prev_critic_info,
+            frozen_h2h,
+        ),
         _analyze_recent_matches(active_v, ui),
         return_exceptions=True,
     )
@@ -485,9 +531,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # correction compute_h2h_avg_winrate (tool_helpers) already applies.
     if combined:
         try:
-            from evolution_infra import H2H_FILE
-            if H2H_FILE.exists():
-                h2h_data = json.loads(H2H_FILE.read_text())
+            if frozen_h2h:
+                h2h_data = frozen_h2h
                 regressions = []    # active_v LOSING — genuine concern for Master
                 dominations = []    # active_v WINNING — informational only, NOT "attention"
                 v_key = bot_name(active_v)
@@ -505,9 +550,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     else:
                         bot_wins = pair_data.get("b_wins", 0)
                         opp = parts[0]
-                    wr = bot_wins / games
+                    draws = int(pair_data.get("draws", 0) or 0)
+                    wr = match_score(bot_wins, draws, games)
+                    if wr is None:
+                        continue
                     delta = wr - 0.5
-                    lb = _wilson_lower_bound(bot_wins, games)
+                    lb = _wilson_lower_bound(bot_wins + 0.5 * draws, games)
                     entry = {
                         "opponent": opp,
                         "win_rate": round(wr, 3),
@@ -621,6 +669,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     "abandoned_floor": _abandoned_floor,
                     "parent_a": parents[0] if parents else None,
                     "parent_b": parent2_v,
+                    "h2h_snapshot_manifest_digest": h2h_snapshot.get("manifest_digest"),
+                    "h2h_snapshot_sha256": h2h_snapshot.get("sha256"),
                 }
             },
         )
@@ -1125,6 +1175,13 @@ def _get_unified_leader_v(ratings):
         selection_scores = load_selection_scores()
     except Exception:
         selection_scores = {}
+    try:
+        from tool_helpers import load_selection_order_keys
+        selection_order_keys = load_selection_order_keys()
+    except Exception:
+        # Chip magnitude is a secondary tie-breaker.  A missing/corrupt chip
+        # snapshot must never discard the authoritative match-result score.
+        selection_order_keys = {}
 
     def _score(name):
         raw = selection_scores.get(name)
@@ -1141,7 +1198,13 @@ def _get_unified_leader_v(ratings):
         except Exception:
             return float("-inf")
 
-    best_bot = max(eligible_bots, key=lambda b: (_score(b), _parse_branch_from(b) or -1))
+    def _order_key(name):
+        primary = _score(name)
+        recorded = selection_order_keys.get(name)
+        secondary = tuple(recorded[1:]) if recorded and float(recorded[0]) == primary else ()
+        return (primary, *secondary, _parse_branch_from(name) or -1)
+
+    best_bot = max(eligible_bots, key=_order_key)
     try:
         return int(best_bot.split("_v")[1])
     except (ValueError, IndexError):
@@ -1248,6 +1311,13 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
         return None
     strength = load_selection_scores()
     try:
+        from tool_helpers import load_selection_order_keys
+        strength_order = load_selection_order_keys()
+    except Exception:
+        # Preserve primary selection when optional secondary evidence is not
+        # available.  Crossover must not fail because chip telemetry is absent.
+        strength_order = {}
+    try:
         from candidate_store import count_candidate_children
 
         def _child_count(bot_name):
@@ -1295,7 +1365,11 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
 
     ranked = sorted(
         active,
-        key=lambda b: (_adjusted_strength(b), strength.get(b, 0.0)),
+        key=lambda b: (
+            _adjusted_strength(b),
+            strength.get(b, 0.0),
+            *(tuple(strength_order.get(b, ()))[1:]),
+        ),
         reverse=True,
     )
     if len(ranked) < 2:
@@ -1591,6 +1665,8 @@ def _finalize_bare_commit(v, ckpt=None):
                 "certificate_digest": official_status.get("certificate_digest"),
                 "candidate_hash": identity.get("candidate_hash"),
                 "policy_id": official_status.get("policy_id"),
+                "certificate_path": official_status.get("certificate_path"),
+                "certification_identity": identity,
             }
         git_commit_bot(
             v,

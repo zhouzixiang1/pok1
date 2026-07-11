@@ -10,7 +10,6 @@ one set of fields for both the dashboard and the evolution tools.
 from __future__ import annotations
 
 import json
-import math
 import re
 from pathlib import Path
 from typing import Any
@@ -104,17 +103,57 @@ def _iter_match_history(path: Path):
             yield entry
 
 
+def _admitted_70_hand_history_sample(entry: dict[str, Any]) -> list[int] | None:
+    """Return proven strength samples, otherwise fail the history row closed."""
+
+    if (
+        entry.get("strength_sample_unit") != "70_hand_match"
+        or int(entry.get("hands_per_strength_sample", 0) or 0) != 70
+        or entry.get("strength_admitted") is not True
+        or entry.get("strength_complete") is not True
+        or entry.get("strength_compliance_passed") is not True
+    ):
+        return None
+    raw_samples = entry.get("net_chips_bot0")
+    if not isinstance(raw_samples, list):
+        return None
+    try:
+        samples = [int(value) for value in raw_samples]
+        wins = int(entry.get("bot0_wins", 0) or 0)
+        losses = int(entry.get("bot1_wins", 0) or 0)
+        draws = int(entry.get("draws", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if not samples:
+        return None
+    if int(entry.get("strength_sample_count", -1) or 0) != len(samples):
+        return None
+    from strength_order import summarize_70_hand_net_chips
+
+    summary = summarize_70_hand_net_chips(samples)
+    if (
+        summary["samples"] != wins + losses + draws
+        or summary["positive_matches"] != wins
+        or summary["negative_matches"] != losses
+        or summary["zero_matches"] != draws
+    ):
+        return None
+    return samples
+
+
 def reconstruct_h2h_from_match_history(
     active_bots: list[str] | set[str] | tuple[str, ...],
     match_history_path: Path | str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Rebuild active-pool H2H from append-only match history."""
+    """Rebuild active-pool H2H from admitted national strength history only."""
     active = set(active_bots or [])
     if len(active) < 2:
         return {}
     path = Path(match_history_path) if match_history_path is not None else _default_match_history_file()
     rebuilt: dict[str, dict[str, Any]] = {}
     for entry in _iter_match_history(path) or []:
+        if _admitted_70_hand_history_sample(entry) is None:
+            continue
         bot_a = entry.get("bot0") or entry.get("bot_a")
         bot_b = entry.get("bot1") or entry.get("bot_b")
         if bot_a not in active or bot_b not in active:
@@ -124,6 +163,34 @@ def reconstruct_h2h_from_match_history(
         draws = entry.get("draws", 0)
         _add_pair_result(rebuilt, str(bot_a), str(bot_b), int(wins_a or 0), int(wins_b or 0), int(draws or 0))
     return rebuilt
+
+
+def national_chip_metrics_from_match_history(
+    active_bots: list[str] | set[str] | tuple[str, ...],
+    match_history_path: Path | str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Aggregate the secondary chip signal from complete 70-hand samples only."""
+
+    from strength_order import summarize_70_hand_net_chips
+
+    active = set(active_bots or [])
+    path = Path(match_history_path) if match_history_path is not None else _default_match_history_file()
+    samples_by_bot: dict[str, list[int]] = {name: [] for name in active}
+    for entry in _iter_match_history(path) or []:
+        bot_a = str(entry.get("bot0") or "")
+        bot_b = str(entry.get("bot1") or "")
+        if bot_a not in active or bot_b not in active or bot_a == bot_b:
+            continue
+        samples = _admitted_70_hand_history_sample(entry)
+        if samples is None:
+            continue
+        samples_by_bot[bot_a].extend(samples)
+        samples_by_bot[bot_b].extend(-value for value in samples)
+    return {
+        name: summarize_70_hand_net_chips(samples)
+        for name, samples in samples_by_bot.items()
+        if samples
+    }
 
 
 def h2h_coverage(h2h_data: dict[str, Any], active_bots: list[str] | set[str] | tuple[str, ...]) -> dict[str, Any]:
@@ -295,6 +362,7 @@ def build_strength_rows(
     coverage_meta = selected["coverage"]
     opponents_total = max(0, len(active) - 1)
     bot_stats_data = bot_stats_data or {}
+    chip_metrics = national_chip_metrics_from_match_history(active, match_history_path)
 
     rows: list[dict[str, Any]] = []
     for name in active:
@@ -329,6 +397,7 @@ def build_strength_rows(
         )
         strength_conf = _strength_confidence(h2h_coverage_ratio, total_games, rd, opponents_total)
         selection_score, selection_penalty = _selection_score(score, strength_conf)
+        chip_summary = chip_metrics.get(name, {})
         conservative = r - 2 * rd
         display_rd = round(rd, 1)
         row = {
@@ -352,6 +421,22 @@ def build_strength_rows(
             "leaderboard_score": round(score, 4),
             "selection_score": round(selection_score, 4),
             "selection_penalty": round(selection_penalty, 4),
+            "primary_70_hand_match_score": (
+                round(h2h_weighted_wr, 4)
+                if h2h_weighted_wr is not None
+                else stats_wr
+            ),
+            "secondary_net_chips_total": chip_summary.get("secondary_net_chips_total"),
+            "secondary_net_chips_mean": (
+                round(float(chip_summary["secondary_net_chips_mean"]), 2)
+                if chip_summary.get("secondary_net_chips_mean") is not None
+                else None
+            ),
+            "strength_sample_count": int(chip_summary.get("samples", 0) or 0),
+            "strength_order_contract": [
+                "70_hand_positive_result",
+                "net_chips_magnitude",
+            ],
             "rank_basis": basis,
             "strength_confidence": strength_conf,
             "strength_note": _strength_note(
@@ -366,15 +451,10 @@ def build_strength_rows(
         }
         rows.append(row)
 
+    from strength_order import strength_order_key
+
     rows.sort(
-        key=lambda row: (
-            row["selection_score"],
-            row["leaderboard_score"],
-            row["h2h_avg_wr"] if row["h2h_avg_wr"] is not None else -math.inf,
-            row["conservative_rating"],
-            row["rating"],
-            _version_key(row["name"]),
-        ),
+        key=lambda row: (*strength_order_key(row), _version_key(row["name"])),
         reverse=True,
     )
     for idx, row in enumerate(rows, start=1):

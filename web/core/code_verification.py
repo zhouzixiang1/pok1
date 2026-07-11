@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from bot_namespace import bot_name
+from gate_execution import GateExecution
 from evolution_infra import (
     CORE_DIR, PROJECT_ROOT, REFERENCE_DIR, RESULTS_DIR,
     MAX_LINES_PER_FILE, MAX_LINES_HELPER, MAX_LINES_HARD_CAP,
@@ -50,7 +51,7 @@ def _has_embedded_selftest(path: Path) -> bool:
     return "__main__" in text and ("self-test" in lowered or "selftest" in lowered)
 
 
-def run_bot_embedded_self_tests(bot_dir, timeout: float = 20.0):
+def run_bot_embedded_self_tests_execution(bot_dir, timeout: float = 20.0):
     """Run safe module-level bot self-tests.
 
     Only modules with explicit self-test markers are executed. Entry points that
@@ -59,7 +60,8 @@ def run_bot_embedded_self_tests(bot_dir, timeout: float = 20.0):
     """
 
     root = Path(bot_dir)
-    errors = []
+    candidate_errors = []
+    infrastructure_errors = []
     for module_name in EMBEDDED_SELFTEST_MODULES:
         path = root / module_name
         if not path.exists() or not _has_embedded_selftest(path):
@@ -74,15 +76,41 @@ def run_bot_embedded_self_tests(bot_dir, timeout: float = 20.0):
             )
         except subprocess.TimeoutExpired as exc:
             output = _compact_process_output(exc.stdout or "", exc.stderr or "")
-            errors.append(f"{module_name}: timeout after {timeout:.0f}s: {output}")
+            candidate_errors.append(f"{module_name}: timeout after {timeout:.0f}s: {output}")
             continue
         except Exception as exc:
-            errors.append(f"{module_name}: self-test runner error {type(exc).__name__}: {str(exc)[:300]}")
+            infrastructure_errors.append(
+                f"{module_name}: self-test runner error {type(exc).__name__}: {str(exc)[:300]}"
+            )
             continue
         if proc.returncode != 0:
             output = _compact_process_output(proc.stdout, proc.stderr)
-            errors.append(f"{module_name}: exit {proc.returncode}: {output}")
-    return errors
+            candidate_errors.append(f"{module_name}: exit {proc.returncode}: {output}")
+    identity = {"timeout": timeout, "modules": list(EMBEDDED_SELFTEST_MODULES)}
+    if infrastructure_errors:
+        return GateExecution.infrastructure(
+            "embedded_selftest_runner",
+            "embedded_selftest",
+            infrastructure_errors,
+            identity=identity,
+        )
+    if candidate_errors:
+        return GateExecution.candidate_failure(
+            "embedded_selftests",
+            "embedded_selftest",
+            candidate_errors,
+            identity=identity,
+        )
+    return GateExecution.passed(
+        "embedded_selftests",
+        "embedded_selftest",
+        identity=identity,
+    )
+
+
+def run_bot_embedded_self_tests(bot_dir, timeout: float = 20.0):
+    """Backward-compatible issue list; use the execution API in hard gates."""
+    return run_bot_embedded_self_tests_execution(bot_dir, timeout=timeout).issues
 
 
 def _get_adaptive_limit(filename, base_limit, source_dir=None):
@@ -698,25 +726,21 @@ def verify_code(directory, target_files=None):
                     if proc.returncode != 0:
                         errors.append(proc.stderr.strip())
 
-    # AST-based dead code detection (advisory, non-blocking on failure)
-    try:
-        _ast_errors = _detect_dead_code_ast(directory, target_files)
-        errors.extend(_ast_errors)
-    except Exception:
-        pass  # AST analysis failures must not block the pipeline
+    # The detector may produce advisory findings, but failure to execute the
+    # trusted detector is infrastructure failure.  Let the quality boundary
+    # classify the exception instead of silently certifying unchecked code.
+    _ast_errors = _detect_dead_code_ast(directory, target_files)
+    errors.extend(_ast_errors)
 
     # fix-3: inline placement-shadow TRUE-SHADOW check (eliminates dual-path).
     # Previously only run_quality_gates called detect_placement_shadow_warnings;
     # verify_code did not. This means a bot could pass verify_code but still
     # have TRUE-SHADOW issues that run_quality_gates would catch -- a confusing
     # dual-path. Now verify_code also flags TRUE-SHADOW so the gate is unified.
-    try:
-        _shadow = detect_placement_shadow_warnings(directory, target_files)
-        for w in _shadow:
-            if 'TRUE SHADOW' in w:
-                errors.append(w)
-    except Exception:
-        pass  # placement-shadow analysis failures must not block the pipeline
+    _shadow = detect_placement_shadow_warnings(directory, target_files)
+    for w in _shadow:
+        if 'TRUE SHADOW' in w:
+            errors.append(w)
 
     return errors
 

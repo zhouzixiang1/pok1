@@ -146,7 +146,7 @@ class TestNemesisSlot:
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", True)
 
-        opponents = tool_helpers._select_precommit_opponents(99, 98)
+        opponents = tool_helpers._select_precommit_opponents(99, 98, max_top=1)
         names = [o["name"] for o in opponents]
         reasons = {o["name"]: o["reason"] for o in opponents}
         # vA is the distinct nemesis (next-worst after vB).
@@ -513,6 +513,25 @@ class TestNemesisArchive:
             active, h2h, min_games=4
         )
         assert "claude_v1" not in nemesis_of  # below min_games
+
+    def test_all_draw_h2h_is_neutral_not_a_false_nemesis(self):
+        active = ["national_v1", "national_v2"]
+        h2h = {
+            "national_v1 vs national_v2": {
+                "games": 20,
+                "a_wins": 0,
+                "b_wins": 0,
+                "draws": 20,
+            },
+        }
+
+        nemesis_of, champions = nemesis_archive.compute_nemesis_relationships(
+            active,
+            h2h,
+        )
+
+        assert nemesis_of == {}
+        assert champions == {}
 
     def test_write_then_read(self, tmp_path, monkeypatch):
         monkeypatch.setattr(nemesis_archive, "NEMESIS_ARCHIVE_FILE", tmp_path / "nemesis.json")

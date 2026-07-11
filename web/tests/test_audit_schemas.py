@@ -311,17 +311,18 @@ class TestRunCriticRegressionGuardianInline:
 
         # Guardian was awaited (synchronous, not fire-and-forget)
         mock_guardian.assert_awaited_once()
-        # Critic is a hard strategy gate before precommit.
-        assert res["approved"] is False
+        # Critic findings are preserved as advisory evidence; the reproducible
+        # native-TCP precommit evaluation remains the strategy hard gate.
+        assert res["approved"] is True
         assert res["advisory_approved"] is False
         assert res["advisory_score"] == 3.0
         assert res["score"] == 3.0
-        assert res["action"] == "retry_workers"
-        assert "CRITIC_REJECTION" in res["reviewer_feedback"]
+        assert res["action"] == "proceed_to_precommit"
+        assert res["reviewer_feedback"] == ""
         gate_call = tool_gates._record_gate.call_args
-        assert gate_call.kwargs["stage"] == "repair_planned"
-        assert gate_call.kwargs["generation_attempt"] == 1
-        assert "CRITIC_REJECTION" in gate_call.kwargs["reviewer_feedback"]
+        assert gate_call.kwargs["stage"] == "critic_checked"
+        assert gate_call.kwargs["generation_attempt"] == 0
+        assert gate_call.kwargs["reviewer_feedback"] == ""
         # Diagnosis is visible to the Orchestrator in the result
         assert "regression_guardian" in res
         rg = res["regression_guardian"]
@@ -343,10 +344,10 @@ class TestRunCriticRegressionGuardianInline:
         # Must not raise
         res = self._call(tool_gates, args)
 
-        assert res["approved"] is False
+        assert res["approved"] is True
         assert res["advisory_approved"] is False
         assert res["advisory_score"] == 2.0
-        assert res["action"] == "retry_workers"
+        assert res["action"] == "proceed_to_precommit"
         # No diagnosis merged when the guardian threw
         assert "regression_guardian" not in res
 
@@ -363,6 +364,6 @@ class TestRunCriticRegressionGuardianInline:
         res = self._call(tool_gates, args)
 
         assert res["approved"] is True
-        assert res["action"] == "approve"
+        assert res["action"] == "proceed_to_precommit"
         mock_guardian.assert_not_awaited()
         assert "regression_guardian" not in res

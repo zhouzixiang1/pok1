@@ -157,47 +157,28 @@ frontend_static_ready() {
     [ -f "web/server/static/index.html" ] && [ -d "web/server/static/assets" ]
 }
 
-default_official_opponent_path() {
-    if [ -d "$ROOT_REAL/bots/national_v70" ]; then
-        echo "$ROOT_REAL/bots/national_v70"
-    elif [ -d "$ROOT_REAL/bots/national_v76" ]; then
-        echo "$ROOT_REAL/bots/national_v76"
-    elif [ -d "$ROOT_REAL/archive/cleanup_20260708/reference_snapshots/national_v70" ]; then
-        echo "$ROOT_REAL/archive/cleanup_20260708/reference_snapshots/national_v70"
-    elif [ -d "$ROOT_REAL/../bots/national_v70" ]; then
-        readlink -f "$ROOT_REAL/../bots/national_v70"
-    elif [ -d "$ROOT_REAL/../bots/national_v76" ]; then
-        readlink -f "$ROOT_REAL/../bots/national_v76"
-    else
-        echo ""
-    fi
-}
-
 configure_evolution_publish_env() {
-    local official_opponent_default
-    official_opponent_default="$(default_official_opponent_path)"
     : "${POK_EVOLUTION_RUNTIME:=1}"
     : "${POK_REQUIRE_EVOLUTION_PUSH:=$POK_EVOLUTION_RUNTIME}"
     : "${EVOLUTION_GIT_PUSH:=$POK_REQUIRE_EVOLUTION_PUSH}"
     : "${POK_OFFICIAL_REQUIRED:=1}"
-    : "${POK_OFFICIAL_SMOKE_GATE:=queue}"
+    : "${POK_OFFICIAL_SMOKE_GATE:=1}"
     : "${POK_OFFICIAL_PRECOMMIT_GATE:=1}"
-    : "${POK_OFFICIAL_ACCEPTANCE_GATE:=0}"
     : "${POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS:=1}"
     : "${POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS:=1}"
     : "${POK_OFFICIAL_PRECOMMIT_TARGET_HANDS:=10}"
-    : "${POK_OFFICIAL_SELF_PLAY_ROUNDS:=1}"
-    : "${POK_OFFICIAL_OPPONENT_ROUNDS:=1}"
-    : "${POK_OFFICIAL_TARGET_HANDS:=70}"
-    : "${POK_OFFICIAL_OPPONENT:=$official_opponent_default}"
+    : "${POK_OFFICIAL_JOB_RECONCILER:=1}"
+    # An explicit value is only a preference. Python validates it against the
+    # content-bound official-opponent policy and otherwise selects an eligible
+    # active bot; the launcher must never inject a legacy path as a bypass.
+    : "${POK_OFFICIAL_OPPONENT:=}"
     : "${POK_ACTIVE_NATIVE_CONTRACT_FILTER:=1}"
     export \
         POK_EVOLUTION_RUNTIME POK_REQUIRE_EVOLUTION_PUSH EVOLUTION_GIT_PUSH \
         POK_OFFICIAL_REQUIRED POK_OFFICIAL_SMOKE_GATE POK_OFFICIAL_PRECOMMIT_GATE \
-        POK_OFFICIAL_ACCEPTANCE_GATE POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS \
+        POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS \
         POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS POK_OFFICIAL_PRECOMMIT_TARGET_HANDS \
-        POK_OFFICIAL_SELF_PLAY_ROUNDS POK_OFFICIAL_OPPONENT_ROUNDS \
-        POK_OFFICIAL_TARGET_HANDS POK_OFFICIAL_OPPONENT \
+        POK_OFFICIAL_JOB_RECONCILER POK_OFFICIAL_OPPONENT \
         POK_ACTIVE_NATIVE_CONTRACT_FILTER
 }
 
@@ -219,6 +200,15 @@ kill_orphan() {
         fi
     fi
     rm -f "$PID_FILE"
+}
+
+cleanup_arena_orphans() {
+    if [ "${POKCTL_SKIP_ARENA_CLEANUP:-0}" = "1" ]; then
+        return 0
+    fi
+    if [ -f "scripts/national_arena.py" ]; then
+        "$PYTHON" scripts/national_arena.py cleanup-orphans >/dev/null 2>&1 || true
+    fi
 }
 
 # ── 子命令 ──
@@ -312,6 +302,7 @@ cmd_stop() {
                 return 0
             fi
         else
+            cleanup_arena_orphans
             return 0
         fi
     fi
@@ -319,6 +310,7 @@ cmd_stop() {
     if ! is_alive "$pid"; then
         echo "服务未运行 (PID $pid 已不存在)"
         rm -f "$PID_FILE"
+        cleanup_arena_orphans
         return 0
     fi
     if ! pid_is_checkout_server "$pid"; then
@@ -393,6 +385,7 @@ PY
         exit 1
     else
         rm -f "$PID_FILE"
+        cleanup_arena_orphans
         echo "服务已停止 ✓"
     fi
 }

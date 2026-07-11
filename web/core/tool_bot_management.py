@@ -282,6 +282,11 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
     """
     from evolution_core import PIPELINE_STATE_FILE
     checkpoint = read_pipeline_checkpoint() if PIPELINE_STATE_FILE.exists() else None
+    infra_failure = (
+        dict(checkpoint.get("infra_failure"))
+        if isinstance(checkpoint, dict) and isinstance(checkpoint.get("infra_failure"), dict)
+        else None
+    )
     blocked = _generic_abandon_stage_block(checkpoint, reason)
     if blocked:
         try:
@@ -369,15 +374,20 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
             from evolution_infra import RESULTS_DIR
             ab_file = RESULTS_DIR / "abandoned_versions.jsonl"
             with open(ab_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"v": abandoned_v, "reason": reason,
-                                    "timestamp": __import__("time").time()}) + "\n")
+                f.write(json.dumps({
+                    "v": abandoned_v,
+                    "reason": reason,
+                    "timestamp": __import__("time").time(),
+                    "infra_failure": infra_failure,
+                }) + "\n")
         except Exception:
             pass
 
     log_system_event("pipeline.abandoned", "warn",
                      f"Abandoned generation ({reason}, dir={removed_dir})",
                      {"removed_dir": removed_dir, "cleared_checkpoint": cleared_checkpoint,
-                      "reason": reason, "abandoned_v": abandoned_v})
+                      "reason": reason, "abandoned_v": abandoned_v,
+                      "infra_failure": infra_failure})
     # A4: update rate-limit timestamp on successful abandon.
     _LAST_ABANDON_TS[0] = now
     _LAST_ABANDON_TS[1] = reason
@@ -387,6 +397,7 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
         "cleared_checkpoint": cleared_checkpoint,
         "removed_directory": removed_dir,
         "reason": reason,
+        "infra_failure": infra_failure,
         "abandoned_v": abandoned_v,
     }
 

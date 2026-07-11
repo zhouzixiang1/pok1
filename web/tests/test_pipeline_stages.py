@@ -1143,6 +1143,83 @@ class TestWorkerFailureCircuitBreaker:
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["worker_failure_count"] == 2
 
+    def test_worker_llm_failure_uses_infrastructure_overlay_and_clean_retry(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+        import agent_workers
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("value = 0\n")
+        (next_dir / "strategy.py").write_text("value = 0\n")
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
+        state = json.loads(ckpt_file.read_text())
+        state["master_plan"]["tasks"] = [{
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy.py"],
+            "worker_prompt": "implement the planned strategy change",
+        }]
+        ckpt_file.write_text(json.dumps(state))
+        monkeypatch.setattr(
+            tool_planning,
+            "get_bot_dir",
+            lambda version: source_dir if int(version) == 10 else next_dir,
+        )
+
+        async def fail_worker(*_args, **_kwargs):
+            raise agent_workers.WorkerInfrastructureError(
+                1, "Algorithmic Logic Architect", ["sdk stream stalled"]
+            )
+
+        async def run_failure():
+            with patch.object(tool_planning, "_execute_workers", side_effect=fail_worker):
+                return await tool_planning.execute_workers.handler({
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+
+        failed = json.loads(asyncio.run(run_failure())["content"][0]["text"])
+        checkpoint = json.loads(ckpt_file.read_text())
+        assert failed["failure_class"] == "infrastructure"
+        assert failed["action"] == "retry_same_tool"
+        assert checkpoint["stage"] == "master_planned"
+        assert checkpoint["worker_failure_count"] == 0
+        assert checkpoint["infra_failure"]["owner_tool"] == "execute_workers"
+
+        (next_dir / "strategy.py").write_text("value = 1\n")
+
+        async def run_success():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                new_callable=AsyncMock,
+            ) as execute:
+                execute.return_value = (True, {}, [])
+                with patch.object(
+                    tool_planning,
+                    "_validate_worker_boundaries",
+                    return_value=[],
+                ), patch.object(
+                    tool_planning,
+                    "_py_files_changed_between",
+                    return_value=["strategy.py"],
+                ):
+                    return await tool_planning.execute_workers.handler({
+                        "next_v": 11,
+                        "source_v": 10,
+                    })
+
+        recovered = json.loads(asyncio.run(run_success())["content"][0]["text"])
+        checkpoint = json.loads(ckpt_file.read_text())
+        assert recovered["success"] is True
+        assert checkpoint["stage"] == "workers_done"
+        assert checkpoint["infra_failure"] is None
+
     def test_quality_failed_rework_uses_checkpoint_feedback_and_sequential(self, tmp_path, monkeypatch):
         """quality_failed checkpoints should not depend on LLM-supplied feedback."""
         import asyncio
@@ -2458,21 +2535,19 @@ class TestWorkerFailureCircuitBreaker:
         monkeypatch.setattr(agent_workers, "verify_code", lambda *_a, **_k: [])
         monkeypatch.setattr(agent_workers, "get_bot_dir", lambda _v: source_dir)
 
-        success, snapshots, focus = asyncio.run(agent_workers._execute_workers(
-            [task],
-            "{worker_prompt}",
-            next_dir,
-            11,
-            [],
-            UI(),
-            reviewer_feedback="Quality gates failed: file_size(opponent.py:1650L/1500L)",
-            source_v=10,
-            task_skipper=lambda _task: "",
-        ))
+        with pytest.raises(agent_workers.WorkerInfrastructureError):
+            asyncio.run(agent_workers._execute_workers(
+                [task],
+                "{worker_prompt}",
+                next_dir,
+                11,
+                [],
+                UI(),
+                reviewer_feedback="Quality gates failed: file_size(opponent.py:1650L/1500L)",
+                source_v=10,
+                task_skipper=lambda _task: "",
+            ))
 
-        assert success is False
-        assert focus == []
-        assert snapshots == {(0, "opponent.py"): baseline}
         assert (next_dir / "opponent.py").read_text() == baseline
 
     def test_cot_inconsistency_does_not_reset_cleared_file_size_repair(self, tmp_path, monkeypatch):
@@ -3999,6 +4074,7 @@ class TestWorkerFailureCircuitBreaker:
         validation would reject as an EXHAUSTED direction."""
         import asyncio
         import tool_planning
+        from runtime_architecture_policy import attach_runtime_contract_ledger
 
         ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
         state = json.loads(ckpt_file.read_text())
@@ -4007,15 +4083,23 @@ class TestWorkerFailureCircuitBreaker:
             "exhausted_directions": ["fold margin clamp tuning"],
             "llm_failed": False,
         }
-        state["master_plan"] = {
+        state["master_plan"] = attach_runtime_contract_ledger({
             "analysis": "stale plan",
             "tasks": [{
                 "worker_id": 1,
                 "role": "Algorithmic Logic Architect",
                 "target_files": ["strategy.py"],
                 "worker_prompt": "Parameter tuning: adjust fold margin clamp and sizing_aggr constants.",
+                "runtime_contract": {
+                    "decision": None,
+                    "precompute_artifacts": [],
+                    "match_memory": None,
+                    "official_feedback_refs": [],
+                    "forbidden_runtime_work": [],
+                },
             }],
-        }
+        }, replace=True)
+        state["runtime_contract_ledger"] = state["master_plan"]["runtime_contract_ledger"]
         ckpt_file.write_text(json.dumps(state))
         monkeypatch.setattr(
             tool_planning,
@@ -4037,8 +4121,59 @@ class TestWorkerFailureCircuitBreaker:
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "direction_audited"
         assert ckpt["master_plan"] == {}
+        assert ckpt["runtime_contract_ledger"] is None
         assert ckpt["audit_attempt"] == 1
         assert ckpt["direction_audit"]["repetition_detected"] is True
+        recovery = ckpt["audit_context"]["worker_exhausted_plan_blocked"]
+        assert recovery["runtime_contract_ledger_reset"] is True
+        assert recovery["previous_runtime_contract_ledger_digest"]
+
+    def test_exhausted_plan_does_not_claim_replan_when_checkpoint_write_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import asyncio
+        import tool_planning
+
+        self._setup_checkpoint(tmp_path, monkeypatch, failure_count=0)
+        monkeypatch.setattr(
+            tool_planning,
+            "_extract_exhausted_keywords",
+            lambda: [("parameter_tuning", "fold margin clamp tuning")],
+        )
+        monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", lambda *_a, **_k: False)
+        events = []
+        monkeypatch.setattr(
+            tool_planning,
+            "log_system_event",
+            lambda *args, **_kwargs: events.append(args),
+        )
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec:
+                result = await tool_planning.execute_workers.handler({
+                    "next_v": 11,
+                    "source_v": 10,
+                    "tasks": [{
+                        "worker_id": 1,
+                        "role": "Algorithmic Logic Architect",
+                        "target_files": ["strategy.py"],
+                        "worker_prompt": "Adjust the fold margin clamp with parameter tuning.",
+                    }],
+                })
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+
+        assert data["error"] == "WORKER_EXHAUSTED_PLAN_RECOVERY_FAILED"
+        assert "next_tool" not in data
+        assert "No re-planning transition has been recorded" in data["message"]
+        mock_exec.assert_not_called()
+        assert [event[0] for event in events] == [
+            "pipeline.worker_exhausted_plan_recovery_failed"
+        ]
 
     def test_backward_compat_old_invocation_count_key(self, tmp_path, monkeypatch):
         """Old checkpoint with worker_invocation_count (no worker_failure_count) should be read."""

@@ -94,7 +94,17 @@ class TestCertificationRoutes:
         (opponent / "main.py").write_text("def main():\n    pass\n", encoding="utf-8")
 
         monkeypatch.setattr(cert_mod, "BOTS_DIR", tmp_path)
-        monkeypatch.setattr(cert_mod, "DEFAULT_OPPONENT", opponent)
+        monkeypatch.setattr(cert_mod, "select_official_opponent", lambda *_a, **_k: {
+            "selected": True,
+            "candidate": str(bot_dir),
+            "opponent": {
+                "bot": opponent.name,
+                "path": str(opponent),
+                "eligible": True,
+                "reason": "official_certified",
+            },
+            "considered": [],
+        })
         monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
 
         status = client.get("/api/certification/9999")
@@ -113,6 +123,24 @@ class TestCertificationRoutes:
         full = client.post("/api/certification/9999/enqueue?mode=full")
         assert full.status_code == 200
         assert full.json()["mode"] == "full"
+
+    def test_enqueue_rejects_when_no_eligible_opponent(self, client, monkeypatch, tmp_path):
+        from server.routes import certification as cert_mod
+
+        bot_dir = tmp_path / bot_name(9998)
+        bot_dir.mkdir()
+        (bot_dir / "national_bot.py").write_text("import socket\n", encoding="utf-8")
+        monkeypatch.setattr(cert_mod, "BOTS_DIR", tmp_path)
+        monkeypatch.setattr(cert_mod, "select_official_opponent", lambda *_a, **_k: {
+            "selected": False,
+            "reason": "no_official_eligible_opponent",
+            "considered": [],
+        })
+
+        response = client.post("/api/certification/9998/enqueue?mode=full")
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["reason"] == "no_official_eligible_opponent"
 
 
 @pytest.mark.requires_active_bot

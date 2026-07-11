@@ -56,14 +56,14 @@ def test_daemon_signal_handler_emits_structured_signal_event(monkeypatch):
     assert event[3]["shutdown_requested"] is True
 
 
-def test_daemon_official_certification_worker_processes_queue(monkeypatch):
+def test_daemon_official_certification_worker_reconciles_jobs(monkeypatch):
     import elo_daemon
 
     calls = []
     events = []
-    fake_cert = ModuleType("official_certification")
+    fake_jobs = ModuleType("official_certification_job")
 
-    def fake_process_certification_queue(limit=1):
+    def fake_reconcile_jobs(limit=1):
         calls.append(limit)
         elo_daemon.running = False
         return {
@@ -74,11 +74,11 @@ def test_daemon_official_certification_worker_processes_queue(monkeypatch):
             "errors": [],
         }
 
-    fake_cert.process_certification_queue = fake_process_certification_queue
-    monkeypatch.setitem(sys.modules, "official_certification", fake_cert)
+    fake_jobs.reconcile_jobs = fake_reconcile_jobs
+    monkeypatch.setitem(sys.modules, "official_certification_job", fake_jobs)
     monkeypatch.setattr(elo_daemon, "running", True)
-    monkeypatch.setattr(elo_daemon, "OFFICIAL_CERT_QUEUE_INTERVAL_SEC", 5.0)
-    monkeypatch.setattr(elo_daemon, "OFFICIAL_CERT_QUEUE_LIMIT", 1)
+    monkeypatch.setattr(elo_daemon, "OFFICIAL_JOB_RECONCILE_INTERVAL_SEC", 5.0)
+    monkeypatch.setattr(elo_daemon, "OFFICIAL_JOB_RECONCILE_LIMIT", 1)
     monkeypatch.setattr(
         elo_daemon,
         "log_system_event",
@@ -91,7 +91,7 @@ def test_daemon_official_certification_worker_processes_queue(monkeypatch):
 
     assert calls == [1]
     assert not thread.is_alive()
-    assert any(args[0] == "official_certification.queue_processed" for args, _ in events)
+    assert any(args[0] == "official_certification.jobs_reconciled" for args, _ in events)
 
 
 def test_daemon_exit_metadata_classifies_signal():

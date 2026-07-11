@@ -88,25 +88,25 @@ class TestEngineWheelStraight:
 
 
 # ═══════════════════════════════════════════════════════════════
-# BOT-002: Re-raise Boundary (strictly > 2x)
+# BOT-002: Conservative Re-raise Headroom Policy
 # ═══════════════════════════════════════════════════════════════
 
 class TestReRaiseBoundary:
-    """Verify re-raise minimum is strictly > 2x previous raise-to-total."""
+    """Verify the retained +1 compatibility policy, not official legality."""
 
-    def test_reraise_strictly_greater_than_2x(self):
-        """min_raise_action should be > 2 * last_raise_to (not >=)."""
+    def test_reraise_uses_one_chip_policy_headroom(self):
+        """Legacy helpers keep one chip above the official inclusive 2x floor."""
         last_raise_to = 400
         my_round_bet = 200  # player already bet 200
         min_raise = max(0, 2 * last_raise_to - my_round_bet + 1)
-        assert min_raise == 601, f"After raise 400, min re-raise should be 601, got {min_raise}"
+        assert min_raise == 601, f"After raise 400, policy headroom should require 601 more, got {min_raise}"
 
     def test_reraise_formula_new_stage(self):
-        """In a new stage with last_raise_to=400, min_raise should be 801."""
+        """The conservative helper returns 801 while official 800 is legal."""
         last_raise_to = 400
         my_round_bet = 0
         min_raise = max(0, 2 * last_raise_to - my_round_bet + 1)
-        assert min_raise == 801, f"Min re-raise should be 801, got {min_raise}"
+        assert min_raise == 801, f"Conservative re-raise target should be 801, got {min_raise}"
 
     def test_reraise_formula_already_bet(self):
         """With my_round_bet=200 and last_raise_to=400, min_raise should be 601."""

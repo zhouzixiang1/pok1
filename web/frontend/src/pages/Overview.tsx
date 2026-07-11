@@ -389,6 +389,7 @@ export default function Overview() {
                   <th className="px-5 py-2 font-medium">Bot</th>
                   <th className="px-5 py-2 font-medium">选择分</th>
                   <th className="px-5 py-2 font-medium">H2H</th>
+                  <th className="px-5 py-2 font-medium">净筹码/70手</th>
                   <th className="px-5 py-2 font-medium">覆盖</th>
                   <th className="px-5 py-2 font-medium">场数</th>
                   <th className="px-5 py-2 font-medium">趋势</th>
@@ -419,6 +420,11 @@ export default function Overview() {
                       </td>
                       <td className="px-5 py-2.5 text-gray-600 dark:text-gray-300 text-xs tabular-nums">
                         {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}
+                      </td>
+                      <td className="px-5 py-2.5 text-gray-600 dark:text-gray-300 text-xs tabular-nums">
+                        {bot.secondary_net_chips_mean != null
+                          ? `${bot.secondary_net_chips_mean >= 0 ? "+" : ""}${bot.secondary_net_chips_mean.toFixed(0)}`
+                          : "—"}
                       </td>
                       <td className="px-5 py-2.5 text-gray-600 dark:text-gray-300 text-xs tabular-nums">
                         {bot.h2h_coverage != null ? `${(bot.h2h_coverage * 100).toFixed(0)}%` : "—"}

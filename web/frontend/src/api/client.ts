@@ -3,6 +3,7 @@ import type {
   MatchSummary, MatchReplayData, DaemonStatus, BotSummary, BotDetail,
   PipelineCheckpoint, WorkerFailure, PromptInfo, OrchestratorSession, OrchestratorLogFile,
   H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse, OfficialCertification,
+  ArenaBot, ArenaCreatePayload, ArenaEvent, ArenaSession, ArenaWireRecord,
 } from "./types";
 
 const BASE = "/api";
@@ -56,6 +57,20 @@ async function postJSON<T>(url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
     headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: abortSignal(),
+  });
+  if (!res.ok) return extractError(res);
+  return res.json();
+}
+
+async function arenaPostJSON<T>(url: string, body: unknown, controlToken = ""): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (controlToken) headers["X-Arena-Token"] = controlToken;
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: abortSignal(),
   });
@@ -190,6 +205,25 @@ export const api = {
   certificationStatus: (version: number) => fetchJSON<OfficialCertification>(`${BASE}/certification/${version}`),
   enqueueCertification: (version: number, mode: "smoke" | "compliance" | "full" = "compliance") =>
     postJSON<OfficialCertification>(`${BASE}/certification/${version}/enqueue?mode=${mode}`),
+
+  // National Web Arena. These matches are local diagnostics and never certify a bot.
+  arenaBots: () => fetchJSON<{ bots: ArenaBot[]; result_authority: "diagnostic_only"; selection_authority: "official_windows_exe" }>(`${BASE}/national-arena/bots`),
+  arenaSessions: () => fetchJSON<{ sessions: ArenaSession[] }>(`${BASE}/national-arena/sessions`),
+  arenaSession: (sessionId: string) => fetchJSON<ArenaSession>(`${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}`),
+  createArenaSession: (payload: ArenaCreatePayload, controlToken = "") =>
+    arenaPostJSON<ArenaSession>(`${BASE}/national-arena/sessions`, payload, controlToken),
+  startArenaSession: (sessionId: string, controlToken = "") =>
+    arenaPostJSON<ArenaSession>(`${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}/start`, undefined, controlToken),
+  stopArenaSession: (sessionId: string, controlToken = "") =>
+    arenaPostJSON<ArenaSession>(`${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}/stop`, undefined, controlToken),
+  arenaEventHistory: (sessionId: string, afterEventId = 0, limit = 5000) =>
+    fetchJSON<{ events: ArenaEvent[]; high_watermark: number; next_after_event_id: number }>(
+      `${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}/events/history?after_event_id=${afterEventId}&limit=${limit}`,
+    ),
+  arenaWireHistory: (sessionId: string, afterSequence = 0, limit = 1000) =>
+    fetchJSON<{ records: ArenaWireRecord[]; complete: boolean }>(
+      `${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}/wire/history?after_sequence=${afterSequence}&limit=${limit}`,
+    ),
 
   // Pipeline
   pipelineCheckpoint: () => fetchJSON<PipelineCheckpoint | null>(`${BASE}/pipeline/checkpoint`),
