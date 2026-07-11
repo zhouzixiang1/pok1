@@ -161,6 +161,14 @@ ledger entry alone is insufficient. Publishing that first attestation creates
 the first normal full-v5 opponent; subsequent candidates use the ordinary
 policy path.
 
+When the first verified candidate finds no normal opponent, the pipeline parks
+at `official_bootstrap_required`. This is a deliberate stop barrier:
+`next_tool` is empty, automatic recovery exits, and the LLM cannot call
+`commit_bot` again or initiate bootstrap. The runtime guard unlocks the manual
+commit handoff only after the external `bootstrap-full` result passes the full
+validator. Missing, forged, stale, or candidate-mismatched certificates remain
+fail-closed.
+
 Lifecycle state is durable in annotated Git tags:
 
 - `national-reaped-vN` is a permanent retirement tombstone;

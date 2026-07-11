@@ -621,9 +621,30 @@ def _detect_actionable_stage_stall(timeout_sec=None):
 def _detect_actionable_stage_handoff():
     """Return route data when an MCP gate has just produced a deterministic step."""
     stall = _detect_actionable_stage_stall(timeout_sec=0)
-    if not stall:
-        return None
-    return stall
+    if stall:
+        return stall
+    try:
+        from evolution_core import read_pipeline_checkpoint
+
+        checkpoint = read_pipeline_checkpoint()
+    except Exception:
+        checkpoint = None
+    if (
+        isinstance(checkpoint, dict)
+        and checkpoint.get("stage") == "official_bootstrap_required"
+    ):
+        return {
+            "next_v": checkpoint.get("next_v"),
+            "source_v": checkpoint.get("source_v"),
+            "stage": "official_bootstrap_required",
+            "next_tool": None,
+            "operator_action_required": True,
+            "directive": (
+                "Stop automatic evolution and wait for the explicit operator "
+                "bootstrap-full suite. Automation must not consume the root."
+            ),
+        }
+    return None
 
 
 async def _await_next_stream_message(stream_iter, last_message_at=None, *, stream_started_at=None):
@@ -980,11 +1001,19 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                         if handoff:
                             next_v = handoff.get("next_v")
                             stage = handoff.get("stage")
-                            next_tool = handoff.get("next_tool") or "unknown"
-                            msg = (
-                                f"Checkpoint reached actionable stage '{stage}' for v{next_v}; "
-                                f"handing off current Orchestrator stream so recovery can call {next_tool} deterministically."
-                            )
+                            if handoff.get("operator_action_required"):
+                                msg = (
+                                    f"Checkpoint parked at '{stage}' for v{next_v}; ending the "
+                                    "Orchestrator stream and stopping automatic recovery until "
+                                    "the explicit operator bootstrap succeeds."
+                                )
+                            else:
+                                next_tool = handoff.get("next_tool") or "unknown"
+                                msg = (
+                                    f"Checkpoint reached actionable stage '{stage}' for v{next_v}; "
+                                    f"handing off current Orchestrator stream so recovery can call "
+                                    f"{next_tool} deterministically."
+                                )
                             try:
                                 log_system_event(
                                     "pipeline.actionable_stage_handoff",
@@ -2127,12 +2156,9 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
     global _watchdog_triggered
     from evolution_infra import WATCHDOG_TIMEOUT
     from evolution_core import read_pipeline_checkpoint
+    from pipeline_state import session_recoverable_stages
 
-    recoverable_stages = {"selected", "preparing", "prepared", "crossover_running",
-                          "direction_audited", "master_planned", "workers_done",
-                          "quality_failed", "quality_passed", "reviewed",
-                          "critic_checked", "precommit_failed", "repair_planned",
-                          "rework_running", "verified", "official_failed"}
+    recoverable_stages = session_recoverable_stages()
 
     while True:
         if shutdown_mgr and shutdown_mgr.is_shutting_down:

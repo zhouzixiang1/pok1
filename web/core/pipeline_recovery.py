@@ -30,6 +30,7 @@ TARGET_DIR_STAGES = {
     "repair_planned",
     "rework_running",
     "verified",
+    "official_bootstrap_required",
     "official_certifying",
     "official_failed",
     "official_inconclusive",
@@ -270,7 +271,10 @@ def checkpoint_recovery_diagnostics(
     if not active:
         return diag
 
-    if stage == "official_inconclusive":
+    if stage == "official_bootstrap_required":
+        issues.append("official_bootstrap_requires_operator_action")
+        warnings.append("automatic_bootstrap_root_consumption_forbidden")
+    elif stage == "official_inconclusive":
         issues.append("official_inconclusive_requires_infra_intervention")
         warnings.append("official_full_gate_not_recoverable_by_bot_rework")
 

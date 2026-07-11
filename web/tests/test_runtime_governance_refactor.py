@@ -803,6 +803,84 @@ def test_runtime_guard_blocks_master_before_direction_audit(monkeypatch):
     assert payload["allowed_tools"] == ["run_direction_audit"]
 
 
+def test_operator_bootstrap_stage_blocks_commit_without_valid_certificate(monkeypatch):
+    import tool_runtime_guard
+
+    checkpoint = {
+        "next_v": 146,
+        "source_v": 142,
+        "stage": "official_bootstrap_required",
+        "gate_results": {"precommit_eval": {"passed": True}},
+    }
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "_operator_bootstrap_certificate_valid",
+        lambda _candidate_v: False,
+    )
+
+    ok, payload = tool_runtime_guard._pipeline_route_guard(
+        tool_name="commit_bot",
+        args={"version": 146, "source_v": 142},
+        candidate_v=146,
+        source_v=142,
+    )
+
+    assert ok is False
+    assert payload["reason"] == "official_bootstrap_certificate_required"
+    assert payload["checkpoint_stage"] == "official_bootstrap_required"
+
+
+def test_operator_bootstrap_stage_allows_commit_only_after_full_validation(monkeypatch):
+    import tool_runtime_guard
+
+    checkpoint = {
+        "next_v": 146,
+        "source_v": 142,
+        "stage": "official_bootstrap_required",
+        "gate_results": {"precommit_eval": {"passed": True}},
+    }
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: checkpoint)
+    calls = []
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "_operator_bootstrap_certificate_valid",
+        lambda candidate_v: calls.append(candidate_v) or True,
+    )
+
+    ok, payload = tool_runtime_guard._pipeline_route_guard(
+        tool_name="commit_bot",
+        args={"version": 146, "source_v": 142},
+        candidate_v=146,
+        source_v=142,
+    )
+
+    assert ok is True
+    assert payload == {}
+    assert calls == [146]
+
+
+def test_operator_bootstrap_guard_uses_complete_official_validator(tmp_path, monkeypatch):
+    import official_certification
+    import tool_runtime_guard
+
+    candidate = tmp_path / "bots" / "national_v146"
+    candidate.mkdir(parents=True)
+    status = {"status": "official-certified", "certificate_digest": "signed"}
+    calls = []
+    monkeypatch.setattr(tool_runtime_guard, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(official_certification, "read_status", lambda path: status)
+
+    def validate(requested_status, path):
+        calls.append((requested_status, path))
+        return requested_status is status and path == candidate
+
+    monkeypatch.setattr(official_certification, "official_full_certified", validate)
+
+    assert tool_runtime_guard._operator_bootstrap_certificate_valid(146) is True
+    assert calls == [(status, candidate)]
+
+
 def test_runtime_guard_allows_pre_master_literature_probe(monkeypatch):
     import tool_runtime_guard
 

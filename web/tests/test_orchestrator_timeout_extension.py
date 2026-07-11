@@ -1813,3 +1813,68 @@ def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch
         for e in events
     )
     assert not any(e[0] == "pipeline.sdk_stream_error" for e in events)
+
+
+def test_operator_bootstrap_stage_parks_active_stream_without_retry(tmp_path, monkeypatch):
+    """The one-time root barrier must end automation as normal control flow."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    import evolution_core
+    import orchestrator
+
+    _write_checkpoint(tmp_path, "verified", timeout_extensions=0)
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+    events = []
+
+    async def _park_after_message():
+        evolution_core.write_pipeline_checkpoint(
+            102,
+            100,
+            "official_bootstrap_required",
+            master_plan={"strategy": "master", "tasks": []},
+            gate_results={
+                "official_full": {
+                    "passed": False,
+                    "operator_action_required": True,
+                    "action": "run_explicit_bootstrap_full",
+                }
+            },
+        )
+        yield AssistantMessage(
+            content=[TextBlock(text="no published opponent; operator action required")],
+            model="sonnet",
+        )
+        await asyncio.sleep(999)
+        if False:
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda prompt, options: _park_after_message(),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "operator_park_log.txt",
+            one_gen=False,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_ACTIONABLE_HANDOFF_COST
+    assert json.loads(pipe_file.read_text())["stage"] == "official_bootstrap_required"
+    event = next(e for e in events if e[0] == "pipeline.actionable_stage_handoff")
+    assert event[3]["operator_action_required"] is True
+    assert not any(e[0] == "pipeline.sdk_stream_error" for e in events)

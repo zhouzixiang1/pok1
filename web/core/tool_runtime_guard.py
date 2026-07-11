@@ -93,6 +93,20 @@ def _same_int(left: Any, right: Any) -> bool:
         return False
 
 
+def _operator_bootstrap_certificate_valid(candidate_v: int | None) -> bool:
+    """Fail closed unless the parked candidate has a full valid certificate."""
+    if candidate_v is None:
+        return False
+    try:
+        from official_certification import official_full_certified, read_status
+
+        candidate = PROJECT_ROOT / bot_relpath(int(candidate_v))
+        status = read_status(candidate)
+        return bool(official_full_certified(status, candidate))
+    except Exception:
+        return False
+
+
 def _pipeline_route_guard(
     *,
     tool_name: str,
@@ -158,6 +172,37 @@ def _pipeline_route_guard(
             "pipeline.route_guard_blocked",
             "error",
             f"Blocked {tool_name}: requested source v{source_v} but active checkpoint source is v{ckpt_source}",
+            payload,
+        )
+        return False, payload
+
+    if (
+        checkpoint.get("stage") == "official_bootstrap_required"
+        and tool_name == "commit_bot"
+        and not _operator_bootstrap_certificate_valid(candidate_v)
+    ):
+        payload = {
+            "error": "pipeline_route_guard_blocked",
+            "blocked": True,
+            "reason": "official_bootstrap_certificate_required",
+            "tool": tool_name,
+            "requested_v": candidate_v,
+            "active_v": ckpt_next,
+            "active_source_v": ckpt_source,
+            "checkpoint_stage": checkpoint.get("stage"),
+            "next_tool": route.get("next_tool"),
+            "allowed_tools": allowed_tools,
+            "route": route,
+            "directive": (
+                "The candidate is parked for explicit operator bootstrap. Run "
+                "bootstrap-full outside the orchestrator; commit_bot remains blocked "
+                "until the complete content-bound certificate validates."
+            ),
+        }
+        _log_guard_event(
+            "pipeline.route_guard_blocked",
+            "warn",
+            f"Blocked commit_bot for v{candidate_v}: operator bootstrap certificate is absent or invalid",
             payload,
         )
         return False, payload

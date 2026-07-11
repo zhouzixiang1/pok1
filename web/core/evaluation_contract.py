@@ -290,6 +290,7 @@ _STAGE_EXACT = {
     "reviewed": CRITIC_STAGE_EXACT,
     "critic_checked": PRECOMMIT_STAGE_EXACT,
     "verified": COMMIT_STAGE_EXACT,
+    "official_bootstrap_required": COMMIT_STAGE_EXACT,
     "official_certifying": COMMIT_STAGE_EXACT,
 }
 

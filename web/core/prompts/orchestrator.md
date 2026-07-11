@@ -137,6 +137,12 @@ Continue with the next state-machine tool instead:
 `critic_checked -> run_precommit_eval`, `precommit_failed -> execute_workers`
 with exact precommit feedback, `verified -> commit_bot`. If the tool guard
 refuses abandon, follow its `next_tool`/`directive` exactly.
+
+`official_bootstrap_required` is an operator-only parked state, not a repair or
+retry route. Stop immediately. Never select, launch, acknowledge, or consume a
+bootstrap root from the LLM path. An operator must run the explicit
+`bootstrap-full` command; only after its content-bound certificate validates may
+the operator invoke `commit_bot` manually.
 </forward_only_guard>
 
 <retry_rules>
