@@ -74,8 +74,77 @@ MODEL_SCALES = {
 }
 
 
+class TemporalCrossHandTransformer(nn.Module):
+    """One exportable temporal self-attention block over completed hands."""
+
+    def __init__(self, hidden: int, heads: int) -> None:
+        super().__init__()
+        if (
+            hidden <= 0
+            or isinstance(heads, bool)
+            or not isinstance(heads, int)
+            or heads <= 0
+            or hidden % heads
+        ):
+            raise ValueError("transformer hidden size must be divisible by heads")
+        self.hidden = int(hidden)
+        self.heads = int(heads)
+        self.head_dim = self.hidden // self.heads
+        self.input_proj = nn.Linear(CROSS_HAND_SEQUENCE_DIM, self.hidden)
+        self.position = nn.Parameter(torch.zeros(MAX_CROSS_HANDS, self.hidden))
+        nn.init.normal_(self.position, mean=0.0, std=0.02)
+        self.q_proj = nn.Linear(self.hidden, self.hidden)
+        self.k_proj = nn.Linear(self.hidden, self.hidden)
+        self.v_proj = nn.Linear(self.hidden, self.hidden)
+        self.out_proj = nn.Linear(self.hidden, self.hidden)
+        self.norm1 = nn.LayerNorm(self.hidden)
+        self.ff = nn.Sequential(
+            nn.Linear(self.hidden, self.hidden * 2),
+            nn.ReLU(),
+            nn.Linear(self.hidden * 2, self.hidden),
+        )
+        self.norm2 = nn.LayerNorm(self.hidden)
+
+    def forward(
+        self, sequence: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
+        batch, width, _ = sequence.shape
+        if width > MAX_CROSS_HANDS:
+            raise ValueError("cross-hand sequence exceeds transformer maximum")
+        if width == 0:
+            return torch.zeros(batch, self.hidden, device=sequence.device)
+        sequence = sequence[:, :width]
+        lengths = lengths.clamp(min=0, max=width)
+        x = self.input_proj(sequence) + self.position[:width].unsqueeze(0)
+
+        def split_heads(value: torch.Tensor) -> torch.Tensor:
+            return value.reshape(
+                batch, width, self.heads, self.head_dim
+            ).transpose(1, 2)
+
+        query = split_heads(self.q_proj(x))
+        key = split_heads(self.k_proj(x))
+        value = split_heads(self.v_proj(x))
+        scores = torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(
+            self.head_dim
+        )
+        key_padding = torch.arange(width, device=sequence.device).unsqueeze(0) >= (
+            lengths.unsqueeze(1)
+        )
+        scores = scores.masked_fill(key_padding[:, None, None, :], -1.0e4)
+        attention = torch.softmax(scores, dim=-1)
+        attended = torch.matmul(attention, value).transpose(1, 2).reshape(
+            batch, width, self.hidden
+        )
+        x = self.norm1(x + self.out_proj(attended))
+        x = self.norm2(x + self.ff(x))
+        final_index = (lengths - 1).clamp(min=0)
+        embedding = x[torch.arange(batch, device=x.device), final_index]
+        return embedding * (lengths > 0).float().unsqueeze(1)
+
+
 class CrossHandEncoder(nn.Module):
-    """Exportable Deep Sets or recurrent encoder over completed prior hands."""
+    """Exportable set, recurrent, MoE, or temporal completed-hand encoder."""
 
     def __init__(
         self,
@@ -83,17 +152,28 @@ class CrossHandEncoder(nn.Module):
         *,
         encoder: str = "deep_set",
         moe_experts: int = 4,
+        transformer_heads: int = 4,
     ) -> None:
         super().__init__()
         if hidden < 1:
             raise ValueError("cross-hand hidden size must be positive")
-        if encoder not in {"none", "deep_set", "gru", "gru_moe"}:
+        if encoder not in {"none", "deep_set", "gru", "gru_moe", "transformer"}:
             raise ValueError(f"unsupported cross-hand encoder: {encoder}")
         if encoder == "gru_moe" and moe_experts < 2:
             raise ValueError("GRU MoE requires at least two experts")
+        if encoder == "transformer" and (
+            isinstance(transformer_heads, bool)
+            or not isinstance(transformer_heads, int)
+            or transformer_heads <= 0
+            or hidden % transformer_heads
+        ):
+            raise ValueError(
+                "transformer hidden size must be divisible by positive heads"
+            )
         self.hidden = int(hidden)
         self.encoder = str(encoder)
         self.moe_experts = int(moe_experts)
+        self.transformer_heads = int(transformer_heads)
         self.item_encoder = (
             nn.Sequential(
                 nn.Linear(CROSS_HAND_SEQUENCE_DIM, hidden),
@@ -133,6 +213,11 @@ class CrossHandEncoder(nn.Module):
             if encoder == "gru_moe"
             else None
         )
+        self.transformer = (
+            TemporalCrossHandTransformer(hidden, transformer_heads)
+            if encoder == "transformer"
+            else None
+        )
 
     def forward(
         self, sequence: torch.Tensor, lengths: torch.Tensor
@@ -142,6 +227,8 @@ class CrossHandEncoder(nn.Module):
         if self.encoder == "none" or sequence.size(1) == 0:
             return torch.zeros(batch, self.hidden, device=sequence.device)
         lengths = lengths.clamp(min=0, max=sequence.size(1))
+        if self.transformer is not None:
+            return self.transformer(sequence, lengths)
         if self.item_encoder is not None:
             encoded = self.item_encoder(sequence)
             positions = torch.arange(sequence.size(1), device=sequence.device)
@@ -177,6 +264,7 @@ class OpponentAwareMultiTaskNetV3(nn.Module):
         scale: str = "medium",
         cross_encoder: str = "deep_set",
         moe_experts: int = 4,
+        transformer_heads: int = 4,
         dropout: float = 0.10,
     ) -> None:
         super().__init__()
@@ -188,6 +276,7 @@ class OpponentAwareMultiTaskNetV3(nn.Module):
         self.scale = scale
         self.cross_encoder_name = cross_encoder
         self.moe_experts = int(moe_experts)
+        self.transformer_heads = int(transformer_heads)
         self.dropout_rate = float(dropout)
         self.config = config
         self.response_private_indices = tuple(
@@ -216,6 +305,7 @@ class OpponentAwareMultiTaskNetV3(nn.Module):
             config["cross_hidden"],
             encoder=cross_encoder,
             moe_experts=moe_experts,
+            transformer_heads=transformer_heads,
         )
         self.opponent_fusion = nn.Sequential(
             nn.Linear(
@@ -396,7 +486,15 @@ class OpponentAwareMultiTaskNetV3(nn.Module):
         }
 
     def metadata(self) -> dict[str, Any]:
-        return {
+        export_operations = [
+            "linear", "relu", "gru", "softplus", "sigmoid",
+            "masked_mean", "masked_max",
+        ]
+        if self.cross_encoder_name == "transformer":
+            export_operations.extend([
+                "position_embedding", "self_attention", "softmax", "layer_norm"
+            ])
+        metadata = {
             "format": MODEL_FORMAT,
             "scale": self.scale,
             "cross_encoder": self.cross_encoder_name,
@@ -425,11 +523,13 @@ class OpponentAwareMultiTaskNetV3(nn.Module):
                 "aggressive_increment_pot_log",
                 "aggressive_stack_fraction",
             ],
-            "stdlib_export_operations": [
-                "linear", "relu", "gru", "softplus", "sigmoid",
-                "masked_mean", "masked_max",
-            ],
+            "stdlib_export_operations": export_operations,
         }
+        if self.cross_encoder_name == "transformer":
+            metadata["cross_transformer_heads"] = self.transformer_heads
+            metadata["cross_transformer_layers"] = 1
+            metadata["cross_transformer_pooling"] = "last_valid_position"
+        return metadata
 
 
 def masked_response_logits(
@@ -444,8 +544,15 @@ def masked_response_logits(
 
 
 def model_from_scale(
-    scale: str, *, cross_encoder: str = "deep_set", dropout: float = 0.10
+    scale: str,
+    *,
+    cross_encoder: str = "deep_set",
+    transformer_heads: int = 4,
+    dropout: float = 0.10,
 ) -> OpponentAwareMultiTaskNetV3:
     return OpponentAwareMultiTaskNetV3(
-        scale=scale, cross_encoder=cross_encoder, dropout=dropout
+        scale=scale,
+        cross_encoder=cross_encoder,
+        transformer_heads=transformer_heads,
+        dropout=dropout,
     )

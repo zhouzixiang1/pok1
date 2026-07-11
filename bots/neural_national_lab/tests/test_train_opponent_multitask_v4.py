@@ -182,3 +182,38 @@ def test_train_evaluate_and_checkpoint_round_trip(tmp_path: Path) -> None:
 
     assert payload["schema"] == trainer.CHECKPOINT_SCHEMA
     assert torch.equal(actual, expected)
+
+
+def test_transformer_checkpoint_round_trip_and_parent_code_binding(
+    tmp_path: Path,
+) -> None:
+    torch.manual_seed(31)
+    model = models.model_from_scale(
+        "small", cross_encoder="transformer", transformer_heads=4, dropout=0.0
+    ).eval()
+    path = tmp_path / "transformer.pt"
+    torch.save({
+        "schema": trainer.CHECKPOINT_SCHEMA,
+        "model_metadata": model.metadata(),
+        "state_dict": model.state_dict(),
+    }, path)
+
+    loaded, _ = trainer.load_checkpoint(path)
+    assert loaded.metadata() == model.metadata()
+    assert loaded.metadata()["cross_transformer_heads"] == 4
+
+    for field in ("cross_transformer_heads", "cross_transformer_layers"):
+        malformed = tmp_path / f"malformed-{field}.pt"
+        metadata = dict(model.metadata())
+        metadata[field] = True
+        torch.save({
+            "schema": trainer.CHECKPOINT_SCHEMA,
+            "model_metadata": metadata,
+            "state_dict": model.state_dict(),
+        }, malformed)
+        with pytest.raises(ValueError, match="invalid transformer metadata"):
+            trainer.load_checkpoint(malformed)
+
+    artifacts = trainer._code_artifacts()
+    assert {"parent_model", "parent_batch"} <= set(artifacts)
+    assert all(len(row["sha256"]) == 64 for row in artifacts.values())

@@ -23,6 +23,8 @@ from multitask_training_data import (
     training_data_metadata,
 )
 from opponent_multitask_batch_v4 import collate_encoded_rows
+import opponent_multitask_batch_v3 as parent_batch
+import opponent_multitask_model_v3 as parent_model
 from opponent_multitask_model_v4 import (
     MODEL_FORMAT,
     MODEL_SCALES,
@@ -405,10 +407,25 @@ def load_checkpoint(
     state = payload.get("state_dict")
     if not isinstance(metadata, dict) or not isinstance(state, dict):
         raise ValueError("v4 checkpoint is missing model metadata or state")
+    raw_transformer_heads = metadata.get("cross_transformer_heads", 4)
+    if str(metadata.get("cross_encoder")) == "transformer":
+        raw_transformer_layers = metadata.get("cross_transformer_layers")
+        if (
+            isinstance(raw_transformer_heads, bool)
+            or not isinstance(raw_transformer_heads, int)
+            or raw_transformer_heads <= 0
+            or isinstance(raw_transformer_layers, bool)
+            or not isinstance(raw_transformer_layers, int)
+            or raw_transformer_layers != 1
+            or metadata.get("cross_transformer_pooling")
+            != "last_valid_position"
+        ):
+            raise ValueError("checkpoint has invalid transformer metadata")
     model = OpponentAwareMultiTaskNetV4(
         scale=str(metadata.get("scale")),
         cross_encoder=str(metadata.get("cross_encoder")),
         moe_experts=int(metadata.get("moe_experts", 0)),
+        transformer_heads=raw_transformer_heads,
         dropout=float(metadata.get("dropout", -1.0)),
     )
     if model.metadata() != metadata or metadata.get("format") != MODEL_FORMAT:
@@ -425,6 +442,7 @@ def _config(args: argparse.Namespace) -> dict[str, Any]:
         "scale": args.scale,
         "cross_encoder": args.cross_encoder,
         "moe_experts": args.moe_experts,
+        "cross_transformer_heads": args.cross_transformer_heads,
         "dropout": args.dropout,
         "epochs": args.epochs,
         "patience": args.patience,
@@ -477,6 +495,14 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("outcome-loss-weight must be positive")
     if not 0.0 <= args.dropout < 1.0:
         raise SystemExit("dropout must be in [0, 1)")
+    if args.cross_encoder == "transformer" and (
+        args.cross_transformer_heads <= 0
+        or MODEL_SCALES[args.scale]["cross_hidden"]
+        % args.cross_transformer_heads
+    ):
+        raise SystemExit(
+            "transformer heads must positively divide the cross hidden size"
+        )
     if str(args.device).startswith("cuda") and not torch.cuda.is_available():
         raise SystemExit("CUDA was requested but is unavailable")
 
@@ -489,6 +515,8 @@ def _code_artifacts() -> dict[str, dict[str, Any]]:
         "match_outcome": Path(sys.modules["match_outcome_schema"].__file__).resolve(),
         "training_data": Path(sys.modules["multitask_training_data"].__file__).resolve(),
         "parent_trainer": Path(v3.__file__).resolve(),
+        "parent_model": Path(parent_model.__file__).resolve(),
+        "parent_batch": Path(parent_batch.__file__).resolve(),
     }
     return {
         name: {"bytes": path.stat().st_size, "sha256": v3._sha256(path)}
@@ -506,10 +534,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scale", choices=tuple(MODEL_SCALES), default="medium")
     parser.add_argument(
         "--cross-encoder",
-        choices=("none", "deep_set", "gru", "gru_moe"),
+        choices=("none", "deep_set", "gru", "gru_moe", "transformer"),
         default="deep_set",
     )
     parser.add_argument("--moe-experts", type=int, default=4)
+    parser.add_argument("--cross-transformer-heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.10)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--patience", type=int, default=15)
@@ -574,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
             scale=args.scale,
             cross_encoder=args.cross_encoder,
             moe_experts=args.moe_experts,
+            transformer_heads=args.cross_transformer_heads,
             dropout=args.dropout,
         )
         history, best_epoch, final_early_stop = train_model(

@@ -37,9 +37,11 @@ from multitask_training_data import (
     prepare_training_phase,
 )
 from opponent_multitask_model_v3 import QUANTILE_LEVELS
-from opponent_multitask_model_v4 import MODEL_FORMAT
+from opponent_multitask_model_v4 import MODEL_FORMAT, MODEL_SCALES
 from role_dataset_access import RoleDatasetAccess
 from run_opponent_multitask_v4_scaling import (
+    FORMAL_ENCODERS,
+    FORMAL_SCALES,
     SELECTION_METHOD,
     SELECTION_KEY_ORDER,
     SUMMARY_SCHEMA,
@@ -62,7 +64,7 @@ ENSEMBLE_MANIFEST_SCHEMA = "opponent_multitask_v4_ensemble_checkpoint_v1"
 ENSEMBLE_CALIBRATION_SCHEMA = "opponent_multitask_v4_ensemble_calibration_v1"
 CALIBRATION_REPORT_SCHEMA = "opponent_multitask_v4_ensemble_calibration_report_v1"
 ARTIFACT_MANIFEST_SCHEMA = "opponent_multitask_v4_ensemble_artifacts_v1"
-FORMAL_GRID_VERIFICATION_SCHEMA = "opponent_multitask_v4_formal_grid_verification_v1"
+FORMAL_GRID_VERIFICATION_SCHEMA = "opponent_multitask_v4_formal_grid_verification_v2"
 EXPECTED_TRAINING_FILES = {
     "checkpoint.pt",
     "checkpoint_authorization.json",
@@ -250,6 +252,7 @@ def selected_scaling_runs(
         requested_scales = list(requested.get("scales") or [])
         requested_encoders = list(requested.get("encoders") or [])
         requested_seeds = sorted(int(seed) for seed in requested.get("seeds") or [])
+        requested_heads = requested.get("cross_transformer_heads")
         expected_pairs = {
             (scale, encoder)
             for scale in requested_scales
@@ -276,10 +279,18 @@ def selected_scaling_runs(
             if isinstance(row, dict)
         }
         if (
-            len(set(requested_scales)) < 2
+            set(requested_scales) != set(FORMAL_SCALES)
             or len(requested_scales) != len(set(requested_scales))
-            or len(set(requested_encoders)) < 2
+            or set(requested_encoders) != set(FORMAL_ENCODERS)
             or len(requested_encoders) != len(set(requested_encoders))
+            or isinstance(requested_heads, bool)
+            or not isinstance(requested_heads, int)
+            or requested_heads <= 0
+            or any(
+                scale not in MODEL_SCALES
+                or MODEL_SCALES[scale]["cross_hidden"] % requested_heads
+                for scale in requested_scales
+            )
             or len(set(requested_seeds)) < 3
             or len(requested_seeds) != len(requested.get("seeds") or [])
             or not _is_cuda_device(requested.get("device"))
@@ -308,7 +319,7 @@ def selected_scaling_runs(
         ):
             raise ValueError(
                 "formal v4 calibration requires complete CUDA runs across "
-                "two scales, two encoders, and three seeds"
+                "every scale, every required encoder, and three seeds"
             )
         if summary.get("source_collection_complete") is not True:
             raise ValueError("formal v4 scaling summary used incomplete source data")
@@ -348,6 +359,23 @@ def _verified_member(
         parameters = int(metadata.get("parameters", -1))
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("v4 member has an invalid parameter count") from exc
+    config_heads = config.get("cross_transformer_heads")
+    if isinstance(config_heads, bool) or not isinstance(config_heads, int):
+        raise ValueError("v4 member has invalid transformer-head configuration")
+    encoder = str(metadata.get("cross_encoder", ""))
+    metadata_heads = metadata.get("cross_transformer_heads")
+    row_heads = row.get("cross_transformer_heads")
+    if encoder == "transformer":
+        if (
+            isinstance(metadata_heads, bool)
+            or not isinstance(metadata_heads, int)
+            or metadata_heads <= 0
+            or config_heads != metadata_heads
+            or row_heads != metadata_heads
+        ):
+            raise ValueError("v4 member transformer-head binding changed")
+    elif metadata_heads is not None or row_heads is not None:
+        raise ValueError("non-transformer v4 member declares transformer heads")
     if (
         report.get("schema") != TRAINING_REPORT_SCHEMA
         or row.get("completed") is not True
@@ -437,6 +465,9 @@ def _verified_member(
         ),
         "scale": str(metadata["scale"]),
         "encoder": str(metadata["cross_encoder"]),
+        "cross_transformer_heads": (
+            config_heads if encoder == "transformer" else None
+        ),
         "parameters": parameters,
         "role_manifest_sha256": role_manifest_sha256,
         "selection_key_order": list(SELECTION_KEY_ORDER),
@@ -519,7 +550,7 @@ def verify_members(
 
 def _formal_requested_matrix(
     summary: dict[str, Any],
-) -> tuple[list[str], list[str], list[int], str]:
+) -> tuple[list[str], list[str], list[int], str, int]:
     requested = summary.get("requested")
     if not isinstance(requested, dict):
         raise ValueError("formal v4 scaling summary has no requested matrix")
@@ -539,11 +570,20 @@ def _formal_requested_matrix(
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("formal v4 scaling requested seeds are invalid") from exc
     device = str(requested.get("device", ""))
+    transformer_heads = requested.get("cross_transformer_heads")
     if (
-        len(scales) < 2
+        set(scales) != set(FORMAL_SCALES)
         or len(scales) != len(set(scales))
-        or len(encoders) < 2
+        or set(encoders) != set(FORMAL_ENCODERS)
         or len(encoders) != len(set(encoders))
+        or isinstance(transformer_heads, bool)
+        or not isinstance(transformer_heads, int)
+        or transformer_heads <= 0
+        or any(
+            scale not in MODEL_SCALES
+            or MODEL_SCALES[scale]["cross_hidden"] % transformer_heads
+            for scale in scales
+        )
         or len(seeds) < 3
         or len(seeds) != len(set(seeds))
         or any(seed < 0 for seed in seeds)
@@ -551,13 +591,20 @@ def _formal_requested_matrix(
         or requested.get("configurations") != len(scales) * len(encoders)
     ):
         raise ValueError("formal v4 scaling requested matrix is incomplete")
-    return list(scales), list(encoders), sorted(seeds), device
+    return (
+        list(scales),
+        list(encoders),
+        sorted(seeds),
+        device,
+        transformer_heads,
+    )
 
 
 def _formal_verified_row(member: dict[str, Any]) -> dict[str, Any]:
     return {
         "scale": member["scale"],
         "encoder": member["encoder"],
+        "cross_transformer_heads": member["cross_transformer_heads"],
         "seed": member["seed"],
         "run_id": member["run_id"],
         "output_dir": member["output_dir"],
@@ -582,7 +629,13 @@ def verify_formal_scaling_artifacts(
     training_artifact_sha256: dict[str, str],
 ) -> dict[str, Any]:
     """Verify every real sweep artifact on CPU and recompute the formal winner."""
-    scales, encoders, seeds, requested_device = _formal_requested_matrix(summary)
+    (
+        scales,
+        encoders,
+        seeds,
+        requested_device,
+        requested_transformer_heads,
+    ) = _formal_requested_matrix(summary)
     raw_rows = summary.get("runs")
     if not isinstance(raw_rows, list):
         raise ValueError("formal v4 scaling summary has no runs")
@@ -632,6 +685,13 @@ def verify_formal_scaling_artifacts(
             or member["source_completed_passes"] != FORMAL_COLLECTION_PASSES
             or member["source_requested_passes"] != FORMAL_COLLECTION_PASSES
             or member["incomplete_smoke"] is not False
+            or member["training_config"].get("cross_transformer_heads")
+            != requested_transformer_heads
+            or (
+                member["encoder"] == "transformer"
+                and member["model_metadata"].get("cross_transformer_heads")
+                != requested_transformer_heads
+            )
         ):
             raise ValueError("formal v4 scaling artifact is not a complete CUDA run")
         config = dict(member["training_config"])
@@ -696,7 +756,13 @@ def validate_formal_grid_verification(
         raise ValueError("formal v4 ensemble has no grid verification")
     proof = dict(raw)
     payload_sha256 = str(proof.pop("payload_sha256", ""))
-    scales, encoders, seeds, requested_device = _formal_requested_matrix(proof)
+    (
+        scales,
+        encoders,
+        seeds,
+        requested_device,
+        requested_transformer_heads,
+    ) = _formal_requested_matrix(proof)
     rows = proof.get("verified_runs")
     expected_jobs = {
         (scale, encoder, seed)
@@ -746,6 +812,12 @@ def validate_formal_grid_verification(
             or row.get("source_completed_passes") != FORMAL_COLLECTION_PASSES
             or row.get("source_requested_passes") != FORMAL_COLLECTION_PASSES
             or row.get("incomplete_smoke") is not False
+            or (
+                row.get("cross_transformer_heads")
+                != requested_transformer_heads
+                if row.get("encoder") == "transformer"
+                else row.get("cross_transformer_heads") is not None
+            )
             or not isinstance(row.get("parameters"), int)
             or isinstance(row.get("parameters"), bool)
             or int(row["parameters"]) < 1

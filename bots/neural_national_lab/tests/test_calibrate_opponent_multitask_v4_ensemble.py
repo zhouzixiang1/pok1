@@ -184,12 +184,12 @@ def _outcome_payload(
     return payload
 
 
-def test_formal_scaling_selection_requires_three_seeds_and_two_configs() -> None:
+def test_formal_scaling_selection_requires_all_encoders_and_three_seeds() -> None:
     seeds = [101, 211, 307]
     runs = []
     counter = 1
-    for scale in ("small", "medium"):
-        for encoder in ("gru", "deep_set"):
+    for scale in scaling.FORMAL_SCALES:
+        for encoder in scaling.FORMAL_ENCODERS:
             for seed in seeds:
                 runs.append({
                     "completed": True,
@@ -226,11 +226,12 @@ def test_formal_scaling_selection_requires_three_seeds_and_two_configs() -> None
         "provisional_best_configuration": selected,
         "source_collection_complete": True,
         "requested": {
-            "scales": ["small", "medium"],
-            "encoders": ["gru", "deep_set"],
+            "scales": list(scaling.FORMAL_SCALES),
+            "encoders": list(scaling.FORMAL_ENCODERS),
             "seeds": seeds,
-            "configurations": 4,
+            "configurations": 12,
             "device": "cuda:0",
+            "cross_transformer_heads": 4,
         },
         "configurations": configurations,
         "runs": runs,
@@ -242,7 +243,7 @@ def test_formal_scaling_selection_requires_three_seeds_and_two_configs() -> None
     assert [row["seed"] for row in runs] == [101, 211, 307]
 
     summary["requested"]["scales"] = ["small"]
-    with pytest.raises(ValueError, match="two scales"):
+    with pytest.raises(ValueError, match="every scale"):
         calibration.selected_scaling_runs(
             summary, allow_incomplete_smoke=False
         )
@@ -253,8 +254,8 @@ def _formal_grid_fixture() -> tuple[dict, dict[str, dict]]:
     runs = []
     actual_by_output = {}
     counter = 0
-    for scale in ("small", "medium"):
-        for encoder in ("gru", "deep_set"):
+    for scale in scaling.FORMAL_SCALES:
+        for encoder in scaling.FORMAL_ENCODERS:
             counter += 1
             parameters = counter * 1000
             for seed_index, seed in enumerate(seeds):
@@ -269,6 +270,9 @@ def _formal_grid_fixture() -> tuple[dict, dict[str, dict]]:
                 row = {
                     "scale": scale,
                     "encoder": encoder,
+                    "cross_transformer_heads": (
+                        4 if encoder == "transformer" else None
+                    ),
                     "seed": seed,
                     "run_id": f"run-{scale}-{encoder}-{seed}",
                     "output_dir": output_dir,
@@ -293,11 +297,15 @@ def _formal_grid_fixture() -> tuple[dict, dict[str, dict]]:
                         "scale": scale,
                         "cross_encoder": encoder,
                         "parameters": parameters,
+                        **({
+                            "cross_transformer_heads": 4,
+                        } if encoder == "transformer" else {}),
                     },
                     "training_config": {
                         "seed": seed,
                         "scale": scale,
                         "cross_encoder": encoder,
+                        "cross_transformer_heads": 4,
                         "epochs": 10,
                     },
                     "training_artifact_sha256": {
@@ -327,11 +335,12 @@ def _formal_grid_fixture() -> tuple[dict, dict[str, dict]]:
         "provisional_best_configuration": selected,
         "source_collection_complete": True,
         "requested": {
-            "scales": ["small", "medium"],
-            "encoders": ["gru", "deep_set"],
+            "scales": list(scaling.FORMAL_SCALES),
+            "encoders": list(scaling.FORMAL_ENCODERS),
             "seeds": seeds,
-            "configurations": 4,
+            "configurations": 12,
             "device": "cuda:0",
+            "cross_transformer_heads": 4,
         },
         "configurations": configurations,
         "runs": runs,
@@ -384,7 +393,7 @@ def test_formal_grid_verifies_every_real_run_and_recomputes_winner(
     )
 
     assert set(visited) == set(actual)
-    assert len(visited) == 12
+    assert len(visited) == 36
     assert proof["configurations"] == summary["configurations"]
     assert proof["selected_configuration"] == summary["selected_configuration"]
     assert all("model" not in row for row in proof["verified_runs"])
@@ -396,6 +405,26 @@ def test_formal_grid_verifies_every_real_run_and_recomputes_winner(
         },
         selected_configuration=summary["selected_configuration"],
     )
+
+    tampered = copy.deepcopy(proof)
+    transformer_row = next(
+        row
+        for row in tampered["verified_runs"]
+        if row["encoder"] == "transformer"
+    )
+    transformer_row["cross_transformer_heads"] = 8
+    unsigned = dict(tampered)
+    unsigned.pop("payload_sha256")
+    tampered["payload_sha256"] = calibration._canonical_sha256(unsigned)
+    with pytest.raises(ValueError, match="binding changed"):
+        calibration.validate_formal_grid_verification(
+            tampered,
+            role_manifest_sha256="b" * 64,
+            training_artifact_sha256={
+                "train": "1" * 64, "early_stop": "2" * 64,
+            },
+            selected_configuration=summary["selected_configuration"],
+        )
 
 
 def test_formal_grid_rejects_forged_nonselected_run_and_winner(
@@ -426,6 +455,23 @@ def test_formal_grid_rejects_forged_nonselected_run_and_winner(
         config for config in summary["configurations"] if config != original
     )
     with pytest.raises(ValueError, match="does not match verified artifacts"):
+        calibration.verify_formal_scaling_artifacts(
+            summary,
+            role_manifest_sha256="b" * 64,
+            training_artifact_sha256={
+                "train": "1" * 64, "early_stop": "2" * 64,
+            },
+        )
+
+
+def test_formal_grid_binds_requested_transformer_heads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summary, actual = _formal_grid_fixture()
+    _install_fake_grid_verifier(monkeypatch, actual)
+    summary["requested"]["cross_transformer_heads"] = 8
+
+    with pytest.raises(ValueError, match="complete CUDA run"):
         calibration.verify_formal_scaling_artifacts(
             summary,
             role_manifest_sha256="b" * 64,
@@ -589,7 +635,12 @@ def test_verified_member_rejects_current_training_code_drift(
         "cross_encoder": "gru",
         "parameters": 1000,
     }
-    config = {"seed": 101, "scale": "small", "cross_encoder": "gru"}
+    config = {
+        "seed": 101,
+        "scale": "small",
+        "cross_encoder": "gru",
+        "cross_transformer_heads": 4,
+    }
     report = {
         "schema": calibration.TRAINING_REPORT_SCHEMA,
         "run_id": "member-101",

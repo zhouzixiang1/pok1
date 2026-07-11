@@ -66,3 +66,16 @@ def test_v4_parameter_scales_remain_ordered() -> None:
 
     assert counts == sorted(counts)
     assert len(set(counts)) == 3
+
+
+def test_v4_temporal_transformer_preserves_outcome_contract() -> None:
+    model = v4.model_from_scale(
+        "small", cross_encoder="transformer", transformer_heads=4, dropout=0.0
+    )
+    output = model.forward_joint_value(**_inputs())
+    metadata = model.metadata()
+
+    assert output["match_positive_logits"].shape == (2, 6)
+    assert metadata["cross_encoder"] == "transformer"
+    assert metadata["cross_transformer_heads"] == 4
+    assert metadata["match_outcome_hands"] == 70

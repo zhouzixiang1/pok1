@@ -98,7 +98,9 @@ def _stdlib_inputs(inputs: dict[str, torch.Tensor]) -> dict:
     }
 
 
-@pytest.mark.parametrize("encoder", ["none", "deep_set", "gru", "gru_moe"])
+@pytest.mark.parametrize(
+    "encoder", ["none", "deep_set", "gru", "gru_moe", "transformer"]
+)
 def test_stdlib_outcome_logits_and_probabilities_match_torch(encoder: str) -> None:
     torch.manual_seed(101)
     model = models.model_from_scale(

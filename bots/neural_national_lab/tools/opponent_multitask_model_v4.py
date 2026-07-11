@@ -37,12 +37,14 @@ class OpponentAwareMultiTaskNetV4(OpponentAwareMultiTaskNetV3):
         scale: str = "medium",
         cross_encoder: str = "deep_set",
         moe_experts: int = 4,
+        transformer_heads: int = 4,
         dropout: float = 0.10,
     ) -> None:
         super().__init__(
             scale=scale,
             cross_encoder=cross_encoder,
             moe_experts=moe_experts,
+            transformer_heads=transformer_heads,
             dropout=dropout,
         )
         self.match_outcome_head = nn.Sequential(
@@ -155,6 +157,7 @@ def model_from_scale(
     *,
     cross_encoder: str = "deep_set",
     moe_experts: int = 4,
+    transformer_heads: int = 4,
     dropout: float = 0.10,
 ) -> OpponentAwareMultiTaskNetV4:
     if scale not in MODEL_SCALES:
@@ -163,5 +166,6 @@ def model_from_scale(
         scale=scale,
         cross_encoder=cross_encoder,
         moe_experts=moe_experts,
+        transformer_heads=transformer_heads,
         dropout=dropout,
     )

@@ -19,7 +19,7 @@ from opponent_multitask_model_v4 import MODEL_FORMAT, MODEL_SCALES
 from train_opponent_multitask_v4 import REPORT_SCHEMA as TRAINING_REPORT_SCHEMA
 
 
-SUMMARY_SCHEMA = "opponent_multitask_v4_scaling_summary_v1"
+SUMMARY_SCHEMA = "opponent_multitask_v4_scaling_summary_v2"
 SELECTION_METHOD = "lexicographic_componentwise_seed_median_then_worst_v1"
 SELECTION_KEY_ORDER = (
     "match_flip_balanced_error",
@@ -27,7 +27,9 @@ SELECTION_KEY_ORDER = (
     "match_nll",
     "secondary_v3_value_response_score",
 )
-ENCODERS = ("none", "deep_set", "gru", "gru_moe")
+ENCODERS = ("none", "deep_set", "gru", "gru_moe", "transformer")
+FORMAL_ENCODERS = ("deep_set", "gru", "gru_moe", "transformer")
+FORMAL_SCALES = tuple(MODEL_SCALES)
 TRAINER = Path(__file__).with_name("train_opponent_multitask_v4.py")
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -88,6 +90,7 @@ def build_training_command(
 ) -> list[str]:
     passthrough = (
         ("--moe-experts", args.moe_experts),
+        ("--cross-transformer-heads", args.cross_transformer_heads),
         ("--dropout", args.dropout),
         ("--epochs", args.epochs),
         ("--patience", args.patience),
@@ -154,6 +157,7 @@ def validate_training_report(
     seed: int,
     run_id: str,
     device: str,
+    transformer_heads: int = 4,
 ) -> list[float]:
     config = report.get("config") or {}
     model = report.get("model") or {}
@@ -171,6 +175,13 @@ def validate_training_report(
         or model.get("format") != MODEL_FORMAT
         or model.get("scale") != scale
         or model.get("cross_encoder") != encoder
+        or (
+            encoder == "transformer"
+            and (
+                model.get("cross_transformer_heads") != transformer_heads
+                or config.get("cross_transformer_heads") != transformer_heads
+            )
+        )
         or int(config.get("seed", -1)) != seed
         or environment.get("device") != device
         or early.get("selection_key_order") != list(SELECTION_KEY_ORDER)
@@ -245,6 +256,7 @@ def _run_one(
             seed=seed,
             run_id=run_id,
             device=str(args.device),
+            transformer_heads=int(args.cross_transformer_heads),
         )
         forbidden = (
             "calibration.json",
@@ -270,6 +282,11 @@ def _run_one(
         "source_requested_passes": report.get("source_requested_passes"),
         "incomplete_smoke": report["incomplete_smoke"],
         "training_device": str((report.get("environment") or {}).get("device")),
+        "cross_transformer_heads": (
+            int(args.cross_transformer_heads)
+            if encoder == "transformer"
+            else None
+        ),
     })
     return row
 
@@ -334,14 +351,54 @@ def formal_selection_allowed(
     *,
     allow_incomplete_smoke: bool,
 ) -> bool:
+    try:
+        seeds = {int(row.get("seed")) for row in rows}
+        jobs = [
+            (
+                str(row.get("scale")),
+                str(row.get("encoder")),
+                int(row.get("seed")),
+            )
+            for row in rows
+        ]
+        configuration_pairs = [
+            (str(row.get("scale")), str(row.get("encoder")))
+            for row in configurations
+        ]
+        configuration_seed_contracts = [
+            (
+                sorted(int(seed) for seed in row.get("requested_seeds", [])),
+                sorted(int(seed) for seed in row.get("completed_seeds", [])),
+            )
+            for row in configurations
+        ]
+    except (TypeError, ValueError, OverflowError):
+        return False
+    expected_jobs = {
+        (scale, encoder, seed)
+        for scale in FORMAL_SCALES
+        for encoder in FORMAL_ENCODERS
+        for seed in seeds
+    }
+    expected_pairs = {
+        (scale, encoder)
+        for scale in FORMAL_SCALES
+        for encoder in FORMAL_ENCODERS
+    }
     return bool(
         not allow_incomplete_smoke
         and best is not None
-        and len({str(row.get("scale")) for row in configurations}) >= 2
-        and len({str(row.get("encoder")) for row in configurations}) >= 2
-        and len({int(row.get("seed")) for row in rows}) >= 3
+        and len(seeds) >= 3
+        and len(jobs) == len(expected_jobs)
+        and set(jobs) == expected_jobs
+        and len(configuration_pairs) == len(expected_pairs)
+        and set(configuration_pairs) == expected_pairs
         and all(row.get("completed") is True for row in rows)
         and all(row.get("all_seeds_completed") is True for row in configurations)
+        and all(
+            requested == sorted(seeds) and completed == sorted(seeds)
+            for requested, completed in configuration_seed_contracts
+        )
         and all(row.get("source_collection_complete") is True for row in rows)
         and all(
             row.get("source_completed_passes") == 160
@@ -359,11 +416,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--run-id-prefix", required=True)
     parser.add_argument("--scales", default="small,medium,large")
-    parser.add_argument("--encoders", default=",".join(ENCODERS))
+    parser.add_argument("--encoders", default=",".join(FORMAL_ENCODERS))
     parser.add_argument("--seeds", default="101,211,307")
     parser.add_argument("--training-workers", type=int, default=1)
     parser.add_argument("--allow-incomplete-smoke", action="store_true")
     parser.add_argument("--moe-experts", type=int, default=4)
+    parser.add_argument("--cross-transformer-heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.10)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--patience", type=int, default=15)
@@ -398,15 +456,26 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(str(exc)) from exc
     if not 1 <= args.training_workers <= 3:
         raise SystemExit("training-workers must be in [1, 3]")
+    if "transformer" in encoders and (
+        args.cross_transformer_heads <= 0
+        or any(
+            MODEL_SCALES[scale]["cross_hidden"]
+            % args.cross_transformer_heads
+            for scale in scales
+        )
+    ):
+        raise SystemExit(
+            "cross-transformer-heads must positively divide every selected scale"
+        )
     if not args.allow_incomplete_smoke and (
         len(seeds) < 3
-        or len(scales) < 2
-        or len(encoders) < 2
+        or set(scales) != set(FORMAL_SCALES)
+        or set(encoders) != set(FORMAL_ENCODERS)
         or not _is_cuda_device(args.device)
     ):
         raise SystemExit(
-            "formal v4 scaling requires three seeds, two scales, two encoders, "
-            "and --device cuda"
+            "formal v4 scaling requires three seeds, all model scales, all of "
+            "deep_set/gru/gru_moe/transformer, and --device cuda"
         )
     root = args.out_dir.resolve()
     if root.exists():
@@ -459,6 +528,7 @@ def main(argv: list[str] | None = None) -> int:
             "seeds": seeds,
             "configurations": len(scales) * len(encoders),
             "device": str(args.device),
+            "cross_transformer_heads": int(args.cross_transformer_heads),
         },
         "selection_key_order": list(SELECTION_KEY_ORDER),
         "selection_method": SELECTION_METHOD,

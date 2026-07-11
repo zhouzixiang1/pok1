@@ -89,7 +89,12 @@ def _selected_policy() -> dict:
     }
 
 
-def _payload(*, selected: bool = True, calibrated: bool = True) -> dict:
+def _payload(
+    *,
+    selected: bool = True,
+    calibrated: bool = True,
+    cross_encoder: str = "deep_set",
+) -> dict:
     checkpoints = ["a" * 64, "d" * 64, "f" * 64]
     member_seeds = [101, 211, 307]
     members = []
@@ -97,7 +102,9 @@ def _payload(*, selected: bool = True, calibrated: bool = True) -> dict:
         zip(member_seeds, checkpoints, strict=True), 1
     ):
         torch.manual_seed(index)
-        model = models.model_from_scale("small", dropout=0.0).eval()
+        model = models.model_from_scale(
+            "small", cross_encoder=cross_encoder, dropout=0.0
+        ).eval()
         members.append(exporter.build_export_payload(
             model,
             {
@@ -256,6 +263,23 @@ def test_v4_ensemble_aggregates_calibrated_member_probabilities() -> None:
     assert actual["mean"] == pytest.approx(expected["mean"], abs=1.0e-12)
     assert actual["lower"] == pytest.approx(expected["lower"], abs=1.0e-12)
     assert set(ensemble.predict_values(**inputs)) == set(v3_models.VALUE_FIELDS)
+
+
+def test_v4_transformer_ensemble_exports_reloads_and_runs() -> None:
+    ensemble = runtime.OpponentMultiTaskEnsembleRuntimeV4(
+        _payload(cross_encoder="transformer")
+    )
+    inputs = _stdlib_inputs(_inputs())
+
+    outcomes = ensemble.predict_match_outcomes(**inputs)
+    values = ensemble.predict_values(**inputs)
+
+    assert len(outcomes["lower"]) == len(v3_models.LABELS)
+    assert set(values) == set(v3_models.VALUE_FIELDS)
+    assert all(
+        member.base.cross_encoder == "transformer"
+        for member in ensemble.members
+    )
 
 
 def test_v4_ensemble_selection_is_disabled_without_bound_policy() -> None:
