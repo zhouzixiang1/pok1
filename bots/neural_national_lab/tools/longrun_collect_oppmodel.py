@@ -594,6 +594,146 @@ def build_pool(
     return pool
 
 
+def _require_hex_digest(value: object, *, field: str, length: int) -> str:
+    text = str(value or "")
+    if len(text) != length or any(ch not in "0123456789abcdef" for ch in text):
+        raise RuntimeError(f"persisted pass plan has invalid {field}")
+    return text
+
+
+def _require_json_int(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"persisted pass plan has invalid {field}")
+    return value
+
+
+def _validate_pass_plan(
+    payload: object,
+    *,
+    pass_number: int,
+    ratings_path: Path,
+    hands: int,
+    deck_seed_base: int,
+    deck_seed_guard: int,
+    bot_seed_base: int,
+    val_opponents: set[str],
+    held_out_opponents: set[str],
+) -> tuple[dict, dict[str, dict[str, float]], list[dict]]:
+    """Validate every immutable input before a persisted plan can run."""
+    if not isinstance(payload, dict):
+        raise RuntimeError("persisted pass plan must be an object")
+    if "schema_version" not in payload:
+        raise RuntimeError(
+            "persisted pass plan predates frozen ratings evidence; "
+            "resume with the collector version bound by its collection manifest"
+        )
+    plan_schema = _require_json_int(
+        payload.get("schema_version"), field="schema_version"
+    )
+    if plan_schema != PASS_PLAN_SCHEMA_VERSION:
+        raise RuntimeError(
+            "persisted pass plan predates frozen ratings evidence; "
+            "resume with the collector version bound by its collection manifest"
+        )
+    if (
+        _require_json_int(payload.get("pass"), field="pass") != pass_number
+        or payload.get("seed_scheme") != "disjoint_match_blocks_v1"
+    ):
+        raise RuntimeError("persisted pass plan identity is invalid")
+    ratings_snapshot = payload.get("ratings_snapshot")
+    rating_rows = _validate_ratings_snapshot(ratings_snapshot, ratings_path)
+    raw_tasks = payload.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise RuntimeError("persisted pass plan tasks must be a non-empty list")
+    tasks: list[dict] = []
+    seen_names: set[str] = set()
+    seen_paths: set[str] = set()
+    for index, raw_entry in enumerate(raw_tasks):
+        if not isinstance(raw_entry, dict):
+            raise RuntimeError("persisted pass plan task must be an object")
+        entry = dict(raw_entry)
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.startswith("national_v"):
+            raise RuntimeError("persisted pass plan task has invalid opponent name")
+        if name in seen_names:
+            raise RuntimeError(f"persisted pass plan has duplicate opponent: {name}")
+        seen_names.add(name)
+        split = entry.get("split")
+        if split not in {"train", "val", "held_out"}:
+            raise RuntimeError(f"persisted pass plan task has invalid split: {name}")
+        if name in held_out_opponents:
+            expected_split = "held_out"
+        elif name in val_opponents:
+            expected_split = "val"
+        elif val_opponents or held_out_opponents:
+            expected_split = "train"
+        else:
+            expected_split = _stable_split(name)
+        if split != expected_split:
+            raise RuntimeError(f"persisted pass plan task role mismatch: {name}")
+        opponent_path = entry.get("opponent_path")
+        if not isinstance(opponent_path, str) or not Path(opponent_path).is_absolute():
+            raise RuntimeError(f"persisted pass plan task has invalid path: {name}")
+        if Path(opponent_path).name != name or opponent_path in seen_paths:
+            raise RuntimeError(f"persisted pass plan task path/name mismatch: {name}")
+        seen_paths.add(opponent_path)
+        source_path = entry.get("source_path")
+        if not isinstance(source_path, str) or not Path(source_path).is_absolute():
+            raise RuntimeError(f"persisted pass plan task has invalid source path: {name}")
+        task_hands = _require_json_int(
+            entry.get("hands"), field=f"hands for {name}"
+        )
+        deck_start = _require_json_int(
+            entry.get("deck_seed_base"), field=f"deck_seed_base for {name}"
+        )
+        deck_last = _require_json_int(
+            entry.get("deck_seed_last"), field=f"deck_seed_last for {name}"
+        )
+        task_bot_seed = _require_json_int(
+            entry.get("bot_seed_base"), field=f"bot_seed_base for {name}"
+        )
+        expected_deck = _deck_seed_for_task(
+            root=deck_seed_base,
+            pass_index=pass_number - 1,
+            task_index=index,
+            hands=hands,
+            guard=deck_seed_guard,
+        )
+        expected_bot = _bot_seed_for_task(
+            root=bot_seed_base,
+            pass_index=pass_number - 1,
+            task_index=index,
+        )
+        if task_hands != hands:
+            raise RuntimeError(f"persisted pass plan task hands mismatch: {name}")
+        if deck_start != expected_deck or deck_last != expected_deck + hands - 1:
+            raise RuntimeError(f"persisted pass plan task deck block mismatch: {name}")
+        if task_bot_seed != expected_bot:
+            raise RuntimeError(f"persisted pass plan task bot seed mismatch: {name}")
+        _require_hex_digest(entry.get("tag_commit"), field="tag_commit", length=40)
+        _require_hex_digest(
+            entry.get("source_checkout_commit"),
+            field="source_checkout_commit",
+            length=40,
+        )
+        _require_hex_digest(
+            entry.get("tag_directory_sha256"),
+            field="tag_directory_sha256",
+            length=64,
+        )
+        _require_hex_digest(
+            entry.get("execution_directory_sha256"),
+            field="execution_directory_sha256",
+            length=64,
+        )
+        if not isinstance(entry.get("execution_matches_generation_tag"), bool):
+            raise RuntimeError(
+                f"persisted pass plan task has invalid tag parity flag: {name}"
+            )
+        tasks.append(entry)
+    return dict(ratings_snapshot), rating_rows, tasks
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--candidate", required=True)
@@ -628,6 +768,8 @@ def main(argv=None) -> int:
         )
     args.workers = max(1, min(4, int(args.workers)))
     args.probe_workers = max(1, min(4, int(args.probe_workers)))
+    if args.passes <= 0:
+        raise SystemExit("--passes must be positive")
     if args.workers * args.probe_workers > 4:
         raise SystemExit("--workers * --probe-workers must not exceed 4 native matches")
     if args.hands <= 0 or args.deck_seed_guard < 0:
@@ -717,13 +859,32 @@ def main(argv=None) -> int:
                 manifest_path.read_text(encoding="utf-8")
             )
             previous_contract = collection_config.get("resume_contract")
-        except (OSError, json.JSONDecodeError):
+        except (AttributeError, OSError, json.JSONDecodeError):
             collection_config = None
             previous_contract = None
         if previous_contract != resume_contract:
             raise SystemExit(
                 f"resume contract mismatch for {out_dir}; use a new output directory"
             )
+        recorded_passes = collection_config.get("passes_requested")
+        if isinstance(recorded_passes, bool) or not isinstance(recorded_passes, int):
+            raise SystemExit(f"invalid passes_requested in {manifest_path}")
+        minimum_passes = max(recorded_passes, start_pass)
+        if args.passes < minimum_passes:
+            raise SystemExit(
+                f"--passes cannot shrink below {minimum_passes} for {out_dir}"
+            )
+        if args.passes > recorded_passes:
+            collection_config = dict(collection_config)
+            collection_config["passes_requested"] = args.passes
+            _write_json_atomic(manifest_path, collection_config)
+            persisted_config = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+            if persisted_config != collection_config:
+                raise RuntimeError(
+                    f"collection manifest changed during atomic write: {manifest_path}"
+                )
     else:
         startup_ratings_snapshot = _capture_ratings_snapshot(ratings_path)
         collection_config = {
@@ -738,24 +899,20 @@ def main(argv=None) -> int:
         f"existing_behavior={total_behavior}")
     for ps in range(start_pass, args.passes):
         pass_plan_path = out_dir / "pass_plans" / f"pass_{ps + 1:04d}.json"
-        if pass_plan_path.exists():
+        plan_existed = pass_plan_path.exists()
+        if plan_existed:
             pass_plan = json.loads(pass_plan_path.read_text(encoding="utf-8"))
-            plan_schema = int(pass_plan.get("schema_version", 0) or 0)
-            if plan_schema != PASS_PLAN_SCHEMA_VERSION:
-                raise RuntimeError(
-                    "persisted pass plan predates frozen ratings evidence; "
-                    "resume with the collector version bound by its collection manifest"
-                )
-            if (
-                int(pass_plan.get("pass", 0) or 0) != ps + 1
-                or pass_plan.get("seed_scheme") != "disjoint_match_blocks_v1"
-            ):
-                raise RuntimeError(f"invalid persisted pass plan: {pass_plan_path}")
-            pass_ratings_snapshot = pass_plan.get("ratings_snapshot")
-            rating_rows = _validate_ratings_snapshot(
-                pass_ratings_snapshot, ratings_path
+            pass_ratings_snapshot, rating_rows, plan_entries = _validate_pass_plan(
+                pass_plan,
+                pass_number=ps + 1,
+                ratings_path=ratings_path,
+                hands=args.hands,
+                deck_seed_base=args.deck_seed_base,
+                deck_seed_guard=args.deck_seed_guard,
+                bot_seed_base=args.bot_seed_base,
+                val_opponents=val_opponents,
+                held_out_opponents=held_out_opponents,
             )
-            plan_entries = list(pass_plan.get("tasks") or [])
             pool = [
                 (
                     str(entry["name"]),
@@ -811,7 +968,9 @@ def main(argv=None) -> int:
                 f"{DECK_SEED_SLOTS_PER_PASS} seed slots are reserved"
             )
         tasks = []
-        if not plan_entries:
+        if not plan_existed:
+            if not pool:
+                raise RuntimeError("live strongest pool produced no runnable tasks")
             for i, (name, path, split) in enumerate(pool):
                 source_path = Path(path).resolve()
                 provenance = _freeze_opponent(name, source_path, out_dir)
@@ -850,6 +1009,17 @@ def main(argv=None) -> int:
                 "ratings_snapshot": pass_ratings_snapshot,
                 "tasks": plan_entries,
             }
+            _validate_pass_plan(
+                pass_plan_payload,
+                pass_number=ps + 1,
+                ratings_path=ratings_path,
+                hands=args.hands,
+                deck_seed_base=args.deck_seed_base,
+                deck_seed_guard=args.deck_seed_guard,
+                bot_seed_base=args.bot_seed_base,
+                val_opponents=val_opponents,
+                held_out_opponents=held_out_opponents,
+            )
             _write_json_atomic(pass_plan_path, pass_plan_payload)
             persisted_plan = json.loads(
                 pass_plan_path.read_text(encoding="utf-8")
@@ -858,11 +1028,17 @@ def main(argv=None) -> int:
                 raise RuntimeError(
                     f"persisted pass plan changed during atomic write: {pass_plan_path}"
                 )
-            pass_ratings_snapshot = persisted_plan["ratings_snapshot"]
-            rating_rows = _validate_ratings_snapshot(
-                pass_ratings_snapshot, ratings_path
+            pass_ratings_snapshot, rating_rows, plan_entries = _validate_pass_plan(
+                persisted_plan,
+                pass_number=ps + 1,
+                ratings_path=ratings_path,
+                hands=args.hands,
+                deck_seed_base=args.deck_seed_base,
+                deck_seed_guard=args.deck_seed_guard,
+                bot_seed_base=args.bot_seed_base,
+                val_opponents=val_opponents,
+                held_out_opponents=held_out_opponents,
             )
-            plan_entries = list(persisted_plan["tasks"])
         for entry in plan_entries:
             name = str(entry["name"])
             _verify_frozen_opponent(entry)

@@ -55,6 +55,8 @@ def _minimal_collection_args(
         "--timeout-sec", "1",
         "--ratings", str(ratings),
         "--strongest", "3",
+        "--val-opponent", "national_v2",
+        "--held-out-opponent", "national_v3",
         "--opponents-per-pass", "3",
         "--max-decisions", "1",
         "--max-alternatives", "1",
@@ -78,11 +80,11 @@ def _install_minimal_pool(tool, monkeypatch, tmp_path: Path):
     def fake_freeze(name, source_path, _out_dir):
         digest = tool._directory_digest(source_path)
         return {
-            "tag_commit": f"commit-{name}",
+            "tag_commit": hashlib.sha1(name.encode("ascii")).hexdigest(),
             "tag_directory_sha256": digest,
             "execution_matches_generation_tag": True,
             "source_path": str(source_path),
-            "source_checkout_commit": "test-checkout",
+            "source_checkout_commit": "b" * 40,
             "snapshot_path": str(source_path),
             "execution_directory_sha256": digest,
         }
@@ -90,6 +92,51 @@ def _install_minimal_pool(tool, monkeypatch, tmp_path: Path):
     monkeypatch.setattr(tool, "build_pool", fake_build_pool)
     monkeypatch.setattr(tool, "_freeze_opponent", fake_freeze)
     return opponents
+
+
+def _valid_pass_plan(tool, tmp_path: Path) -> tuple[Path, dict]:
+    ratings_path = tmp_path / "plan_ratings.json"
+    ratings_path.write_bytes(_ratings_bytes())
+    opponent = _minimal_bot(tmp_path / "national_v1")
+    digest = tool._directory_digest(opponent)
+    plan = {
+        "schema_version": tool.PASS_PLAN_SCHEMA_VERSION,
+        "pass": 1,
+        "seed_scheme": "disjoint_match_blocks_v1",
+        "ratings_snapshot": tool._capture_ratings_snapshot(ratings_path),
+        "tasks": [{
+            "name": "national_v1",
+            "opponent_path": str(opponent),
+            "split": "train",
+            "hands": 1,
+            "deck_seed_base": tool._deck_seed_for_task(
+                root=tool.DEFAULT_DECK_SEED_BASE,
+                pass_index=0,
+                task_index=0,
+                hands=1,
+                guard=tool.DEFAULT_DECK_SEED_GUARD,
+            ),
+            "deck_seed_last": tool._deck_seed_for_task(
+                root=tool.DEFAULT_DECK_SEED_BASE,
+                pass_index=0,
+                task_index=0,
+                hands=1,
+                guard=tool.DEFAULT_DECK_SEED_GUARD,
+            ),
+            "bot_seed_base": tool._bot_seed_for_task(
+                root=tool.DEFAULT_BOT_SEED_BASE,
+                pass_index=0,
+                task_index=0,
+            ),
+            "tag_commit": "a" * 40,
+            "tag_directory_sha256": digest,
+            "execution_matches_generation_tag": True,
+            "source_path": str(opponent),
+            "source_checkout_commit": "b" * 40,
+            "execution_directory_sha256": digest,
+        }],
+    }
+    return ratings_path, plan
 
 
 def test_deck_seed_blocks_do_not_overlap_across_tasks_or_passes() -> None:
@@ -224,6 +271,61 @@ def test_ratings_snapshot_tampering_fails_closed(
         tool._validate_ratings_snapshot(snapshot, ratings_path)
 
 
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "empty_tasks",
+        "non_integer_schema",
+        "bad_split",
+        "role_mismatch",
+        "hands",
+        "deck_range",
+        "bot_seed",
+        "missing_provenance",
+        "relative_path",
+        "duplicate_opponent",
+    ),
+)
+def test_persisted_pass_plan_rejects_invalid_tasks(
+    tmp_path: Path, tamper: str
+) -> None:
+    tool = _load_tool()
+    ratings_path, plan = _valid_pass_plan(tool, tmp_path)
+    if tamper == "empty_tasks":
+        plan["tasks"] = []
+    elif tamper == "non_integer_schema":
+        plan["schema_version"] = "2"
+    elif tamper == "bad_split":
+        plan["tasks"][0]["split"] = "selection"
+    elif tamper == "role_mismatch":
+        plan["tasks"][0]["split"] = "val"
+    elif tamper == "hands":
+        plan["tasks"][0]["hands"] = 2
+    elif tamper == "deck_range":
+        plan["tasks"][0]["deck_seed_last"] += 1
+    elif tamper == "bot_seed":
+        plan["tasks"][0]["bot_seed_base"] += 1
+    elif tamper == "missing_provenance":
+        del plan["tasks"][0]["tag_commit"]
+    elif tamper == "relative_path":
+        plan["tasks"][0]["opponent_path"] = "national_v1"
+    elif tamper == "duplicate_opponent":
+        plan["tasks"].append(copy.deepcopy(plan["tasks"][0]))
+
+    with pytest.raises(RuntimeError):
+        tool._validate_pass_plan(
+            plan,
+            pass_number=1,
+            ratings_path=ratings_path,
+            hands=1,
+            deck_seed_base=tool.DEFAULT_DECK_SEED_BASE,
+            deck_seed_guard=tool.DEFAULT_DECK_SEED_GUARD,
+            bot_seed_base=tool.DEFAULT_BOT_SEED_BASE,
+            val_opponents=set(),
+            held_out_opponents=set(),
+        )
+
+
 def test_pass_completion_uses_plan_ratings_after_live_file_disappears(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -244,6 +346,22 @@ def test_pass_completion_uses_plan_ratings_after_live_file_disappears(
         return capture(path)
 
     def fake_probe(_candidate, _opponent, _split, name, *_args):
+        persisted_plan = json.loads(
+            (out_dir / "pass_plans" / "pass_0001.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        tool._validate_pass_plan(
+            persisted_plan,
+            pass_number=1,
+            ratings_path=ratings_path,
+            hands=1,
+            deck_seed_base=tool.DEFAULT_DECK_SEED_BASE,
+            deck_seed_guard=tool.DEFAULT_DECK_SEED_GUARD,
+            bot_seed_base=tool.DEFAULT_BOT_SEED_BASE,
+            val_opponents={"national_v2"},
+            held_out_opponents={"national_v3"},
+        )
         ratings_path.unlink(missing_ok=True)
         return 0, 0, name
 
@@ -281,6 +399,52 @@ def test_pass_completion_uses_plan_ratings_after_live_file_disappears(
     ]["ratings"]
 
 
+def test_each_fresh_pass_captures_ratings_exactly_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tool = _load_tool()
+    candidate = _minimal_bot(tmp_path / "candidate")
+    ratings_path = tmp_path / "glicko_ratings.json"
+    ratings_path.write_bytes(_ratings_bytes())
+    out_dir = tmp_path / "collection"
+    _install_minimal_pool(tool, monkeypatch, tmp_path)
+    capture_calls = 0
+    capture = tool._capture_ratings_snapshot
+
+    def counted_capture(path):
+        nonlocal capture_calls
+        capture_calls += 1
+        return capture(path)
+
+    monkeypatch.setattr(tool, "_capture_ratings_snapshot", counted_capture)
+    monkeypatch.setattr(
+        tool,
+        "probe_one",
+        lambda _candidate, _opponent, _split, name, *_args: (0, 0, name),
+    )
+
+    assert tool.main(_minimal_collection_args(
+        candidate=candidate,
+        out_dir=out_dir,
+        ratings=ratings_path,
+        passes=2,
+    )) == 0
+
+    assert capture_calls == 2
+    assert (out_dir / "pass_plans" / "pass_0001.json").is_file()
+    assert (out_dir / "pass_plans" / "pass_0002.json").is_file()
+    manifest_path = out_dir / "collection_manifest.json"
+    manifest_bytes = manifest_path.read_bytes()
+    with pytest.raises(SystemExit, match="cannot shrink"):
+        tool.main(_minimal_collection_args(
+            candidate=candidate,
+            out_dir=out_dir,
+            ratings=ratings_path,
+            passes=1,
+        ))
+    assert manifest_path.read_bytes() == manifest_bytes
+
+
 def test_persisted_pass_resumes_without_live_ratings(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -305,6 +469,9 @@ def test_persisted_pass_resumes_without_live_ratings(
         passes=1,
     )
     assert tool.main(args) == 0
+    initial_manifest = json.loads(
+        (out_dir / "collection_manifest.json").read_text(encoding="utf-8")
+    )
 
     first_plan = json.loads(
         (out_dir / "pass_plans" / "pass_0001.json").read_text(encoding="utf-8")
@@ -341,6 +508,13 @@ def test_persisted_pass_resumes_without_live_ratings(
     )
     assert tool.main(resumed_args) == 0
     assert probe_calls == 6
+    resumed_manifest = json.loads(
+        (out_dir / "collection_manifest.json").read_text(encoding="utf-8")
+    )
+    assert resumed_manifest["passes_requested"] == 2
+    assert resumed_manifest["ratings_sha256_at_start"] == initial_manifest[
+        "ratings_sha256_at_start"
+    ]
     snapshots = [
         json.loads(line)
         for line in (out_dir / "pool_snapshots.jsonl").read_text(
@@ -402,6 +576,57 @@ def test_legacy_plan_without_ratings_snapshot_fails_before_probe_or_live_read(
 
     assert probe_calls == calls_before_resume
     assert legacy_path.read_bytes() == legacy_bytes
+
+
+def test_empty_persisted_plan_fails_without_rewrite_or_probe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tool = _load_tool()
+    candidate = _minimal_bot(tmp_path / "candidate")
+    ratings_path = tmp_path / "glicko_ratings.json"
+    ratings_path.write_bytes(_ratings_bytes())
+    out_dir = tmp_path / "collection"
+    _install_minimal_pool(tool, monkeypatch, tmp_path)
+    probe_calls = 0
+
+    def fake_probe(_candidate, _opponent, _split, name, *_args):
+        nonlocal probe_calls
+        probe_calls += 1
+        return 0, 0, name
+
+    monkeypatch.setattr(tool, "probe_one", fake_probe)
+    assert tool.main(_minimal_collection_args(
+        candidate=candidate,
+        out_dir=out_dir,
+        ratings=ratings_path,
+        passes=1,
+    )) == 0
+    first_plan = json.loads(
+        (out_dir / "pass_plans" / "pass_0001.json").read_text(encoding="utf-8")
+    )
+    empty_plan = copy.deepcopy(first_plan)
+    empty_plan["pass"] = 2
+    empty_plan["tasks"] = []
+    empty_path = out_dir / "pass_plans" / "pass_0002.json"
+    empty_bytes = json.dumps(empty_plan, separators=(",", ":")).encode("utf-8")
+    empty_path.write_bytes(empty_bytes)
+    ratings_path.unlink()
+    calls_before_resume = probe_calls
+
+    def forbidden_capture(_path):
+        raise AssertionError("empty persisted plan unexpectedly read live ratings")
+
+    monkeypatch.setattr(tool, "_capture_ratings_snapshot", forbidden_capture)
+    with pytest.raises(RuntimeError, match="tasks must be a non-empty list"):
+        tool.main(_minimal_collection_args(
+            candidate=candidate,
+            out_dir=out_dir,
+            ratings=ratings_path,
+            passes=2,
+        ))
+
+    assert probe_calls == calls_before_resume
+    assert empty_path.read_bytes() == empty_bytes
 
 
 def test_durable_collection_rejects_fallback_pool() -> None:
