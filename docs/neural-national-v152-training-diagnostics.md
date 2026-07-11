@@ -545,19 +545,48 @@ and 18,723/5,968/3,275 opponent-action rows in train/validation/held-out.
 The conditional common-runout diagnostic remains queued until the four native
 TCP collection slots are released.
 
+## Hero-Hand Representation Audit
+
+The legacy 48-dimensional state encoder is not sufficient for postflop value
+learning. It contains scalar hole-card ranks, whether the two hole cards are
+suited, and board-only rank/suit texture, but it does not encode the exact
+relationship between the hole cards and board. A constructive collision proves
+the information loss: `AsKs` and `AhKh` produce the same legacy vector on a
+`Qs7s2h` flop, although the first hand has a four-card flush draw and the second
+has only a three-card suit concentration. Increasing hidden width cannot recover
+information that the input has discarded.
+
+`hand_context_features.py` therefore introduces the separately versioned
+18-dimensional `hero_hand_context_v1` representation. It adds the exact best
+made-hand class and primary rank, best-five hole-card usage, board-rank matches,
+overcards, combined hole/board suit concentration, flush-draw indicators,
+straight-window density and hole contribution, and paired/suited board pressure.
+The representation is bounded, stdlib-only, and invariant to arbitrary suit
+renaming. Six focused tests cover the legacy collision, a board-only straight
+flush, suit permutation, malformed/missing cards, and dimension bounds.
+
+This feature set is not yet strength evidence. A pass-98 snapshot is running the
+existing 48-dimensional model across GRU, GRU+MoE, Deep Sets, and Transformer
+encoders at four parameter scales as the fixed control. After that sweep
+finishes, the same frozen rows, cluster-bootstrap seeds, architecture recipe,
+and policy gates will be rerun with the 18 dimensions appended. Held-out must
+remain unopened unless calibration passes.
+
 ## Next Evidence
 
 1. Finish and atomically freeze the 160-pass opponent-disjoint collection.
 2. Repeat the full GRU, GRU+MoE, Deep Sets, and Transformer scaling grid after
    the 160-pass dataset is frozen.
-3. Use calibration only for output calibration and coverage diagnostics;
+3. Run a controlled legacy-48 versus legacy-48-plus-hand-context feature
+   ablation before selecting the pass-160 architecture.
+4. Use calibration only for output calibration and coverage diagnostics;
    reserve fresh tagged opponents outside all current partitions for the final
    blind test and do not open them after a failed calibration gate.
-4. Use offline clustered policy selection before creating an active TCP bot.
-5. Treat native paired classic-pool EV, not these supervised metrics, as the
+5. Use offline clustered policy selection before creating an active TCP bot.
+6. Treat native paired classic-pool EV, not these supervised metrics, as the
    eventual strength criterion.
-6. Use the catastrophe head as an ablation and uncertainty signal, not a
+7. Use the catastrophe head as an ablation and uncertainty signal, not a
    release gate, until targeted data closes its rare-action false negatives.
-7. Run conditional common-runout replication on the first-divergence failures,
+8. Run conditional common-runout replication on the first-divergence failures,
    then compare a separately frozen replicated-label dataset before treating
    match/tail labels as causal long-horizon targets.
