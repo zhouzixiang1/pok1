@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze an uncertainty-driven neural override policy on selection data only."""
+"""Screen neural overrides using single-decision counterfactual action uplift."""
 from __future__ import annotations
 
 import argparse
@@ -24,6 +24,9 @@ from train_opponent_multitask_net import (  # noqa: E402
     _hero_action_features,
     build_value_sample,
 )
+
+
+OFFLINE_ESTIMAND = "single_decision_action_uplift_v1"
 
 
 def _read(path: Path) -> list[dict[str, Any]]:
@@ -350,6 +353,9 @@ def _evaluate_config(
         seed=bootstrap_seed + 2,
     )
     return {
+        "estimand": OFFLINE_ESTIMAND,
+        "deployment_policy_value": False,
+        "strength_evidence": False,
         "config": config,
         "rows": len(rows),
         "overrides": len(selected),
@@ -471,9 +477,34 @@ def _file_manifest(path: Path | None) -> dict[str, Any] | None:
         return None
     return {
         "path": str(path.resolve()),
+        "opened": True,
         "bytes": path.stat().st_size,
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
+
+
+def _unopened_file_manifest(
+    path: Path | None, *, role: str
+) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return {
+        "path": str(path.resolve()),
+        "role": role,
+        "opened": False,
+        "bytes": None,
+        "sha256": None,
+    }
+
+
+def _may_open_policy_gate(
+    path: Path | None, calibration_gate: dict[str, Any] | None
+) -> bool:
+    return bool(
+        path is not None
+        and calibration_gate is not None
+        and calibration_gate.get("passed")
+    )
 
 
 def _write_payload(path: Path, payload: dict[str, Any]) -> None:
@@ -558,6 +589,9 @@ def select_offline_policy(
         ),
     ) if eligible else None
     return {
+        "estimand": OFFLINE_ESTIMAND,
+        "deployment_policy_value": False,
+        "strength_evidence": False,
         "rows": len(rows),
         "grid": grid,
         "selected": selected,
@@ -646,8 +680,12 @@ def main() -> int:
     model_manifests = [_file_manifest(path) for path in model_paths]
     data_manifests = {
         "selection": _file_manifest(args.selection_data),
-        "calibration": _file_manifest(args.calibration_data),
-        "held_out": _file_manifest(args.held_out_data),
+        "calibration": _unopened_file_manifest(
+            args.calibration_data, role="policy_calibration"
+        ),
+        "held_out": _unopened_file_manifest(
+            args.held_out_data, role="policy_gate_not_final_blind"
+        ),
     }
     selection_criteria = {
         "min_overrides": args.min_overrides,
@@ -665,7 +703,10 @@ def main() -> int:
     }
     if policy_selection["selected"] is None:
         payload = {
-            "schema_version": 4,
+            "schema_version": 5,
+            "estimand": OFFLINE_ESTIMAND,
+            "deployment_policy_value": False,
+            "strength_evidence": False,
             "selection_used_held_out": False,
             "models": model_manifests,
             "selection_data": str(args.selection_data.resolve()),
@@ -695,10 +736,34 @@ def main() -> int:
             bootstrap_seed=args.bootstrap_seed,
         )
 
+    if args.calibration_data is not None:
+        data_manifests["calibration"] = _file_manifest(args.calibration_data)
     calibration = evaluate_optional(args.calibration_data, selected["config"])
-    held_out = evaluate_optional(args.held_out_data, selected["config"])
     calibration_gate = _calibration_gate(
         calibration,
+        min_overrides=args.min_calibration_overrides,
+        min_override_clusters=args.min_calibration_override_clusters,
+        require_nonnegative_opponent_mean=(
+            not args.allow_negative_calibration_opponent
+        ),
+        min_cluster_ci_lower=args.min_calibration_ci_lower,
+        min_opponent_stratified_ci_lower=args.min_calibration_ci_lower,
+    )
+    if args.held_out_data is not None and calibration_gate is None:
+        calibration_gate = {
+            "passed": False,
+            "errors": ["calibration_data_required_before_policy_gate"],
+        }
+    held_out_opened = _may_open_policy_gate(
+        args.held_out_data, calibration_gate
+    )
+    if held_out_opened:
+        data_manifests["held_out"] = _file_manifest(args.held_out_data)
+        held_out = evaluate_optional(args.held_out_data, selected["config"])
+    else:
+        held_out = None
+    policy_gate = _calibration_gate(
+        held_out,
         min_overrides=args.min_calibration_overrides,
         min_override_clusters=args.min_calibration_override_clusters,
         require_nonnegative_opponent_mean=(
@@ -710,7 +775,10 @@ def main() -> int:
     no_response_config = dict(selected["config"], response_weight=0.0)
     mean_only_config = dict(selected["config"], use_lower=False)
     payload = {
-        "schema_version": 4,
+        "schema_version": 5,
+        "estimand": OFFLINE_ESTIMAND,
+        "deployment_policy_value": False,
+        "strength_evidence": False,
         "selection_used_held_out": False,
         "models": model_manifests,
         "selection_data": str(args.selection_data.resolve()),
@@ -720,13 +788,17 @@ def main() -> int:
         "selected": selected,
         "calibration": calibration,
         "calibration_gate": calibration_gate,
+        "held_out_opened": held_out_opened,
         "held_out": held_out,
+        "policy_gate": policy_gate,
         "ablations": {
-            "no_response_held_out": evaluate_optional(
-                args.held_out_data, no_response_config
+            "no_response_held_out": (
+                evaluate_optional(args.held_out_data, no_response_config)
+                if held_out_opened else None
             ),
-            "mean_only_held_out": evaluate_optional(
-                args.held_out_data, mean_only_config
+            "mean_only_held_out": (
+                evaluate_optional(args.held_out_data, mean_only_config)
+                if held_out_opened else None
             ),
         },
     }
@@ -734,9 +806,13 @@ def main() -> int:
     print(json.dumps({
         "selected": selected,
         "calibration": calibration,
+        "calibration_gate": calibration_gate,
+        "held_out_opened": held_out_opened,
         "held_out": held_out,
+        "policy_gate": policy_gate,
     }, indent=2, sort_keys=True))
-    return 0 if calibration_gate is None or calibration_gate["passed"] else 1
+    gates = [gate for gate in (calibration_gate, policy_gate) if gate is not None]
+    return 0 if all(gate["passed"] for gate in gates) else 1
 
 
 if __name__ == "__main__":

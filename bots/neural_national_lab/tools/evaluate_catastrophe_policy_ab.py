@@ -16,8 +16,10 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from evaluate_multitask_offline_policy import (  # noqa: E402
+    OFFLINE_ESTIMAND,
     _calibration_gate,
     _evaluate_config,
+    _may_open_policy_gate,
     _prepare_rows,
     _read,
     select_offline_policy,
@@ -43,9 +45,33 @@ def _file_manifest(path: str | Path) -> dict[str, Any]:
     source = Path(path)
     return {
         "path": str(source.resolve()),
+        "opened": True,
         "bytes": source.stat().st_size,
         "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
     }
+
+
+def _unopened_manifest(path: Path | None, *, role: str) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return {
+        "path": str(path.resolve()),
+        "role": role,
+        "opened": False,
+        "bytes": None,
+        "sha256": None,
+    }
+
+
+def _result_exit_code(
+    selected: dict[str, Any] | None,
+    post_selection: dict[str, Any] | None,
+) -> int:
+    if selected is None:
+        return 2
+    if post_selection is None or not post_selection.get("passed"):
+        return 1
+    return 0
 
 
 def _attach_risk(
@@ -328,6 +354,15 @@ def main(argv: list[str] | None = None) -> int:
     catastrophe_threshold = catastrophe_thresholds.pop()
 
     raw_selection = _read(args.selection_data)
+    data_manifests = {
+        "selection": _file_manifest(args.selection_data),
+        "calibration": _unopened_manifest(
+            args.calibration_data, role="risk_policy_calibration"
+        ),
+        "held_out": _unopened_manifest(
+            args.held_out_data, role="risk_policy_gate_not_final_blind"
+        ),
+    }
     prepared = _prepare_rows(raw_selection, base_ensemble)
     prepared = _attach_risk(
         prepared,
@@ -363,6 +398,9 @@ def main(argv: list[str] | None = None) -> int:
         calibration = None
         calibration_gate = None
         if args.calibration_data is not None:
+            data_manifests["calibration"] = _file_manifest(
+                args.calibration_data
+            )
             calibration = _evaluate_frozen(
                 _read(args.calibration_data),
                 base_ensemble,
@@ -380,9 +418,18 @@ def main(argv: list[str] | None = None) -> int:
                 min_cluster_ci_lower=args.min_calibration_ci_lower,
                 min_opponent_stratified_ci_lower=args.min_calibration_ci_lower,
             )
+        if args.held_out_data is not None and calibration_gate is None:
+            calibration_gate = {
+                "passed": False,
+                "errors": ["calibration_data_required_before_policy_gate"],
+            }
         held_out = None
         held_out_gate = None
-        if args.held_out_data is not None:
+        held_out_opened = _may_open_policy_gate(
+            args.held_out_data, calibration_gate
+        )
+        if held_out_opened:
+            data_manifests["held_out"] = _file_manifest(args.held_out_data)
             held_out = _evaluate_frozen(
                 _read(args.held_out_data),
                 base_ensemble,
@@ -406,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
             "policy_config_frozen_before_post_selection": policy_config,
             "calibration": calibration,
             "calibration_gate": calibration_gate,
+            "held_out_opened": held_out_opened,
             "held_out": held_out,
             "held_out_gate": held_out_gate,
             "passed": (
@@ -416,23 +464,16 @@ def main(argv: list[str] | None = None) -> int:
         }
 
     payload = {
-        "format": "catastrophe_policy_ab_v1",
+        "format": "catastrophe_policy_ab_v2",
+        "estimand": OFFLINE_ESTIMAND,
+        "deployment_policy_value": False,
+        "strength_evidence": False,
         "catastrophe_threshold": catastrophe_threshold,
         "model_manifests": {
             "base": [_file_manifest(path) for path in args.base_model],
             "risk": [_file_manifest(path) for path in args.risk_head],
         },
-        "data_manifests": {
-            "selection": _file_manifest(args.selection_data),
-            "calibration": (
-                _file_manifest(args.calibration_data)
-                if args.calibration_data is not None else None
-            ),
-            "held_out": (
-                _file_manifest(args.held_out_data)
-                if args.held_out_data is not None else None
-            ),
-        },
+        "data_manifests": data_manifests,
         "selection_requirements": {
             "min_overrides": args.min_overrides,
             "min_selection_clusters": args.min_selection_clusters,
@@ -462,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
             post_selection["passed"] if post_selection else None
         ),
     }, sort_keys=True))
-    return 0 if selected_threshold is not None else 2
+    return _result_exit_code(selected_threshold, post_selection)
 
 
 if __name__ == "__main__":

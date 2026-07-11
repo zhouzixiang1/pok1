@@ -647,11 +647,36 @@ from a frozen native policy executing all overrides on fresh, non-overlapping
 70-hand paired blocks, followed by opponent/block-aware uncertainty,
 leave-one-block-out sensitivity, and a one-time blind classic-pool test.
 
+`native_tcp_evaluate.py --strength-evidence` now enforces that boundary before
+and after execution. It requires at least three deterministic blocks per
+opponent, 70 hands per seat, paired seats, unique bot seeds, no forced action,
+native entries only, and at most four workers. Default deck stride is
+`hands + 10`; different opponents receive disjoint 10-million-seed regions.
+After execution, every row must contain both complete 70-hand legs, 70 paired
+hand deltas, zero illegal/timeout/adapter/wrapper events, no issues, and stable
+candidate/opponent directory SHA-256 values. `native_tcp_report_diff.py
+--strength-evidence` rejects reports that did not pass this gate or used
+different opponent artifacts and reports leave-one-deck-block-out sensitivity.
+The old adjacent-seed v146 reports intentionally fail this contract.
+
+The offline evaluators now label their estimand
+`single_decision_action_uplift_v1`, set `deployment_policy_value=false` and
+`strength_evidence=false`, and treat their old `held_out` argument as a policy
+gate rather than a final blind test. If selection or calibration fails, the
+next file is not read, statted, or hashed; its manifest remains unopened. The
+catastrophe A/B evaluator also returns nonzero when post-selection gates fail.
+This closes the immediate file-exposure and false-success paths, but does not
+solve the trainer's reuse of model-calibration opponents or adaptive validation
+selection. Those require the separately partitioned pass after the running
+pass-98 control has finished.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
 model returns no neural prediction so the sanitized rule action remains in
 control; it can no longer silently truncate vectors through Python `zip`.
+The historical v150 context-only encoder and newer rule-conditioned encoder are
+distinguished from their first-layer widths and tested as explicit contracts.
 
 ## Literature Recheck And Search Direction
 

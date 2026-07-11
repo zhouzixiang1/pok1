@@ -115,7 +115,150 @@ def _top(rows: list[dict[str, Any]], reverse: bool, limit: int) -> list[dict[str
     return out
 
 
-def _diff_rows(candidate: dict[str, Any], baseline: dict[str, Any]) -> list[dict[str, Any]]:
+def _strength_report_errors(report: dict[str, Any]) -> list[str]:
+    errors = []
+    if report.get("format") != "native_tcp_evaluation_v2":
+        errors.append("unsupported_evaluation_format")
+    evidence = report.get("strength_evidence") or {}
+    if not evidence.get("passed"):
+        errors.append("evaluator_strength_evidence_not_passed")
+    if report.get("execution_mode") != "native_tcp":
+        errors.append("execution_mode_not_native_tcp")
+    if not report.get("paired"):
+        errors.append("report_not_paired")
+    if int(report.get("hands_per_match", 0) or 0) != 70:
+        errors.append("hands_per_match_not_70")
+    if not report.get("requires_native_opponents"):
+        errors.append("native_opponents_not_required")
+    if report.get("legacy_debug_wrapper_enabled") or report.get("wrapper_used"):
+        errors.append("wrapper_enabled_or_used")
+    artifacts = report.get("execution_artifacts") or {}
+    if not _valid_artifact(artifacts.get("candidate") or {}):
+        errors.append("candidate_artifact_not_stable")
+    opponent_artifacts = list(artifacts.get("opponents") or [])
+    if not opponent_artifacts or any(
+        not _valid_artifact(artifact) for artifact in opponent_artifacts
+    ):
+        errors.append("opponent_artifact_not_stable")
+    rows = list(report.get("rows") or [])
+    windows = []
+    for index, row in enumerate(rows):
+        prefix = f"row[{index}]"
+        if row.get("leg") != "paired":
+            errors.append(f"{prefix}:not_paired")
+        if int(row.get("hands_played", 0) or 0) != 140:
+            errors.append(f"{prefix}:short_match")
+        if len(row.get("hand_net_chips") or []) != 70:
+            errors.append(f"{prefix}:incomplete_hand_vector")
+        if not row.get("passed_compliance"):
+            errors.append(f"{prefix}:compliance_failed")
+        if row.get("wrapper_used") or row.get("issues"):
+            errors.append(f"{prefix}:wrapper_or_issues")
+        for field in (
+            "candidate_illegal",
+            "candidate_timeouts",
+            "opponent_illegal",
+            "opponent_timeouts",
+            "adapter_actions_candidate",
+            "adapter_actions_opponent",
+        ):
+            if int(row.get(field, 0) or 0) != 0:
+                errors.append(f"{prefix}:{field}")
+        seed = row.get("deck_seed_base")
+        if seed is None:
+            errors.append(f"{prefix}:missing_deck_seed")
+        else:
+            windows.append((int(seed), int(seed) + 69))
+    for left_index, left in enumerate(windows):
+        for right in windows[left_index + 1:]:
+            if max(left[0], right[0]) <= min(left[1], right[1]):
+                errors.append(f"overlapping_deck_windows:{left[0]},{right[0]}")
+    return errors
+
+
+def _valid_artifact(artifact: dict[str, Any]) -> bool:
+    before = artifact.get("sha256_before")
+    after = artifact.get("sha256_after")
+    return bool(
+        artifact.get("stable")
+        and artifact.get("path")
+        and isinstance(before, str)
+        and len(before) == 64
+        and before == after
+    )
+
+
+def _leave_one_block_out(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(rows) <= 1:
+        return {
+            "blocks": len(rows),
+            "estimates": 0,
+            "min_delta_per_hand": None,
+            "max_delta_per_hand": None,
+            "negative_estimates": 0,
+            "sign_flips": 0,
+        }
+    total_delta = sum(int(row["delta_net_chips"]) for row in rows)
+    total_hands = sum(int(row["hands_played"]) for row in rows)
+    full = total_delta / max(1, total_hands)
+    estimates = []
+    for omitted in rows:
+        delta = total_delta - int(omitted["delta_net_chips"])
+        hands = total_hands - int(omitted["hands_played"])
+        estimates.append(delta / max(1, hands))
+    full_sign = 1 if full > 0 else -1 if full < 0 else 0
+    return {
+        "blocks": len(rows),
+        "estimates": len(estimates),
+        "min_delta_per_hand": round(min(estimates), 6),
+        "max_delta_per_hand": round(max(estimates), 6),
+        "negative_estimates": sum(value < 0 for value in estimates),
+        "sign_flips": sum(
+            (1 if value > 0 else -1 if value < 0 else 0) != full_sign
+            for value in estimates
+        ),
+    }
+
+
+def _diff_rows(
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+    *,
+    require_strength: bool = False,
+) -> list[dict[str, Any]]:
+    if require_strength:
+        for label, report in (("candidate", candidate), ("baseline", baseline)):
+            errors = _strength_report_errors(report)
+            if errors:
+                raise SystemExit(
+                    f"{label} report is not valid strength evidence: {errors[:10]}"
+                )
+        for field in (
+            "opponent_paths",
+            "seeds",
+            "actual_deck_seed_bases",
+            "deck_seed_scheme",
+            "opponent_seed_stride",
+            "bot_seed_base",
+            "bot_seed_stride",
+            "hands_per_match",
+        ):
+            if candidate.get(field) != baseline.get(field):
+                raise SystemExit(
+                    f"strength reports differ on {field}: "
+                    f"candidate={candidate.get(field)!r} "
+                    f"baseline={baseline.get(field)!r}"
+                )
+        candidate_opponents = (
+            candidate.get("execution_artifacts") or {}
+        ).get("opponents")
+        baseline_opponents = (
+            baseline.get("execution_artifacts") or {}
+        ).get("opponents")
+        if candidate_opponents != baseline_opponents:
+            raise SystemExit(
+                "strength reports used different opponent artifacts"
+            )
     candidate_rows = {_row_key(row): row for row in candidate.get("rows", [])}
     baseline_rows = {_row_key(row): row for row in baseline.get("rows", [])}
     missing = sorted(set(candidate_rows) ^ set(baseline_rows))
@@ -137,6 +280,14 @@ def _diff_rows(candidate: dict[str, Any], baseline: dict[str, Any]) -> list[dict
             raise SystemExit(
                 f"report hand vector mismatch for {key}: "
                 f"candidate={len(cand_hands)} baseline={len(base_hands)}"
+            )
+        if sum(cand_hands) != int(cand["net_chips"]):
+            raise SystemExit(
+                f"candidate hand accounting mismatch for {key}"
+            )
+        if sum(base_hands) != int(base["net_chips"]):
+            raise SystemExit(
+                f"baseline hand accounting mismatch for {key}"
             )
         hand_deltas = [
             cand_hands[idx] - base_hands[idx]
@@ -189,6 +340,7 @@ def _summary(
             samples=bootstrap_samples,
             seed=bootstrap_seed,
         )
+        payload["leave_one_block_out"] = _leave_one_block_out(subset)
         payload["worst"] = _top(subset, reverse=False, limit=limit)
         payload["best"] = _top(subset, reverse=True, limit=limit)
     all_deltas = [int(row["delta_net_chips"]) for row in rows]
@@ -210,7 +362,9 @@ def _summary(
         samples=bootstrap_samples,
         seed=bootstrap_seed + 1,
     )
+    combined["leave_one_block_out"] = _leave_one_block_out(rows)
     return {
+        "format": "native_tcp_strength_diff_v2",
         "candidate_report": candidate.get("candidate_path"),
         "baseline_report": baseline.get("candidate_path"),
         "candidate_paired": bool(candidate.get("paired")),
@@ -232,11 +386,18 @@ def main() -> int:
     parser.add_argument("--top", type=int, default=8)
     parser.add_argument("--bootstrap-samples", type=int, default=20_000)
     parser.add_argument("--bootstrap-seed", type=int, default=20260710)
+    parser.add_argument(
+        "--strength-evidence",
+        action="store_true",
+        help="Reject reports that did not pass the strict native strength gate.",
+    )
     args = parser.parse_args()
 
     candidate = _load(args.candidate_report)
     baseline = _load(args.baseline_report)
-    rows = _diff_rows(candidate, baseline)
+    rows = _diff_rows(
+        candidate, baseline, require_strength=args.strength_evidence
+    )
     payload = _summary(
         rows,
         candidate,
@@ -246,6 +407,7 @@ def main() -> int:
         bootstrap_seed=args.bootstrap_seed,
     )
     payload["diff_rows"] = rows
+    payload["strength_evidence_validated"] = bool(args.strength_evidence)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     compact_opponents = {

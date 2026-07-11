@@ -69,3 +69,104 @@ def test_diff_rejects_seed_mismatch() -> None:
 
     with pytest.raises(SystemExit, match="deck_seed_base"):
         tool._diff_rows(candidate, baseline)
+
+
+def _strength_row(opponent: str, match_idx: int, net: int, seed: int) -> dict:
+    row = _row(opponent, match_idx, net, seed=seed)
+    row.update({
+        "hands_played": 140,
+        "hand_net_chips": [0] * 69 + [net],
+        "wrapper_used": False,
+        "candidate_illegal": 0,
+        "candidate_timeouts": 0,
+        "opponent_illegal": 0,
+        "opponent_timeouts": 0,
+        "adapter_actions_candidate": 0,
+        "adapter_actions_opponent": 0,
+    })
+    return row
+
+
+def _strength_report(rows: list[dict], candidate: str) -> dict:
+    seeds = [row["deck_seed_base"] for row in rows]
+    return {
+        "format": "native_tcp_evaluation_v2",
+        "execution_mode": "native_tcp",
+        "candidate_path": candidate,
+        "opponent_paths": ["opponent"],
+        "hands_per_match": 70,
+        "seeds": seeds,
+        "actual_deck_seed_bases": seeds,
+        "deck_seed_scheme": "opponent_disjoint_match_blocks_v1",
+        "opponent_seed_stride": 10_000_000,
+        "bot_seed_base": 2_000,
+        "bot_seed_stride": 10,
+        "paired": True,
+        "requires_native_opponents": True,
+        "legacy_debug_wrapper_enabled": False,
+        "wrapper_used": False,
+        "execution_artifacts": {
+            "candidate": {
+                "path": candidate,
+                "sha256_before": "a" * 64,
+                "sha256_after": "a" * 64,
+                "stable": True,
+            },
+            "opponents": [{
+                "path": "opponent",
+                "sha256_before": "b" * 64,
+                "sha256_after": "b" * 64,
+                "stable": True,
+            }],
+        },
+        "strength_evidence": {"passed": True},
+        "rows": rows,
+    }
+
+
+def test_strength_diff_accepts_independent_complete_reports() -> None:
+    tool = _load_tool()
+    candidate_rows = [
+        _strength_row("a", index, net, seed)
+        for index, (net, seed) in enumerate(((100, 1_000), (200, 1_080), (300, 1_160)))
+    ]
+    baseline_rows = [
+        _strength_row("a", index, 0, seed)
+        for index, seed in enumerate((1_000, 1_080, 1_160))
+    ]
+
+    rows = tool._diff_rows(
+        _strength_report(candidate_rows, "candidate"),
+        _strength_report(baseline_rows, "baseline"),
+        require_strength=True,
+    )
+    summary = tool._summary(
+        rows,
+        _strength_report(candidate_rows, "candidate"),
+        _strength_report(baseline_rows, "baseline"),
+        2,
+        bootstrap_samples=100,
+        bootstrap_seed=7,
+    )
+
+    assert len(rows) == 3
+    assert summary["combined"]["leave_one_block_out"] == {
+        "blocks": 3,
+        "estimates": 3,
+        "min_delta_per_hand": 1.071429,
+        "max_delta_per_hand": 1.785714,
+        "negative_estimates": 0,
+        "sign_flips": 0,
+    }
+
+
+def test_strength_diff_rejects_overlapping_deck_windows() -> None:
+    tool = _load_tool()
+    rows = [
+        _strength_row("a", index, 0, seed)
+        for index, seed in enumerate((7_000, 7_001, 7_002))
+    ]
+    report = _strength_report(rows, "candidate")
+
+    with pytest.raises(SystemExit, match="overlapping_deck_windows"):
+        tool._diff_rows(report, report, require_strength=True)

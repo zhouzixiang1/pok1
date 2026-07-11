@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import statistics
@@ -23,9 +24,32 @@ from national_native import (  # noqa: E402
 )
 
 
+DEFAULT_DECK_SEED_GUARD = 10
+DEFAULT_OPPONENT_SEED_STRIDE = 10_000_000
+
+
 def _resolve(path: str) -> Path:
     raw = Path(path)
     return raw if raw.is_absolute() else (ROOT / raw).resolve()
+
+
+def _directory_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    for file_path in sorted(
+        item
+        for item in path.rglob("*")
+        if (
+            item.is_file()
+            and "__pycache__" not in item.parts
+            and item.name != ".completed"
+            and item.suffix != ".pyc"
+        )
+    ):
+        digest.update(str(file_path.relative_to(path)).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _seeds(args: argparse.Namespace) -> list[int | None]:
@@ -33,7 +57,163 @@ def _seeds(args: argparse.Namespace) -> list[int | None]:
         return [int(seed) for seed in args.seeds.split(",") if seed.strip()]
     if args.seed_base is None:
         return [None for _ in range(args.matches)]
-    return [int(args.seed_base) + idx * int(args.seed_stride) for idx in range(args.matches)]
+    stride = (
+        int(args.seed_stride)
+        if args.seed_stride is not None
+        else int(args.hands) + DEFAULT_DECK_SEED_GUARD
+    )
+    return [int(args.seed_base) + idx * stride for idx in range(args.matches)]
+
+
+def _opponent_deck_seed(
+    base_seed: int | None,
+    opponent_idx: int,
+    opponent_seed_stride: int,
+) -> int | None:
+    if base_seed is None:
+        return None
+    return int(base_seed) + int(opponent_idx) * int(opponent_seed_stride)
+
+
+def _seed_window_overlaps(
+    seeds: list[int | None], *, hands: int
+) -> list[tuple[int, int]]:
+    numeric = [int(seed) for seed in seeds if seed is not None]
+    overlaps = []
+    for left_index, left in enumerate(numeric):
+        left_last = left + int(hands) - 1
+        for right in numeric[left_index + 1:]:
+            right_last = right + int(hands) - 1
+            if max(left, right) <= min(left_last, right_last):
+                overlaps.append((left, right))
+    return overlaps
+
+
+def _strength_request_errors(
+    args: argparse.Namespace,
+    base_seeds: list[int | None],
+    *,
+    opponent_count: int,
+) -> list[str]:
+    errors = []
+    if not args.paired:
+        errors.append("paired_required")
+    if int(args.hands) != 70:
+        errors.append("hands_per_leg_must_equal_70")
+    if args.allow_generated_opponent_entry:
+        errors.append("legacy_wrapper_must_be_disabled")
+    if args.bot_seed_base is None:
+        errors.append("bot_seed_base_required")
+    else:
+        bot_seeds = [
+            _bot_seed(args, match_idx, opponent_idx)
+            for opponent_idx in range(opponent_count)
+            for match_idx in range(len(base_seeds))
+        ]
+        if len(set(bot_seeds)) != len(bot_seeds):
+            errors.append("bot_seed_collision")
+    if any(seed is None for seed in base_seeds):
+        errors.append("deterministic_deck_seeds_required")
+    if len(base_seeds) < 3:
+        errors.append("at_least_three_seed_blocks_required")
+    if opponent_count <= 0:
+        errors.append("opponent_required")
+    if int(args.workers) > 4:
+        errors.append("workers_must_not_exceed_4")
+    if any(
+        value is not None
+        for value in (args.force_hand, args.force_decision, args.force_action)
+    ):
+        errors.append("forced_actions_forbidden")
+    actual_seeds = [
+        _opponent_deck_seed(seed, opponent_idx, args.opponent_seed_stride)
+        for opponent_idx in range(opponent_count)
+        for seed in base_seeds
+    ]
+    overlaps = _seed_window_overlaps(actual_seeds, hands=int(args.hands))
+    if overlaps:
+        errors.append(f"overlapping_deck_windows:{overlaps[:5]}")
+    return errors
+
+
+def _strength_result_errors(
+    payload: dict[str, Any],
+    *,
+    expected_rows: int,
+    hands_per_leg: int,
+) -> list[str]:
+    errors = []
+    if payload.get("format") != "native_tcp_evaluation_v2":
+        errors.append("unsupported_evaluation_format")
+    if payload.get("execution_mode") != "native_tcp":
+        errors.append("execution_mode_not_native_tcp")
+    if not payload.get("paired"):
+        errors.append("payload_not_paired")
+    if not payload.get("requires_native_opponents"):
+        errors.append("native_opponents_not_required")
+    if payload.get("legacy_debug_wrapper_enabled") or payload.get("wrapper_used"):
+        errors.append("payload_wrapper_enabled_or_used")
+    artifacts = payload.get("execution_artifacts") or {}
+    candidate_artifact = artifacts.get("candidate") or {}
+    opponent_artifacts = list(artifacts.get("opponents") or [])
+    if not _valid_artifact(candidate_artifact):
+        errors.append("candidate_artifact_not_stable")
+    if not opponent_artifacts or any(
+        not _valid_artifact(artifact) for artifact in opponent_artifacts
+    ):
+        errors.append("opponent_artifact_not_stable")
+    rows = list(payload.get("rows") or [])
+    if len(rows) != expected_rows:
+        errors.append(f"row_count:{len(rows)}!={expected_rows}")
+    for index, row in enumerate(rows):
+        prefix = f"row[{index}]"
+        if row.get("leg") != "paired":
+            errors.append(f"{prefix}:not_paired")
+        if int(row.get("hands_played", 0) or 0) != 2 * hands_per_leg:
+            errors.append(f"{prefix}:short_match")
+        if len(row.get("hand_net_chips") or []) != hands_per_leg:
+            errors.append(f"{prefix}:incomplete_hand_vector")
+        if not row.get("passed_compliance"):
+            errors.append(f"{prefix}:compliance_failed")
+        if row.get("wrapper_used"):
+            errors.append(f"{prefix}:wrapper_used")
+        if row.get("issues"):
+            errors.append(f"{prefix}:issues_present")
+        legs = list(row.get("legs") or [])
+        if len(legs) != 2:
+            errors.append(f"{prefix}:paired_legs_missing")
+        for leg_index, leg in enumerate(legs):
+            if int(leg.get("hands_played", 0) or 0) != hands_per_leg:
+                errors.append(f"{prefix}:leg[{leg_index}]:short_match")
+            if not leg.get("passed_compliance"):
+                errors.append(f"{prefix}:leg[{leg_index}]:compliance_failed")
+        for field in (
+            "candidate_illegal",
+            "candidate_timeouts",
+            "opponent_illegal",
+            "opponent_timeouts",
+            "adapter_actions_candidate",
+            "adapter_actions_opponent",
+        ):
+            if int(row.get(field, 0) or 0) != 0:
+                errors.append(f"{prefix}:{field}")
+    deck_seeds = [row.get("deck_seed_base") for row in rows]
+    overlaps = _seed_window_overlaps(deck_seeds, hands=hands_per_leg)
+    if overlaps:
+        errors.append(f"overlapping_result_deck_windows:{overlaps[:5]}")
+    return errors
+
+
+def _valid_artifact(artifact: dict[str, Any]) -> bool:
+    before = artifact.get("sha256_before")
+    after = artifact.get("sha256_after")
+    return bool(
+        artifact.get("stable")
+        and artifact.get("path")
+        and isinstance(before, str)
+        and len(before) == 64
+        and before == after
+    )
 
 
 def _bot_seed(args: argparse.Namespace, match_idx: int, opponent_idx: int) -> int | None:
@@ -90,7 +270,9 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
     candidate = _resolve(args.candidate)
     opponents = [_resolve(item) for item in args.opponent]
-    seed_values = _seeds(args)
+    candidate_digest_before = _directory_digest(candidate)
+    opponent_digests_before = [_directory_digest(path) for path in opponents]
+    base_seed_values = _seeds(args)
     semaphore = asyncio.Semaphore(max(1, int(args.workers)))
     started = time.time()
 
@@ -234,7 +416,12 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     tasks = [
         one(opponent_idx, opponent, match_idx, deck_seed)
         for opponent_idx, opponent in enumerate(opponents)
-        for match_idx, deck_seed in enumerate(seed_values)
+        for match_idx, base_seed in enumerate(base_seed_values)
+        for deck_seed in [
+            _opponent_deck_seed(
+                base_seed, opponent_idx, args.opponent_seed_stride
+            )
+        ]
     ]
     rows = []
     for coro in asyncio.as_completed(tasks):
@@ -243,17 +430,41 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         if args.print_rows:
             print(json.dumps(row, ensure_ascii=False), flush=True)
     payload = {
+        "format": "native_tcp_evaluation_v2",
         "execution_mode": "native_tcp",
         "candidate_path": str(candidate),
         "opponent_paths": [str(path) for path in opponents],
         "hands_per_match": int(args.hands),
-        "seeds": seed_values,
+        "seeds": base_seed_values,
+        "deck_seed_scheme": "opponent_disjoint_match_blocks_v1",
+        "opponent_seed_stride": int(args.opponent_seed_stride),
+        "actual_deck_seed_bases": sorted({
+            int(row["deck_seed_base"])
+            for row in rows
+            if row.get("deck_seed_base") is not None
+        }),
+        "execution_artifacts": {
+            "candidate": {
+                "path": str(candidate),
+                "sha256_before": candidate_digest_before,
+                "sha256_after": _directory_digest(candidate),
+            },
+            "opponents": [
+                {
+                    "path": str(path),
+                    "sha256_before": opponent_digests_before[index],
+                    "sha256_after": _directory_digest(path),
+                }
+                for index, path in enumerate(opponents)
+            ],
+        },
         "workers": int(args.workers),
         "paired": bool(args.paired),
         "requires_native_opponents": not args.allow_generated_opponent_entry,
         "legacy_debug_wrapper_enabled": bool(args.allow_generated_opponent_entry),
         "wrapper_used": any(bool(row.get("wrapper_used")) for row in rows),
         "bot_seed_base": args.bot_seed_base,
+        "bot_seed_stride": int(args.bot_seed_stride),
         "trace_decisions": bool(args.trace_decisions),
         "force": {
             "hand": args.force_hand,
@@ -263,6 +474,14 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "elapsed_sec": round(time.time() - started, 3),
         "rows": sorted(rows, key=lambda row: (row["opponent"], row["match_idx"])),
     }
+    payload["execution_artifacts"]["candidate"]["stable"] = (
+        payload["execution_artifacts"]["candidate"]["sha256_before"]
+        == payload["execution_artifacts"]["candidate"]["sha256_after"]
+    )
+    for artifact in payload["execution_artifacts"]["opponents"]:
+        artifact["stable"] = (
+            artifact["sha256_before"] == artifact["sha256_after"]
+        )
     payload.update(_summary(payload["rows"]))
     return payload
 
@@ -274,7 +493,18 @@ def main() -> int:
     parser.add_argument("--hands", type=int, default=10, help="Hands per match, capped by the native runner at 70.")
     parser.add_argument("--matches", type=int, default=10, help="Number of matches per opponent when --seeds is not provided.")
     parser.add_argument("--seed-base", type=int, default=None, help="Deck seed base for deterministic decks.")
-    parser.add_argument("--seed-stride", type=int, default=1)
+    parser.add_argument(
+        "--seed-stride",
+        type=int,
+        default=None,
+        help="Deck-base stride. Defaults to hands + 10 to avoid overlap.",
+    )
+    parser.add_argument(
+        "--opponent-seed-stride",
+        type=int,
+        default=DEFAULT_OPPONENT_SEED_STRIDE,
+        help="Additional deck-base offset per opponent.",
+    )
     parser.add_argument("--seeds", default="", help="Comma-separated deck seeds. Overrides --matches and --seed-base.")
     parser.add_argument("--bot-seed-base", type=int, default=None, help="Seed Python random in each native bot process.")
     parser.add_argument("--bot-seed-stride", type=int, default=10)
@@ -292,7 +522,21 @@ def main() -> int:
     )
     parser.add_argument("--print-rows", action="store_true")
     parser.add_argument("--output", default="", help="Optional JSON output path.")
+    parser.add_argument(
+        "--strength-evidence",
+        action="store_true",
+        help="Fail unless this is an independent, complete, compliant 70-hand paired evaluation.",
+    )
     args = parser.parse_args()
+
+    base_seeds = _seeds(args)
+    request_errors = _strength_request_errors(
+        args, base_seeds, opponent_count=len(args.opponent)
+    ) if args.strength_evidence else []
+    if request_errors:
+        raise SystemExit(
+            "strength-evidence request rejected: " + ", ".join(request_errors)
+        )
 
     if args.trace_decisions:
         os.environ["POK_TRACE_DECISIONS"] = "1"
@@ -305,12 +549,23 @@ def main() -> int:
             os.environ[env_name] = str(int(value))
 
     payload = asyncio.run(_run(args))
+    result_errors = _strength_result_errors(
+        payload,
+        expected_rows=len(args.opponent) * len(base_seeds),
+        hands_per_leg=int(args.hands),
+    ) if args.strength_evidence else []
+    payload["strength_evidence"] = {
+        "requested": bool(args.strength_evidence),
+        "passed": bool(args.strength_evidence and not result_errors),
+        "request_errors": request_errors,
+        "result_errors": result_errors,
+    }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     if args.output:
         output = _resolve(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return 0
+    return 2 if result_errors else 0
 
 
 if __name__ == "__main__":

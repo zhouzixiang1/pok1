@@ -227,3 +227,26 @@ def test_policy_trace_records_predicted_and_observed_catastrophe() -> None:
     assert result["override_trace"][0]["prediction"][
         "catastrophe_expected_loss_upper"
     ] == 1200.0
+
+
+def test_catastrophe_policy_does_not_claim_success_after_gate_failure(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "must_remain_blind.jsonl"
+
+    assert policy_ab._unopened_manifest(
+        missing, role="risk_policy_gate_not_final_blind"
+    ) == {
+        "path": str(missing.resolve()),
+        "role": "risk_policy_gate_not_final_blind",
+        "opened": False,
+        "bytes": None,
+        "sha256": None,
+    }
+    assert policy_ab._result_exit_code(None, None) == 2
+    assert policy_ab._result_exit_code(
+        {"selected": True}, {"passed": False}
+    ) == 1
+    assert policy_ab._result_exit_code(
+        {"selected": True}, {"passed": True}
+    ) == 0

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -203,6 +205,104 @@ def test_calibration_gate_requires_both_cluster_confidence_bounds() -> None:
     assert gate == {
         "passed": False,
         "errors": ["cluster_ci_lower<=0.0"],
+    }
+
+
+def test_unopened_policy_gate_manifest_does_not_touch_file(
+    tmp_path: Path,
+) -> None:
+    tool = _load_tool()
+    missing = tmp_path / "must_remain_blind.jsonl"
+
+    manifest = tool._unopened_file_manifest(
+        missing, role="policy_gate_not_final_blind"
+    )
+
+    assert manifest == {
+        "path": str(missing.resolve()),
+        "role": "policy_gate_not_final_blind",
+        "opened": False,
+        "bytes": None,
+        "sha256": None,
+    }
+    assert tool._may_open_policy_gate(missing, None) is False
+    assert tool._may_open_policy_gate(
+        missing, {"passed": False, "errors": ["failed"]}
+    ) is False
+    assert tool._may_open_policy_gate(
+        missing, {"passed": True, "errors": []}
+    ) is True
+
+
+def test_main_does_not_read_or_hash_policy_gate_after_calibration_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    tool = _load_tool()
+    model = tmp_path / "model.json"
+    selection = tmp_path / "selection.jsonl"
+    calibration = tmp_path / "calibration.jsonl"
+    policy_gate = tmp_path / "policy_gate_must_stay_missing.jsonl"
+    output = tmp_path / "report.json"
+    for path in (model, selection, calibration):
+        path.write_text("{}\n", encoding="utf-8")
+    reads = []
+
+    monkeypatch.setattr(
+        tool.OpponentMultiTaskEnsemble,
+        "load",
+        staticmethod(lambda _paths: object()),
+    )
+
+    def read_rows(path: Path):
+        reads.append(path)
+        return []
+
+    monkeypatch.setattr(tool, "_read", read_rows)
+    monkeypatch.setattr(
+        tool,
+        "select_offline_policy",
+        lambda *_args, **_kwargs: {
+            "grid": [],
+            "selected": {"config": {
+                "response_weight": 0.0,
+                "use_lower": True,
+            }},
+            "selection_failure": None,
+        },
+    )
+    monkeypatch.setattr(
+        tool,
+        "_evaluate_config",
+        lambda *_args, **_kwargs: {
+            "overrides": 0,
+            "override_clusters": 0,
+            "match_cluster_bootstrap_mean_ci": {"lower": 0.0},
+            "match_opponent_stratified_cluster_ci": {"lower": 0.0},
+            "by_opponent": {},
+        },
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "evaluate_multitask_offline_policy.py",
+        "--model", str(model),
+        "--selection-data", str(selection),
+        "--calibration-data", str(calibration),
+        "--held-out-data", str(policy_gate),
+        "--output", str(output),
+        "--bootstrap-samples", "2",
+    ])
+
+    assert tool.main() == 1
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert reads == [selection, calibration]
+    assert payload["held_out_opened"] is False
+    assert payload["held_out"] is None
+    assert payload["data_manifests"]["held_out"] == {
+        "path": str(policy_gate.resolve()),
+        "role": "policy_gate_not_final_blind",
+        "opened": False,
+        "bytes": None,
+        "sha256": None,
     }
 
 
