@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[3]
 TOOL = ROOT / "bots" / "neural_national_lab" / "tools" / "native_tcp_counterfactual_probe.py"
@@ -20,8 +22,21 @@ def test_uniform_decision_sampling_spreads_across_window() -> None:
     tool = _load_tool()
     eligible = [{"hand": hand} for hand in range(1, 11)]
 
-    assert [row["hand"] for row in tool._sample_decisions(eligible, 3, "uniform")] == [2, 6, 9]
+    first = tool._sample_decisions(eligible, 3, "uniform", seed=41)
+    second = tool._sample_decisions(eligible, 3, "uniform", seed=41)
+
+    assert first == second
+    assert len(first) == 3
+    assert len({row["hand"] for row in first}) == 3
     assert [row["hand"] for row in tool._sample_decisions(eligible, 3, "first")] == [1, 2, 3]
+
+
+def test_uniform_decision_sampling_requires_seed() -> None:
+    tool = _load_tool()
+    eligible = [{"hand": hand} for hand in range(1, 11)]
+
+    with pytest.raises(ValueError, match="requires an explicit seed"):
+        tool._sample_decisions(eligible, 3, "uniform")
 
 
 def test_rotating_alternatives_cover_every_non_rule_action_class() -> None:

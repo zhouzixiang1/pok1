@@ -13,8 +13,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import Counter, defaultdict
+import hashlib
 import json
 from pathlib import Path
+import random
 import statistics
 import sys
 from typing import Any
@@ -316,16 +318,44 @@ def _force_confirmed(
 
 
 def _sample_decisions(
-    eligible: list[dict[str, Any]], limit: int, sampling: str
+    eligible: list[dict[str, Any]],
+    limit: int,
+    sampling: str,
+    *,
+    seed: int | None = None,
 ) -> list[dict[str, Any]]:
     limit = max(1, int(limit))
     if len(eligible) <= limit:
-        return eligible
+        return list(eligible)
     if sampling == "first":
         return eligible[:limit]
-    n = len(eligible)
-    indices = [min(n - 1, ((2 * idx + 1) * n) // (2 * limit)) for idx in range(limit)]
+    if sampling != "uniform":
+        raise ValueError(f"unsupported decision sampling mode: {sampling}")
+    if seed is None:
+        raise ValueError("uniform decision sampling requires an explicit seed")
+    indices = sorted(random.Random(int(seed)).sample(range(len(eligible)), limit))
     return [eligible[idx] for idx in indices]
+
+
+def _decision_sampling_seed(
+    candidate: Path,
+    opponent: Path,
+    *,
+    deck_seed_base: int | None,
+    bot_seed_base: int | None,
+) -> int:
+    payload = json.dumps(
+        {
+            "candidate": str(candidate),
+            "opponent": str(opponent),
+            "deck_seed_base": deck_seed_base,
+            "bot_seed_base": bot_seed_base,
+            "purpose": "counterfactual_decision_sampling_v1",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
 
 
 def _update_best(values: list[float | None], label_id: int, value: float) -> bool:
@@ -503,9 +533,38 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             "alternative_rotation": rotation,
         })
 
-    selected_rows = _sample_decisions(
-        eligible, int(args.max_decisions), str(args.decision_sampling)
+    sampling_seed = _decision_sampling_seed(
+        candidate,
+        opponent,
+        deck_seed_base=args.seed_base,
+        bot_seed_base=args.bot_seed_base,
     )
+    selected_rows = _sample_decisions(
+        eligible,
+        int(args.max_decisions),
+        str(args.decision_sampling),
+        seed=sampling_seed,
+    )
+    if str(args.decision_sampling) == "uniform" and eligible:
+        inclusion_probability = min(
+            1.0, len(selected_rows) / float(len(eligible))
+        )
+        inverse_probability_weight = 1.0 / inclusion_probability
+    else:
+        inclusion_probability = None
+        inverse_probability_weight = None
+    eligible_by_stage = dict(sorted(Counter(
+        str(item["stage"]) for item in eligible
+    ).items()))
+    selected_by_stage = dict(sorted(Counter(
+        str(item["stage"]) for item in selected_rows
+    ).items()))
+    eligible_by_rule_label = dict(sorted(Counter(
+        LABELS[int(item["rule_label"])] for item in eligible
+    ).items()))
+    selected_by_rule_label = dict(sorted(Counter(
+        LABELS[int(item["rule_label"])] for item in selected_rows
+    ).items()))
     semaphore = asyncio.Semaphore(max(1, min(4, int(args.probe_workers))))
 
     async def run_forced(selected_index: int, alt: int):
@@ -677,6 +736,16 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
             "invalid_probe_count": sum(record["status"] != "ok" for record in probe_records),
             "baseline_match_net_chips": baseline_match_value,
             "alternative_rotation": int(item["alternative_rotation"]),
+            "decision_sampling": str(args.decision_sampling),
+            "decision_sampling_seed": (
+                sampling_seed
+                if str(args.decision_sampling) == "uniform"
+                else None
+            ),
+            "eligible_decisions": len(eligible),
+            "selected_decisions": len(selected_rows),
+            "decision_inclusion_probability": inclusion_probability,
+            "decision_inverse_probability_weight": inverse_probability_weight,
         }
         rows.append(row)
         probe_details.extend(probe_records)
@@ -703,6 +772,17 @@ async def _collect(args: argparse.Namespace) -> dict[str, Any]:
         "eligible_decisions": len(eligible),
         "selected_decisions": len(selected_rows),
         "decision_sampling": str(args.decision_sampling),
+        "decision_sampling_seed": (
+            sampling_seed if str(args.decision_sampling) == "uniform" else None
+        ),
+        "decision_inclusion_probability": inclusion_probability,
+        "decision_inverse_probability_weight": inverse_probability_weight,
+        "decision_population": {
+            "eligible_by_stage": eligible_by_stage,
+            "selected_by_stage": selected_by_stage,
+            "eligible_by_rule_label": eligible_by_rule_label,
+            "selected_by_rule_label": selected_by_rule_label,
+        },
         "probe_workers": max(1, min(4, int(args.probe_workers))),
         "baseline_net_chips": baseline.get("net_chips_a"),
         "baseline_passed_compliance": baseline.get("passed_compliance"),

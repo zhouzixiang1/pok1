@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import sys
 from pathlib import Path
@@ -590,6 +591,12 @@ def test_multitask_runtime_matches_torch_outputs(
             "opponent_action_labels": list(trainer.OPPONENT_ACTION_LABELS),
             "value_fields": list(trainer.VALUE_FIELDS),
             "response_private_state_masked": list(trainer.PRIVATE_STATE_INDICES),
+            "state_dim": 48,
+            "profile_dim": 12,
+            "hist_feat_dim": 15,
+            "cross_hand_dim": 20,
+            "cross_hand_sequence_dim": 16 if temporal_cross_hand else 0,
+            "hero_action_dim": trainer.HERO_ACTION_DIM,
             "rule_action_dim": trainer.RULE_ACTION_DIM,
             "lower_calibration": {
                 field: {"offsets": [10.0] * trainer.NUM_ACTIONS}
@@ -695,6 +702,205 @@ def test_multitask_runtime_matches_torch_outputs(
         ) < 1e-6
         expected_ratio = 4.0 * torch.sigmoid(torch_response[-1]).item()
         assert actual_response["raise_pot_ratio"] == pytest.approx(expected_ratio, abs=1e-6)
+
+
+def _strict_runtime_fixture() -> tuple[dict, dict]:
+    torch.manual_seed(43)
+    model = trainer.OpponentAwareMultiTaskNet(
+        48,
+        12,
+        gru_hidden=5,
+        hidden=16,
+        latent=9,
+        cross_hidden=7,
+        head_hidden=11,
+        dropout=0.0,
+        cross_sequence_hidden=4,
+        cross_sequence_encoder="gru",
+    )
+    model.eval()
+    payload = {
+        "meta": {
+            "format": "opp_multitask_gru_v2",
+            "labels": list(trainer.LABELS),
+            "opponent_action_labels": list(trainer.OPPONENT_ACTION_LABELS),
+            "value_fields": list(trainer.VALUE_FIELDS),
+            "response_private_state_masked": list(trainer.PRIVATE_STATE_INDICES),
+            "state_dim": 48,
+            "profile_dim": 12,
+            "hist_feat_dim": 15,
+            "cross_hand_dim": 20,
+            "cross_hand_sequence_dim": 16,
+            "hero_action_dim": trainer.HERO_ACTION_DIM,
+            "rule_action_dim": trainer.RULE_ACTION_DIM,
+            "model": {
+                "gru_hidden": 5,
+                "max_hist": 16,
+                "cross_sequence_hidden": 4,
+                "max_cross_hands": 32,
+                "cross_sequence_encoder": "gru",
+            },
+            "training": {
+                "clips": {field: 2000.0 for field in trainer.VALUE_FIELDS}
+            },
+        },
+        "weights": {
+            key: value.detach().tolist()
+            for key, value in model.state_dict().items()
+        },
+    }
+    inputs = {
+        "state": [0.01] * 48,
+        "profile": [0.02] * 12,
+        "history": [[0.03] * 15],
+        "cross_hand": [0.04] * 20,
+        "cross_sequence": [[0.05] * 16],
+        "hero_action": [1.0] + [0.0] * (trainer.HERO_ACTION_DIM - 1),
+        "rule_id": 1,
+    }
+    return payload, inputs
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("state", [0.01] * 47),
+        ("profile", [0.02] * 11),
+        ("history", [[0.03] * 14]),
+        ("cross_hand", [0.04] * 19),
+        ("cross_sequence", [[0.05] * 15]),
+        ("rule_id", 6),
+    ],
+)
+def test_runtime_fails_closed_on_context_dimension_mismatch(
+    field: str,
+    bad_value,
+) -> None:
+    payload, inputs = _strict_runtime_fixture()
+    pure = runtime.OpponentMultiTaskRuntime(payload)
+    assert pure.predict_values(
+        inputs["state"],
+        inputs["profile"],
+        inputs["history"],
+        inputs["cross_hand"],
+        inputs["rule_id"],
+        inputs["cross_sequence"],
+    )
+
+    inputs[field] = bad_value
+
+    assert pure.predict_values(
+        inputs["state"],
+        inputs["profile"],
+        inputs["history"],
+        inputs["cross_hand"],
+        inputs["rule_id"],
+        inputs["cross_sequence"],
+    ) == {}
+
+
+def test_runtime_fails_closed_on_hero_action_dimension_mismatch() -> None:
+    payload, inputs = _strict_runtime_fixture()
+    pure = runtime.OpponentMultiTaskRuntime(payload)
+
+    assert pure.predict_response(
+        inputs["state"],
+        inputs["profile"],
+        inputs["history"],
+        inputs["cross_hand"],
+        inputs["hero_action"],
+        inputs["cross_sequence"],
+    )
+    assert pure.predict_response(
+        inputs["state"],
+        inputs["profile"],
+        inputs["history"],
+        inputs["cross_hand"],
+        inputs["hero_action"][:-1],
+        inputs["cross_sequence"],
+    ) == {}
+
+
+def test_runtime_fails_closed_on_malformed_weight_matrix() -> None:
+    payload, inputs = _strict_runtime_fixture()
+    payload = copy.deepcopy(payload)
+    payload["weights"]["value_heads.delta_vs_rule.0.weight"][0].pop()
+    pure = runtime.OpponentMultiTaskRuntime(payload)
+
+    assert pure.predict_values(
+        inputs["state"],
+        inputs["profile"],
+        inputs["history"],
+        inputs["cross_hand"],
+        inputs["rule_id"],
+        inputs["cross_sequence"],
+    ) == {}
+
+
+def test_runtime_rejects_malformed_shared_input_contract() -> None:
+    payload, _ = _strict_runtime_fixture()
+    payload["weights"]["shared.0.weight"][0].pop()
+
+    with pytest.raises(ValueError, match="shared encoder input contract mismatch"):
+        runtime.OpponentMultiTaskRuntime(payload)
+
+
+def test_runtime_requires_schema_for_nonlegacy_state() -> None:
+    payload, _ = _strict_runtime_fixture()
+    payload["meta"]["state_dim"] = 66
+    payload["meta"]["response_private_state_masked"] = (
+        list(range(5, 10)) + list(range(48, 66))
+    )
+
+    with pytest.raises(ValueError, match="missing state feature schema"):
+        runtime.OpponentMultiTaskRuntime(payload)
+
+
+def test_runtime_rejects_private_state_mask_contract_mismatch() -> None:
+    payload, _ = _strict_runtime_fixture()
+    payload["meta"]["response_private_state_masked"] = list(range(5, 9))
+
+    with pytest.raises(ValueError, match="legacy state feature contract mismatch"):
+        runtime.OpponentMultiTaskRuntime(payload)
+
+
+def test_runtime_infers_legacy_schema_and_private_mask() -> None:
+    payload, _ = _strict_runtime_fixture()
+    payload["meta"].pop("response_private_state_masked")
+    pure = runtime.OpponentMultiTaskRuntime(payload)
+
+    assert pure.state_feature_schema == "legacy48_v1"
+    assert pure.response_private_state_masked == tuple(range(5, 10))
+
+
+def test_runtime_supports_explicit_legacy_context_only_model() -> None:
+    model_path = (
+        ROOT
+        / "bots"
+        / "neural_national_lab"
+        / "versions"
+        / "v150_national_v149_multitask_p1_shadow_tcp"
+        / "opp_multitask_p1_large_seed101.json"
+    )
+    pure = runtime.OpponentMultiTaskRuntime.load(model_path)
+
+    assert pure is not None
+    assert pure.value_input_contract == "context_only_v1"
+    assert pure.response_encoder_contract == "shared_context_public_v1"
+    assert pure.predict_values(
+        [0.0] * pure.state_dim,
+        [0.0] * pure.profile_dim,
+        [],
+        [0.0] * pure.cross_hand_dim,
+        1,
+    )
+    assert pure.predict_response(
+        [0.0] * pure.state_dim,
+        [0.0] * pure.profile_dim,
+        [],
+        [0.0] * pure.cross_hand_dim,
+        [0.0] * pure.hero_action_dim,
+    )
 
 
 def test_ensemble_uses_member_and_seed_uncertainty() -> None:

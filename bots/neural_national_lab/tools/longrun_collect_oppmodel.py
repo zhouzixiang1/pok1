@@ -29,6 +29,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -39,6 +40,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 TOOLS = Path(__file__).resolve().parent
 _APPEND_LOCK = threading.Lock()
+_TAG_DIGEST_CACHE: dict[tuple[str, str], str] = {}
+DECK_SEED_SLOTS_PER_PASS = 1024
+DEFAULT_DECK_SEED_BASE = 5_000_000
+DEFAULT_DECK_SEED_GUARD = 10
+DEFAULT_BOT_SEED_BASE = 1_000_000
 
 
 def _operator_root() -> Path:
@@ -268,7 +274,12 @@ def _directory_digest(path: Path) -> str:
     digest = hashlib.sha256()
     for file_path in sorted(
         item for item in path.rglob("*")
-        if item.is_file() and "__pycache__" not in item.parts
+        if (
+            item.is_file()
+            and "__pycache__" not in item.parts
+            and item.name != ".completed"
+            and item.suffix != ".pyc"
+        )
     ):
         digest.update(str(file_path.relative_to(path)).encode("utf-8"))
         digest.update(b"\0")
@@ -277,12 +288,184 @@ def _directory_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _tag_directory_digest(name: str, commit: str) -> str:
+    cache_key = (name, commit)
+    cached = _TAG_DIGEST_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    prefix = f"bots/{name}/"
+    try:
+        raw_paths = subprocess.check_output(
+            [
+                "git",
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                commit,
+                "--",
+                f"bots/{name}",
+            ],
+            cwd=ROOT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"cannot inspect tagged bot {name}@{commit}") from exc
+    paths = sorted(
+        path.decode("utf-8")
+        for path in raw_paths.split(b"\0")
+        if path
+    )
+    if not paths or any(not path.startswith(prefix) for path in paths):
+        raise RuntimeError(f"tagged bot tree is empty or malformed: {name}@{commit}")
+    digest = hashlib.sha256()
+    for git_path in paths:
+        try:
+            content = subprocess.check_output(
+                ["git", "show", f"{commit}:{git_path}"],
+                cwd=ROOT,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(
+                f"cannot read tagged bot file {git_path}@{commit}"
+            ) from exc
+        digest.update(git_path.removeprefix(prefix).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content)
+        digest.update(b"\0")
+    value = digest.hexdigest()
+    _TAG_DIGEST_CACHE[cache_key] = value
+    return value
+
+
+def _copy_opponent_snapshot(source: Path, destination: Path) -> None:
+    if destination.exists():
+        return
+    temporary = destination.with_name(
+        f".{destination.name}.tmp-{os.getpid()}"
+    )
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    temporary.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        temporary,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".completed"),
+    )
+    for item in sorted(temporary.rglob("*"), reverse=True):
+        item.chmod(item.stat().st_mode & ~0o222)
+    temporary.chmod(temporary.stat().st_mode & ~0o222)
+    try:
+        temporary.replace(destination)
+    except FileExistsError:
+        shutil.rmtree(temporary)
+
+
+def _freeze_opponent(
+    name: str,
+    source_path: Path,
+    out_dir: Path,
+) -> dict[str, str | bool]:
+    commit = _completed_tag_commit(name)
+    if commit is None:
+        raise RuntimeError(f"opponent has no completed immutable tag: {name}")
+    source_digest = _directory_digest(source_path)
+    tag_digest = _tag_directory_digest(name, commit)
+    registry_path = out_dir / "opponent_snapshots" / "registry.json"
+    if registry_path.exists():
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    else:
+        registry = {"schema": "opponent_execution_snapshot_v1", "opponents": {}}
+    opponents = registry.setdefault("opponents", {})
+    previous = opponents.get(name)
+    if previous is not None:
+        snapshot_path = Path(str(previous["snapshot_path"])).resolve()
+        if (
+            not snapshot_path.is_dir()
+            or _directory_digest(snapshot_path)
+            != previous.get("execution_directory_sha256")
+        ):
+            raise RuntimeError(f"frozen opponent snapshot is corrupt: {name}")
+        return dict(previous)
+    snapshot_path = (
+        out_dir
+        / "opponent_snapshots"
+        / source_digest
+        / name
+    ).resolve()
+    _copy_opponent_snapshot(source_path, snapshot_path)
+    snapshot_digest = _directory_digest(snapshot_path)
+    if snapshot_digest != source_digest:
+        raise RuntimeError(
+            f"opponent snapshot digest mismatch for {name}: "
+            f"source={source_digest} snapshot={snapshot_digest}"
+        )
+    try:
+        source_checkout_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=source_path,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"cannot resolve source checkout commit for {name}"
+        ) from exc
+    frozen: dict[str, str | bool] = {
+        "tag_commit": commit,
+        "tag_directory_sha256": tag_digest,
+        "execution_matches_generation_tag": source_digest == tag_digest,
+        "source_path": str(source_path),
+        "source_checkout_commit": source_checkout_commit,
+        "snapshot_path": str(snapshot_path),
+        "execution_directory_sha256": snapshot_digest,
+    }
+    opponents[name] = frozen
+    _write_json_atomic(registry_path, registry)
+    return frozen
+
+
+def _verify_frozen_opponent(entry: dict) -> None:
+    path = Path(str(entry["opponent_path"])).resolve()
+    expected = str(entry["execution_directory_sha256"])
+    if not path.is_dir() or _directory_digest(path) != expected:
+        raise RuntimeError(
+            f"persisted opponent snapshot changed for {entry.get('name')}"
+        )
+
+
 def _write_json_atomic(path: Path, payload: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
         json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
     )
     temporary.replace(path)
+
+
+def _deck_seed_for_task(
+    *,
+    root: int,
+    pass_index: int,
+    task_index: int,
+    hands: int,
+    guard: int,
+) -> int:
+    if pass_index < 0:
+        raise ValueError("pass index must be non-negative")
+    if task_index < 0 or task_index >= DECK_SEED_SLOTS_PER_PASS:
+        raise ValueError("task index exceeds reserved deck-seed slots")
+    if hands <= 0 or guard < 0:
+        raise ValueError("hands must be positive and guard non-negative")
+    block_span = int(hands) + int(guard)
+    block_index = pass_index * DECK_SEED_SLOTS_PER_PASS + task_index
+    return int(root) + block_index * block_span
+
+
+def _bot_seed_for_task(*, root: int, pass_index: int, task_index: int) -> int:
+    if pass_index < 0:
+        raise ValueError("pass index must be non-negative")
+    if task_index < 0 or task_index >= DECK_SEED_SLOTS_PER_PASS:
+        raise ValueError("task index exceeds reserved bot-seed slots")
+    return int(root) + pass_index * DECK_SEED_SLOTS_PER_PASS + task_index
 
 
 def build_pool(
@@ -301,6 +484,9 @@ def build_pool(
     all_bots = list(dict.fromkeys(strong + old + explicit_bots))
     explicit = bool(val_opponents or held_out_opponents)
     pool = []
+    ratings_checkout = ratings_path.parents[3]
+    if not (ratings_checkout / "bots").is_dir():
+        ratings_checkout = ROOT
     for name in all_bots:
         if name in held_out_opponents:
             split = "held_out"
@@ -310,8 +496,12 @@ def build_pool(
             split = "train"
         else:
             split = _stable_split(name)
-        path = str(_resolve(f"bots/{name}"))
-        if Path(path).exists() and _completed_tag_commit(name) is not None:
+        path = str((ratings_checkout / "bots" / name).resolve())
+        if (
+            Path(path).exists()
+            and (Path(path) / ".completed").exists()
+            and _completed_tag_commit(name) is not None
+        ):
             pool.append((name, path, split))
     if not any(split == "val" for _, _, split in pool):
         raise RuntimeError("opponent partition has no validation bot")
@@ -338,6 +528,9 @@ def main(argv=None) -> int:
     ap.add_argument("--max-decisions", type=int, default=6)
     ap.add_argument("--max-alternatives", type=int, default=2)
     ap.add_argument("--decision-sampling", choices=("first", "uniform"), default="uniform")
+    ap.add_argument("--deck-seed-base", type=int, default=DEFAULT_DECK_SEED_BASE)
+    ap.add_argument("--deck-seed-guard", type=int, default=DEFAULT_DECK_SEED_GUARD)
+    ap.add_argument("--bot-seed-base", type=int, default=DEFAULT_BOT_SEED_BASE)
     ap.add_argument(
         "--hand-windows",
         default="0.0,0.4,0.7",
@@ -348,6 +541,8 @@ def main(argv=None) -> int:
     args.probe_workers = max(1, min(4, int(args.probe_workers)))
     if args.workers * args.probe_workers > 4:
         raise SystemExit("--workers * --probe-workers must not exceed 4 native matches")
+    if args.hands <= 0 or args.deck_seed_guard < 0:
+        raise SystemExit("--hands must be positive and --deck-seed-guard non-negative")
     ratings_path = Path(args.ratings).expanduser().resolve()
     fractions = [float(value) for value in args.hand_windows.split(",") if value.strip()]
     if not fractions or any(value < 0.0 or value > 1.0 for value in fractions):
@@ -372,7 +567,6 @@ def main(argv=None) -> int:
         print(line, flush=True)
         plog.write(line + "\n"); plog.flush()
 
-    seed_offset = {"train": 0, "val": 100000, "held_out": 200000}
     total_rows = {"train": 0, "val": 0, "held_out": 0}
     total_behavior = {"train": 0, "val": 0, "held_out": 0}
     for split in total_rows:
@@ -384,10 +578,22 @@ def main(argv=None) -> int:
         )
     start_pass = _completed_passes(out_dir)
     candidate_path = _resolve(args.candidate)
+    candidate_digest = _directory_digest(candidate_path)
+    candidate_execution_path = (
+        out_dir
+        / "candidate_snapshot"
+        / candidate_digest
+        / candidate_path.name
+    ).resolve()
+    _copy_opponent_snapshot(candidate_path, candidate_execution_path)
+    if _directory_digest(candidate_execution_path) != candidate_digest:
+        raise RuntimeError("candidate execution snapshot digest mismatch")
     resume_contract = {
-        "schema_version": 3,
+        "schema_version": 4,
         "candidate": str(candidate_path),
-        "candidate_sha256": _directory_digest(candidate_path),
+        "candidate_sha256": candidate_digest,
+        "candidate_execution_path": str(candidate_execution_path),
+        "candidate_snapshot_sha256": candidate_digest,
         "ratings_path": str(ratings_path),
         "workers": args.workers,
         "probe_workers": args.probe_workers,
@@ -401,6 +607,11 @@ def main(argv=None) -> int:
         "max_alternatives": args.max_alternatives,
         "decision_sampling": args.decision_sampling,
         "hand_windows": fractions,
+        "deck_seed_scheme": "disjoint_match_blocks_v1",
+        "deck_seed_base": args.deck_seed_base,
+        "deck_seed_guard": args.deck_seed_guard,
+        "deck_seed_slots_per_pass": DECK_SEED_SLOTS_PER_PASS,
+        "bot_seed_base": args.bot_seed_base,
         "collector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "probe_sha256": hashlib.sha256(
             (TOOLS / "native_tcp_counterfactual_probe.py").read_bytes()
@@ -432,43 +643,111 @@ def main(argv=None) -> int:
     log(f"START: pass={start_pass + 1}/{args.passes} existing_values={total_rows} "
         f"existing_behavior={total_behavior}")
     for ps in range(start_pass, args.passes):
-        full_pool = build_pool(
-            ratings_path,
-            strongest=max(1, args.strongest),
-            allow_fallback=args.allow_fallback_pool,
-            val_opponents=val_opponents,
-            held_out_opponents=held_out_opponents,
-        )
-        limit = max(0, int(args.opponents_per_pass))
-        if 0 < limit < len(full_pool):
-            train_pool = [row for row in full_pool if row[2] == "train"]
-            val_pool = [row for row in full_pool if row[2] == "val"]
-            held_pool = [row for row in full_pool if row[2] == "held_out"]
-            pool = []
-            if val_pool:
-                pool.append(val_pool[ps % len(val_pool)])
-            if held_pool and len(pool) < limit:
-                pool.append(held_pool[ps % len(held_pool)])
-            remaining = max(0, limit - len(pool))
-            if train_pool and remaining:
-                start = (ps * remaining) % len(train_pool)
-                rotated_train = train_pool[start:] + train_pool[:start]
-                pool.extend(rotated_train[:remaining])
+        pass_plan_path = out_dir / "pass_plans" / f"pass_{ps + 1:04d}.json"
+        if pass_plan_path.exists():
+            pass_plan = json.loads(pass_plan_path.read_text(encoding="utf-8"))
+            if (
+                int(pass_plan.get("pass", 0) or 0) != ps + 1
+                or pass_plan.get("seed_scheme") != "disjoint_match_blocks_v1"
+            ):
+                raise RuntimeError(f"invalid persisted pass plan: {pass_plan_path}")
+            plan_entries = list(pass_plan.get("tasks") or [])
+            pool = [
+                (
+                    str(entry["name"]),
+                    str(entry["opponent_path"]),
+                    str(entry["split"]),
+                )
+                for entry in plan_entries
+            ]
         else:
-            pool = full_pool
+            full_pool = build_pool(
+                ratings_path,
+                strongest=max(1, args.strongest),
+                allow_fallback=args.allow_fallback_pool,
+                val_opponents=val_opponents,
+                held_out_opponents=held_out_opponents,
+            )
+            limit = max(0, int(args.opponents_per_pass))
+            if 0 < limit < len(full_pool):
+                train_pool = [row for row in full_pool if row[2] == "train"]
+                val_pool = [row for row in full_pool if row[2] == "val"]
+                held_pool = [row for row in full_pool if row[2] == "held_out"]
+                pool = []
+                if val_pool:
+                    pool.append(val_pool[ps % len(val_pool)])
+                if held_pool and len(pool) < limit:
+                    pool.append(held_pool[ps % len(held_pool)])
+                remaining = max(0, limit - len(pool))
+                if train_pool and remaining:
+                    start = (ps * remaining) % len(train_pool)
+                    rotated_train = train_pool[start:] + train_pool[:start]
+                    pool.extend(rotated_train[:remaining])
+            else:
+                pool = full_pool
+            plan_entries = []
         fraction = fractions[ps % len(fractions)]
         min_hand = max(1, min(args.hands, 1 + int((args.hands - 1) * fraction)))
-        seed_base = 5000 + ps * 17
+        if len(pool) > DECK_SEED_SLOTS_PER_PASS:
+            raise RuntimeError(
+                f"pool has {len(pool)} tasks but only "
+                f"{DECK_SEED_SLOTS_PER_PASS} seed slots are reserved"
+            )
         tasks = []
-        for i, (name, path, split) in enumerate(pool):
-            tasks.append((name, path, split, args.hands,
-                          seed_base + seed_offset[split],
-                          1000 + ps * 100 + i))
+        if not plan_entries:
+            for i, (name, path, split) in enumerate(pool):
+                source_path = Path(path).resolve()
+                provenance = _freeze_opponent(name, source_path, out_dir)
+                opponent_path = Path(str(provenance["snapshot_path"])).resolve()
+                deck_seed_base = _deck_seed_for_task(
+                    root=args.deck_seed_base,
+                    pass_index=ps,
+                    task_index=i,
+                    hands=args.hands,
+                    guard=args.deck_seed_guard,
+                )
+                bot_seed_base = _bot_seed_for_task(
+                    root=args.bot_seed_base,
+                    pass_index=ps,
+                    task_index=i,
+                )
+                plan_entries.append({
+                    "name": name,
+                    "opponent_path": str(opponent_path),
+                    "split": split,
+                    "hands": args.hands,
+                    "deck_seed_base": deck_seed_base,
+                    "deck_seed_last": deck_seed_base + args.hands - 1,
+                    "bot_seed_base": bot_seed_base,
+                    **{
+                        key: value
+                        for key, value in provenance.items()
+                        if key != "snapshot_path"
+                    },
+                })
+            pass_plan_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(pass_plan_path, {
+                "pass": ps + 1,
+                "seed_scheme": "disjoint_match_blocks_v1",
+                "tasks": plan_entries,
+            })
+        for entry in plan_entries:
+            name = str(entry["name"])
+            _verify_frozen_opponent(entry)
+            opponent_path = Path(str(entry["opponent_path"])).resolve()
+            tasks.append((
+                name,
+                str(opponent_path),
+                str(entry["split"]),
+                int(entry["hands"]),
+                int(entry["deck_seed_base"]),
+                int(entry["bot_seed_base"]),
+            ))
         t0 = time.time()
         pass_rows = 0
         pass_behavior = 0
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
-            futs = {ex.submit(probe_one, args.candidate, p, s, n, h, sb, bsb,
+            futs = {ex.submit(probe_one, str(candidate_execution_path), p, s, n, h, sb, bsb,
                               str(out_dir), args.timeout_sec, min_hand,
                               args.max_decisions, args.max_alternatives,
                               str(ratings_path), args.probe_workers,
@@ -505,9 +784,33 @@ def main(argv=None) -> int:
                 "pool": [{
                     "name": name,
                     "split": split,
-                    "tag_commit": _completed_tag_commit(name),
+                    "tag_commit": next(
+                        entry["tag_commit"]
+                        for entry in plan_entries
+                        if entry["name"] == name
+                    ),
+                    "execution_directory_sha256": next(
+                        entry["execution_directory_sha256"]
+                        for entry in plan_entries
+                        if entry["name"] == name
+                    ),
+                    "source_checkout_commit": next(
+                        entry["source_checkout_commit"]
+                        for entry in plan_entries
+                        if entry["name"] == name
+                    ),
                     "glicko": rating_rows.get(name),
-                } for name, _, split in pool],
+                    "deck_seed_base": deck_seed_base,
+                    "deck_seed_last": deck_seed_base + args.hands - 1,
+                    "bot_seed_base": bot_seed_base,
+                } for (
+                    name,
+                    _,
+                    split,
+                    _,
+                    deck_seed_base,
+                    bot_seed_base,
+                ) in tasks],
             }, separators=(",", ":")) + "\n")
         _write_json_atomic(out_dir / "collector_state.json", {
             "completed_passes": ps + 1,

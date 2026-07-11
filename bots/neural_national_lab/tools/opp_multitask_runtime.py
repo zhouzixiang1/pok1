@@ -6,7 +6,21 @@ import math
 from pathlib import Path
 from typing import Any
 
-from opp_value_runtime import _matvec, _relu, _sigmoid
+from opp_value_runtime import _matvec as _legacy_matvec, _relu, _sigmoid
+
+
+def _matvec(
+    weights: list[list[float]] | None,
+    values: list[float],
+    bias: list[float] | None = None,
+) -> list[float]:
+    if not isinstance(weights, list) or not weights:
+        raise ValueError("missing linear weight matrix")
+    if any(not isinstance(row, list) or len(row) != len(values) for row in weights):
+        raise ValueError("linear input dimension mismatch")
+    if bias is not None and len(bias) != len(weights):
+        raise ValueError("linear bias dimension mismatch")
+    return _legacy_matvec(weights, values, bias)
 
 
 def _softmax(values: list[float]) -> list[float]:
@@ -57,8 +71,129 @@ class OpponentMultiTaskRuntime:
         self.labels = list(meta.get("labels") or [])
         self.response_labels = list(meta.get("opponent_action_labels") or [])
         self.value_fields = list(meta.get("value_fields") or [])
+        if not self.labels or not self.response_labels or not self.value_fields:
+            raise ValueError("missing opponent multitask output labels")
+        self.state_dim = int(meta.get("state_dim", 0) or 0)
+        self.profile_dim = int(meta.get("profile_dim", 0) or 0)
+        self.hist_feat_dim = int(meta.get("hist_feat_dim", 0) or 0)
+        self.cross_hand_dim = int(meta.get("cross_hand_dim", 0) or 0)
+        self.cross_sequence_dim = int(
+            meta.get("cross_hand_sequence_dim", 0) or 0
+        )
+        self.hero_action_dim = int(meta.get("hero_action_dim", 0) or 0)
+        self.rule_action_dim = int(
+            meta.get("rule_action_dim", len(self.labels)) or len(self.labels)
+        )
+        if min(
+            self.state_dim,
+            self.profile_dim,
+            self.hist_feat_dim,
+            self.cross_hand_dim,
+            self.hero_action_dim,
+            self.rule_action_dim,
+        ) <= 0:
+            raise ValueError("missing opponent multitask feature dimensions")
+        if self.rule_action_dim != len(self.labels):
+            raise ValueError("rule action dimension does not match labels")
+        if self.cross_sequence_hidden > 0 and self.cross_sequence_dim <= 0:
+            raise ValueError("missing cross-hand sequence feature dimension")
+        raw_schema = meta.get("state_feature_schema")
+        if raw_schema is None and self.state_dim == 48:
+            raw_schema = "legacy48_v1"
+        if not raw_schema:
+            raise ValueError("missing state feature schema for non-legacy input")
+        self.state_feature_schema = str(raw_schema)
+        if self.state_feature_schema not in {
+            "legacy48_v1",
+            "legacy48_plus_hero_hand_v1",
+        }:
+            raise ValueError("unsupported state feature schema")
+        raw_private = meta.get("response_private_state_masked")
+        if raw_private is None and self.state_feature_schema == "legacy48_v1":
+            raw_private = list(range(5, 10))
+        try:
+            self.response_private_state_masked = tuple(
+                int(index) for index in raw_private
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid response private-state mask") from exc
+        if (
+            len(set(self.response_private_state_masked))
+            != len(self.response_private_state_masked)
+            or any(
+                index < 0 or index >= self.state_dim
+                for index in self.response_private_state_masked
+            )
+        ):
+            raise ValueError("response private-state mask is out of range")
+        expected_private = tuple(range(5, 10))
+        if self.state_feature_schema == "legacy48_v1":
+            if (
+                self.state_dim != 48
+                or self.response_private_state_masked != expected_private
+            ):
+                raise ValueError("legacy state feature contract mismatch")
+        else:
+            expected_private += tuple(range(48, 66))
+            if (
+                self.state_dim != 66
+                or self.response_private_state_masked != expected_private
+            ):
+                raise ValueError("hero-hand state feature contract mismatch")
+        opponent_output = self.weights.get("opp_encoder.2.weight")
+        if not isinstance(opponent_output, list) or not opponent_output:
+            raise ValueError("missing opponent encoder output matrix")
+        self.context_dim = (
+            self.state_dim
+            + self.profile_dim
+            + self.gru_hidden
+            + len(opponent_output)
+            + self.cross_sequence_hidden
+        )
+        shared_input = self.weights.get("shared.0.weight")
+        if (
+            not isinstance(shared_input, list)
+            or not shared_input
+            or not isinstance(shared_input[0], list)
+        ):
+            raise ValueError("missing shared encoder input matrix")
+        shared_input_dim = len(shared_input[0])
+        if shared_input_dim == self.context_dim + self.rule_action_dim:
+            self.value_input_contract = "rule_conditioned_v1"
+        elif shared_input_dim == self.context_dim:
+            self.value_input_contract = "context_only_v1"
+        else:
+            raise ValueError("shared encoder input contract mismatch")
+        if self.weights.get("response_shared.0.weight") is not None:
+            self.response_encoder_contract = "separate_public_v1"
+        elif self.value_input_contract == "context_only_v1":
+            self.response_encoder_contract = "shared_context_public_v1"
+        else:
+            raise ValueError("missing response encoder for rule-conditioned model")
         training = meta.get("training") or {}
         self.clips = dict(training.get("clips") or {})
+
+    def _validate_context_inputs(
+        self,
+        state: list[float],
+        profile: list[float],
+        history: list[list[float]],
+        cross_hand: list[float],
+        cross_sequence: list[list[float]] | None,
+    ) -> None:
+        if len(state) != self.state_dim:
+            raise ValueError("state feature dimension mismatch")
+        if len(profile) != self.profile_dim:
+            raise ValueError("profile feature dimension mismatch")
+        if len(cross_hand) != self.cross_hand_dim:
+            raise ValueError("cross-hand feature dimension mismatch")
+        if any(len(row) != self.hist_feat_dim for row in history):
+            raise ValueError("history feature dimension mismatch")
+        if self.cross_sequence_hidden > 0 and any(
+            len(row) != self.cross_sequence_dim
+            for row in (cross_sequence or [])
+        ):
+            raise ValueError("cross-hand sequence feature dimension mismatch")
 
     @classmethod
     def load(cls, path: str | Path) -> "OpponentMultiTaskRuntime | None":
@@ -79,12 +214,22 @@ class OpponentMultiTaskRuntime:
         weight_hidden = self.weights.get(f"{prefix}.weight_hh_l0")
         bias_input = self.weights.get(f"{prefix}.bias_ih_l0")
         bias_hidden = self.weights.get(f"{prefix}.bias_hh_l0")
-        if not weight_input or not weight_hidden:
-            return [0.0] * hidden_size
+        if (
+            not weight_input
+            or not weight_hidden
+            or bias_input is None
+            or bias_hidden is None
+        ):
+            return []
         hidden = [0.0] * hidden_size
         for features in sequence[-max(0, int(max_steps)):]:
             input_gates = _matvec(weight_input, features, bias_input)
             hidden_gates = _matvec(weight_hidden, hidden, bias_hidden)
+            if (
+                len(input_gates) != 3 * hidden_size
+                or len(hidden_gates) != 3 * hidden_size
+            ):
+                return []
             for idx in range(hidden_size):
                 reset = _sigmoid(input_gates[idx] + hidden_gates[idx])
                 update = _sigmoid(
@@ -105,12 +250,17 @@ class OpponentMultiTaskRuntime:
         cross_hand: list[float],
         cross_sequence: list[list[float]] | None,
     ) -> list[float]:
+        self._validate_context_inputs(
+            state, profile, history, cross_hand, cross_sequence
+        )
         history_embedding = self._gru_forward(
             history,
             prefix="gru",
             hidden_size=self.gru_hidden,
             max_steps=self.max_hist,
         ) if history else [0.0] * self.gru_hidden
+        if len(history_embedding) != self.gru_hidden:
+            return []
         opponent_embedding = self._linear_stack(
             cross_hand, "opp_encoder", (0, 2), final_relu=True
         )
@@ -136,6 +286,8 @@ class OpponentMultiTaskRuntime:
                     and self.cross_sequence_encoder == "gru_moe"
                 ):
                     sequence_embedding = self._moe_forward(sequence_embedding)
+            if len(sequence_embedding) != self.cross_sequence_hidden:
+                return []
             context += sequence_embedding
         return context
 
@@ -151,7 +303,7 @@ class OpponentMultiTaskRuntime:
         for position, layer_index in enumerate(linear_indices):
             weight = self.weights.get(f"{prefix}.{layer_index}.weight")
             bias = self.weights.get(f"{prefix}.{layer_index}.bias")
-            if weight is None:
+            if weight is None or bias is None:
                 return []
             output = _matvec(weight, output, bias)
             if position < len(linear_indices) - 1 or final_relu:
@@ -167,8 +319,10 @@ class OpponentMultiTaskRuntime:
             )
             for row in sequence[-self.max_cross_hands:]
         ]
-        if not encoded or any(not row for row in encoded):
+        if not encoded:
             return [0.0] * self.cross_sequence_hidden
+        if any(len(row) != self.cross_sequence_hidden for row in encoded):
+            return []
         return [
             sum(row[index] for row in encoded) / len(encoded)
             for index in range(self.cross_sequence_hidden)
@@ -217,11 +371,11 @@ class OpponentMultiTaskRuntime:
             return [0.0] * self.cross_sequence_hidden
         position = self.weights.get("cross_transformer.position")
         if not position:
-            return [0.0] * self.cross_sequence_hidden
+            return []
         hidden = self.cross_sequence_hidden
         heads = self.cross_transformer_heads
         if hidden <= 0 or heads <= 0 or hidden % heads:
-            return [0.0] * max(0, hidden)
+            return []
         head_dim = hidden // heads
         values = []
         for index, row in enumerate(sequence):
@@ -317,17 +471,22 @@ class OpponentMultiTaskRuntime:
         rule_label_id: int,
         cross_sequence: list[list[float]] | None = None,
     ) -> list[float]:
+        if int(rule_label_id) < 0 or int(rule_label_id) >= self.rule_action_dim:
+            raise ValueError("rule action label is out of range")
         context = self._context_features(
             state, profile, history, cross_hand, cross_sequence
         )
         if not context:
             return []
-        rule_action = [
-            1.0 if index == max(0, min(len(self.labels) - 1, int(rule_label_id))) else 0.0
-            for index in range(len(self.labels))
-        ]
+        features = context
+        if self.value_input_contract == "rule_conditioned_v1":
+            rule_action = [
+                1.0 if index == int(rule_label_id) else 0.0
+                for index in range(len(self.labels))
+            ]
+            features = context + rule_action
         return self._linear_stack(
-            context + rule_action,
+            features,
             "shared",
             (0, 3),
             final_relu=True,
@@ -346,11 +505,13 @@ class OpponentMultiTaskRuntime:
         )
         if not context:
             return []
+        prefix = (
+            "response_shared"
+            if self.response_encoder_contract == "separate_public_v1"
+            else "shared"
+        )
         return self._linear_stack(
-            context,
-            "response_shared",
-            (0, 3),
-            final_relu=True,
+            context, prefix, (0, 3), final_relu=True
         )
 
     def predict_values(
@@ -410,10 +571,11 @@ class OpponentMultiTaskRuntime:
         cross_sequence: list[list[float]] | None = None,
     ) -> dict[str, Any]:
         try:
+            if len(hero_action) != self.hero_action_dim:
+                return {}
             public_state = list(state)
-            for index in self.meta.get("response_private_state_masked") or []:
-                if 0 <= int(index) < len(public_state):
-                    public_state[int(index)] = 0.0
+            for index in self.response_private_state_masked:
+                public_state[index] = 0.0
             latent = self.encode_response(
                 public_state, profile, history, cross_hand, cross_sequence
             )

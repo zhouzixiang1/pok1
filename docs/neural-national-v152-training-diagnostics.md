@@ -583,21 +583,130 @@ finishes, the same frozen rows, cluster-bootstrap seeds, architecture recipe,
 and policy gates will be rerun with the 18 dimensions appended. Held-out must
 remain unopened unless calibration passes.
 
+## Statistical Validity Audit At Pass 100
+
+An independent audit at 2026-07-11 10:30 +08:00 found that the old collection
+and evaluation seed plans did not create independent 70-hand match clusters.
+The old collector used `5000 + pass * 17` as its deck seed base, while a match
+consumes `base` through `base + 69`. Adjacent passes therefore shared 53 of 70
+decks. Multiple opponents in one split also received the same base and were
+then treated as separate `(opponent, deck_seed_base, bot_seed_base)` bootstrap
+clusters. The old evaluator defaulted to a seed stride of one and the v146 live
+report used bases `7000/7001/7002`, `7400/7401/7402`, and
+`7800/7801/7802`. Those are only three connected deck windows, not nine
+independent blocks. Removing the strongly positive 7400 window changes the
+v146 relative mean from positive to negative. This reinforces the existing
+conclusion that v146 strength is not established and invalidates any nominal
+CI that counted the overlapping matches as independent.
+
+The original 160-pass collection was stopped after the atomic pass-100 state:
+4,638/1,180/1,160 value rows and 19,333/6,230/3,422 behavior rows in
+train/validation/so-called held-out. It remains useful for exploratory
+representation and architecture training, including the already-running
+pass-98 scaling control, but is now explicitly `exploratory-only`. It cannot be
+used for final confidence intervals or a release claim.
+
+The replacement collection contract makes every `(pass, opponent)` consume a
+separate `hands + guard` deck block and a unique bot seed. A persisted pass
+plan prevents an interrupted pass from assigning an already consumed block to
+a different live-pool opponent. Each opponent is copied read-only from the
+checkout that owns the live ratings into a content-addressed execution
+snapshot. The manifest records that checkout commit, the exact execution
+directory SHA-256, the generation tag/tree SHA-256, and whether later global
+protocol fixes made the execution tree differ from its generation tag. The
+candidate is also content-addressed and snapshotted. A two-opponent native TCP
+smoke verified distinct blocks, exact snapshot execution, and zero protocol
+failures.
+
+The old deterministic decision subsampling also lacked a recoverable inclusion
+probability. Replacement `uniform` sampling is seeded independently from bot
+randomness and samples without replacement. Every value row now records the
+eligible and selected counts, sampling seed, inclusion probability, and inverse
+probability weight, plus stage/action population counts in the probe report.
+Training does not yet consume those weights, so this is provenance needed for
+the next controlled trainer, not a retroactive correction of old models.
+
+The audit identified three further estimand boundaries:
+
+- offline policy EV sums mutually exclusive one-decision interventions from a
+  common baseline. It is an action-uplift screening statistic, not the value of
+  a deployed policy that performs all selected overrides in one trajectory;
+- current model calibration labels are reused by the policy gate, validation is
+  reused for early stopping and grid selection, and v57/v66 have already been
+  exposed. The next pipeline must use opponent-disjoint early-stop,
+  model-calibration, policy-selection, policy-gate, and one-time final-blind
+  roles with an exposure ledger. v57/v66 are regression opponents only;
+- the conditional runout tool fixes the opponent's hidden cards and future
+  schedule. It measures board sensitivity conditional on that hidden state,
+  not decision-time Bayes risk. It remains a failure diagnostic until an outer
+  loop samples opponent range, future decks, and bot seeds.
+
+Accordingly, offline uplift, supervised AUROC, nominal selection CI, and the
+queued conditional runout are diagnostic metrics. Release strength must come
+from a frozen native policy executing all overrides on fresh, non-overlapping
+70-hand paired blocks, followed by opponent/block-aware uncertainty,
+leave-one-block-out sensitivity, and a one-time blind classic-pool test.
+
+The stdlib multi-task runtime was hardened separately. Model dimensions,
+versioned state schema, response private-state mask, every context input, and
+linear/GRU weight shapes are now checked exactly. A malformed or mismatched
+model returns no neural prediction so the sanitized rule action remains in
+control; it can no longer silently truncate vectors through Python `zip`.
+
+## Literature Recheck And Search Direction
+
+The architecture decision is also constrained by established imperfect-
+information poker results. DeepStack combines depth-limited continual
+re-solving with a learned counterfactual value function rather than asking one
+network to emit the final action directly. ReBeL similarly combines self-play
+reinforcement learning, a public-belief representation, and search for
+imperfect-information games. These results support using the opponent-aware
+network as a leaf/value and response model inside bounded online search, while
+retaining the current rule policy as an immediate legal fallback. They do not
+support assuming that a larger direct override MLP is sufficient.
+
+Primary references:
+
+- Moravcik et al., *DeepStack: Expert-Level Artificial Intelligence in
+  No-Limit Poker*, 2017: <https://arxiv.org/abs/1701.01724>;
+- Brown et al., *Combining Deep Reinforcement Learning and Search for
+  Imperfect-Information Games*, 2020:
+  <https://papers.nips.cc/paper/2020/hash/c61f571dbd2fb949d3fe5ae1608dd48b-Abstract.html>.
+
+Quantile Regression Distributional RL provides a second relevant result: a
+return distribution can be represented by multiple learned quantiles instead
+of one mean. The current model's single q20 head is not a CVaR estimate and
+cannot represent how severe outcomes below q20 are. The pass-98 data confirms
+this matters for all-in labels. A future controlled model should predict a
+fixed quantile grid, including q05/q10/q20, and derive a lower-tail aggregate;
+it must still be selected by clustered policy EV, not quantile loss alone.
+Conditional common-runout labels are required before interpreting extreme
+quantiles causally. Reference: Dabney et al., *Distributional Reinforcement
+Learning with Quantile Regression*, 2018:
+<https://ojs.aaai.org/index.php/AAAI/article/view/11791>.
+
 ## Next Evidence
 
-1. Finish and atomically freeze the 160-pass opponent-disjoint collection.
-2. Repeat the full GRU, GRU+MoE, Deep Sets, and Transformer scaling grid after
-   the 160-pass dataset is frozen.
+1. Run the replacement non-overlapping, snapshotted collection in a new output
+   directory; never append it to the exploratory pass-100 corpus.
+2. Let the existing pass-98 scaling control finish, but interpret it only as
+   architecture/representation diagnostics. Repeat the architecture grid on
+   the independently seeded corpus.
 3. Run a controlled legacy-48 versus legacy-48-plus-hand-context feature
    ablation before selecting the pass-160 architecture.
-4. Use calibration only for output calibration and coverage diagnostics;
-   reserve fresh tagged opponents outside all current partitions for the final
-   blind test and do not open them after a failed calibration gate.
-5. Use offline clustered policy selection before creating an active TCP bot.
-6. Treat native paired classic-pool EV, not these supervised metrics, as the
-   eventual strength criterion.
-7. Use the catastrophe head as an ablation and uncertainty signal, not a
+4. Compare the existing mean-plus-q20 head with a fixed multi-quantile
+   distribution head and a predeclared lower-tail aggregate.
+5. Split early stopping, model calibration, policy selection, policy gate, and
+   final blind by opponent. Track every opened opponent in an exposure ledger;
+   do not read or hash the next split after a failed gate.
+6. Use offline clustered policy selection before creating an active TCP bot,
+   then evaluate the selected network as a leaf/response model in bounded
+   depth-limited search under the national 60-second decision budget.
+7. Treat fresh, non-overlapping native paired classic-pool joint-policy EV, not
+   offline single-intervention uplift or supervised metrics, as the eventual
+   strength criterion.
+8. Use the catastrophe head as an ablation and uncertainty signal, not a
    release gate, until targeted data closes its rare-action false negatives.
-8. Run conditional common-runout replication on the first-divergence failures,
-   then compare a separately frozen replicated-label dataset before treating
-   match/tail labels as causal long-horizon targets.
+9. Use conditional common-runout replication only for first-divergence
+   diagnosis until an outer opponent-range/deck/bot-seed sampling layer exists;
+   do not treat its fixed-hidden-state labels as causal policy targets.
