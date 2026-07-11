@@ -711,6 +711,24 @@ already trained or improved a deployed policy. Adoption requires a new model
 format, matching stdlib runtime validation, and paired regression against the
 unchanged v140 rule trajectory.
 
+`freeze_opponent_role_dataset.py` replaces the ambiguous four-way development
+freeze for the next training run. It emits five explicit opponent-disjoint
+roles: train, early stop, model calibration, policy selection, and policy gate.
+It snapshots only the atomic `collector_state.json` completed-pass prefix, then
+binds every row to a persisted pass-plan cluster. The freeze rejects reused or
+overlapping 70-hand deck blocks, reused bot seeds, source-split drift, invalid
+or duplicate counterfactual decisions, inconsistent uniform-sampling IPW, and
+candidate/opponent snapshot digest changes. Final blind is intentionally not a
+dataset role; it remains an external one-time native evaluation reserved in the
+exposure ledger after the candidate is frozen.
+
+The first real smoke freeze at the completed pass-2 boundary succeeded with
+seven train opponents, v141 for early stopping, v142 for model calibration,
+v98 for policy selection, and v57/v66 for the policy gate. It contained 144
+counterfactual rows and 782 behavior rows across 12 non-overlapping match
+blocks. These counts only validate the freeze contract; they are far below the
+minimum needed to train or claim strength, and the live collection continues.
+
 The stdlib multi-task runtime was hardened separately. Model dimensions,
 versioned state schema, response private-state mask, every context input, and
 linear/GRU weight shapes are now checked exactly. A malformed or mismatched
