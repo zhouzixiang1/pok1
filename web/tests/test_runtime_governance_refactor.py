@@ -1685,6 +1685,75 @@ def test_runtime_guard_uses_persisted_checkpoint_baseline_after_restart(monkeypa
     assert payload["baseline_head"] == "old123"
 
 
+def test_runtime_guard_allows_explicit_abandon_after_contract_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "new456",
+        "entries": ["?? bots/national_v300/"],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "repo_baseline": {
+            "head": "old123",
+            "branch": "main...origin/main",
+            "captured_stage": "direction_audited",
+        },
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "abandon_generation",
+        {},
+    )
+
+    assert ok is True
+    assert payload["guard"] == "ok"
+    assert payload["candidate_v"] == 300
+
+
+def test_runtime_guard_abandon_still_blocks_unrelated_dirty_entries(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "new456",
+        "entries": [
+            "?? bots/national_v300/",
+            " M web/core/official_certification.py",
+        ],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "repo_baseline": {
+            "head": "old123",
+            "branch": "main...origin/main",
+            "captured_stage": "direction_audited",
+        },
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "abandon_generation",
+        {},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "unexpected_worktree_entries"
+    assert " M web/core/official_certification.py" in payload["unexpected_entries"]
+
+
 def test_runtime_guard_allows_execute_workers_after_repair_head_drift(monkeypatch):
     import tool_runtime_guard
 
