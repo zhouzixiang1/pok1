@@ -19,8 +19,8 @@ from national_capability_contract import (
 )
 
 
-RUNTIME_ARCHITECTURE_POLICY_VERSION = "3.2.0"
-RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 7
+RUNTIME_ARCHITECTURE_POLICY_VERSION = "3.3.0"
+RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 8
 RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION = 1
 OFFICIAL_FULL_POLICY_ID = "official-full-v5"
 OFFICIAL_ORACLE_DOC_DIGESTS: dict[str, str] = {
@@ -50,6 +50,7 @@ STATE_LEARNING_INNOVATION_CHECKS: tuple[str, ...] = (
     "incremental_refinement_protocol",
     "budget_scaled_refinement",
     "precompute_lookup_path",
+    "precompute_runtime_influence",
     "incremental_opponent_model",
     "terminal_response_adaptation",
     "showdown_range_adaptation",
@@ -81,6 +82,13 @@ def _verified_official_oracle_identity() -> dict[str, str]:
         observed[relative] = actual_digest
     return observed
 
+
+def _strategy_reference_pack_digest() -> str:
+    """Pin the local recipe registry into the architecture-policy identity."""
+    from strategy_reference_pack import reference_pack_registry_digest
+
+    return reference_pack_registry_digest()
+
 _FOCUS_SPECS: tuple[dict[str, Any], ...] = (
     {
         "focus_id": "national_runtime_v4_state_learning",
@@ -93,6 +101,7 @@ _FOCUS_SPECS: tuple[dict[str, Any], ...] = (
             "decision_path_no_full_history_scan",
             "decision_path_no_large_runtime_tables",
             "precompute_lookup_path",
+            "precompute_runtime_influence",
             "persistent_match_memory",
             "terminal_response_memory",
             "showdown_range_posterior",
@@ -146,7 +155,7 @@ _FOCUS_SPECS: tuple[dict[str, Any], ...] = (
     {
         "focus_id": "reusable_precompute",
         "title": "Bounded precomputed decision facts",
-        "required_checks": ["precompute_lookup_path"],
+        "required_checks": ["precompute_lookup_path", "precompute_runtime_influence"],
         "accepted_skill_layers": ["precompute", "runtime_architecture"],
         "suggested_files": ["strategy.py", "simulation.py", "card_utils.py", "constants.py"],
         "required_terms": ["precompute", "bounded", "lookup"],
@@ -476,6 +485,7 @@ def _policy_contract_payload(policy: dict[str, Any]) -> dict[str, Any]:
         "policy_version": policy.get("policy_version"),
         "official_policy_id": policy.get("official_policy_id"),
         "official_oracle_digests": policy.get("official_oracle_digests") or {},
+        "strategy_reference_pack_digest": policy.get("strategy_reference_pack_digest"),
         "detector_version": policy.get("detector_version"),
         "source_bot": policy.get("source_bot"),
         "source_capability_digest": policy.get("source_capability_digest"),
@@ -545,6 +555,7 @@ def build_architecture_policy(
         "policy_version": RUNTIME_ARCHITECTURE_POLICY_VERSION,
         "official_policy_id": OFFICIAL_FULL_POLICY_ID,
         "official_oracle_digests": _verified_official_oracle_identity(),
+        "strategy_reference_pack_digest": _strategy_reference_pack_digest(),
         "detector_version": capabilities.get("detector_version"),
         "source_bot": source_bot_dir.name,
         "source_capability_digest": _state_digest(state),
@@ -575,6 +586,7 @@ def _policy_identity_errors(
         "policy_version",
         "official_policy_id",
         "official_oracle_digests",
+        "strategy_reference_pack_digest",
         "detector_version",
         "source_bot",
         "source_capability_digest",
@@ -935,6 +947,97 @@ def validate_runtime_contract_implementation(
             if state_learning is not None
             else ""
         )
+        if state_learning is not None and state_learning.work_primitive is not None:
+            from strategy_reference_pack import get_reference_card
+
+            card = get_reference_card(contract.reference_pack_id)
+            if card is None:
+                # RuntimeContract normally catches this first. Keep the
+                # implementation gate fail-closed if a serialized legacy plan
+                # bypasses schema validation in a caller.
+                errors.append(
+                    f"{prefix}: selected work primitive has no valid local strategy reference card"
+                )
+            else:
+                decision_fields = incremental.get("decision_field_locations") or {}
+                decision_field_functions = (
+                    incremental.get("decision_field_function_locations") or {}
+                )
+                # v4.3+ capability evidence contains exact request-rooted
+                # paths which reach an action sink.  A dead tuple of strings
+                # such as ('street', 'spr', 'confidence') must never satisfy a
+                # reference card simply because it shares field names with the
+                # live schema.  Retain the former normalized-literal heuristic
+                # only for persisted pre-v4.3 capability reports which do not
+                # carry this key at all.
+                has_source_rooted_paths = (
+                    "source_rooted_live_access_paths" in incremental
+                )
+                source_rooted_paths = (
+                    incremental.get("source_rooted_live_access_paths")
+                    if has_source_rooted_paths
+                    else None
+                )
+                if has_source_rooted_paths:
+                    if not isinstance(source_rooted_paths, dict):
+                        source_rooted_paths = {}
+                    missing_hand_fields = [
+                        field
+                        for field in card.required_hand_runtime_fields
+                        if not source_rooted_paths.get(field)
+                    ]
+                    if missing_hand_fields:
+                        errors.append(
+                            f"{prefix}: reference card {card.reference_id} lacks source-rooted "
+                            f"live hand_runtime action consumption for {missing_hand_fields}"
+                        )
+                    if not any(
+                        source_rooted_paths.get(path)
+                        for path in card.required_any_opponent_runtime_fields
+                    ):
+                        errors.append(
+                            f"{prefix}: reference card {card.reference_id} lacks a source-rooted "
+                            "confidence-scaled terminal/showdown opponent_runtime action consumer"
+                        )
+                else:
+                    missing_hand_fields = [
+                        field.rsplit(".", 1)[-1]
+                        for field in card.required_hand_runtime_fields
+                        if not decision_fields.get(field.rsplit(".", 1)[-1])
+                    ]
+                    if missing_hand_fields:
+                        errors.append(
+                            f"{prefix}: reference card {card.reference_id} lacks live "
+                            f"hand_runtime decision consumption for {missing_hand_fields}"
+                        )
+
+                    def _opponent_path_consumed(path: str) -> bool:
+                        parts = path.split(".")[1:]
+                        # A disconnected mention of ``confidence`` elsewhere in
+                        # strategy code is not evidence that the terminal or
+                        # showdown posterior controls this decision.  Require all
+                        # path components to meet in at least one decision
+                        # location, which keeps the legacy fallback meaningful.
+                        normalized_locations = decision_field_functions or decision_fields
+                        locations = [
+                            {
+                                str(item)
+                                for item in (normalized_locations.get(part) or [])
+                            }
+                            for part in parts
+                        ]
+                        return bool(parts) and bool(locations) and bool(
+                            set.intersection(*locations)
+                        )
+
+                    if not any(
+                        _opponent_path_consumed(path)
+                        for path in card.required_any_opponent_runtime_fields
+                    ):
+                        errors.append(
+                            f"{prefix}: reference card {card.reference_id} lacks a required "
+                            "confidence-scaled terminal/showdown opponent_runtime consumer"
+                        )
 
         if contract.decision is not None:
             if not checks.get("decision_time_budget_visible"):
@@ -1047,6 +1150,12 @@ def validate_runtime_contract_implementation(
                     max_bytes=declared.max_bytes,
                     key_shape=declared.key_shape,
                     fallback=declared.fallback,
+                    require_action_influence=(
+                        primary_innovation == "bounded_precompute_lookup"
+                    ),
+                    require_key_variation=(
+                        primary_innovation == "bounded_precompute_lookup"
+                    ),
                 )
             except Exception as exc:
                 dynamic_errors = [
@@ -1175,6 +1284,11 @@ def validate_runtime_contract_implementation(
             if not checks.get("precompute_lookup_path"):
                 errors.append(
                     f"{prefix}: selected bounded_precompute_lookup is not proven consumed"
+                )
+            if not checks.get("precompute_runtime_influence"):
+                errors.append(
+                    f"{prefix}: selected bounded_precompute_lookup has no proven "
+                    "value-sensitive final-wire counterfactual"
                 )
         elif primary_innovation in {
             "action_profile",

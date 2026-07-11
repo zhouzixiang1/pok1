@@ -136,8 +136,12 @@ def test_prompts_require_national_runtime_architecture_contracts():
     assert "`runtime_contract` object" in master_prompt
     assert '"runtime_contract":' in master_prompt
     assert "{master_plan_executable_contract}" in master_prompt
+    assert "{strategy_reference_packet}" in master_prompt
+    assert "reference_pack_id" in master_prompt
+    assert "same-shape/different-value" in master_prompt
     assert "same constants and literal types used" in master_prompt
     assert "bounded module-import precomputation" in worker_prompt
+    assert "binding local strategy reference card" in worker_prompt
     assert "process persists for all 70 hands" in worker_prompt
     assert "# Runtime Contract" in worker_prompt
     assert "Runtime architecture check" in reviewer_prompt

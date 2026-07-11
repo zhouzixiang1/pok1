@@ -120,6 +120,18 @@ Sizing Principles:
 - Adjust down when ranges are weak or boards are dry; adjust up when ranges are strong or draws are present.
 </poker_theory_reference>
 
+<local_strategy_reference_cards>
+{strategy_reference_packet}
+
+These are source-controlled implementation cards, not optional reading. When
+the selected `state_learning` primary is a work primitive, set
+`runtime_contract.reference_pack_id` to the compatible card id and mirror its
+id, required live inputs, control, and counterfactual into the worker prompt.
+A foundation fact table, a constant-key lookup, or a lookup whose value never
+changes a final sanitized wire action is an acceleration detail, never an
+innovation. Do not invent a new card, a table provenance, or a research result.
+</local_strategy_reference_cards>
+
 <worker_guidance>
 Use fewer workers when data is uncertain (few games), more workers when the bot is well-evaluated.
 
@@ -200,6 +212,12 @@ and do not require a worker unless quality evidence says they still fail.
   `delayed_probe`). Include both exact oracle document paths in `oracle_refs`.
   Do not add unrelated primary dimensions merely because their shadow evidence
   is visible.
+- `reference_pack_id`: required exactly when `state_learning.work_primitive`
+  is selected; it must name the injected local card supporting that primitive.
+  Leave it empty for profile and line-control primaries. A precompute primary
+  additionally needs a same-shape/different-value runtime counterfactual that
+  changes at least one final sanitized wire action while the empty-table path
+  remains legal.
 - `official_feedback_refs`: official evidence or LLM analysis ids being fixed;
   empty only when the task is not reacting to official EXE feedback.
 - `forbidden_runtime_work`: file/network/subprocess I/O, full-history scans,
@@ -459,10 +477,11 @@ Required schema (emit exactly this structure as raw JSON):
           "line_controls": [],
           "oracle_refs": ["docs/official-raise-boundary-oracle-2026-07-11.md", "docs/official-terminal-settlement-oracle-2026-07-11.md"]
         },
+        "reference_pack_id": "range_weighted_candidate_batch_v1",
         "official_feedback_refs": [],
         "forbidden_runtime_work": ["file_io_in_decision", "network_io_in_decision", "unbounded_history_scan"]
       },
-      "worker_prompt": "Implement only the typed sample_counted_candidate_batch primary in strategy.get_baseline_action and iter_refinements; preserve the system-owned national_bot.py memory, confidence, opponent_runtime, and official oracle behavior without editing that read-only dependency. Compute and sanitize the legal baseline strictly under the 250 ms budget and retain the legal fallback at every deadline. Use a fixed seed and bounded max_samples, terminate low-uncertainty spots early, and let ambiguous spots scale within the local 1.8 s refinement envelope and formal 54 s ceiling. Candidate sample_count/confidence/complete fields are diagnostic only: prove real work with system-trusted iterator steps, at least 5 ms elapsed work, true exhaustion or larger-budget scaling, sanitized action trajectories, and telemetry. Do not yield the input baseline or empty candidates as fake refinement."
+      "worker_prompt": "Implement only the typed range_weighted_candidate_batch_v1 sample_counted_candidate_batch primary in strategy.get_baseline_action and iter_refinements; preserve the system-owned national_bot.py memory, confidence, hand_runtime, opponent_runtime, and official oracle behavior without editing that read-only dependency. Compute and sanitize the legal baseline strictly under the 250 ms budget and retain the legal fallback at every deadline. Use a fixed seed and bounded max_samples, terminate low-uncertainty spots early, and let ambiguous spots scale within the local 1.8 s refinement envelope and formal 54 s ceiling. Candidate sample_count/confidence/complete fields are diagnostic only: prove real work with system-trusted iterator steps, at least 5 ms elapsed work, true exhaustion or larger-budget scaling, sanitized action trajectories, a posterior/budget control, and telemetry. Do not yield the input baseline or empty candidates as fake refinement."
     }
   ]
 }

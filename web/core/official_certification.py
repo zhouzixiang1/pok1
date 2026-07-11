@@ -163,6 +163,22 @@ class CertificationSpec:
     target_hands: int
     round_timeout_sec: float
     no_progress_timeout_sec: float
+    # The normal formal path deliberately leaves this unset.  A value is only
+    # legal for the explicit, operator-acknowledged signed-ledger bootstrap.
+    bootstrap_root_id: str | None = None
+
+
+def spec_record(spec: CertificationSpec) -> dict[str, Any]:
+    """Serialize a spec without changing legacy v5 identity bytes.
+
+    Old full-v5 certificates and durable requests predate the bootstrap field.
+    Omitting its ``None`` default keeps their identity/spec payload exactly
+    compatible; an explicit bootstrap root is identity-bearing instead.
+    """
+    record = asdict(spec)
+    if record.get("bootstrap_root_id") is None:
+        record.pop("bootstrap_root_id", None)
+    return record
 
 
 Runner = Callable[..., Any]
@@ -388,6 +404,7 @@ def build_spec(
     target_hands: int | None = None,
     round_timeout_sec: float | None = None,
     no_progress_timeout_sec: float | None = None,
+    bootstrap_root_id: str | None = None,
 ) -> CertificationSpec:
     defaults = _mode_defaults(mode)
     requested = {
@@ -427,6 +444,9 @@ def build_spec(
         no_progress_timeout_sec=float(
             no_progress_timeout_sec if no_progress_timeout_sec is not None else defaults["no_progress_timeout_sec"]
         ),
+        bootstrap_root_id=(
+            str(bootstrap_root_id).strip() if bootstrap_root_id is not None else None
+        ),
     )
     validate_spec(spec)
     return spec
@@ -439,6 +459,11 @@ def validate_spec(spec: CertificationSpec) -> None:
         raise ValueError("official certification rounds cannot be negative")
     if spec.self_play_rounds + spec.opponent_rounds <= 0:
         raise ValueError("official certification must run at least one round")
+    if spec.bootstrap_root_id is not None:
+        if spec.mode != "full":
+            raise ValueError("bootstrap root is valid only for immutable full certification")
+        if not isinstance(spec.bootstrap_root_id, str) or not spec.bootstrap_root_id.strip():
+            raise ValueError("bootstrap root id must be a non-empty string")
     if spec.mode == "full":
         defaults = MODE_CONFIG["full"]
         valid = (
@@ -532,7 +557,7 @@ def certification_identity(
         "runner_provenance": runner_provenance,
         "authority_scope": "test-only" if test_only else "production",
         "test_only": bool(test_only),
-        "spec": asdict(spec),
+        "spec": spec_record(spec),
         "candidate_hash": hash_path(spec.candidate),
         "opponent_hash": hash_path(spec.opponent) if spec.opponent else None,
         "platform": _config_fingerprint(cfg),
@@ -987,7 +1012,7 @@ def _write_cache(
     payload = {
         "cache_key": key,
         "created_at": now_iso(),
-        "spec": asdict(spec),
+        "spec": spec_record(spec),
         "identity": identity,
         "result": result,
     }
@@ -1770,6 +1795,11 @@ def _spec_from_mapping(data: dict[str, Any]) -> CertificationSpec:
         target_hands=int(data.get("target_hands", 0) or 0),
         round_timeout_sec=float(data.get("round_timeout_sec", 0.0) or 0.0),
         no_progress_timeout_sec=float(data.get("no_progress_timeout_sec", 0.0) or 0.0),
+        bootstrap_root_id=(
+            str(data.get("bootstrap_root_id")).strip()
+            if data.get("bootstrap_root_id") is not None
+            else None
+        ),
     )
     validate_spec(spec)
     return spec
@@ -1805,7 +1835,7 @@ def _identity_integrity_issues(identity: Any, spec: CertificationSpec) -> list[s
         issues.append("certificate_platform_fingerprint_mismatch")
     if identity.get("policy_id") != spec.policy_id:
         issues.append("certificate_identity_policy_mismatch")
-    if identity.get("spec") != asdict(spec):
+    if identity.get("spec") != spec_record(spec):
         issues.append("certificate_identity_spec_mismatch")
     return issues
 
@@ -1814,6 +1844,8 @@ def _opponent_selection_issues(
     selection: Any,
     spec: CertificationSpec,
     identity: dict[str, Any],
+    *,
+    allow_consumed_bootstrap: bool = False,
 ) -> list[str]:
     if spec.mode != "full":
         return []
@@ -1833,7 +1865,44 @@ def _opponent_selection_issues(
     if str(opponent.get("artifact_hash") or "") != str(identity.get("opponent_hash") or ""):
         issues.append("certificate_official_opponent_hash_mismatch")
     reason = opponent.get("reason")
-    if reason not in {"official_certified", "content_bound_grandfather_grant"}:
+    if spec.bootstrap_root_id is not None:
+        # This is the only path that can use the historic signed-ledger root.
+        # It is bound into the spec/identity and must reproduce every receipt
+        # field from the selector.  A normal full spec never enters here.
+        if selection.get("bootstrap_root_id") != spec.bootstrap_root_id:
+            issues.append("certificate_bootstrap_root_id_mismatch")
+        if reason != "signed_v5_ledger_bootstrap_root":
+            issues.append("certificate_bootstrap_root_reason_invalid")
+        try:
+            from official_bootstrap import validate_signed_v5_ledger_bootstrap_selection
+
+            validation = validate_signed_v5_ledger_bootstrap_selection(
+                selection,
+                spec.bootstrap_root_id,
+                spec.candidate,
+                # The certificate is validated again after its successful
+                # append consumes the one-time root.  That historical check
+                # must validate the same receipt without reauthorizing a run.
+                allow_consumed=allow_consumed_bootstrap,
+            )
+            if not validation.get("valid"):
+                issues.extend(
+                    f"certificate_{item}"
+                    for item in (validation.get("issues") or ["bootstrap_root_selection_invalid"])
+                )
+        except Exception as exc:
+            issues.append(
+                f"certificate_bootstrap_root_validation_error:{type(exc).__name__}:{str(exc)[:160]}"
+            )
+        return list(dict.fromkeys(issues))
+
+    if selection.get("bootstrap_root_id") is not None:
+        issues.append("certificate_bootstrap_root_unexpected")
+    # A full EXE certificate is the only production authorization for an
+    # official opponent.  Content-bound migration grants remain available for
+    # parent/rating-pool history, but must never validate a formal opponent
+    # receipt (including a resumed durable job).
+    if reason != "official_certified":
         issues.append("certificate_official_opponent_reason_invalid")
     receipt = opponent.get("eligibility_receipt")
     if not isinstance(receipt, dict):
@@ -1854,29 +1923,16 @@ def _opponent_selection_issues(
         issues.append("certificate_official_opponent_eligibility_receipt_bot_mismatch")
     if str(receipt.get("artifact_hash") or "") != str(opponent.get("artifact_hash") or ""):
         issues.append("certificate_official_opponent_eligibility_receipt_hash_mismatch")
-    expected_kind = {
-        "official_certified": "official_full_certificate",
-        "content_bound_grandfather_grant": "content_bound_grandfather_grant",
-    }.get(reason)
+    expected_kind = "official_full_certificate"
     if receipt.get("kind") != expected_kind:
         issues.append("certificate_official_opponent_eligibility_receipt_kind_mismatch")
-    if expected_kind == "official_full_certificate":
-        if receipt.get("policy_id") != FULL_POLICY_ID:
-            issues.append("certificate_official_opponent_certificate_policy_mismatch")
-        certificate_digest = str(receipt.get("certificate_digest") or "")
-        if len(certificate_digest) != 64 or any(
-            ch not in "0123456789abcdef" for ch in certificate_digest.lower()
-        ):
-            issues.append("certificate_official_opponent_certificate_digest_invalid")
-    elif expected_kind == "content_bound_grandfather_grant":
-        for key in ("policy_digest", "grant_digest"):
-            digest = str(receipt.get(key) or "")
-            if len(digest) != 64 or any(
-                ch not in "0123456789abcdef" for ch in digest.lower()
-            ):
-                issues.append(f"certificate_official_opponent_{key}_invalid")
-        if not str(receipt.get("policy_id") or ""):
-            issues.append("certificate_official_opponent_grandfather_policy_missing")
+    if receipt.get("policy_id") != FULL_POLICY_ID:
+        issues.append("certificate_official_opponent_certificate_policy_mismatch")
+    certificate_digest = str(receipt.get("certificate_digest") or "")
+    if len(certificate_digest) != 64 or any(
+        ch not in "0123456789abcdef" for ch in certificate_digest.lower()
+    ):
+        issues.append("certificate_official_opponent_certificate_digest_invalid")
     return issues
 
 
@@ -2062,6 +2118,7 @@ def certificate_validation(
             record.get("opponent_selection"),
             spec,
             current_identity,
+            allow_consumed_bootstrap=not _skip_ledger_check,
         )
     )
     if spec.mode == "full":
@@ -2168,7 +2225,7 @@ def certificate_validation(
         "valid": not issues,
         "issues": list(dict.fromkeys(issues)),
         "certificate_digest": digest,
-        "spec": asdict(spec),
+        "spec": spec_record(spec),
         "identity": current_identity,
         "published_attestation": portable or require_published,
         "evidence_retained": evidence_retained,
@@ -2484,7 +2541,7 @@ def stable_official_opponent_selection(
     if not isinstance(selection, dict):
         return None
     opponent = selection.get("opponent") if isinstance(selection.get("opponent"), dict) else {}
-    return {
+    stable = {
         "selected": bool(selection.get("selected")),
         "candidate": str(selection.get("candidate") or ""),
         "opponent": {
@@ -2501,6 +2558,18 @@ def stable_official_opponent_selection(
             )
         },
     }
+    # Keep ordinary v5 selection records byte-compatible.  Bootstrap fields
+    # exist only on the explicit one-time path and are part of its job/cert
+    # identity, not a fallback for normal opponent selection.
+    bootstrap_root_id = selection.get("bootstrap_root_id", selection.get("root_id"))
+    if bootstrap_root_id is not None:
+        stable["eligible"] = bool(selection.get("eligible"))
+        stable["reason"] = selection.get("reason")
+        stable["bootstrap_root_id"] = str(bootstrap_root_id or "")
+        stable["bootstrap_root_receipt"] = selection.get("bootstrap_root_receipt")
+        stable["candidate_binding"] = selection.get("candidate_binding")
+        stable["opponent"]["completion_tree_oid"] = opponent.get("completion_tree_oid")
+    return stable
 
 
 def official_opponent_eligibility(
@@ -2510,7 +2579,12 @@ def official_opponent_eligibility(
     target_version: int | None = None,
     certified_alternatives: int | None = None,
 ) -> dict[str, Any]:
-    """Return content-bound eligibility for an official-EXE opponent."""
+    """Return formal official-EXE opponent eligibility.
+
+    A published signed full certificate is the sole production authorization.
+    ``allow_bootstrap_grandfather`` is retained for API compatibility only;
+    it never authorizes a content-bound migration grant in this path.
+    """
     version = parse_bot_version(Path(candidate).name)
     lifecycle = (
         epoch_lifecycle_eligibility(version)
@@ -2538,38 +2612,15 @@ def official_opponent_eligibility(
         priority = 0
         eligibility_receipt = _official_certificate_opponent_receipt(candidate, status)
     else:
-        ledger_issues = _grandfather_ledger_issues()
-        if ledger_issues:
-            return {
-                "eligible": False,
-                "reason": "official_verdict_ledger_unavailable",
-                "status": status.get("status"),
-                "mode": status.get("mode"),
-                "verdict": verdict,
-                "ledger_issues": ledger_issues,
-                "bootstrap_requested_but_disabled": bool(allow_bootstrap_grandfather),
-            }
-        grant = grandfather_eligibility(
-            candidate,
-            "official_opponent",
-            target_version=target_version,
-            readiness={
-                "certified_alternatives": max(0, int(certified_alternatives or 0)),
-            },
-        )
-        if not grant.get("eligible"):
-            return {
-                "eligible": False,
-                "reason": grant.get("reason") or "not_official_certified",
-                "status": status.get("status"),
-                "mode": status.get("mode"),
-                "verdict": verdict,
-                "grant": grant,
-                "bootstrap_requested_but_disabled": bool(allow_bootstrap_grandfather),
-            }
-        reason = "content_bound_grandfather_grant"
-        priority = 1
-        eligibility_receipt = _grandfathered_opponent_receipt(grant)
+        return {
+            "eligible": False,
+            "reason": "official_full_certificate_required",
+            "status": status.get("status"),
+            "mode": status.get("mode"),
+            "verdict": verdict,
+            "bootstrap_requested_but_disabled": bool(allow_bootstrap_grandfather),
+            "grandfathered": False,
+        }
     return {
         "eligible": True,
         "reason": reason,
@@ -2577,7 +2628,7 @@ def official_opponent_eligibility(
         "status": status.get("status"),
         "mode": status.get("mode"),
         "verdict": verdict,
-        "grandfathered": reason == "content_bound_grandfather_grant",
+        "grandfathered": False,
         "eligibility_receipt": eligibility_receipt,
     }
 
@@ -2736,6 +2787,22 @@ def select_official_opponent(
             target_version=target_version,
             certified_alternatives=certified_alternatives,
         )
+        if (
+            eligibility.get("eligible")
+            and eligibility.get("reason") != "official_certified"
+        ):
+            # Keep diagnostics about a stale/injected authorization, but never
+            # expose it as an eligible formal opponent to downstream callers.
+            eligibility = {
+                **eligibility,
+                "eligible": False,
+                "reason": "official_full_certificate_required",
+                "rejected_authorization_reason": eligibility.get("reason"),
+                "bootstrap_requested_but_disabled": bool(
+                    allow_bootstrap_grandfather
+                ),
+                "grandfathered": False,
+            }
         item = {
             "bot": name,
             "path": str(path),
@@ -2746,7 +2813,13 @@ def select_official_opponent(
         }
         considered.append(item)
 
-    eligible = [item for item in considered if item.get("eligible")]
+    # Defense in depth: even a stale/injected helper result must not make a
+    # content-bound grandfather receipt selectable for a formal EXE job.
+    eligible = [
+        item
+        for item in considered
+        if item.get("eligible") and item.get("reason") == "official_certified"
+    ]
     if not eligible:
         return {
             "selected": False,
@@ -2788,12 +2861,22 @@ def resolve_managed_certification_spec(
     """
     if spec.opponent_rounds <= 0:
         return spec, None
-    selection = select_official_opponent(
-        spec.candidate,
-        active_bots=(spec.opponent,) if exact_opponent_only else None,
-        preferred=spec.opponent,
-        allow_bootstrap_grandfather=False,
-    )
+    if spec.bootstrap_root_id is not None:
+        # Bootstrap is opt-in at spec creation and never falls back to the
+        # active-pool selector.  A job resume replays this exact root receipt.
+        from official_bootstrap import select_signed_v5_ledger_bootstrap_root
+
+        selection = select_signed_v5_ledger_bootstrap_root(
+            spec.bootstrap_root_id,
+            candidate_path=spec.candidate,
+        )
+    else:
+        selection = select_official_opponent(
+            spec.candidate,
+            active_bots=(spec.opponent,) if exact_opponent_only else None,
+            preferred=spec.opponent,
+            allow_bootstrap_grandfather=False,
+        )
     if not selection.get("selected"):
         return None, selection
     selected_path = str(Path(selection["opponent"]["path"]).resolve())
@@ -2808,6 +2891,7 @@ def resolve_managed_certification_spec(
         target_hands=spec.target_hands,
         round_timeout_sec=spec.round_timeout_sec,
         no_progress_timeout_sec=spec.no_progress_timeout_sec,
+        bootstrap_root_id=spec.bootstrap_root_id,
     )
     return resolved, selection
 
@@ -2865,6 +2949,11 @@ def _spec_from_queue_entry(entry: dict[str, Any]) -> CertificationSpec:
         target_hands=int(data["target_hands"]),
         round_timeout_sec=float(data["round_timeout_sec"]),
         no_progress_timeout_sec=float(data["no_progress_timeout_sec"]),
+        bootstrap_root_id=(
+            str(data.get("bootstrap_root_id")).strip()
+            if data.get("bootstrap_root_id") is not None
+            else None
+        ),
     )
     validate_spec(spec)
     return spec
@@ -2918,7 +3007,7 @@ def enqueue_certification(
         "queued_at": now_iso(),
         "request_started_ns": time.time_ns(),
         "reason": reason,
-        "spec": asdict(spec),
+        "spec": spec_record(spec),
         "status": "pending",
     }
     with _queue_lock(blocking=True):
@@ -3003,7 +3092,7 @@ def _write_certificate_record(
         "issued_at": now_iso(),
         "policy_id": spec.policy_id,
         "mode": spec.mode,
-        "spec": asdict(spec),
+        "spec": spec_record(spec),
         "identity": identity,
         "cache_key": cache_key_value,
         "opponent_selection": stable_selection,

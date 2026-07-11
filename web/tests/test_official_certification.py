@@ -1872,7 +1872,7 @@ def test_mutable_grandfather_status_is_rejected(tmp_path, monkeypatch):
         record_grandfathered(candidate, reason="bootstrap active pool", source="test")
 
 
-def test_official_opponent_eligibility_rejects_untracked_bootstrap_and_bound_failure(tmp_path, monkeypatch):
+def test_official_opponent_eligibility_requires_full_certificate_and_blocks_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     monkeypatch.setattr(
         "official_certification.epoch_lifecycle_eligibility",
@@ -1881,10 +1881,13 @@ def test_official_opponent_eligibility_rejects_untracked_bootstrap_and_bound_fai
     historical = _bot(tmp_path / "national_v70")
     opponent = _bot(tmp_path / "national_v71")
 
-    bootstrap = official_opponent_eligibility(historical)
+    bootstrap = official_opponent_eligibility(
+        historical,
+        allow_bootstrap_grandfather=True,
+    )
     assert bootstrap["eligible"] is False
-    assert bootstrap["reason"] == "official_verdict_ledger_unavailable"
-    assert "official_verdict_ledger_missing" in bootstrap["ledger_issues"]
+    assert bootstrap["reason"] == "official_full_certificate_required"
+    assert bootstrap["bootstrap_requested_but_disabled"] is True
 
     _run_certification_with_runner_for_test(
         build_spec("smoke", historical, opponent=opponent),
@@ -1899,16 +1902,10 @@ def test_official_opponent_eligibility_rejects_untracked_bootstrap_and_bound_fai
     assert failed["reason"] == "blocking_official_failure"
 
 
-def test_grandfathered_opponent_eligibility_emits_policy_bound_receipt(tmp_path, monkeypatch):
+def test_official_opponent_eligibility_never_evaluates_grandfather_grant(tmp_path, monkeypatch):
     import official_certification as certification
 
     historical = _bot(tmp_path / "national_v70")
-    artifact_hash = hash_path(historical)
-    grant_payload = {
-        "bot": historical.name,
-        "artifact_hash": artifact_hash,
-        "roles": ["official_opponent"],
-    }
     monkeypatch.setattr(
         certification,
         "epoch_lifecycle_eligibility",
@@ -1920,71 +1917,70 @@ def test_grandfathered_opponent_eligibility_emits_policy_bound_receipt(tmp_path,
     monkeypatch.setattr(
         certification,
         "grandfather_eligibility",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("formal opponent eligibility must not evaluate grandfather grants")
+        ),
+    )
+
+    result = official_opponent_eligibility(
+        historical,
+        allow_bootstrap_grandfather=True,
+        target_version=143,
+    )
+
+    assert result["eligible"] is False
+    assert result["reason"] == "official_full_certificate_required"
+    assert result["bootstrap_requested_but_disabled"] is True
+
+
+def test_select_official_opponent_rejects_grandfather_result_even_when_requested(
+    tmp_path,
+    monkeypatch,
+):
+    import official_certification as certification
+    import evolution_infra
+    import national_native
+
+    candidate = _bot(tmp_path / "national_v143")
+    historical = _bot(tmp_path / "national_v70")
+    (historical / ".completed").touch()
+    monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
+    monkeypatch.setattr(national_native, "check_native_contract", lambda _path, **_kwargs: [])
+    monkeypatch.setattr(
+        certification,
+        "published_bot_identity",
+        lambda path: {
+            "published": True,
+            "artifact_hash": f"hash-{Path(path).name}",
+            "tag": f"tag-{Path(path).name}",
+            "tag_object": f"tag-object-{Path(path).name}",
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        certification,
+        "official_opponent_eligibility",
         lambda *_a, **_k: {
             "eligible": True,
             "reason": "content_bound_grandfather_grant",
-            "role": "official_opponent",
-            "target_version": 143,
-            "sunset_version": 0,
-            "minimum_certified_alternatives": 2,
-            "policy_id": "legacy-official-opponents-v1",
-            "policy_digest": "b" * 64,
-            "grant": grant_payload,
-            "identity": {
-                "label": historical.name,
-                "artifact_hash": artifact_hash,
-            },
+            "priority": 1,
         },
     )
 
-    result = official_opponent_eligibility(historical, target_version=143)
-    receipt = result["eligibility_receipt"]
-
-    assert result["eligible"] is True
-    assert receipt["policy_digest"] == "b" * 64
-    assert receipt["grant_digest"] == canonical_digest(grant_payload)
-    assert receipt["receipt_digest"] == canonical_digest({
-        key: value for key, value in receipt.items() if key != "receipt_digest"
-    })
-
-
-@pytest.mark.parametrize("ledger_state", ["missing", "corrupt", "truncated"])
-def test_grandfather_role_fails_closed_on_invalid_ledger(
-    tmp_path,
-    monkeypatch,
-    ledger_state,
-):
-    import official_certification as certification
-    from official_verdict_ledger import ledger_path
-
-    historical = _bot(tmp_path / "national_v70")
-    monkeypatch.setattr(
-        certification,
-        "epoch_lifecycle_eligibility",
-        lambda version: {"eligible": True, "reason": "national_epoch_active", "version": version},
+    result = select_official_opponent(
+        candidate,
+        [str(historical)],
+        allow_bootstrap_grandfather=True,
     )
-    monkeypatch.setattr(certification, "read_status", lambda _path: {})
-    monkeypatch.setattr(certification, "official_full_certified", lambda *_a, **_k: False)
-    monkeypatch.setattr(
-        certification,
-        "grandfather_eligibility",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("invalid ledger must block before grant evaluation")
-        ),
-    )
-    path = ledger_path()
-    if ledger_state != "missing":
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{}\n" if ledger_state == "corrupt" else "{}", encoding="utf-8")
 
-    result = official_opponent_eligibility(historical)
-
-    assert result["eligible"] is False
-    assert result["reason"] == "official_verdict_ledger_unavailable"
-    assert result["ledger_issues"]
+    assert result["selected"] is False
+    assert result["reason"] == "no_official_eligible_opponent"
+    assert result["considered"][0]["eligible"] is False
+    assert result["considered"][0]["reason"] == "official_full_certificate_required"
+    assert result["considered"][0]["rejected_authorization_reason"] == "content_bound_grandfather_grant"
 
 
-def test_select_official_opponent_prefers_certified_over_content_bound_grant(tmp_path, monkeypatch):
+def test_select_official_opponent_uses_certified_candidate_only(tmp_path, monkeypatch):
     import evolution_infra
     import national_native
     import official_certification
@@ -2012,8 +2008,8 @@ def test_select_official_opponent_prefers_certified_over_content_bound_grant(tmp
         official_certification,
         "official_opponent_eligibility",
         lambda path, **_kwargs: {
-            "eligible": True,
-            "reason": "official_certified" if Path(path).name == "national_v120" else "content_bound_grandfather_grant",
+            "eligible": Path(path).name == "national_v120",
+            "reason": "official_certified" if Path(path).name == "national_v120" else "official_full_certificate_required",
             "priority": 0 if Path(path).name == "national_v120" else 1,
         },
     )
@@ -2021,12 +2017,33 @@ def test_select_official_opponent_prefers_certified_over_content_bound_grant(tmp
     result = select_official_opponent(
         candidate,
         [str(bootstrap), str(certified)],
-        allow_bootstrap_grandfather=False,
+        allow_bootstrap_grandfather=True,
     )
 
     assert result["selected"] is True
     assert result["opponent"]["bot"] == "national_v120"
     assert result["opponent"]["reason"] == "official_certified"
+
+
+def test_full_certificate_rejects_grandfathered_opponent_receipt(tmp_path):
+    import official_certification as certification
+
+    candidate = _bot(tmp_path / "national_v143")
+    opponent = _bot(tmp_path / "national_v142")
+    spec = build_spec("full", candidate, opponent=opponent)
+    identity = certification_identity(spec)
+    selection = _selection(candidate, opponent)
+    receipt = selection["opponent"]["eligibility_receipt"]
+    receipt["kind"] = "content_bound_grandfather_grant"
+    receipt["receipt_digest"] = canonical_digest({
+        key: value for key, value in receipt.items() if key != "receipt_digest"
+    })
+    selection["opponent"]["reason"] = "content_bound_grandfather_grant"
+
+    issues = certification._opponent_selection_issues(selection, spec, identity)
+
+    assert "certificate_official_opponent_reason_invalid" in issues
+    assert "certificate_official_opponent_eligibility_receipt_kind_mismatch" in issues
 
 
 def test_readiness_counts_unique_certified_artifacts_not_version_copies(tmp_path, monkeypatch):

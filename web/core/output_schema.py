@@ -81,7 +81,14 @@ STATE_LEARNING_PRIMARY_CHECKS = {
         "incremental_refinement_protocol",
         "budget_scaled_refinement",
     ),
-    "bounded_precompute_lookup": ("precompute_lookup_path",),
+    # Reading a mapping is an acceleration capability, not a strategy
+    # innovation.  A selected lookup primary must additionally prove that a
+    # same-shaped, different-valued mapping changes a final sanitized wire
+    # action in the trusted runtime probe.
+    "bounded_precompute_lookup": (
+        "precompute_lookup_path",
+        "precompute_runtime_influence",
+    ),
     "action_profile": ("incremental_opponent_model",),
     "terminal_response": ("terminal_response_adaptation",),
     "showdown_range": ("showdown_range_adaptation",),
@@ -330,8 +337,42 @@ class RuntimeContract(BaseModel):
     precompute_artifacts: list[PrecomputeArtifactContract] = Field(default_factory=list, max_length=4)
     match_memory: Optional[MatchMemoryRuntimeContract] = None
     state_learning: Optional[StateLearningRuntimeContract] = None
+    reference_pack_id: str = Field(default="", max_length=128)
     official_feedback_refs: list[str] = Field(default_factory=list, max_length=8)
     forbidden_runtime_work: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("reference_pack_id")
+    @classmethod
+    def _trim_reference_pack_id(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _bind_work_primitive_to_local_reference_card(self):
+        """Keep weak planners on a versioned, executable recipe.
+
+        Profile dimensions and line controls already have their own closed
+        evidence contracts.  The two work primitives are otherwise broad
+        enough that a model can mislabel a dead/static table as an innovation,
+        so each must name one source-controlled local reference card.
+        """
+        state_learning = self.state_learning
+        primary = (
+            state_learning.primary_innovation()
+            if state_learning is not None
+            else ""
+        )
+        if state_learning is not None and state_learning.work_primitive is not None:
+            from strategy_reference_pack import validate_reference_selection
+
+            errors = validate_reference_selection(self.reference_pack_id, primary)
+            if errors:
+                raise ValueError("; ".join(errors))
+        elif self.reference_pack_id:
+            raise ValueError(
+                "reference_pack_id is only valid for a work-primitive "
+                "state_learning primary"
+            )
+        return self
 
 
 def runtime_contract_worker_prompt_terms(contract: RuntimeContract) -> tuple[str, ...]:
@@ -355,6 +396,12 @@ def runtime_contract_worker_prompt_terms(contract: RuntimeContract) -> tuple[str
                 contract.state_learning.primary_innovation()
             ]
         )
+        if contract.state_learning.work_primitive is not None:
+            from strategy_reference_pack import get_reference_card
+
+            card = get_reference_card(contract.reference_pack_id)
+            if card is not None:
+                terms.extend(card.required_worker_terms)
     return tuple(dict.fromkeys(terms))
 
 
@@ -423,6 +470,12 @@ def master_plan_executable_contract_text() -> str:
             f"profile_dimensions={list(STATE_LEARNING_PROFILE_DIMENSIONS)}, or "
             f"line_controls={list(STATE_LEARNING_LINE_CONTROLS)}; oracle_refs must "
             f"equal {list(STATE_LEARNING_ORACLE_REFS)}."
+        ),
+        (
+            "- a state_learning work primitive must declare reference_pack_id "
+            "from the source-controlled local strategy cards; profile dimensions "
+            "and line controls must leave reference_pack_id empty. Foundation-only "
+            "tables never satisfy this requirement by themselves."
         ),
     ]
     for primary, terms in STATE_LEARNING_PRIMARY_PROMPT_TERMS.items():
@@ -557,6 +610,17 @@ class WorkerTask(BaseModel):
                 raise ValueError(
                     "sample_counted_candidate_batch requires a decision contract"
                 )
+            if state_learning.work_primitive is not None:
+                from strategy_reference_pack import validate_reference_task
+
+                reference_errors = validate_reference_task(
+                    contract.reference_pack_id,
+                    state_learning.primary_innovation(),
+                    target_files=[*self.target_files, *self.files_allowed],
+                    worker_prompt=self.worker_prompt,
+                )
+                if reference_errors:
+                    raise ValueError("; ".join(reference_errors))
 
         read_only_scope = {
             str(item).replace("\\", "/").rsplit("/", 1)[-1]

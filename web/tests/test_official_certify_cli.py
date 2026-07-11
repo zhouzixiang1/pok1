@@ -225,3 +225,74 @@ def test_cli_returns_nonzero_for_terminal_job_infrastructure_failure(monkeypatch
     })
 
     assert module.main(["full", "bots/national_v143"]) == 2
+
+
+def test_cli_bootstrap_full_requires_explicit_one_time_acknowledgement(monkeypatch, capsys):
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "select_signed_v5_ledger_bootstrap_root",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bootstrap root must not be selected before acknowledgement")
+        ),
+    )
+
+    exit_code = module.main([
+        "bootstrap-full",
+        "bots/national_v143",
+        "--root-id",
+        "national-v141-official-full-v5-signed-ledger-root",
+    ])
+
+    assert exit_code == 2
+    assert "bootstrap-acknowledgement-required" in capsys.readouterr().out
+
+
+def test_cli_bootstrap_full_binds_the_explicit_root_to_full_spec(monkeypatch):
+    module = _module()
+    root_id = "national-v141-official-full-v5-signed-ledger-root"
+    selection = {
+        "selected": True,
+        "root_id": root_id,
+        "candidate": "bots/national_v143",
+        "opponent": {"path": "bots/national_v141", "eligible": True},
+    }
+    seen = {}
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "select_signed_v5_ledger_bootstrap_root",
+        lambda root, *, candidate_path: seen.update({"root": root, "candidate": candidate_path}) or selection,
+    )
+    monkeypatch.setattr(
+        module,
+        "select_official_opponent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("normal selector used")),
+    )
+    monkeypatch.setattr(
+        module,
+        "build_spec",
+        lambda mode, candidate, **kwargs: seen.update({"mode": mode, "spec_candidate": candidate, **kwargs}) or object(),
+    )
+    monkeypatch.setattr(
+        module,
+        "start_or_poll_job",
+        lambda *_args, **_kwargs: {"state": "failed", "pending": False},
+    )
+
+    exit_code = module.main([
+        "bootstrap-full",
+        "bots/national_v143",
+        "--root-id",
+        root_id,
+        "--acknowledge-one-time-ledger-bootstrap",
+    ])
+
+    assert exit_code == 2
+    assert seen["root"] == root_id
+    assert seen["mode"] == "full"
+    assert seen["bootstrap_root_id"] == root_id

@@ -620,19 +620,15 @@ def test_authorization_receipt_changes_official_job_identity(tmp_path, monkeypat
 
     artifact_hash = hash_path(opponent)
 
-    def selection(policy_digest: str) -> dict:
+    def selection(certificate_digest: str) -> dict:
         receipt_payload = {
             "schema_version": 1,
-            "kind": "content_bound_grandfather_grant",
+            "kind": "official_full_certificate",
             "role": "official_opponent",
             "bot": opponent.name,
             "artifact_hash": artifact_hash,
-            "policy_id": "legacy-official-opponents-v1",
-            "policy_digest": policy_digest,
-            "grant_digest": "c" * 64,
-            "target_version": 200,
-            "sunset_version": 0,
-            "minimum_certified_alternatives": 2,
+            "policy_id": "official-full-v5",
+            "certificate_digest": certificate_digest,
         }
         return {
             "selected": True,
@@ -642,7 +638,7 @@ def test_authorization_receipt_changes_official_job_identity(tmp_path, monkeypat
                 "path": str(opponent.resolve()),
                 "artifact_hash": artifact_hash,
                 "eligible": True,
-                "reason": "content_bound_grandfather_grant",
+                "reason": "official_certified",
                 "eligibility_receipt": {
                     **receipt_payload,
                     "receipt_digest": canonical_digest(receipt_payload),

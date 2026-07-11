@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "kind": "official-signed-v5-ledger-bootstrap-roots",
+  "policy_id": "official-signed-v5-ledger-bootstrap-v1",
+  "roots": [
+    {
+      "root_id": "national-v141-official-full-v5-signed-ledger-root",
+      "bot": "national_v141",
+      "version": 141,
+      "artifact_hash": "67cd6059e17afdb333137a37a051764ccef405d03072addb92ebaa5a39631796",
+      "tag": "national-bot-v141",
+      "tag_object": "b5105699c24cdbce8afc8e137b4a55f074b8b5e5",
+      "completion_tree_oid": "e8b01c77a3173038f50772a2c9c64b7710401c83",
+      "max_successful_consumptions": 1,
+      "ledger_entry": {
+        "sequence": 1,
+        "entry_digest": "410a5e2202bddb1fddb6bc62ff397b239ec176e2f9c7e53dab4bdd91d532ed5a",
+        "candidate_label": "national_v141",
+        "candidate_hash": "67cd6059e17afdb333137a37a051764ccef405d03072addb92ebaa5a39631796",
+        "policy_id": "official-full-v5",
+        "mode": "full",
+        "outcome": "official-certified",
+        "authoritative": true,
+        "blocking": false,
+        "classification": "pass",
+        "certificate_digest": "3eb5e5d150fe5276a6f5933f04c547d7f1c4f4adacfdedafc4be63b4917d9808"
+      }
+    }
+  ]
+}

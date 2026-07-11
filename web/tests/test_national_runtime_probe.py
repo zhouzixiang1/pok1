@@ -68,6 +68,59 @@ def _artifact_request():
     }]
 
 
+def _write_value_sensitive_probe_bot(root: Path) -> Path:
+    """Make the existing small mapping change a real postflop wire action."""
+    bot = _write_probe_bot(root)
+    strategy_path = bot / "strategy.py"
+    source = strategy_path.read_text(encoding="utf-8")
+    source = source.replace(
+        "        POSTFLOP_TABLE.get(12, 0.0)\n",
+        "        score = POSTFLOP_TABLE.get(len(req.get('public_cards') or []), 0.0)\n"
+        "        if score > 0.0:\n"
+        "            return 600\n",
+    )
+    strategy_path.write_text(source, encoding="utf-8")
+    return bot
+
+
+def _write_packed_value_sensitive_probe_bot(root: Path) -> Path:
+    """Use a packed row, matching the planned preflop-equity asset shape."""
+    bot = _write_probe_bot(root)
+    strategy_path = bot / "strategy.py"
+    source = strategy_path.read_text(encoding="utf-8")
+    source = source.replace(
+        "POSTFLOP_TABLE = {i: i / 31.0 for i in range(32)}",
+        "POSTFLOP_TABLE = {i: bytes([i + 1]) for i in range(32)}",
+    )
+    source = source.replace(
+        "        POSTFLOP_TABLE.get(12, 0.0)\n",
+        "        packed = POSTFLOP_TABLE.get(len(req.get('public_cards') or []), b'\\x00')\n"
+        "        if packed and packed[0] > 128:\n"
+        "            return 600\n",
+    )
+    strategy_path.write_text(source, encoding="utf-8")
+    return bot
+
+
+def _write_fixed_key_value_sensitive_probe_bot(root: Path) -> Path:
+    """A table whose values matter, but whose lookup is a fake constant."""
+    bot = _write_probe_bot(root)
+    strategy_path = bot / "strategy.py"
+    source = strategy_path.read_text(encoding="utf-8")
+    source = source.replace(
+        "POSTFLOP_TABLE = {i: i / 31.0 for i in range(32)}",
+        "POSTFLOP_TABLE = {i: 1 for i in range(32)}",
+    )
+    source = source.replace(
+        "        POSTFLOP_TABLE.get(12, 0.0)\n",
+        "        score = POSTFLOP_TABLE.get(0, 0)\n"
+        "        if score > 0:\n"
+        "            return 600\n",
+    )
+    strategy_path.write_text(source, encoding="utf-8")
+    return bot
+
+
 def test_runtime_scenario_bank_uses_coherent_national_transcripts():
     by_id = {scenario["id"]: scenario for scenario in DECISION_SCENARIOS}
     for scenario in DECISION_SCENARIOS:
@@ -122,6 +175,107 @@ def test_probe_measures_postflop_consumer_across_scenario_bank_and_caches(tmp_pa
     assert artifact["fallback_ok"] is True
     assert len(artifact["fallback_scenarios"]) == len(DECISION_SCENARIOS)
     assert all("error" not in row for row in artifact["fallback_scenarios"])
+    assert artifact["value_affects_final_wire"] is False
+    assert national_runtime_probe.validate_dynamic_precompute_contract(
+        first,
+        name="POSTFLOP_TABLE",
+        owner_file="strategy.py",
+        build_phase="module_import",
+        max_build_ms=2_500,
+        max_entries=65_536,
+        max_bytes=8 * 1024 * 1024,
+        key_shape="int",
+        fallback="legal_baseline",
+        require_action_influence=True,
+    ) == ["dynamic_precompute_value_no_final_wire_influence"]
+
+
+def test_probe_requires_value_sensitive_final_wire_counterfactual_for_primary(tmp_path):
+    bot = _write_value_sensitive_probe_bot(tmp_path / "national_v_value_sensitive")
+    national_runtime_probe.clear_runtime_probe_cache()
+
+    result = national_runtime_probe.run_national_runtime_probe(
+        bot,
+        static_artifacts=_artifact_request(),
+    )
+
+    # This fixture deliberately changes the existing generic strategy's line
+    # controls, so its unrelated strategy-influence gate can fail.  The
+    # artifact assertion below is intentionally scoped to the precompute
+    # counterfactual contract.
+    assert result["failure_class"] != "probe_infra"
+    artifact = result["artifacts"][0]
+    assert artifact["value_affects_final_wire"] is True
+    assert artifact["action_influence_scenarios"]
+    assert artifact["lookup_key_varies_across_consumer_scenarios"] is True
+    assert national_runtime_probe.validate_dynamic_precompute_contract(
+        result,
+        name="POSTFLOP_TABLE",
+        owner_file="strategy.py",
+        build_phase="module_import",
+        max_build_ms=2_500,
+        max_entries=65_536,
+        max_bytes=8 * 1024 * 1024,
+        key_shape="int",
+        fallback="legal_baseline",
+        require_action_influence=True,
+    ) == []
+
+
+def test_probe_rejects_constant_key_lookup_even_when_mutated_values_change_wire(tmp_path):
+    bot = _write_fixed_key_value_sensitive_probe_bot(tmp_path / "national_v_fixed_key")
+    national_runtime_probe.clear_runtime_probe_cache()
+
+    result = national_runtime_probe.run_national_runtime_probe(
+        bot,
+        static_artifacts=_artifact_request(),
+    )
+
+    assert result["failure_class"] != "probe_infra"
+    artifact = result["artifacts"][0]
+    assert artifact["value_affects_final_wire"] is True
+    assert artifact["lookup_key_varies_across_consumer_scenarios"] is False
+    assert national_runtime_probe.validate_dynamic_precompute_contract(
+        result,
+        name="POSTFLOP_TABLE",
+        owner_file="strategy.py",
+        build_phase="module_import",
+        max_build_ms=2_500,
+        max_entries=65_536,
+        max_bytes=8 * 1024 * 1024,
+        key_shape="int",
+        fallback="legal_baseline",
+        require_action_influence=True,
+        require_key_variation=True,
+    ) == ["dynamic_precompute_lookup_key_static"]
+
+
+def test_probe_counterfactual_mutates_packed_bytes_rows_for_live_action_proof(tmp_path):
+    bot = _write_packed_value_sensitive_probe_bot(tmp_path / "national_v_packed_value")
+    national_runtime_probe.clear_runtime_probe_cache()
+
+    result = national_runtime_probe.run_national_runtime_probe(
+        bot,
+        static_artifacts=_artifact_request(),
+    )
+
+    assert result["failure_class"] != "probe_infra"
+    artifact = result["artifacts"][0]
+    assert artifact["value_affects_final_wire"] is True
+    assert artifact["action_influence_scenarios"]
+    assert artifact["lookup_key_varies_across_consumer_scenarios"] is True
+    assert national_runtime_probe.validate_dynamic_precompute_contract(
+        result,
+        name="POSTFLOP_TABLE",
+        owner_file="strategy.py",
+        build_phase="module_import",
+        max_build_ms=2_500,
+        max_entries=65_536,
+        max_bytes=8 * 1024 * 1024,
+        key_shape="int",
+        fallback="legal_baseline",
+        require_action_influence=True,
+    ) == []
 
 
 def test_probe_infrastructure_failure_is_never_cached(monkeypatch, tmp_path):

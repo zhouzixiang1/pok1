@@ -30,7 +30,7 @@ def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
             "opponent": {
                 "path": str(opponent),
                 "bot": opponent.name,
-                "reason": "content_bound_grandfather_grant",
+                "reason": "official_certified",
             },
             "considered": [],
         },
@@ -79,7 +79,7 @@ def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
     assert spec.target_hands == 70
     assert kwargs["source_v"] == 123
     assert kwargs["retry_terminal"] is False
-    assert result["opponent_selection"]["opponent"]["reason"] == "content_bound_grandfather_grant"
+    assert result["opponent_selection"]["opponent"]["reason"] == "official_certified"
 
 
 def test_official_full_commit_gate_blocks_inconclusive_result(tmp_path, monkeypatch):
@@ -101,7 +101,7 @@ def test_official_full_commit_gate_blocks_inconclusive_result(tmp_path, monkeypa
             "opponent": {
                 "path": str(opponent),
                 "bot": opponent.name,
-                "reason": "content_bound_grandfather_grant",
+                "reason": "official_certified",
             },
             "considered": [],
         },

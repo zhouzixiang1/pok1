@@ -11,6 +11,7 @@ import asyncio
 import ast
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -2459,7 +2460,7 @@ import itertools
 import json
 
 
-PRECOMPUTE_SCHEMA_VERSION = 1
+PRECOMPUTE_SCHEMA_VERSION = 2
 CARD_ENCODING = "judge_int:rank=card//4+2,suit=card%4"
 GENERATOR_VERSION = "national-precompute-v1"
 FIVE_OF_SEVEN_INDICES = tuple(itertools.combinations(range(7), 5))
@@ -2510,6 +2511,15 @@ PRECOMPUTE_MANIFEST = {
     "hole_combo_entries": len(HOLE_COMBO_FACTS),
     "straight_mask_entries": len(STRAIGHT_HIGH_BY_MASK),
     "five_of_seven_entries": len(FIVE_OF_SEVEN_INDICES),
+    # These are system-provided domain facts.  They may accelerate a live
+    # decision, but a plan may not claim them alone as a state-learning
+    # innovation; the runtime probe must still prove value-sensitive wire
+    # influence for any selected precompute primary.
+    "foundation_pure_facts": [
+        "HOLE_COMBO_FACTS",
+        "STRAIGHT_HIGH_BY_MASK",
+        "FIVE_OF_SEVEN_INDICES",
+    ],
     "content_digest": _content_digest(),
 }
 
@@ -2524,6 +2534,32 @@ def straight_high(rank_mask: int) -> int:
 '''
 
 
+CURRENT_STRENGTH_RUNTIME_OVERLAY_VERSION = 1
+CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST = hashlib.sha256(
+    NATIVE_BOT_TEMPLATE.encode("utf-8")
+).hexdigest()
+CURRENT_STRENGTH_MISSING_PRECOMPUTE_DIGEST = hashlib.sha256(
+    NATIVE_PRECOMPUTE_TEMPLATE.encode("utf-8")
+).hexdigest()
+
+
+def current_strength_runtime_overlay_identity() -> dict[str, Any]:
+    """Return the explicit local-strength runtime identity.
+
+    Rating and precommit strength use a temporary bilateral wrapper overlay so
+    historic policy modules are compared under the same repaired connection
+    state and deadline runtime.  Official EXE and raw artifact smoke never use
+    this identity: they execute the candidate's submitted entry verbatim.
+    """
+    return {
+        "schema_version": CURRENT_STRENGTH_RUNTIME_OVERLAY_VERSION,
+        "mode": "current_system_wrapper_bilateral",
+        "native_template_digest": CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST,
+        "missing_precompute_template_digest": CURRENT_STRENGTH_MISSING_PRECOMPUTE_DIGEST,
+        "precompute_policy": "preserve_candidate_file_or_provision_if_missing",
+    }
+
+
 @dataclass(frozen=True)
 class NativeBotSpec:
     label: str
@@ -2531,6 +2567,10 @@ class NativeBotSpec:
     entry: Path
     temp_root: Path | None = None
     wrapper_used: bool = False
+    runtime_overlay: bool = False
+    runtime_overlay_template_digest: str = ""
+    runtime_overlay_precompute_source: str = ""
+    runtime_overlay_precompute_digest: str = ""
 
 
 def ensure_native_entry(bot_dir: str | Path, *, overwrite: bool = False) -> Path:
@@ -2886,6 +2926,7 @@ def _prepare_native_spec(
     bot_dir: Path,
     *,
     allow_legacy_wrapper: bool = False,
+    current_runtime_overlay: bool = False,
 ) -> NativeBotSpec:
     """Resolve an existing native entry, optionally wrapping a copied legacy bot.
 
@@ -2894,6 +2935,62 @@ def _prepare_native_spec(
     copy of the source bot.
     """
     entry = bot_dir / NATIVE_ENTRY
+    if current_runtime_overlay:
+        if allow_legacy_wrapper:
+            raise ValueError(
+                "current runtime overlay cannot be combined with legacy wrapper generation"
+            )
+        if not entry.exists():
+            raise ValueError(f"{label}: missing required {NATIVE_ENTRY}")
+        original_errors = check_native_contract(bot_dir)
+        if original_errors:
+            raise ValueError(
+                f"{label}: invalid source {NATIVE_ENTRY} before runtime overlay: "
+                + "; ".join(original_errors[:3])
+            )
+        # Do not mutate an immutable historical bot or an in-progress
+        # candidate.  Local strength is intentionally a policy-vs-policy
+        # comparison under one current system wrapper; official and raw smoke
+        # paths continue to execute the artifact's own entrypoint.
+        tmp = Path(tempfile.mkdtemp(prefix=f"pok_native_strength_{label}_"))
+        dst = tmp / bot_dir.name
+        try:
+            shutil.copytree(bot_dir, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            precompute = dst / PRECOMPUTE_ENTRY
+            precompute_source = (
+                "preserved_candidate_artifact"
+                if precompute.exists()
+                else "provisioned_system_facts"
+            )
+            overlaid_entry = ensure_native_entry(dst, overwrite=True)
+            contract_errors = check_native_contract(
+                dst,
+                require_current_stream_decoder=True,
+                require_current_decision_runtime=True,
+            )
+            if contract_errors:
+                raise ValueError(
+                    f"{label}: current runtime overlay invalid {NATIVE_ENTRY}: "
+                    + "; ".join(contract_errors[:3])
+                )
+            precompute_digest = ""
+            if (dst / PRECOMPUTE_ENTRY).is_file():
+                precompute_digest = hashlib.sha256(
+                    (dst / PRECOMPUTE_ENTRY).read_bytes()
+                ).hexdigest()
+            return NativeBotSpec(
+                label=label,
+                path=dst,
+                entry=overlaid_entry,
+                temp_root=tmp,
+                runtime_overlay=True,
+                runtime_overlay_template_digest=CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST,
+                runtime_overlay_precompute_source=precompute_source,
+                runtime_overlay_precompute_digest=precompute_digest,
+            )
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
     if entry.exists():
         contract_errors = check_native_contract(bot_dir)
         if not contract_errors:
@@ -3230,6 +3327,12 @@ async def _run_tcp_server_with_processes(
             "illegal_actions": illegal[idx],
             "timeouts": timeouts[idx],
             "wrapper_used": spec.wrapper_used,
+            "runtime_overlay": {
+                "enabled": spec.runtime_overlay,
+                "native_template_digest": spec.runtime_overlay_template_digest,
+                "precompute_source": spec.runtime_overlay_precompute_source,
+                "precompute_digest": spec.runtime_overlay_precompute_digest,
+            },
             "runtime_telemetry": runtime_telemetry,
             "native": {
                 "returncode": proc_info.get("returncode"),
@@ -3280,6 +3383,35 @@ async def _run_tcp_server_with_processes(
             run_labels[0]: bot_a.wrapper_used,
             run_labels[1]: bot_b.wrapper_used,
         },
+        "runtime_overlay": {
+            **current_strength_runtime_overlay_identity(),
+            "enabled": bool(bot_a.runtime_overlay or bot_b.runtime_overlay),
+            "both_sides": bool(bot_a.runtime_overlay and bot_b.runtime_overlay),
+            "mode": (
+                "current_system_wrapper_bilateral"
+                if bot_a.runtime_overlay and bot_b.runtime_overlay
+                else "artifact_native_entry"
+            ),
+            "native_template_digest": (
+                CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST
+                if bot_a.runtime_overlay or bot_b.runtime_overlay
+                else ""
+            ),
+            "by_player": {
+                run_labels[0]: {
+                    "enabled": bot_a.runtime_overlay,
+                    "native_template_digest": bot_a.runtime_overlay_template_digest,
+                    "precompute_source": bot_a.runtime_overlay_precompute_source,
+                    "precompute_digest": bot_a.runtime_overlay_precompute_digest,
+                },
+                run_labels[1]: {
+                    "enabled": bot_b.runtime_overlay,
+                    "native_template_digest": bot_b.runtime_overlay_template_digest,
+                    "precompute_source": bot_b.runtime_overlay_precompute_source,
+                    "precompute_digest": bot_b.runtime_overlay_precompute_digest,
+                },
+            },
+        },
         "deck_seed_base": deck_seed_base,
         "bot_seed_base": bot_seed_base,
         "settlements": settlements,
@@ -3327,6 +3459,49 @@ async def run_native_tcp_pair(
         bot_a_env_overrides=bot_a_env_overrides,
         bot_b_env_overrides=bot_b_env_overrides,
         capture_events=capture_events,
+        current_runtime_overlay=False,
+    )
+
+
+async def run_current_runtime_native_strength_pair(
+    bot_a_token: str | Path,
+    bot_b_token: str | Path,
+    hands: int,
+    *,
+    require_native_a: bool = True,
+    require_native_b: bool = True,
+    deck_seed_base: int | None = None,
+    bot_seed_base: int | None = None,
+    timeout_sec: float | None = None,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    capture_events: bool = False,
+) -> dict[str, Any]:
+    """Run a local-strength match under the current system runtime on both sides.
+
+    This is deliberately separate from :func:`run_native_tcp_pair`: the latter
+    is the raw artifact path used by protocol/compliance smoke and external
+    experiments.  The strength runner copies both native artifacts, replaces
+    only their system-owned TCP/deadline wrapper, and retains their policy
+    modules.  It must never be used for official EXE certification.
+    """
+    if require_native_a is not True or require_native_b is not True:
+        raise ValueError(
+            "run_current_runtime_native_strength_pair requires existing native entries "
+            "for both players"
+        )
+    return await _run_native_tcp_pair(
+        bot_a_token,
+        bot_b_token,
+        hands,
+        allow_legacy_wrappers=False,
+        deck_seed_base=deck_seed_base,
+        bot_seed_base=bot_seed_base,
+        timeout_sec=timeout_sec,
+        bot_a_env_overrides=bot_a_env_overrides,
+        bot_b_env_overrides=bot_b_env_overrides,
+        capture_events=capture_events,
+        current_runtime_overlay=True,
     )
 
 
@@ -3352,6 +3527,7 @@ async def run_legacy_debug_tcp_pair_with_wrappers(
         deck_seed_base=deck_seed_base,
         bot_seed_base=bot_seed_base,
         timeout_sec=timeout_sec,
+        current_runtime_overlay=False,
     )
 
 
@@ -3367,6 +3543,7 @@ async def _run_native_tcp_pair(
     bot_a_env_overrides: dict[str, str | int | None] | None = None,
     bot_b_env_overrides: dict[str, str | int | None] | None = None,
     capture_events: bool = False,
+    current_runtime_overlay: bool = False,
 ) -> dict[str, Any]:
     label_a, dir_a = resolve_bot(bot_a_token)
     label_b, dir_b = resolve_bot(bot_b_token)
@@ -3380,11 +3557,13 @@ async def _run_native_tcp_pair(
             label_a,
             dir_a,
             allow_legacy_wrapper=allow_legacy_wrappers,
+            current_runtime_overlay=current_runtime_overlay,
         ))
         specs.append(_prepare_native_spec(
             label_b,
             dir_b,
             allow_legacy_wrapper=allow_legacy_wrappers,
+            current_runtime_overlay=current_runtime_overlay,
         ))
         hands = max(1, min(70, int(hands)))
         if timeout_sec is None:
@@ -3784,7 +3963,7 @@ async def run_native_precommit(
                 if frozen is not None
                 else (None if seed is None else int(seed) + 1_000_000_000)
             )
-            result = await run_native_tcp_pair(
+            result = await run_current_runtime_native_strength_pair(
                 candidate[1],
                 opponent[1],
                 hands,
@@ -3819,7 +3998,21 @@ async def run_native_precommit(
             ]
             complete = hands_played == hands
             compliance_passed = bool(result.get("passed_compliance", False))
-            sample_valid = complete and compliance_passed and not c_issues and not o_issues
+            overlay = result.get("runtime_overlay") or {}
+            overlay_valid = bool(
+                overlay.get("enabled") is True
+                and overlay.get("both_sides") is True
+                and overlay.get("mode") == "current_system_wrapper_bilateral"
+            )
+            if not overlay_valid:
+                c_issues.append("native_runtime_overlay_missing")
+            sample_valid = (
+                complete
+                and compliance_passed
+                and overlay_valid
+                and not c_issues
+                and not o_issues
+            )
             strength_admitted = strength_authoritative and sample_valid
             if sample_valid:
                 samples.append(net)
@@ -3839,6 +4032,8 @@ async def run_native_precommit(
                 "passed_compliance": compliance_passed,
                 "sample_valid": sample_valid,
                 "strength_admitted": strength_admitted,
+                "runtime_overlay": overlay,
+                "runtime_overlay_valid": overlay_valid,
                 "local_runtime_budget": {
                     "hard_deadline_sec": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
                     "refinement_budget_sec": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
@@ -3876,6 +4071,7 @@ async def run_native_precommit(
             "candidate_compliance_issues": candidate_issues,
             "opponent_compliance_issues": opponent_issues,
             "wrapper_used": any(bool(row["raw"].get("wrapper_used")) for row in repeats),
+            "runtime_overlay": [row.get("runtime_overlay") or {} for row in repeats],
             "repeats": repeats,
         }
         matchups.append(matchup)
@@ -3932,6 +4128,7 @@ async def run_native_precommit(
         "sample_plan": list(sample_plan or []),
         "paired_bootstrap": paired_payload,
         "wrapper_used": any(bool(matchup.get("wrapper_used")) for matchup in matchups),
+        "runtime_overlay_identity": current_strength_runtime_overlay_identity(),
         "blockers": blockers,
         "passed": not blockers,
     }

@@ -110,6 +110,16 @@ use official EXE or Web Arena chip outcomes as strength evidence.
   `legal_baseline` behavior when empty. Opaque LRU caches, warmed-on-first-use
   work, dead consumers, network/file I/O, and large decision-time table builds
   do not satisfy the contract.
+- When a state-learning work primitive is selected, the injected Runtime
+  Contract contains a binding local strategy reference card. Implement that
+  exact card rather than inventing a generic table or copying poker prose. A
+  pure foundation table is not an innovation: for a precompute primary, a
+  same-shaped/different-value counterfactual must change at least one final
+  sanitized wire action while an empty mapping still takes a legal baseline.
+  For a candidate-batch primary, the card's fixed-seed posterior/budget control
+  must show trusted work and a final-action difference. Keep `strategy.py` as
+  thin orchestration when it is near its line cap; place a cohesive mechanism
+  in its named helper module instead of piling more logic into it.
 - The process persists for all 70 hands. Maintain bounded match-level opponent
   state incrementally from opponent actions, `oppo_hands`, and `earnChips`.
   Hand state resets each hand; match state resets only on a new TCP connection.

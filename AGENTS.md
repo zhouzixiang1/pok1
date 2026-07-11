@@ -191,6 +191,12 @@ python scripts/national_arena.py run --mode managed \
 
 # Formal signed EXE certification required for every new bot before commit/tag.
 python scripts/official_certify.py full bots/national_v<N> --wait-if-busy
+
+# One-time recovery root only: never selected by the normal full path.  A
+# successful 5+3x70 run consumes this repository-pinned signed-ledger root.
+python scripts/official_certify.py bootstrap-full bots/national_v<N> \
+  --root-id national-v141-official-full-v5-signed-ledger-root \
+  --acknowledge-one-time-ledger-bootstrap --wait-if-busy
 ```
 
 ### Reinforcement Learning
@@ -338,6 +344,10 @@ an evolution gate. Every new bot must separately pass the signed official
 Windows EXE full policy: five 70-hand self-play rounds plus three 70-hand rounds
 against an eligible opponent. Historical content-bound grandfather grants are
 temporary migration eligibility and must never be displayed as an EXE pass.
+Normal formal selection accepts only a published full-v5 certificate. The
+signed-ledger bootstrap root is an explicit operator-only recovery command,
+never an automatic fallback; its immutable receipt is written into the signed
+ledger only after a successful full run and then cannot be reused.
 Arena and the official EXE share an exclusive lease for TCP port 10001; pending
 formal certification has priority, so use a different Arena port for concurrent
 local presentation work.
