@@ -720,6 +720,13 @@ already trained or improved a deployed policy. Adoption requires a new model
 format, matching stdlib runtime validation, and paired regression against the
 unchanged v140 rule trajectory.
 
+`model_input_schema.py` now composes the 81-dimensional state and 24-dimensional
+actor-aware history through one bounded encoder shared by the future trainer
+and stdlib runtime. Its response mode derives the private mask from the state
+schema instead of hard-coding legacy indices, and metadata explicitly records
+that exact rule strategy context is still absent. This prevents either side
+from silently adopting a different feature order or dimension.
+
 `freeze_opponent_role_dataset.py` replaces the ambiguous four-way development
 freeze for the next training run. It emits five explicit opponent-disjoint
 roles: train, early stop, model calibration, policy selection, and policy gate.

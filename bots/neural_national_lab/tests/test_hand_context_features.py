@@ -93,6 +93,15 @@ def test_hand_context_has_stable_bounded_dimension(payload) -> None:
     assert all(0.0 <= value <= 1.0 for value in features)
 
 
+def test_hand_context_ignores_non_finite_cards() -> None:
+    features = hand_context.encode_hand_context({
+        "my_cards": [float("inf"), float("nan")],
+        "public_cards": [0, 1, 2],
+    })
+
+    assert features == [0.0] * hand_context.HAND_CONTEXT_DIM
+
+
 def test_versioned_state_schema_extends_dimension_and_private_mask() -> None:
     request = {
         "my_cards": [card(14, 0), card(13, 0)],

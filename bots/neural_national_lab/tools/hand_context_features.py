@@ -29,7 +29,7 @@ def _cards(raw: Any) -> list[int]:
     for value in raw:
         try:
             card = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if 0 <= card < 52 and card not in seen:
             seen.add(card)
