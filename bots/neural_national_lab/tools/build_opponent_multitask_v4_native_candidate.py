@@ -55,6 +55,7 @@ from v4_native_build_contract import (
     current_native_build_contract,
     snapshot_native_build_inputs,
 )
+import v4_runtime_budget as runtime_budget
 from win_first_policy_v4 import normalize_policy
 
 
@@ -62,6 +63,7 @@ ROOT = v3_builder.ROOT
 TOOLS = v3_builder.TOOLS
 VERSIONS = v3_builder.VERSIONS
 BUILD_SCHEMA = "opponent_multitask_v4_native_candidate_build_v1"
+RUNTIME_BUDGET_FILENAME = "V4_RUNTIME_BUDGET.json"
 VERSION_RE = re.compile(r"^v\d+_[a-z0-9_]+$")
 COPIED_TOOL_MODULES = RUNTIME_MODULE_FILENAMES
 FORMAL_MIN_BOOTSTRAP_SAMPLES = 2000
@@ -110,6 +112,20 @@ def _finite(value: Any, *, field: str) -> float:
 
 def _sha256_bytes(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _bounded_bundle_path(path: Path) -> Path:
+    """Reject an unsafe/oversized bundle before protected evidence is read."""
+    source = Path(path)
+    if source.is_symlink():
+        raise ValueError("v4 bundle exceeds the immutable native size budget")
+    resolved = source.resolve()
+    if (
+        not resolved.is_file()
+        or resolved.stat().st_size > runtime_budget.MAX_BUNDLE_BYTES
+    ):
+        raise ValueError("v4 bundle exceeds the immutable native size budget")
+    return resolved
 
 
 def _read_json_snapshot(path: Path, *, field: str) -> tuple[bytes, dict[str, Any]]:
@@ -655,7 +671,7 @@ def verify_build_authorization(
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
         raise ValueError("v4 candidate replay batch size must be a positive integer")
     gate_root = gate_dir.resolve()
-    bundle_path = bundle_path.resolve()
+    bundle_path = _bounded_bundle_path(bundle_path)
     artifact_raw, artifact = _read_json_snapshot(
         gate_root / "artifact_manifest.json", field="gate manifest"
     )
@@ -690,6 +706,11 @@ def verify_build_authorization(
     bundle_binding = bundle_exporter.bundle_artifact_binding(
         bundle, raw=bundle_raw
     )
+    if (
+        bundle_binding.get("runtime_identity_sha256")
+        != runtime_budget.bundle_runtime_identity_sha256(bundle)
+    ):
+        raise ValueError("v4 bundle runtime identity is not bound")
     selected = _verify_observed_evidence(evaluation, result)
     current_gate_code = gate_code_artifacts()
     selected_sha256 = _canonical_sha256(selected)
@@ -1055,6 +1076,7 @@ def _donor_derived_contracts(source: Path) -> dict[str, dict[str, Any]]:
         "national_validator.py",
         "opponent_response_schema.py",
         "v4_ensemble_bundle.json",
+        RUNTIME_BUDGET_FILENAME,
         "V4_BUILD_MANIFEST.json",
     }
     result = {}
@@ -1094,6 +1116,7 @@ def _candidate_artifacts(target: Path) -> dict[str, dict[str, Any]]:
         "national_validator.py",
         "opponent_response_schema.py",
         "v4_ensemble_bundle.json",
+        RUNTIME_BUDGET_FILENAME,
         *COPIED_TOOL_MODULES,
     }
     return {
@@ -1189,6 +1212,40 @@ assert sanitize_calls == [151]
         )
 
 
+def _assess_final_runtime_budget(
+    target: Path, authorization: dict[str, Any]
+) -> dict[str, Any]:
+    bundle_path = target / "v4_ensemble_bundle.json"
+    preselection_sha256 = _digest(
+        authorization.get("preselection_runtime_budget_payload_sha256"),
+        field="preselection_runtime_budget_payload_sha256",
+    )
+    artifact = runtime_budget.measure_bundle_runtime_budget_subprocess(
+        bundle_path,
+        source_collection_complete=True,
+        preselection_runtime_budget_payload_sha256=preselection_sha256,
+        worker_script=target / "v4_runtime_budget.py",
+    )
+    validated = runtime_budget.validate_runtime_budget_artifact(
+        artifact,
+        bundle_bytes=authorization["bundle_bytes"],
+        bundle_sha256=authorization["bundle_sha256"],
+        runtime_identity_sha256=authorization["runtime_identity_sha256"],
+        preselection_runtime_budget_payload_sha256=preselection_sha256,
+        require_formal=True,
+    )
+    path = target / RUNTIME_BUDGET_FILENAME
+    path.write_text(
+        json.dumps(validated, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    authorization.update({
+        "final_runtime_budget_payload_sha256": validated["payload_sha256"],
+        "final_runtime_budget_file_sha256": _sha256(path),
+    })
+    return validated
+
+
 def _verify_copied_authorization_inputs(
     target: Path, authorization: dict[str, Any]
 ) -> None:
@@ -1199,6 +1256,27 @@ def _verify_copied_authorization_inputs(
         or _sha256(bundle) != authorization.get("bundle_sha256")
     ):
         raise ValueError("copied v4 bundle changed during candidate build")
+    runtime_budget_path = target / RUNTIME_BUDGET_FILENAME
+    runtime_budget_artifact = _load_json(
+        runtime_budget_path, field="v4 final runtime budget"
+    )
+    runtime_budget.validate_runtime_budget_artifact(
+        runtime_budget_artifact,
+        bundle_bytes=authorization["bundle_bytes"],
+        bundle_sha256=authorization["bundle_sha256"],
+        runtime_identity_sha256=authorization["runtime_identity_sha256"],
+        preselection_runtime_budget_payload_sha256=authorization[
+            "preselection_runtime_budget_payload_sha256"
+        ],
+        require_formal=True,
+    )
+    if (
+        runtime_budget_artifact["payload_sha256"]
+        != authorization.get("final_runtime_budget_payload_sha256")
+        or _sha256(runtime_budget_path)
+        != authorization.get("final_runtime_budget_file_sha256")
+    ):
+        raise ValueError("copied v4 runtime budget authorization changed")
     evidence = target / "evidence" / "offline_policy_gate"
     expected = {
         "artifact_manifest.json": "gate_artifact_manifest_sha256",
@@ -1258,6 +1336,7 @@ def build_candidate(
     output = output.resolve()
     if output.exists():
         raise ValueError(f"output already exists: {output}")
+    bundle_path = _bounded_bundle_path(bundle_path)
     _manifest_raw, manifest_preview = _read_json_snapshot(
         role_manifest_path, field="role manifest"
     )
@@ -1347,6 +1426,7 @@ def build_candidate(
         )
         if runtime is None or runtime.policy is None:
             raise ValueError("copied v4 candidate bundle failed strict loading")
+        _assess_final_runtime_budget(temporary, authorization)
         _smoke_candidate(temporary)
         _verify_copied_authorization_inputs(temporary, authorization)
         candidate_artifacts = _candidate_artifacts(temporary)
@@ -1376,6 +1456,7 @@ def build_candidate(
                 "ablation_env": [
                     "POK_V4_DISABLE",
                     "POK_V4_DISABLE_CROSS_HAND",
+                    "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH",
                 ],
             },
             "deployment_policy_value": False,

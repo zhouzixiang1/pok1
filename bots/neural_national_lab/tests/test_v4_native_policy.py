@@ -13,6 +13,7 @@ sys.path.insert(0, str(TOOLS))
 
 import v3_native_policy as v3_policy  # noqa: E402
 import v4_native_policy as native_policy  # noqa: E402
+import v4_runtime_budget as runtime_budget  # noqa: E402
 import win_first_policy_v4 as win_first  # noqa: E402
 
 
@@ -29,12 +30,35 @@ def _authorized_bot(tmp_path: Path) -> Path:
     bundle = tmp_path / native_policy.BUNDLE_FILENAME
     member = {"weights": [1.0]}
     payload = {
+        "schema": "test-bundle-schema",
+        "format": "test-bundle-format",
         "members": [member],
         "member_payload_sha256": [hashlib.sha256(
             json.dumps(member, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()],
+        "calibration": {},
+        "source": {
+            "preselection_runtime_budget_payload_sha256": "a" * 64,
+        },
+        "export_contract": {},
     }
+    payload["source"]["runtime_identity_sha256"] = (
+        runtime_budget.bundle_runtime_identity_sha256(payload)
+    )
     _write(bundle, payload)
+    budget_artifact = runtime_budget._artifact(
+        bundle_bytes=bundle.stat().st_size,
+        bundle_sha256=_sha(bundle),
+        runtime_identity_sha256=payload["source"]["runtime_identity_sha256"],
+        preselection_runtime_budget_payload_sha256="a" * 64,
+        source_collection_complete=True,
+        cpu_ns=[1] * runtime_budget.MEASURED_REPEATS,
+        wall_ns=[2] * runtime_budget.MEASURED_REPEATS,
+        warmups_completed=runtime_budget.WARMUP_ROUNDS,
+        errors=[],
+    )
+    budget_path = tmp_path / native_policy.RUNTIME_BUDGET_FILENAME
+    _write(budget_path, budget_artifact)
     extra = tmp_path / "national_bot.py"
     extra.write_text("# native\n", encoding="utf-8")
     donor = (
@@ -63,16 +87,56 @@ def _authorized_bot(tmp_path: Path) -> Path:
         "bundle_bytes": bundle.stat().st_size,
         "bundle_sha256": _sha(bundle),
         "native_build_contract": native_build_contract,
+        "preselection_runtime_budget_payload_sha256": "a" * 64,
+        "runtime_identity_sha256": payload["source"][
+            "runtime_identity_sha256"
+        ],
         "deployment_policy_value": False,
         "strength_evidence": False,
     }
     _write(evidence / "policy_gate_result.json", result)
-    for name in (
-        "artifact_manifest.json",
-        "policy_gate_evaluation.json",
-        "policy_gate_report.json",
-    ):
-        _write(evidence / name, {"name": name})
+    common_gate_binding = {
+        "bundle_bytes": bundle.stat().st_size,
+        "bundle_sha256": _sha(bundle),
+        "native_build_contract": native_build_contract,
+        "preselection_runtime_budget_payload_sha256": "a" * 64,
+        "runtime_identity_sha256": payload["source"][
+            "runtime_identity_sha256"
+        ],
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+    }
+    _write(evidence / "policy_gate_evaluation.json", {
+        "schema": native_policy.GATE_EVALUATION_SCHEMA,
+        "source_collection_complete": True,
+        "policy_search_performed": False,
+        **common_gate_binding,
+    })
+    _write(evidence / "policy_gate_report.json", {
+        "schema": native_policy.GATE_REPORT_SCHEMA,
+        "gate_passed": True,
+        "gate_errors": [],
+        "native_candidate_build_authorized": True,
+        "source_collection_complete": True,
+        **common_gate_binding,
+    })
+    gate_files = {
+        name: {
+            "bytes": (evidence / name).stat().st_size,
+            "sha256": _sha(evidence / name),
+        }
+        for name in (
+            "policy_gate_evaluation.json",
+            "policy_gate_result.json",
+            "policy_gate_report.json",
+        )
+    }
+    _write(evidence / "artifact_manifest.json", {
+        "schema": native_policy.GATE_ARTIFACT_SCHEMA,
+        "files": gate_files,
+        "native_candidate_build_authorized": True,
+        **common_gate_binding,
+    })
     authorization = {
         "bundle_bytes": bundle.stat().st_size,
         "bundle_sha256": _sha(bundle),
@@ -81,6 +145,14 @@ def _authorized_bot(tmp_path: Path) -> Path:
         "gate_result_sha256": _sha(evidence / "policy_gate_result.json"),
         "gate_report_sha256": _sha(evidence / "policy_gate_report.json"),
         "native_build_contract": native_build_contract,
+        "preselection_runtime_budget_payload_sha256": "a" * 64,
+        "runtime_identity_sha256": payload["source"][
+            "runtime_identity_sha256"
+        ],
+        "final_runtime_budget_payload_sha256": budget_artifact[
+            "payload_sha256"
+        ],
+        "final_runtime_budget_file_sha256": _sha(budget_path),
         "deployment_policy_value": False,
         "strength_evidence": False,
     }
@@ -88,7 +160,7 @@ def _authorized_bot(tmp_path: Path) -> Path:
         "schema": native_policy.BUILD_SCHEMA,
         "candidate_artifacts": {
             path.name: {"bytes": path.stat().st_size, "sha256": _sha(path)}
-            for path in (bundle, extra)
+            for path in (bundle, budget_path, extra)
         },
         "authorization": authorization,
         "native_build_contract": native_build_contract,
@@ -190,7 +262,7 @@ class _Runtime:
         lower = [0.0] * 6
         lower[3] = 10.0
         return {
-            field: {"lower": list(lower)}
+            field: {"mean": list(lower), "lower": list(lower)}
             for field in (
                 "delta_vs_rule",
                 "tail_delta_vs_rule",
@@ -223,15 +295,80 @@ class _Runtime:
         )
 
 
+class _DiagnosticValueSelector:
+    def __init__(self, runtime, *, fail: bool = False) -> None:
+        self.runtime = runtime
+        self.fail = fail
+
+    def select_candidate(self, values, candidates):
+        self.runtime.value_selection = {
+            "values": values,
+            "candidates": candidates,
+        }
+        if self.fail:
+            raise RuntimeError("diagnostic value selector failed")
+        selected = next(row for row in candidates if row["label_id"] == 3)
+        if values["delta_vs_rule"]["lower"][3] <= 0.0:
+            return None
+        return {
+            **selected,
+            "prediction": {"hand": values["delta_vs_rule"]["lower"][3]},
+        }
+
+
+class _DiagnosticAblationRuntime(_Runtime):
+    def __init__(self, *, fail_value_selector: bool = False) -> None:
+        super().__init__()
+        self.outcome_calls = 0
+        self.win_first_calls = 0
+        self.value_selection = None
+        self.raw_values = None
+        self.value_response = _DiagnosticValueSelector(
+            self, fail=fail_value_selector
+        )
+
+    def predict_values(self, **inputs):
+        self.value_inputs = inputs
+        hand_mean = [0.0] * 6
+        hand_mean[3] = 1_000.0
+        pessimistic = [0.0] * 6
+        pessimistic[3] = -500.0
+        self.raw_values = {
+            "delta_vs_rule": {
+                "mean": hand_mean,
+                "lower": list(pessimistic),
+            },
+            "tail_delta_vs_rule": {
+                "mean": [250.0] * 6,
+                "lower": list(pessimistic),
+            },
+            "match_delta_vs_rule": {
+                "mean": [500.0] * 6,
+                "lower": list(pessimistic),
+            },
+        }
+        return self.raw_values
+
+    def predict_match_outcomes(self, **inputs):
+        self.outcome_calls += 1
+        raise AssertionError("diagnostic ablation must skip outcome inference")
+
+    def select_candidate(self, *args, **kwargs):
+        self.win_first_calls += 1
+        raise AssertionError("diagnostic ablation must skip win-first selection")
+
+
 def test_native_v4_uses_shared_win_first_selector_and_exact_context() -> None:
     runtime = _Runtime()
     native = native_policy.NativeV4Policy(runtime)
+    request = _request()
+    request["cross_hand_sequence"] = [[0.1] * 15 + [-0.1]]
     captured = {
         "schema": v3_policy.STRATEGY_CONTEXT_SCHEMA,
         "features": [0.25] * 66,
     }
 
-    action = native.advise(_request(), _state(), 0, captured)
+    action = native.advise(request, _state(), 0, captured)
 
     assert action > _state()["round_bet"]
     assert runtime.value_inputs == runtime.outcome_inputs
@@ -240,8 +377,10 @@ def test_native_v4_uses_shared_win_first_selector_and_exact_context() -> None:
     assert len(runtime.value_inputs["rule_action"]) == 6
     assert len(runtime.value_inputs["strategy_context"]) == 66
     assert runtime.value_inputs["strategy_context"] == [0.0] * 66
+    assert len(runtime.value_inputs["cross_sequence"]) == 1
     assert runtime.selection["rule_label_id"] == 1
     assert native.last_decision["used"] is True
+    assert native.last_decision["ablation_mode"] == "full"
 
 
 def test_native_v4_inference_failure_returns_same_sanitized_rule() -> None:
@@ -288,6 +427,208 @@ def test_native_v4_disable_env_fails_closed(monkeypatch) -> None:
     assert native_policy.NativeV4Policy.load("missing.json") is None
 
 
+def test_native_v4_cross_hand_ablation_binds_canonical_mode(monkeypatch) -> None:
+    monkeypatch.setenv("POK_V4_DISABLE_CROSS_HAND", "1")
+    request = _request()
+    request["cross_hand_sequence"] = [[0.1] * 15 + [-0.1]]
+    runtime = _Runtime()
+    native = native_policy.NativeV4Policy(runtime)
+
+    assert native.advise(request, _state(), 0, {}) > 0
+    assert runtime.value_inputs["cross_sequence"] == []
+    assert runtime.outcome_inputs["cross_sequence"] == []
+    assert native.last_decision["ablation_mode"] == "cross_hand_off"
+
+
+def test_native_v4_outcome_uncertainty_match_ablation_uses_hand_mean(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        native_policy.OUTCOME_UNCERTAINTY_MATCH_ABLATION_ENV, "1"
+    )
+    monkeypatch.setattr(
+        native_policy,
+        "candidate_actions",
+        lambda request, state, safe: [{"label_id": 3, "action": 201}],
+    )
+    runtime = _DiagnosticAblationRuntime()
+    native = native_policy.NativeV4Policy(runtime)
+
+    assert native.advise(_request(), _state(), 0, {}) == 201
+    assert runtime.outcome_calls == 0
+    assert runtime.win_first_calls == 0
+    values = runtime.value_selection["values"]
+    assert values["delta_vs_rule"]["lower"] == values[
+        "delta_vs_rule"
+    ]["mean"]
+    assert values["delta_vs_rule"]["lower"][3] == 1_000.0
+    assert values["tail_delta_vs_rule"]["lower"] == [0.0] * 6
+    assert values["match_delta_vs_rule"]["lower"] == [0.0] * 6
+    assert runtime.raw_values["delta_vs_rule"]["lower"][3] == -500.0
+    assert runtime.raw_values["tail_delta_vs_rule"]["lower"][3] == -500.0
+    assert runtime.raw_values["match_delta_vs_rule"]["lower"][3] == -500.0
+    assert native.last_decision["ablation_mode"] == (
+        "outcome_uncertainty_match_off"
+    )
+
+
+def test_native_v4_diagnostic_ablation_exception_returns_same_rule(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        native_policy.OUTCOME_UNCERTAINTY_MATCH_ABLATION_ENV, "1"
+    )
+    monkeypatch.setattr(
+        native_policy,
+        "candidate_actions",
+        lambda request, state, safe: [{"label_id": 3, "action": 151}],
+    )
+    runtime = _DiagnosticAblationRuntime(fail_value_selector=True)
+    native = native_policy.NativeV4Policy(runtime)
+
+    assert native.advise(_request(), _state(), 201, {}) == 201
+    assert runtime.outcome_calls == 0
+    assert runtime.win_first_calls == 0
+    assert native.last_decision["rule_action"] == 201
+    assert native.last_decision["ablation_mode"] == (
+        "outcome_uncertainty_match_off"
+    )
+    assert "diagnostic value selector failed" in native.last_decision["error"]
+
+
+def test_native_v4_rejects_combined_component_ablations(monkeypatch) -> None:
+    monkeypatch.setenv("POK_V4_DISABLE_CROSS_HAND", "1")
+    monkeypatch.setenv(
+        native_policy.OUTCOME_UNCERTAINTY_MATCH_ABLATION_ENV, "1"
+    )
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        native_policy.NativeV4Policy(_Runtime())
+
+
+def test_native_v4_load_accepts_path_and_authorized_payload_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    class RuntimeFactory:
+        def __new__(cls, payload):
+            calls.append(("payload", payload))
+            return _Runtime()
+
+        @classmethod
+        def load(cls, path):
+            calls.append(("path", path))
+            return _Runtime()
+
+    monkeypatch.setattr(
+        native_policy, "OpponentMultiTaskEnsembleRuntimeV4", RuntimeFactory
+    )
+    payload = {"authorized": "snapshot"}
+
+    from_path = native_policy.NativeV4Policy.load("bundle.json")
+    from_snapshot = native_policy.NativeV4Policy.load(payload)
+
+    assert isinstance(from_path, native_policy.NativeV4Policy)
+    assert isinstance(from_snapshot, native_policy.NativeV4Policy)
+    assert calls == [("path", "bundle.json"), ("payload", payload)]
+
+
+@pytest.mark.parametrize("malformed", ["authorization", "gate_result"])
+def test_formal_native_loader_returns_none_for_malformed_json_subobjects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed: str,
+) -> None:
+    bot = _authorized_bot(tmp_path)
+    manifest_path = bot / native_policy.BUILD_MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if malformed == "authorization":
+        manifest["authorization"] = []
+    else:
+        result_path = (
+            bot / "evidence" / "offline_policy_gate" /
+            "policy_gate_result.json"
+        )
+        _write(result_path, [])
+        manifest["authorization"]["gate_result_sha256"] = _sha(result_path)
+        artifact_path = (
+            bot / "evidence" / "offline_policy_gate" /
+            "artifact_manifest.json"
+        )
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        artifact["files"]["policy_gate_result.json"] = {
+            "bytes": result_path.stat().st_size,
+            "sha256": _sha(result_path),
+        }
+        _write(artifact_path, artifact)
+        manifest["authorization"]["gate_artifact_manifest_sha256"] = _sha(
+            artifact_path
+        )
+    _write(manifest_path, manifest)
+    model_loads = []
+    monkeypatch.setattr(
+        native_policy.NativeV4Policy,
+        "load",
+        lambda source: model_loads.append(source),
+    )
+
+    assert native_policy.load_native_v4_policy(bot) is None
+    assert model_loads == []
+
+
+def test_formal_native_loader_uses_one_bundle_snapshot_after_hash_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = _authorized_bot(tmp_path)
+    bundle_path = bot / native_policy.BUNDLE_FILENAME
+    original_payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+    alternate_payload = json.loads(json.dumps(original_payload))
+    alternate_payload["selected_policy"] = {"same_identity_alternate": True}
+    assert runtime_budget.bundle_runtime_identity_sha256(
+        alternate_payload
+    ) == runtime_budget.bundle_runtime_identity_sha256(original_payload)
+
+    original_snapshot = native_policy._file_snapshot
+    snapshot_calls = []
+    swapped = False
+
+    def snapshot_then_swap(root: Path, name, *, top_level=False):
+        nonlocal swapped
+        raw = original_snapshot(root, name, top_level=top_level)
+        snapshot_calls.append(name)
+        if name == native_policy.BUNDLE_FILENAME and not swapped:
+            swapped = True
+            _write(bundle_path, alternate_payload)
+        return raw
+
+    monkeypatch.setattr(native_policy, "_file_snapshot", snapshot_then_swap)
+    loaded_payloads = []
+    sentinel = object()
+
+    def load_snapshot(source):
+        loaded_payloads.append(source)
+        return sentinel
+
+    monkeypatch.setattr(native_policy.NativeV4Policy, "load", load_snapshot)
+
+    assert native_policy.load_native_v4_policy(bot) is sentinel
+    assert swapped is True
+    assert snapshot_calls.count(native_policy.BUNDLE_FILENAME) == 1
+    assert snapshot_calls.count(native_policy.RUNTIME_BUDGET_FILENAME) == 1
+    for name in (
+        "artifact_manifest.json",
+        "policy_gate_evaluation.json",
+        "policy_gate_result.json",
+        "policy_gate_report.json",
+    ):
+        assert snapshot_calls.count(f"evidence/offline_policy_gate/{name}") == 1
+    assert len(loaded_payloads) == 1
+    assert isinstance(loaded_payloads[0], dict)
+    assert "selected_policy" not in loaded_payloads[0]
+    assert json.loads(bundle_path.read_text(encoding="utf-8"))[
+        "selected_policy"
+    ] == alternate_payload["selected_policy"]
+
+
 def test_formal_native_loader_rejects_post_build_bundle_rehash(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -308,6 +649,69 @@ def test_formal_native_loader_rejects_post_build_bundle_rehash(
     ).hexdigest()
     _write(bundle, payload)
     assert native_policy.load_native_v4_policy(bot) is None
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["missing", "content", "manifest_contract", "authorization_identity"],
+)
+def test_formal_native_loader_falls_back_on_missing_or_tampered_budget_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str,
+) -> None:
+    bot = _authorized_bot(tmp_path)
+    budget_path = bot / native_policy.RUNTIME_BUDGET_FILENAME
+    if tamper == "missing":
+        budget_path.unlink()
+    elif tamper == "content":
+        payload = json.loads(budget_path.read_text(encoding="utf-8"))
+        payload["measurements"]["max_full_decision_cpu_ns"] += 1
+        _write(budget_path, payload)
+    elif tamper == "manifest_contract":
+        manifest_path = bot / native_policy.BUILD_MANIFEST_FILENAME
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["candidate_artifacts"][
+            native_policy.RUNTIME_BUDGET_FILENAME
+        ] = None
+        _write(manifest_path, manifest)
+    else:
+        manifest_path = bot / native_policy.BUILD_MANIFEST_FILENAME
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["authorization"]["runtime_identity_sha256"] = "f" * 64
+        _write(manifest_path, manifest)
+    model_loads = []
+    monkeypatch.setattr(
+        native_policy.NativeV4Policy,
+        "load",
+        lambda path: model_loads.append(path),
+    )
+
+    assert native_policy.load_native_v4_policy(bot) is None
+    assert model_loads == []
+
+
+def test_formal_native_loader_validates_sidecar_without_rerunning_benchmark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = _authorized_bot(tmp_path)
+    benchmark_calls = []
+
+    def forbidden_benchmark(*args, **kwargs):
+        benchmark_calls.append((args, kwargs))
+        raise AssertionError("native startup must not rerun the runtime benchmark")
+
+    for name in (
+        "measure_runtime_budget",
+        "measure_bundle_runtime_budget",
+        "measure_bundle_runtime_budget_subprocess",
+    ):
+        monkeypatch.setattr(runtime_budget, name, forbidden_benchmark)
+    sentinel = object()
+    monkeypatch.setattr(
+        native_policy.NativeV4Policy, "load", lambda path: sentinel
+    )
+
+    assert native_policy.load_native_v4_policy(bot) is sentinel
+    assert benchmark_calls == []
 
 
 def test_formal_native_loader_rejects_candidate_file_tamper(

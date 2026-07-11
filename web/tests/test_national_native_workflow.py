@@ -3072,3 +3072,24 @@ def test_legacy_debug_tcp_pair_wraps_unsafe_opponent_without_rewriting_it(tmp_pa
     assert result["wrapper_used_by_player"] == {"BotA": False, "BotB": True}
     assert result["per_player"]["BotB"]["wrapper_used"] is True
     assert entry.read_text(encoding="utf-8") == invalid_source
+
+
+def test_legacy_debug_tcp_pair_forwards_explicit_environment(monkeypatch):
+    captured = {}
+
+    async def fake_runner(*args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(national_native, "_run_native_tcp_pair", fake_runner)
+    result = asyncio.run(national_native.run_legacy_debug_tcp_pair_with_wrappers(
+        "A",
+        "B",
+        hands=1,
+        bot_a_env_overrides={"POK_FORCE_HAND": None},
+        bot_b_env_overrides={"POK_V4_DISABLE": "1"},
+    ))
+
+    assert result == {"ok": True}
+    assert captured["bot_a_env_overrides"] == {"POK_FORCE_HAND": None}
+    assert captured["bot_b_env_overrides"] == {"POK_V4_DISABLE": "1"}

@@ -3539,6 +3539,8 @@ async def run_legacy_debug_tcp_pair_with_wrappers(
     deck_seed_base: int | None = None,
     bot_seed_base: int | None = None,
     timeout_sec: float | None = None,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
 ) -> dict[str, Any]:
     """Run an old regression match, wrapping missing/invalid native entries.
 
@@ -3553,6 +3555,8 @@ async def run_legacy_debug_tcp_pair_with_wrappers(
         deck_seed_base=deck_seed_base,
         bot_seed_base=bot_seed_base,
         timeout_sec=timeout_sec,
+        bot_a_env_overrides=bot_a_env_overrides,
+        bot_b_env_overrides=bot_b_env_overrides,
         current_runtime_overlay=False,
     )
 

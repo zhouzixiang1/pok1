@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from pathlib import Path
 import sys
 
@@ -18,6 +20,8 @@ import opponent_multitask_ensemble_runtime_v3 as v3_runtime  # noqa: E402
 import opponent_multitask_ensemble_runtime_v4 as runtime  # noqa: E402
 import opponent_multitask_model_v3 as v3_models  # noqa: E402
 import opponent_multitask_model_v4 as models  # noqa: E402
+import select_opponent_multitask_v4_policy as selector  # noqa: E402
+import v4_runtime_budget as runtime_budget  # noqa: E402
 import win_first_policy_v4 as win_first  # noqa: E402
 
 
@@ -51,21 +55,39 @@ def _outcome(checkpoint: str, seed: int) -> dict:
     return payload
 
 
-def _calibrated() -> dict:
+def _calibrated(
+    *,
+    checkpoints: list[str] | None = None,
+    checkpoint_paths: list[Path] | None = None,
+) -> dict:
+    checkpoint_values = list(
+        CHECKPOINTS if checkpoints is None else checkpoints
+    )
+    if len(checkpoint_values) != len(SEEDS):
+        raise ValueError("test calibration requires exactly three checkpoints")
+    paths = (
+        [Path(f"/unused/{seed}/checkpoint.pt") for seed in SEEDS]
+        if checkpoint_paths is None
+        else list(checkpoint_paths)
+    )
+    if len(paths) != len(SEEDS):
+        raise ValueError(
+            "test calibration requires exactly three checkpoint paths"
+        )
     outcomes = [
         _outcome(checkpoint, seed)
-        for checkpoint, seed in zip(CHECKPOINTS, SEEDS, strict=True)
+        for checkpoint, seed in zip(checkpoint_values, SEEDS, strict=True)
     ]
     members = [
         {
             "seed": seed,
             "checkpoint_sha256": checkpoint,
-            "checkpoint_path": f"/unused/{seed}/checkpoint.pt",
+            "checkpoint_path": str(path),
             "source_collection_complete": True,
             "outcome_calibration": outcome,
         }
-        for seed, checkpoint, outcome in zip(
-            SEEDS, CHECKPOINTS, outcomes, strict=True
+        for seed, checkpoint, path, outcome in zip(
+            SEEDS, checkpoint_values, paths, outcomes, strict=True
         )
     ]
     original_calibration = {
@@ -79,7 +101,9 @@ def _calibrated() -> dict:
         "ensemble": {
             "members": [
                 {"seed": seed, "checkpoint_sha256": checkpoint}
-                for seed, checkpoint in zip(SEEDS, CHECKPOINTS, strict=True)
+                for seed, checkpoint in zip(
+                    SEEDS, checkpoint_values, strict=True
+                )
             ],
             "lower_quantile": 0.2,
             "uncertainty_std_weight": 1.0,
@@ -114,6 +138,9 @@ def _calibrated() -> dict:
             "role_manifest_sha256": "b" * 64,
             "source_collection_complete": True,
         },
+        "ensemble_manifest_sha256": "1" * 64,
+        "artifact_manifest_sha256": "2" * 64,
+        "calibration_report_sha256": "3" * 64,
         "calibration": original_calibration,
         "calibration_payload_sha256": original_calibration[
             "payload_sha256"
@@ -144,6 +171,27 @@ def _policy() -> dict:
         "min_hand_lcb": 0.0,
         "use_lower": True,
     }
+
+
+class _CompleteDataset:
+    manifest_sha256 = "b" * 64
+    manifest = {
+        "source_collection_complete": True,
+        "source_completed_passes": 160,
+        "source_requested_passes": 160,
+    }
+
+    @staticmethod
+    def runtime_context_contract() -> dict:
+        return {
+            "candidate_snapshot": {
+                "name": "v140_test",
+                "sha256": "6" * 64,
+            },
+            "strategy_context_runtime_mode": (
+                runtime.STRATEGY_CONTEXT_RUNTIME_MODE
+            ),
+        }
 
 
 @pytest.fixture(scope="module")
@@ -253,6 +301,314 @@ def test_v4_ensemble_export_bytes_are_deterministic(
     assert first.read_bytes() == second.read_bytes()
     assert first_artifact["sha256"] == second_artifact["sha256"]
     assert runtime.OpponentMultiTaskEnsembleRuntimeV4.load(first) is not None
+
+    budget = runtime_budget.measure_bundle_runtime_budget_subprocess(
+        first, source_collection_complete=True
+    )
+    assert runtime_budget.validate_runtime_budget_artifact(
+        budget,
+        bundle_bytes=first.stat().st_size,
+        bundle_sha256=first_artifact["sha256"],
+        runtime_identity_sha256=(
+            runtime_budget.bundle_runtime_identity_sha256(payload)
+        ),
+        require_formal=True,
+    )["formal_runtime_budget_passed"] is True
+
+
+def test_preselection_runtime_identity_is_policy_stable_and_bound_to_export(
+    member_payloads: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calibrated = _calibrated()
+    dataset = _CompleteDataset()
+    monkeypatch.setattr(
+        exporter,
+        "_export_verified_member_payloads",
+        lambda _calibrated, *, formal: copy.deepcopy(member_payloads),
+    )
+    preselection = exporter.build_preselection_bundle_payload(
+        calibrated=calibrated,
+        dataset=dataset,
+        run_id="run-1",
+        formal=True,
+    )
+    identity_a = runtime_budget.bundle_runtime_identity_sha256(preselection)
+    budget_artifact_a = "4" * 64
+    selected = _policy()
+    policy = {
+        "selected_policy": selected,
+        "selected_policy_sha256": v3_runtime._canonical_sha256(selected),
+        "selection_passed": True,
+        "candidate_sha256": "5" * 64,
+        "evaluation_sha256": "7" * 64,
+        "result_sha256": "8" * 64,
+        "artifact_manifest_sha256": "9" * 64,
+        "runtime_budget_payload_sha256": budget_artifact_a,
+        "runtime_identity_sha256": identity_a,
+    }
+
+    final = exporter.build_verified_bundle_payload(
+        calibrated=calibrated,
+        policy=policy,
+        dataset=dataset,
+        run_id="run-1",
+        formal=True,
+    )
+    binding = exporter.bundle_artifact_binding(final)
+
+    assert runtime_budget.bundle_runtime_identity_sha256(final) == identity_a
+    assert final["source"][
+        "preselection_runtime_budget_payload_sha256"
+    ] == budget_artifact_a
+    assert final["source"]["runtime_identity_sha256"] == identity_a
+    assert binding[
+        "preselection_runtime_budget_payload_sha256"
+    ] == budget_artifact_a
+    assert binding["runtime_identity_sha256"] == identity_a
+
+    alternate = copy.deepcopy(final)
+    alternate_policy = {**selected, "chip_margin": 125.0}
+    alternate["selected_policy"] = alternate_policy
+    alternate["source"].update({
+        "selected_policy_sha256": v3_runtime._canonical_sha256(
+            alternate_policy
+        ),
+        "policy_candidate_sha256": "a" * 64,
+        "policy_evaluation_sha256": "d" * 64,
+        "policy_result_sha256": "e" * 64,
+        "policy_artifact_manifest_sha256": "f" * 64,
+    })
+    runtime.OpponentMultiTaskEnsembleRuntimeV4(alternate)
+    assert (
+        runtime_budget.bundle_runtime_identity_sha256(alternate)
+        == identity_a
+    )
+    assert exporter.bundle_artifact_binding(alternate)[
+        "runtime_identity_sha256"
+    ] == identity_a
+
+    member_drift, calibration_drift, runtime_module_drift = (
+        copy.deepcopy(final),
+        copy.deepcopy(final),
+        copy.deepcopy(final),
+    )
+    member_drift["member_payload_sha256"][0] = "0" * 64
+    calibration_drift["calibration"][
+        "calibration_projection_sha256"
+    ] = "0" * 64
+    module_name = next(iter(
+        runtime_module_drift["export_contract"]["copied_tool_modules"]
+    ))
+    runtime_module_drift["export_contract"]["copied_tool_modules"][
+        module_name
+    ]["sha256"] = "0" * 64
+    for drifted in (member_drift, calibration_drift, runtime_module_drift):
+        with pytest.raises(ValueError, match="runtime identity changed"):
+            exporter.bundle_artifact_binding(drifted)
+
+
+def test_real_checkpoint_preselection_budget_round_trip_binds_final_bundle(
+    tmp_path: Path,
+) -> None:
+    checkpoint_paths = []
+    checkpoint_sha256 = []
+    model_source = Path(models.__file__).resolve()
+    code_artifacts = {
+        "test_model_source": {
+            "bytes": model_source.stat().st_size,
+            "sha256": hashlib.sha256(model_source.read_bytes()).hexdigest(),
+        }
+    }
+    for seed in SEEDS:
+        torch.manual_seed(seed)
+        model = models.model_from_scale("small", dropout=0.0).eval()
+        path = tmp_path / f"member-{seed}.pt"
+        torch.save({
+            "schema": member_exporter.CHECKPOINT_SCHEMA,
+            "role_manifest_sha256": "b" * 64,
+            "training_artifact_sha256": {
+                "train": "7" * 64,
+                "early_stop": "8" * 64,
+            },
+            "source_completed_passes": 160,
+            "source_requested_passes": 160,
+            "source_collection_complete": True,
+            "code_artifacts": code_artifacts,
+            "model_metadata": model.metadata(),
+            "state_dict": model.state_dict(),
+        }, path)
+        loaded, checkpoint = exporter.load_checkpoint(path, device="cpu")
+        assert loaded.metadata() == model.metadata()
+        assert checkpoint["source_collection_complete"] is True
+        checkpoint_paths.append(path)
+        checkpoint_sha256.append(hashlib.sha256(path.read_bytes()).hexdigest())
+
+    calibrated = _calibrated(
+        checkpoints=checkpoint_sha256,
+        checkpoint_paths=checkpoint_paths,
+    )
+    dataset = _CompleteDataset()
+    assessed_a = selector.assess_preselection_runtime_budget(
+        calibrated,
+        dataset=dataset,
+        run_id="run-1",
+        formal=True,
+    )
+    budget_path = tmp_path / selector.RUNTIME_BUDGET_NAME
+    budget_path.write_text(
+        json.dumps(assessed_a, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    verified_a = selector.verify_preselection_runtime_budget(
+        budget_path,
+        calibrated=calibrated,
+        dataset=dataset,
+        run_id="run-1",
+        formal=True,
+    )
+
+    assert verified_a == assessed_a
+    assert verified_a["formal_runtime_budget_passed"] is True
+    selected = _policy()
+    final = exporter.build_verified_bundle_payload(
+        calibrated=calibrated,
+        policy={
+            "selected_policy": selected,
+            "selected_policy_sha256": v3_runtime._canonical_sha256(selected),
+            "selection_passed": True,
+            "candidate_sha256": "5" * 64,
+            "evaluation_sha256": "7" * 64,
+            "result_sha256": "8" * 64,
+            "artifact_manifest_sha256": "9" * 64,
+            "runtime_budget_payload_sha256": verified_a["payload_sha256"],
+            "runtime_identity_sha256": verified_a[
+                "runtime_identity_sha256"
+            ],
+        },
+        dataset=dataset,
+        run_id="run-1",
+        formal=True,
+    )
+    binding = exporter.bundle_artifact_binding(final)
+
+    assert runtime_budget.bundle_runtime_identity_sha256(final) == verified_a[
+        "runtime_identity_sha256"
+    ]
+    assert final["source"][
+        "preselection_runtime_budget_payload_sha256"
+    ] == verified_a["payload_sha256"]
+    assert binding[
+        "preselection_runtime_budget_payload_sha256"
+    ] == verified_a["payload_sha256"]
+    assert binding["runtime_identity_sha256"] == verified_a[
+        "runtime_identity_sha256"
+    ]
+
+
+def test_runtime_identity_changes_or_rejects_runtime_relevant_drift(
+    member_payloads: list[dict],
+) -> None:
+    calibrated = _calibrated()
+    payload = exporter.build_bundle_payload(
+        member_payloads,
+        calibrated=calibrated,
+        policy={
+            "selected_policy": None,
+            "selected_policy_sha256": None,
+            "selection_passed": False,
+        },
+        source={
+            "run_id": "run-1",
+            "role_manifest_sha256": "b" * 64,
+            "ensemble_manifest_sha256": "1" * 64,
+            "calibration_artifact_manifest_sha256": "2" * 64,
+            "calibration_report_sha256": "3" * 64,
+            "source_collection_complete": True,
+            "source_completed_passes": 160,
+            "source_requested_passes": 160,
+            "candidate_snapshot": {
+                "name": "v140_test",
+                "sha256": "6" * 64,
+            },
+            "strategy_context_runtime_mode": (
+                runtime.STRATEGY_CONTEXT_RUNTIME_MODE
+            ),
+        },
+    )
+    original_identity = runtime_budget.bundle_runtime_identity_sha256(payload)
+
+    unsynchronized_member = copy.deepcopy(payload)
+    weight_name = next(iter(unsynchronized_member["members"][0]["weights"]))
+    weight = unsynchronized_member["members"][0]["weights"][weight_name]
+    if isinstance(weight[0], list):
+        weight[0][0] += 1.0
+    else:
+        weight[0] += 1.0
+    with pytest.raises(ValueError, match="member payload changed"):
+        runtime.OpponentMultiTaskEnsembleRuntimeV4(unsynchronized_member)
+
+    synchronized_member = copy.deepcopy(unsynchronized_member)
+    synchronized_member["member_payload_sha256"][0] = (
+        v3_runtime._canonical_sha256(synchronized_member["members"][0])
+    )
+    assert (
+        runtime_budget.bundle_runtime_identity_sha256(synchronized_member)
+        != original_identity
+    )
+
+    calibration_drift = copy.deepcopy(payload)
+    calibration_drift["calibration"][
+        "calibration_projection_sha256"
+    ] = "0" * 64
+    assert (
+        runtime_budget.bundle_runtime_identity_sha256(calibration_drift)
+        != original_identity
+    )
+    with pytest.raises(ValueError, match="calibration source binding changed"):
+        runtime.OpponentMultiTaskEnsembleRuntimeV4(calibration_drift)
+
+    runtime_module_drift = copy.deepcopy(payload)
+    module_name = next(iter(
+        runtime_module_drift["export_contract"]["copied_tool_modules"]
+    ))
+    runtime_module_drift["export_contract"]["copied_tool_modules"][
+        module_name
+    ]["sha256"] = "0" * 64
+    assert (
+        runtime_budget.bundle_runtime_identity_sha256(runtime_module_drift)
+        != original_identity
+    )
+
+
+@pytest.mark.parametrize(
+    ("canonical_bytes", "allowed"),
+    [
+        (exporter.MAX_CANONICAL_BUNDLE_BYTES, True),
+        (exporter.MAX_CANONICAL_BUNDLE_BYTES + 1, False),
+    ],
+)
+def test_v4_export_enforces_fixed_canonical_bundle_byte_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    canonical_bytes: int,
+    allowed: bool,
+) -> None:
+    monkeypatch.setattr(
+        exporter,
+        "canonical_bundle_bytes",
+        lambda _payload: b"x" * canonical_bytes,
+    )
+    output = tmp_path / "new-output-directory" / "bundle.json"
+
+    if allowed:
+        artifact = exporter.write_export(output, {"payload": "small"})
+        assert output.is_file()
+        assert artifact["path"] == str(output.resolve())
+    else:
+        with pytest.raises(ValueError, match="50,000,000-byte limit"):
+            exporter.write_export(output, {"payload": "small"})
+        assert not output.exists()
+        assert not output.parent.exists()
 
 
 def test_exact_bundle_rebuild_rejects_weight_with_synchronized_member_hash(

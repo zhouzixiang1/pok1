@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 from typing import Any
 
 import torch
@@ -53,6 +55,7 @@ POLICY_CANDIDATE_SCHEMA = "opponent_multitask_v4_policy_candidate_v1"
 POLICY_EVALUATION_SCHEMA = "opponent_multitask_v4_policy_evaluation_v1"
 POLICY_REPORT_SCHEMA = "opponent_multitask_v4_policy_selection_report_v1"
 POLICY_ARTIFACT_SCHEMA = "opponent_multitask_v4_policy_artifacts_v1"
+RUNTIME_BUDGET_NAME = "runtime_budget.json"
 EVIDENCE_CONTRACT = "v4"
 
 MIN_POSITIVE_PROBABILITY_LCB = 0.5
@@ -698,6 +701,7 @@ def policy_evaluation(
 
 def _verify_artifact_files(root: Path, artifact: dict[str, Any]) -> None:
     expected = {
+        RUNTIME_BUDGET_NAME,
         "candidate_manifest.json",
         "policy_evaluation.json",
         "policy_selection_result.json",
@@ -740,6 +744,15 @@ def verify_policy_artifacts(
     evaluation_path = root / "policy_evaluation.json"
     result_path = root / "policy_selection_result.json"
     report_path = root / "policy_selection_report.json"
+    runtime_budget = verify_preselection_runtime_budget(
+        root / RUNTIME_BUDGET_NAME,
+        calibrated=calibrated,
+        dataset=dataset,
+        run_id=run_id,
+        formal=formal,
+    )
+    runtime_budget_sha256 = runtime_budget["payload_sha256"]
+    runtime_identity_sha256 = runtime_budget["runtime_identity_sha256"]
     candidate = v3._load_json(candidate_path, field="policy candidate")
     evaluation = v3._load_json(evaluation_path, field="policy evaluation")
     result = v3._load_json(result_path, field="policy selection result")
@@ -776,6 +789,10 @@ def verify_policy_artifacts(
         != calibrated["calibration_payload_sha256"]
         or candidate.get("member_checkpoint_sha256") != checkpoint_sha256
         or candidate.get("outcome_calibration_payload_sha256") != outcome_sha256
+        or candidate.get("runtime_budget_payload_sha256")
+        != runtime_budget_sha256
+        or candidate.get("runtime_identity_sha256")
+        != runtime_identity_sha256
         or candidate.get("collection_boundary")
         != expected_collection_boundary
         or candidate.get("candidate_snapshot")
@@ -793,6 +810,10 @@ def verify_policy_artifacts(
         or evaluation.get("deployment_policy_value") is not False
         or evaluation.get("strength_evidence") is not False
         or evaluation.get("code_artifacts") != current_code_artifacts
+        or evaluation.get("runtime_budget_payload_sha256")
+        != runtime_budget_sha256
+        or evaluation.get("runtime_identity_sha256")
+        != runtime_identity_sha256
         or evaluation.get("candidate_snapshot")
         != runtime_context["candidate_snapshot"]
         or evaluation.get("strategy_context_runtime_mode")
@@ -807,6 +828,10 @@ def verify_policy_artifacts(
         or result.get("evaluation_report_sha256")
         != v3._canonical_sha256(evaluation)
         or result.get("selected_policy_sha256") != selected_sha256
+        or result.get("runtime_budget_payload_sha256")
+        != runtime_budget_sha256
+        or result.get("runtime_identity_sha256")
+        != runtime_identity_sha256
         or result.get("policy_gate_opened") is not False
         or result.get("deployment_policy_value") is not False
         or result.get("strength_evidence") is not False
@@ -826,6 +851,10 @@ def verify_policy_artifacts(
         or report.get("selected_policy") != selected_policy
         or report.get("selection_passed") is not result.get("passed")
         or report.get("selection_errors") != result.get("errors")
+        or report.get("runtime_budget_payload_sha256")
+        != runtime_budget_sha256
+        or report.get("runtime_identity_sha256")
+        != runtime_identity_sha256
         or report.get("policy_gate_opened") is not False
         or report.get("deployment_policy_value") is not False
         or report.get("strength_evidence") is not False
@@ -836,6 +865,10 @@ def verify_policy_artifacts(
         != runtime_context["strategy_context_runtime_mode"]
         or artifact.get("candidate_snapshot")
         != runtime_context["candidate_snapshot"]
+        or artifact.get("runtime_budget_payload_sha256")
+        != runtime_budget_sha256
+        or artifact.get("runtime_identity_sha256")
+        != runtime_identity_sha256
         or artifact.get("strategy_context_runtime_mode")
         != runtime_context["strategy_context_runtime_mode"]
     ):
@@ -867,6 +900,9 @@ def verify_policy_artifacts(
         "evaluation_sha256": v3._sha256(evaluation_path),
         "result_sha256": result_sha256,
         "artifact_manifest_sha256": v3._sha256(root / "artifact_manifest.json"),
+        "runtime_budget_path": root / RUNTIME_BUDGET_NAME,
+        "runtime_budget_payload_sha256": runtime_budget_sha256,
+        "runtime_identity_sha256": runtime_identity_sha256,
         "selected_policy": selected_policy,
         "selected_policy_sha256": selected_sha256,
         "selection_passed": bool(formal and result.get("passed") is True),
@@ -969,6 +1005,10 @@ def recompute_and_verify_formal_policy_selection(
         "preparation": preparation,
         "policy_contract": contract,
         "code_artifacts": selector_code_artifacts(),
+        "runtime_budget_payload_sha256": verified[
+            "runtime_budget_payload_sha256"
+        ],
+        "runtime_identity_sha256": verified["runtime_identity_sha256"],
         **dataset.runtime_context_contract(),
     })
     if evaluation != recomputed:
@@ -1014,6 +1054,12 @@ def selector_code_artifacts() -> dict[str, dict[str, Any]]:
             sys.modules["multitask_training_data"].__file__
         ).resolve(),
         "selector": Path(__file__).resolve(),
+        "ensemble_exporter": Path(__file__).with_name(
+            "export_opponent_multitask_ensemble_v4.py"
+        ).resolve(),
+        "runtime_budget": Path(__file__).with_name(
+            "v4_runtime_budget.py"
+        ).resolve(),
         "observed_evidence": Path(
             sys.modules["evaluate_multitask_offline_policy"].__file__
         ).resolve(),
@@ -1035,6 +1081,91 @@ def selector_code_artifacts() -> dict[str, dict[str, Any]]:
 
 
 _code_artifacts = selector_code_artifacts
+
+
+def assess_preselection_runtime_budget(
+    calibrated: dict[str, Any],
+    *,
+    dataset: RoleDatasetAccess,
+    run_id: str,
+    formal: bool,
+) -> dict[str, Any]:
+    """Benchmark the policy-free stdlib image before opening selection."""
+    import export_opponent_multitask_ensemble_v4 as exporter  # noqa: PLC0415
+    import v4_runtime_budget as budget  # noqa: PLC0415
+
+    payload = exporter.build_preselection_bundle_payload(
+        calibrated=calibrated,
+        dataset=dataset,
+        run_id=run_id,
+        formal=formal,
+    )
+    raw = exporter.checked_canonical_bundle_bytes(payload)
+    if len(raw) > budget.MAX_PRESELECTION_BUNDLE_BYTES:
+        raise ValueError(
+            "v4 preselection bundle exceeds immutable "
+            f"{budget.MAX_PRESELECTION_BUNDLE_BYTES:,}-byte ceiling"
+        )
+    identity_sha256 = budget.bundle_runtime_identity_sha256(payload)
+    with tempfile.TemporaryDirectory(prefix="v4-runtime-budget-") as temporary:
+        bundle_path = Path(temporary) / "preselection_bundle.json"
+        bundle_path.write_bytes(raw)
+        artifact = budget.measure_bundle_runtime_budget_subprocess(
+            bundle_path,
+            source_collection_complete=dataset.manifest.get(
+                "source_collection_complete"
+            ) is True,
+        )
+    validated = budget.validate_runtime_budget_artifact(
+        artifact,
+        bundle_bytes=len(raw),
+        bundle_sha256=hashlib.sha256(raw).hexdigest(),
+        runtime_identity_sha256=identity_sha256,
+        require_formal=formal,
+    )
+    if validated["preselection_runtime_budget_payload_sha256"] is not None:
+        raise ValueError(
+            "v4 preselection runtime budget unexpectedly binds an earlier budget"
+        )
+    if validated["runtime_budget_passed"] is not True:
+        raise ValueError("v4 preselection runtime budget failed")
+    return validated
+
+
+def verify_preselection_runtime_budget(
+    path: Path,
+    *,
+    calibrated: dict[str, Any],
+    dataset: RoleDatasetAccess,
+    run_id: str,
+    formal: bool,
+) -> dict[str, Any]:
+    """Rebuild policy-free identity without rerunning the benchmark."""
+    import export_opponent_multitask_ensemble_v4 as exporter  # noqa: PLC0415
+    import v4_runtime_budget as budget  # noqa: PLC0415
+
+    payload = exporter.build_preselection_bundle_payload(
+        calibrated=calibrated,
+        dataset=dataset,
+        run_id=run_id,
+        formal=formal,
+    )
+    raw = exporter.checked_canonical_bundle_bytes(payload)
+    if len(raw) > budget.MAX_PRESELECTION_BUNDLE_BYTES:
+        raise ValueError("v4 preselection runtime identity exceeds size ceiling")
+    artifact = v3._load_json(path, field="preselection runtime budget")
+    validated = budget.validate_runtime_budget_artifact(
+        artifact,
+        bundle_bytes=len(raw),
+        bundle_sha256=hashlib.sha256(raw).hexdigest(),
+        runtime_identity_sha256=budget.bundle_runtime_identity_sha256(payload),
+        require_formal=formal,
+    )
+    if validated["preselection_runtime_budget_payload_sha256"] is not None:
+        raise ValueError(
+            "v4 preselection runtime budget unexpectedly binds an earlier budget"
+        )
+    return validated
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1143,8 +1274,16 @@ def main(argv: list[str] | None = None) -> int:
             run_id=args.run_id,
             formal=formal,
         )
+        runtime_budget = assess_preselection_runtime_budget(
+            calibrated,
+            dataset=dataset,
+            run_id=args.run_id,
+            formal=formal,
+        )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
+    runtime_budget_sha256 = runtime_budget["payload_sha256"]
+    runtime_identity_sha256 = runtime_budget["runtime_identity_sha256"]
 
     policy_contract = {
         "schema": POLICY_SCHEMA,
@@ -1196,6 +1335,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         code_artifacts = selector_code_artifacts()
         runtime_context = dataset.runtime_context_contract()
+        v3._write_json(temporary / RUNTIME_BUDGET_NAME, runtime_budget)
         candidate_manifest = {
             "schema": POLICY_CANDIDATE_SCHEMA,
             "run_id": args.run_id,
@@ -1214,6 +1354,8 @@ def main(argv: list[str] | None = None) -> int:
                 calibration["payload_sha256"]
                 for calibration in calibrated["outcome_calibrations"]
             ],
+            "runtime_budget_payload_sha256": runtime_budget_sha256,
+            "runtime_identity_sha256": runtime_identity_sha256,
             "inference_contract": {
                 "device": str(args.device),
                 "batch_size": args.batch_size,
@@ -1284,6 +1426,8 @@ def main(argv: list[str] | None = None) -> int:
         evaluation["preparation"] = preparation
         evaluation["policy_contract"] = policy_contract
         evaluation["code_artifacts"] = code_artifacts
+        evaluation["runtime_budget_payload_sha256"] = runtime_budget_sha256
+        evaluation["runtime_identity_sha256"] = runtime_identity_sha256
         evaluation.update(runtime_context)
         evaluation_path = temporary / "policy_evaluation.json"
         v3._write_json(evaluation_path, evaluation)
@@ -1316,6 +1460,8 @@ def main(argv: list[str] | None = None) -> int:
             "source_collection_complete"
         )
         result["formal_selection"] = formal
+        result["runtime_budget_payload_sha256"] = runtime_budget_sha256
+        result["runtime_identity_sha256"] = runtime_identity_sha256
         result.update(runtime_context)
         if args.allow_incomplete_smoke:
             result["passed"] = False
@@ -1352,6 +1498,8 @@ def main(argv: list[str] | None = None) -> int:
             "selection_passed": result["passed"],
             "selection_errors": result["errors"],
             "selection_result_sha256": result_sha256,
+            "runtime_budget_payload_sha256": runtime_budget_sha256,
+            "runtime_identity_sha256": runtime_identity_sha256,
             "code_artifacts": code_artifacts,
             **runtime_context,
             "source_collection_complete": dataset.manifest.get(
@@ -1364,6 +1512,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         v3._write_json(temporary / "policy_selection_report.json", report)
         files = (
+            RUNTIME_BUDGET_NAME,
             "candidate_manifest.json",
             "policy_evaluation.json",
             "policy_selection_result.json",
@@ -1380,6 +1529,8 @@ def main(argv: list[str] | None = None) -> int:
                 for name in files
             },
             "candidate_sha256": candidate_sha256,
+            "runtime_budget_payload_sha256": runtime_budget_sha256,
+            "runtime_identity_sha256": runtime_identity_sha256,
             **runtime_context,
             "policy_gate_opened": False,
             "deployment_policy_value": False,

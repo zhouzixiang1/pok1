@@ -1371,6 +1371,192 @@ not create strength evidence before the independent collection is complete.
 After this hardening, the complete neural-lab suite passes 484 tests and all 33
 national protocol tests pass.
 
+## Formal V4 Grid Resumability And Proof Binding
+
+The 36-job formal grid can now resume without treating a directory name or an
+old summary row as evidence. Before any trainer starts,
+`run_opponent_multitask_v4_scaling.py` atomically publishes a self-hashed
+`scaling_run_contract.json`. The contract freezes the exact Cartesian matrix,
+run IDs, output paths, commands, per-seed `PYTHONHASHSEED`, training options,
+device environment, Git commit, Python executable, trainer and transitive code
+hashes, role-manifest bytes, exact train/early-stop file bytes and row counts,
+candidate snapshot, and false deployment/strength claims. A resume may change
+only runner concurrency; any semantic or provenance change requires a new
+output root.
+
+Root initialization uses a same-filesystem sibling temporary directory,
+`fsync`, and rename. Each trainer similarly writes a PID-named temporary
+directory, rechecks its frozen code and environment immediately before
+publication, and renames only a complete manifest/checkpoint/report set.
+Completed jobs are reusable only after strict directory allowlisting, manifest
+and file rehashing, safe `torch.load(weights_only=True)`, exact checkpoint/report
+cross-binding, strict model-state loading, and reconstruction of the full
+CLI-derived training configuration. A dead training temporary is preserved in
+an abandoned-partial quarantine. An invalid completed artifact is preserved in
+an invalid-job quarantine and retrained; protected-role ledger contamination is
+never repaired by moving files or retraining. A nonblocking root lock excludes
+concurrent runners and is released in every success or exception path. A
+metadata temporary left by process termination between `fsync` and rename is
+also quarantined on resume rather than blocking an otherwise valid run root.
+
+Training-role evidence is checked from the raw append-only ledger rather than
+its expanded per-opponent view. The complete ledger must have canonical fields,
+continuous non-boolean sequence numbers, canonical opponent groups, valid UTC
+timestamps and hashes, and known event/role combinations. Each training run ID
+must have exactly two complete group events in `train` then `early_stop` order,
+with no candidate hash or other role. A canonical per-run receipt digest enters
+the scaling row and formal proof. The final all-job verification uses one
+shared-lock ledger snapshot and holds that lock through atomic summary
+publication, so unrelated concurrent runs may append before or after the
+barrier but the published grid cannot race a same-run mutation.
+
+Formal calibration no longer trusts even a self-consistent embedded proof. It
+reloads every real member on CPU, recomputes the winner, and binds each verified
+row back to the current manifest, train/early-stop composite digests, current
+code, scaling tool, trainer, requested CUDA matrix, planned run ID/output,
+exact command, environment, training configuration, role counts, and raw-ledger
+receipt. The downstream proof validator repeats those bindings from a single
+ledger snapshot and requires exact proof/row field sets. Re-signing a changed
+contract, command, environment, role count, code digest, or exposure receipt is
+therefore rejected.
+
+These changes make interruption and reuse auditable; they do not make an
+incomplete collection deployable. Incomplete smoke output still carries
+`deployment_policy_value=false` and `strength_evidence=false`, cannot become a
+formal selected configuration, and cannot create a Bot. No formal CUDA grid was
+run while the independent collector remained incomplete. The complete
+neural-lab suite now passes 498 tests and all 33 national protocol tests pass.
+
+## Protected V4 Deployment Runtime Budget
+
+V4 selection now has an immutable deployment-feasibility guard before it can
+open `policy_selection`. The selector first exports a policy-free calibrated
+stdlib image and enforces a 49,000,000-byte preselection ceiling. An isolated
+`python -I` child then loads only the copied runtime directory and executes two
+warmups plus seven measured maximum-shape neural override paths. Each path has
+one value forward, one calibrated outcome forward, five response forwards, and
+one call to the shared `win_first_policy_v4` selector. The fixed inputs contain
+the full 81-dimensional state, 12-dimensional profile, 16x24 current-hand
+history, 32x16 cross-hand history, and 66-dimensional strategy context. Formal
+eligibility requires the maximum `process_time_ns` result to be at most five
+seconds; wall time is diagnostic. Exceptions, non-finite output, incomplete
+measurements, a child timeout, and incomplete source data all fail closed.
+
+The preselection `runtime_budget.json` is self-hashed and binds the exact
+benchmark bytes plus a policy-independent runtime identity. That identity
+includes every member payload hash, checkpoint/calibration projection and role
+provenance, and the exporter contract with every copied runtime-module hash. It
+deliberately excludes the selected policy and its evidence hashes, avoiding a
+hash cycle while still rejecting member, calibration, or runtime-code drift.
+The artifact must not claim an earlier runtime-budget parent. Its payload hash
+and identity are copied into every selection document and are reconstructed
+from current checkpoints and calibration artifacts during protected replay.
+
+The final exporter independently caps canonical output at exactly 50,000,000
+bytes before it creates an output path. A selected bundle must carry the same
+preselection identity; the exporter and gate recompute it rather than trusting
+the embedded digest. After the builder copies the final bundle and all stdlib
+modules into its temporary native candidate, it runs the same isolated
+benchmark again and writes `V4_RUNTIME_BUDGET.json`. This second artifact binds
+the final bundle byte count and SHA-256, stable identity, and preselection
+artifact SHA-256. Benchmark failure removes the temporary tree and publishes no
+candidate. The native loader verifies the sidecar and all manifest/gate/source
+cross-bindings from single byte snapshots without rerunning a benchmark at
+startup. A missing, changed, concurrently replaced, or inconsistent sidecar,
+bundle, or gate document disables the neural policy before model loading,
+leaving the already sanitized rule action as the runtime fallback.
+
+These hashes are content-integrity and provenance bindings, not a cryptographic
+signature against an actor who can rewrite the entire candidate, its loader,
+and its manifest together. A formal release must therefore anchor the complete
+candidate tree and runtime-budget sidecar in the task commit/tag and in the
+later official-platform evidence. No formal candidate or such release anchor
+exists at this incomplete stage.
+
+The deterministic three-small-member test image is 11,169,406 bytes. On the
+current host its seven measured override-path CPU times were 147.6-151.9 ms,
+with a maximum of 151,897,359 ns. This is portability-chain smoke, not official
+platform timing, deployment value, or strength evidence. The complete
+neural-lab suite now passes 530 tests and all 33 national protocol tests pass.
+
+At the latest atomic independent-collection boundary, 75 of 160 passes are
+complete: value train/validation/held-out counts are 3,491/870/875 and behavior
+counts are 16,866/4,772/2,383. The handed-off collector PID is no longer
+running, and no restart was performed. Only that 75-pass atomic prefix is
+valid; formal scaling, selection, gate, candidate creation, and any strength
+claim remain prohibited until a complete 160/160 source exists.
+
+The directory also contains all six valid, duplicate-free pass-76 task files
+and corresponding appended row tails, but neither the pool snapshot nor the
+self-hashed collector state advanced to pass 76. Those files are therefore an
+interrupted, uncommitted transaction rather than part of the atomic completed
+prefix. The observed failure window coincides with another process replacing
+the live ratings file between the old collector's post-probe ratings reads.
+The strongest diagnosis is a transient missing-file read during that replace,
+not resource exhaustion. Main now freezes one ratings snapshot for each pass
+and validates persisted plans, but the stopped corpus binds the older collector
+code hash. Resuming it consequently requires explicit provenance handling and
+operator authorization; this work does not silently restart, upgrade, or
+discard it.
+
+## Candidate-Only Native V4 Ablation Contract
+
+Native joint-policy diagnostics now have four canonical modes: the complete v4
+policy, neural disabled, cross-hand history disabled, and outcome uncertainty
+plus match-outcome selection disabled. `native_tcp_evaluate.py` applies the
+selected diagnostic environment only to the candidate process in its current
+seat. It explicitly clears all three v4 ablation variables for the opponent,
+then reverses those mappings with the seats in the swapped leg. This prevents a
+parent shell setting from contaminating either side. The per-process mapping
+also clears legacy v3 ablations and explicitly binds or removes trace and
+force-action controls, so a parent-shell probe cannot disagree with the report.
+The legacy debug wrapper accepts the same cleanup mapping, while non-full modes
+reject that wrapper and any request to label the run as strength evidence.
+
+The outcome/uncertainty/match-off mode is a runtime component ablation, not a
+retrained headless architecture. It skips calibrated match-outcome inference
+and the formal win-first selector, removes match/tail lower-bound contribution,
+and uses the immediate-hand mean in place of its uncertainty lower bound before
+delegating to the existing value/response selector. Likewise, cross-hand-off
+zeros the runtime history input; it is not a substitute for training and
+calibrating the formal `cross_encoder=none` architecture. The modes cannot be
+combined, and every exception still falls back to the already sanitized rule
+action.
+
+`summarize_v4_native_ablations.py` accepts exactly one raw native report for
+each mode and discovers no ratings, role manifest, exposure ledger, or
+protected dataset. It requires identical stable candidate and opponent trees,
+the same deterministic non-overlapping deck and bot-seed plan, at least three
+seed blocks, one to four workers, two compliant native 70-hand legs per row,
+and zero wrapper, adapter, illegal-action, timeout, force-action, or process
+failures. Missing hands, changed artifacts, changed identities, duplicate rows,
+overlapping per-player bot-seed windows, or a candidate/opponent seat mismatch
+fail closed. Every raw report must also carry the evaluator's explicit strength
+result; a positive deployment, native-strength, protected-data, or
+official-acceptance claim is rejected rather than copied into the summary. The
+full-mode report alone may reuse a separately requested strength-compliance run
+when that request passed with no errors; the resulting ablation summary remains
+diagnostic and cannot inherit that status. All three non-full inputs must have
+unrequested, false, error-free strength fields.
+
+For every `(opponent, seed)` block, the forward and swapped legs remain together
+in all resamples. The primary diagnostic is the paired difference between full
+and ablated `net_chips > 0` indicators for the individual 70-hand legs. Both an
+ordinary complete-seed-block bootstrap and an equal-opponent-stratified version
+are emitted. Net-chip delta per hand and its corresponding intervals are
+secondary only and cannot change the primary direction or ordering. The
+self-hashed summary has an exact root schema and keeps diagnostic-only true and
+all protected-data, eligibility, deployment, native-strength, official-EXE,
+strength-evidence, and formal-release-evidence fields false. These diagnostics
+cannot be authoritatively validated from their self-hash alone: validation
+requires all four raw report byte streams and recomputes the entire identity,
+counts, bootstrap intervals, chip diagnostics, directions, and controls for
+exact equality. They can guide the eventual pass-160 architecture study;
+they cannot open `policy_selection` or `policy_gate`, create a Bot, or establish
+strength. After this diagnostic chain and its contamination hardening, the
+complete neural-lab suite passes 576 tests, the focused native workflow suite
+passes 86 tests, and all 33 national protocol tests pass.
+
 ## Literature Recheck And Search Direction
 
 The architecture decision is also constrained by established imperfect-

@@ -5,7 +5,6 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
 import random
 import statistics
 import sys
@@ -30,6 +29,121 @@ DEFAULT_OPPONENT_SEED_STRIDE = 10_000_000
 DEFAULT_OUTCOME_BOOTSTRAP_SAMPLES = 20_000
 DEFAULT_OUTCOME_BOOTSTRAP_SEED = 20_260_711
 PRIMARY_OUTCOME_CRITERION = "net_chips_after_70_hands_gt_zero"
+CANDIDATE_ABLATION_SCHEMA = "opponent_multitask_v4_native_ablation_v1"
+CANDIDATE_ABLATION_ENV_NAMES = (
+    "POK_V4_DISABLE",
+    "POK_V4_DISABLE_CROSS_HAND",
+    "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH",
+)
+LEGACY_NEURAL_ABLATION_ENV_NAMES = (
+    "POK_V3_DISABLE",
+    "POK_V3_DISABLE_CROSS_HAND",
+    "POK_V3_DISABLE_RISK_MATCH",
+)
+EVALUATION_CONTROL_ENV_NAMES = (
+    "POK_TRACE_DECISIONS",
+    "POK_FORCE_HAND",
+    "POK_FORCE_DECISION",
+    "POK_FORCE_ACTION",
+)
+CANDIDATE_ABLATION_MODES = (
+    "full",
+    "neural_off",
+    "cross_hand_off",
+    "outcome_uncertainty_match_off",
+)
+
+
+def _candidate_ablation_contract(mode: str) -> dict[str, Any]:
+    if mode not in CANDIDATE_ABLATION_MODES:
+        raise ValueError(f"unknown candidate ablation mode: {mode!r}")
+    candidate_env = {name: None for name in CANDIDATE_ABLATION_ENV_NAMES}
+    enabled_env = {
+        "neural_off": "POK_V4_DISABLE",
+        "cross_hand_off": "POK_V4_DISABLE_CROSS_HAND",
+        "outcome_uncertainty_match_off": (
+            "POK_V4_DISABLE_OUTCOME_UNCERTAINTY_MATCH"
+        ),
+    }.get(mode)
+    if enabled_env is not None:
+        candidate_env[enabled_env] = "1"
+    diagnostic_only = mode != "full"
+    return {
+        "schema": CANDIDATE_ABLATION_SCHEMA,
+        "mode": mode,
+        "candidate_env_overrides": candidate_env,
+        "opponent_env_overrides": {
+            name: None for name in CANDIDATE_ABLATION_ENV_NAMES
+        },
+        "diagnostic_only": diagnostic_only,
+        "eligible_as_strength_evidence": not diagnostic_only,
+        "protected_data_read": False,
+        "policy_roles_opened": [],
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+    }
+
+
+def _candidate_ablation_contract_errors(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return ["candidate_ablation_contract_missing"]
+    try:
+        expected = _candidate_ablation_contract(str(payload.get("mode") or ""))
+    except ValueError:
+        return ["candidate_ablation_mode_unknown"]
+    if payload != expected:
+        return ["candidate_ablation_contract_mismatch"]
+    return []
+
+
+def _candidate_ablation_request_errors(args: argparse.Namespace) -> list[str]:
+    mode = str(getattr(args, "candidate_ablation", "full"))
+    try:
+        _candidate_ablation_contract(mode)
+    except ValueError:
+        return ["candidate_ablation_mode_unknown"]
+    errors = []
+    if mode != "full" and bool(args.allow_generated_opponent_entry):
+        errors.append("candidate_ablation_requires_native_opponents")
+    if mode != "full" and bool(getattr(args, "strength_evidence", False)):
+        errors.append("candidate_ablation_is_diagnostic_only")
+    return errors
+
+
+def _native_process_env_overrides(
+    args: argparse.Namespace,
+    ablation_contract: dict[str, Any],
+    *,
+    candidate: bool,
+) -> dict[str, str | None]:
+    """Return the complete evaluator-owned environment for one seat.
+
+    Native runners inherit the parent process environment.  Explicit nulls are
+    therefore evidence controls: they prevent an unrelated shell probe from
+    silently changing either policy while the report still claims no force or
+    ablation was active.
+    """
+    force_values = {
+        "POK_FORCE_HAND": getattr(args, "force_hand", None),
+        "POK_FORCE_DECISION": getattr(args, "force_decision", None),
+        "POK_FORCE_ACTION": getattr(args, "force_action", None),
+    }
+    overrides: dict[str, str | None] = {
+        "POK_TRACE_DECISIONS": (
+            "1" if bool(getattr(args, "trace_decisions", False)) else None
+        ),
+        **{
+            name: None if value is None else str(int(value))
+            for name, value in force_values.items()
+        },
+        **{name: None for name in LEGACY_NEURAL_ABLATION_ENV_NAMES},
+    }
+    overrides.update(
+        ablation_contract[
+            "candidate_env_overrides" if candidate else "opponent_env_overrides"
+        ]
+    )
+    return overrides
 
 
 def _resolve(path: str) -> Path:
@@ -99,7 +213,7 @@ def _strength_request_errors(
     *,
     opponent_count: int,
 ) -> list[str]:
-    errors = []
+    errors = _candidate_ablation_request_errors(args)
     if not args.paired:
         errors.append("paired_required")
     if int(args.hands) != 70:
@@ -114,16 +228,26 @@ def _strength_request_errors(
             for opponent_idx in range(opponent_count)
             for match_idx in range(len(base_seeds))
         ]
+        ordered_bot_seeds = sorted(bot_seeds)
         if len(set(bot_seeds)) != len(bot_seeds):
             errors.append("bot_seed_collision")
+        elif any(
+            right <= left + 1
+            for left, right in zip(ordered_bot_seeds, ordered_bot_seeds[1:])
+        ):
+            errors.append("per_player_bot_seed_window_overlap")
     if any(seed is None for seed in base_seeds):
         errors.append("deterministic_deck_seeds_required")
     if len(base_seeds) < 3:
         errors.append("at_least_three_seed_blocks_required")
     if opponent_count <= 0:
         errors.append("opponent_required")
-    if int(args.workers) > 4:
-        errors.append("workers_must_not_exceed_4")
+    if not 1 <= int(args.workers) <= 4:
+        errors.append("workers_must_be_between_1_and_4")
+    if int(args.opponent_seed_stride) <= 0:
+        errors.append("opponent_seed_stride_must_be_positive")
+    if int(args.bot_seed_stride) <= 0:
+        errors.append("bot_seed_stride_must_be_positive")
     if any(
         value is not None
         for value in (args.force_hand, args.force_decision, args.force_action)
@@ -147,6 +271,14 @@ def _strength_result_errors(
     hands_per_leg: int,
 ) -> list[str]:
     errors = []
+    errors.extend(
+        _candidate_ablation_contract_errors(payload.get("candidate_ablation"))
+    )
+    ablation = payload.get("candidate_ablation")
+    if isinstance(ablation, dict) and not ablation.get(
+        "eligible_as_strength_evidence"
+    ):
+        errors.append("candidate_ablation_not_strength_eligible")
     if payload.get("format") != "native_tcp_evaluation_v2":
         errors.append("unsupported_evaluation_format")
     if payload.get("execution_mode") != "native_tcp":
@@ -466,6 +598,14 @@ def _summary(
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
+    ablation_errors = _candidate_ablation_request_errors(args)
+    if ablation_errors:
+        raise ValueError(
+            "candidate-ablation request rejected: " + ", ".join(ablation_errors)
+        )
+    ablation_contract = _candidate_ablation_contract(
+        str(getattr(args, "candidate_ablation", "full"))
+    )
     candidate = _resolve(args.candidate)
     opponents = [_resolve(item) for item in args.opponent]
     candidate_digest_before = _directory_digest(candidate)
@@ -539,6 +679,18 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 "require_native_a": True,
                 "require_native_b": True,
             }
+            forward_env_kwargs = {
+                "bot_a_env_overrides": dict(
+                    _native_process_env_overrides(
+                        args, ablation_contract, candidate=True
+                    )
+                ),
+                "bot_b_env_overrides": dict(
+                    _native_process_env_overrides(
+                        args, ablation_contract, candidate=False
+                    )
+                ),
+            }
             forward = await pair_runner(
                 candidate,
                 opponent,
@@ -547,6 +699,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 bot_seed_base=bot_seed_base,
                 timeout_sec=float(args.timeout_sec),
                 **strict_kwargs,
+                **forward_env_kwargs,
             )
             forward_row = result_row(
                 forward,
@@ -558,6 +711,18 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             )
             if not args.paired:
                 return forward_row
+            swapped_env_kwargs = {
+                "bot_a_env_overrides": dict(
+                    _native_process_env_overrides(
+                        args, ablation_contract, candidate=False
+                    )
+                ),
+                "bot_b_env_overrides": dict(
+                    _native_process_env_overrides(
+                        args, ablation_contract, candidate=True
+                    )
+                ),
+            }
             swapped = await pair_runner(
                 opponent,
                 candidate,
@@ -566,6 +731,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 bot_seed_base=bot_seed_base,
                 timeout_sec=float(args.timeout_sec),
                 **strict_kwargs,
+                **swapped_env_kwargs,
             )
             swapped_row = result_row(
                 swapped,
@@ -630,6 +796,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     payload = {
         "format": "native_tcp_evaluation_v2",
         "execution_mode": "native_tcp",
+        "candidate_ablation": ablation_contract,
         "candidate_path": str(candidate),
         "opponent_paths": [str(path) for path in opponents],
         "hands_per_match": int(args.hands),
@@ -713,6 +880,15 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--timeout-sec", type=float, default=90.0)
     parser.add_argument("--paired", action="store_true", help="For each seed, run candidate/opponent and opponent/candidate, then sum candidate net chips.")
+    parser.add_argument(
+        "--candidate-ablation",
+        choices=CANDIDATE_ABLATION_MODES,
+        default="full",
+        help=(
+            "Apply one diagnostic v4 ablation to the candidate process only; "
+            "the opponent environment is always cleared."
+        ),
+    )
     parser.add_argument("--trace-decisions", action="store_true", help="Set POK_TRACE_DECISIONS=1 for native bot subprocesses that support structured decision traces.")
     parser.add_argument("--force-hand", type=int, default=None, help="Set POK_FORCE_HAND for native bot subprocesses that support force probes.")
     parser.add_argument("--force-decision", type=int, default=None, help="Set POK_FORCE_DECISION for native bot subprocesses that support force probes.")
@@ -742,6 +918,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    ablation_errors = _candidate_ablation_request_errors(args)
+    if ablation_errors:
+        raise SystemExit(
+            "candidate-ablation request rejected: "
+            + ", ".join(ablation_errors)
+        )
     base_seeds = _seeds(args)
     request_errors = _strength_request_errors(
         args, base_seeds, opponent_count=len(args.opponent)
@@ -750,16 +932,6 @@ def main() -> int:
         raise SystemExit(
             "strength-evidence request rejected: " + ", ".join(request_errors)
         )
-
-    if args.trace_decisions:
-        os.environ["POK_TRACE_DECISIONS"] = "1"
-    for env_name, value in (
-        ("POK_FORCE_HAND", args.force_hand),
-        ("POK_FORCE_DECISION", args.force_decision),
-        ("POK_FORCE_ACTION", args.force_action),
-    ):
-        if value is not None:
-            os.environ[env_name] = str(int(value))
 
     payload = asyncio.run(_run(args))
     result_errors = _strength_result_errors(
