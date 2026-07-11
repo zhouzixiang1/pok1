@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
+import math
+import os
 import random
 import statistics
 import sys
@@ -14,21 +15,43 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[3]
+TOOLS = Path(__file__).resolve().parent
 WEB_CORE = ROOT / "web" / "core"
-if str(WEB_CORE) not in sys.path:
-    sys.path.insert(0, str(WEB_CORE))
+for import_root in (ROOT, TOOLS, WEB_CORE):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 from national_native import (  # noqa: E402
     run_legacy_debug_tcp_pair_with_wrappers,
     run_native_tcp_pair,
 )
 
+try:  # package import in tests; direct import for the CLI
+    from .v4_native_strength_artifacts import tree_digest as _artifact_tree_digest
+    from .v4_native_strength_runtime import (
+        DEFAULT_MATCH_TIMEOUT_SEC,
+        RUNTIME_ENVIRONMENT_OVERRIDES,
+        native_strength_runtime_contract,
+        validate_native_strength_runtime_contract,
+    )
+except ImportError:  # pragma: no cover - direct CLI execution path
+    from v4_native_strength_artifacts import (  # type: ignore[no-redef]
+        tree_digest as _artifact_tree_digest,
+    )
+    from v4_native_strength_runtime import (  # type: ignore[no-redef]
+        DEFAULT_MATCH_TIMEOUT_SEC,
+        RUNTIME_ENVIRONMENT_OVERRIDES,
+        native_strength_runtime_contract,
+        validate_native_strength_runtime_contract,
+    )
+
 
 DEFAULT_DECK_SEED_GUARD = 10
 DEFAULT_OPPONENT_SEED_STRIDE = 10_000_000
 DEFAULT_OUTCOME_BOOTSTRAP_SAMPLES = 20_000
-DEFAULT_OUTCOME_BOOTSTRAP_SEED = 20_260_711
+DEFAULT_OUTCOME_BOOTSTRAP_SEED = 20_260_712
 PRIMARY_OUTCOME_CRITERION = "net_chips_after_70_hands_gt_zero"
+STRENGTH_EVIDENCE_SCHEMA = "native_tcp_strength_evidence_v2_outcome_first"
 CANDIDATE_ABLATION_SCHEMA = "opponent_multitask_v4_native_ablation_v1"
 CANDIDATE_ABLATION_ENV_NAMES = (
     "POK_V4_DISABLE",
@@ -129,6 +152,7 @@ def _native_process_env_overrides(
         "POK_FORCE_ACTION": getattr(args, "force_action", None),
     }
     overrides: dict[str, str | None] = {
+        **RUNTIME_ENVIRONMENT_OVERRIDES,
         "POK_TRACE_DECISIONS": (
             "1" if bool(getattr(args, "trace_decisions", False)) else None
         ),
@@ -151,23 +175,36 @@ def _resolve(path: str) -> Path:
     return raw if raw.is_absolute() else (ROOT / raw).resolve()
 
 
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(
+        f".{path.name}.tmp-{os.getpid()}-{time.monotonic_ns()}"
+    )
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            json.dump(
+                payload,
+                handle,
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        if hasattr(os, "O_DIRECTORY"):
+            descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _directory_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    for file_path in sorted(
-        item
-        for item in path.rglob("*")
-        if (
-            item.is_file()
-            and "__pycache__" not in item.parts
-            and item.name != ".completed"
-            and item.suffix != ".pyc"
-        )
-    ):
-        digest.update(str(file_path.relative_to(path)).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(file_path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return _artifact_tree_digest(path)
 
 
 def _seeds(args: argparse.Namespace) -> list[int | None]:
@@ -248,6 +285,12 @@ def _strength_request_errors(
         errors.append("opponent_seed_stride_must_be_positive")
     if int(args.bot_seed_stride) <= 0:
         errors.append("bot_seed_stride_must_be_positive")
+    if int(args.outcome_bootstrap_samples) < 2_000:
+        errors.append("outcome_bootstrap_samples_must_be_at_least_2000")
+    if float(args.timeout_sec) != DEFAULT_MATCH_TIMEOUT_SEC:
+        errors.append("match_timeout_must_equal_frozen_default")
+    if bool(args.trace_decisions):
+        errors.append("decision_trace_forbidden")
     if any(
         value is not None
         for value in (args.force_hand, args.force_decision, args.force_action)
@@ -283,6 +326,12 @@ def _strength_result_errors(
         errors.append("unsupported_evaluation_format")
     if payload.get("execution_mode") != "native_tcp":
         errors.append("execution_mode_not_native_tcp")
+    try:
+        validate_native_strength_runtime_contract(
+            payload.get("runtime_contract"), require_default_timeout=True
+        )
+    except ValueError:
+        errors.append("runtime_contract_invalid")
     if not payload.get("paired"):
         errors.append("payload_not_paired")
     if not payload.get("requires_native_opponents"):
@@ -338,6 +387,89 @@ def _strength_result_errors(
     if overlaps:
         errors.append(f"overlapping_result_deck_windows:{overlaps[:5]}")
     return errors
+
+
+def _strength_outcome_errors(payload: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    outcome = payload.get("seventy_hand_outcomes")
+    if not isinstance(outcome, dict):
+        return ["seventy_hand_outcomes_missing"]
+    if outcome.get("criterion") != PRIMARY_OUTCOME_CRITERION:
+        errors.append("primary_outcome_criterion_mismatch")
+    combined = outcome.get("combined")
+    if not isinstance(combined, dict):
+        return [*errors, "combined_outcome_summary_missing"]
+
+    def require_lcb(field: str, label: str) -> None:
+        interval = combined.get(field)
+        if not isinstance(interval, dict):
+            errors.append(f"{label}_missing")
+            return
+        low = interval.get("low")
+        if (
+            isinstance(low, bool)
+            or not isinstance(low, (int, float))
+            or not math.isfinite(float(low))
+        ):
+            errors.append(f"{label}_invalid")
+        elif float(low) <= 0.5:
+            errors.append(f"{label}_not_above_half")
+
+    require_lcb(
+        "cluster_bootstrap_positive_rate_ci",
+        "ordinary_positive_rate_lcb",
+    )
+    require_lcb(
+        "opponent_stratified_cluster_bootstrap_positive_rate_ci",
+        "opponent_stratified_positive_rate_lcb",
+    )
+    opponents = outcome.get("opponents")
+    if not isinstance(opponents, dict) or not opponents:
+        errors.append("per_opponent_outcome_summary_missing")
+    else:
+        for opponent, stats in sorted(opponents.items()):
+            if not isinstance(stats, dict):
+                errors.append(f"opponent:{opponent}:summary_invalid")
+                continue
+            rate = stats.get("positive_rate")
+            if (
+                isinstance(rate, bool)
+                or not isinstance(rate, (int, float))
+                or not math.isfinite(float(rate))
+            ):
+                errors.append(f"opponent:{opponent}:positive_rate_invalid")
+            elif float(rate) < 0.5:
+                errors.append(f"opponent:{opponent}:positive_rate_below_half")
+    if combined.get("win_rate_evidence_passed") is not (not errors):
+        errors.append("win_rate_evidence_passed_inconsistent")
+    return errors
+
+
+def _strength_evidence_payload(
+    *,
+    requested: bool,
+    request_errors: list[str],
+    result_errors: list[str],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    statistical_errors = _strength_outcome_errors(payload) if requested else []
+    execution_contract_passed = bool(
+        requested and not request_errors and not result_errors
+    )
+    outcome_gate_passed = bool(
+        execution_contract_passed and not statistical_errors
+    )
+    return {
+        "schema": STRENGTH_EVIDENCE_SCHEMA,
+        "criterion": PRIMARY_OUTCOME_CRITERION,
+        "requested": bool(requested),
+        "execution_contract_passed": execution_contract_passed,
+        "outcome_gate_passed": outcome_gate_passed,
+        "passed": outcome_gate_passed,
+        "request_errors": list(request_errors),
+        "result_errors": list(result_errors),
+        "statistical_errors": statistical_errors,
+    }
 
 
 def _valid_artifact(artifact: dict[str, Any]) -> bool:
@@ -679,6 +811,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 "require_native_a": True,
                 "require_native_b": True,
             }
+            strict_kwargs["sanitize_parent_environment"] = True
             forward_env_kwargs = {
                 "bot_a_env_overrides": dict(
                     _native_process_env_overrides(
@@ -797,6 +930,13 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "format": "native_tcp_evaluation_v2",
         "execution_mode": "native_tcp",
         "candidate_ablation": ablation_contract,
+        "runtime_contract": native_strength_runtime_contract(
+            args.timeout_sec,
+            trace_decisions=bool(args.trace_decisions),
+            force_hand=args.force_hand,
+            force_decision=args.force_decision,
+            force_action=args.force_action,
+        ),
         "candidate_path": str(candidate),
         "opponent_paths": [str(path) for path in opponents],
         "hands_per_match": int(args.hands),
@@ -830,6 +970,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "wrapper_used": any(bool(row.get("wrapper_used")) for row in rows),
         "bot_seed_base": args.bot_seed_base,
         "bot_seed_stride": int(args.bot_seed_stride),
+        "outcome_bootstrap_samples": int(args.outcome_bootstrap_samples),
+        "outcome_bootstrap_seed": int(args.outcome_bootstrap_seed),
         "trace_decisions": bool(args.trace_decisions),
         "force": {
             "hand": args.force_hand,
@@ -878,7 +1020,9 @@ def main() -> int:
     parser.add_argument("--bot-seed-base", type=int, default=None, help="Seed Python random in each native bot process.")
     parser.add_argument("--bot-seed-stride", type=int, default=10)
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--timeout-sec", type=float, default=90.0)
+    parser.add_argument(
+        "--timeout-sec", type=float, default=DEFAULT_MATCH_TIMEOUT_SEC
+    )
     parser.add_argument("--paired", action="store_true", help="For each seed, run candidate/opponent and opponent/candidate, then sum candidate net chips.")
     parser.add_argument(
         "--candidate-ablation",
@@ -939,18 +1083,19 @@ def main() -> int:
         expected_rows=len(args.opponent) * len(base_seeds),
         hands_per_leg=int(args.hands),
     ) if args.strength_evidence else []
-    payload["strength_evidence"] = {
-        "requested": bool(args.strength_evidence),
-        "passed": bool(args.strength_evidence and not result_errors),
-        "request_errors": request_errors,
-        "result_errors": result_errors,
-    }
+    payload["strength_evidence"] = _strength_evidence_payload(
+        requested=bool(args.strength_evidence),
+        request_errors=request_errors,
+        result_errors=result_errors,
+        payload=payload,
+    )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     if args.output:
         output = _resolve(args.output)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return 2 if result_errors else 0
+        _atomic_write_json(output, payload)
+    return 2 if (
+        args.strength_evidence and not payload["strength_evidence"]["passed"]
+    ) else 0
 
 
 if __name__ == "__main__":

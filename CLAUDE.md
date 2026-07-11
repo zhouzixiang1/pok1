@@ -520,7 +520,7 @@ It is sorted by current line count and excludes `__init__.py`,
 | File | Lines | Role |
 |---|---|---|
 | `tool_planning.py` | 9550 | Pipeline tools: direction audit, system-owned Master context, canonical repair authority, literature, transactional Workers |
-| `national_native.py` | 4164 | Native national TCP execution backend for evolved bots |
+| `national_native.py` | 4173 | Native national TCP execution backend for evolved bots |
 | `official_certification.py` | 3947 | Official EXE policy, identity, evidence validation, signed certificates and explicit one-time bootstrap binding |
 | `tool_gates.py` | 3450 | Complete-artifact quality gates, code prep, review, and advisory Critic execution |
 | `orchestrator.py` | 3125 | LLM-driven Orchestrator: pipeline loop and recovery routing |

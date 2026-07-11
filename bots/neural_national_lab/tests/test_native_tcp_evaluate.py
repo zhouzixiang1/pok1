@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -28,6 +30,17 @@ def _load_tool():
     return module
 
 
+def test_direct_cli_help_resolves_repository_imports() -> None:
+    result = subprocess.run(
+        [sys.executable, str(TOOL), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def _args(**overrides):
     values = {
         "seeds": "",
@@ -43,9 +56,13 @@ def _args(**overrides):
         "force_hand": None,
         "force_decision": None,
         "force_action": None,
+        "trace_decisions": False,
         "opponent_seed_stride": 10_000_000,
         "candidate_ablation": "full",
         "strength_evidence": False,
+        "outcome_bootstrap_samples": 20_000,
+        "outcome_bootstrap_seed": 20_260_712,
+        "timeout_sec": 90.0,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -163,6 +180,8 @@ def test_process_overrides_clear_parent_force_trace_and_legacy_ablations(
     )
     for name in inherited:
         monkeypatch.setenv(name, "parent-value")
+    for name in tool.RUNTIME_ENVIRONMENT_OVERRIDES:
+        monkeypatch.setenv(name, "parent-contamination")
     args = _args(trace_decisions=False)
     contract = tool._candidate_ablation_contract("cross_hand_off")
 
@@ -180,6 +199,12 @@ def test_process_overrides_clear_parent_force_trace_and_legacy_ablations(
         if name != "POK_V4_DISABLE_CROSS_HAND"
     )
     assert all(opponent[name] is None for name in inherited)
+    assert {
+        name: candidate[name] for name in tool.RUNTIME_ENVIRONMENT_OVERRIDES
+    } == tool.RUNTIME_ENVIRONMENT_OVERRIDES
+    assert {
+        name: opponent[name] for name in tool.RUNTIME_ENVIRONMENT_OVERRIDES
+    } == tool.RUNTIME_ENVIRONMENT_OVERRIDES
     assert all(os.environ[name] == "parent-value" for name in inherited)
 
 
@@ -201,6 +226,38 @@ def test_process_overrides_bind_explicit_force_and_trace() -> None:
         assert overrides["POK_FORCE_HAND"] == "3"
         assert overrides["POK_FORCE_DECISION"] == "4"
         assert overrides["POK_FORCE_ACTION"] == "-1"
+
+
+def test_atomic_report_write_publishes_complete_json_and_cleans_temp(
+    tmp_path: Path,
+) -> None:
+    tool = _load_tool()
+    output = tmp_path / "report.json"
+
+    tool._atomic_write_json(output, {"complete": True, "value": 7})
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "complete": True,
+        "value": 7,
+    }
+    assert list(tmp_path.glob(".report.json.tmp-*")) == []
+
+
+def test_atomic_report_write_failure_leaves_no_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = _load_tool()
+    output = tmp_path / "report.json"
+
+    def fail_replace(source, destination):
+        raise OSError("publish failed")
+
+    monkeypatch.setattr(tool.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="publish failed"):
+        tool._atomic_write_json(output, {"complete": True})
+
+    assert not output.exists()
+    assert list(tmp_path.glob(".report.json.tmp-*")) == []
 
 
 def test_candidate_ablation_is_applied_only_to_candidate_in_both_seats(
@@ -274,6 +331,8 @@ def test_candidate_ablation_is_applied_only_to_candidate_in_both_seats(
     assert calls[0]["bot_b_env_overrides"] == opponent_env
     assert calls[1]["bot_a_env_overrides"] == opponent_env
     assert calls[1]["bot_b_env_overrides"] == candidate_env
+    assert all(call["sanitize_parent_environment"] is True for call in calls)
+    assert payload["runtime_contract"] == tool.native_strength_runtime_contract(1.0)
 
 
 def test_unknown_candidate_ablation_is_rejected_by_contract_and_cli(
@@ -341,12 +400,142 @@ def test_strength_request_rejects_bot_seed_window_overlap() -> None:
     assert "per_player_bot_seed_window_overlap" in errors
 
 
+def test_strength_request_rejects_tiny_outcome_bootstrap() -> None:
+    tool = _load_tool()
+    args = _args(outcome_bootstrap_samples=1_999)
+
+    errors = tool._strength_request_errors(
+        args, tool._seeds(args), opponent_count=1
+    )
+
+    assert "outcome_bootstrap_samples_must_be_at_least_2000" in errors
+
+
+def test_strength_request_rejects_nonfrozen_match_timeout() -> None:
+    tool = _load_tool()
+    args = _args(timeout_sec=1.0)
+
+    errors = tool._strength_request_errors(
+        args, tool._seeds(args), opponent_count=1
+    )
+
+    assert "match_timeout_must_equal_frozen_default" in errors
+
+    trace_args = _args(trace_decisions=True)
+    trace_errors = tool._strength_request_errors(
+        trace_args, tool._seeds(trace_args), opponent_count=1
+    )
+    assert "decision_trace_forbidden" in trace_errors
+
+
+def _outcome_payload(
+    *, ordinary_low: float, stratified_low: float, opponent_rates: dict[str, float]
+) -> dict:
+    passed = bool(
+        ordinary_low > 0.5
+        and stratified_low > 0.5
+        and all(rate >= 0.5 for rate in opponent_rates.values())
+    )
+    return {
+        "seventy_hand_outcomes": {
+            "criterion": "net_chips_after_70_hands_gt_zero",
+            "combined": {
+                "cluster_bootstrap_positive_rate_ci": {"low": ordinary_low},
+                "opponent_stratified_cluster_bootstrap_positive_rate_ci": {
+                    "low": stratified_low
+                },
+                "win_rate_evidence_passed": passed,
+            },
+            "opponents": {
+                name: {"positive_rate": rate}
+                for name, rate in opponent_rates.items()
+            },
+        }
+    }
+
+
+def test_strength_outcome_gate_requires_both_lcbs_and_each_opponent() -> None:
+    tool = _load_tool()
+
+    assert tool._strength_outcome_errors(
+        _outcome_payload(
+            ordinary_low=0.51,
+            stratified_low=0.52,
+            opponent_rates={"a": 0.5, "b": 0.75},
+        )
+    ) == []
+
+    errors = tool._strength_outcome_errors(
+        _outcome_payload(
+            ordinary_low=0.5,
+            stratified_low=0.49,
+            opponent_rates={"a": 0.49, "b": 1.0},
+        )
+    )
+    assert "ordinary_positive_rate_lcb_not_above_half" in errors
+    assert "opponent_stratified_positive_rate_lcb_not_above_half" in errors
+    assert "opponent:a:positive_rate_below_half" in errors
+
+
+def test_mechanically_compliant_all_loss_summary_fails_strength_outcome() -> None:
+    tool = _load_tool()
+    errors = tool._strength_outcome_errors(
+        _outcome_payload(
+            ordinary_low=0.0,
+            stratified_low=0.0,
+            opponent_rates={"a": 0.0},
+        )
+    )
+
+    assert errors
+    assert all("missing" not in error for error in errors)
+
+    evidence = tool._strength_evidence_payload(
+        requested=True,
+        request_errors=[],
+        result_errors=[],
+        payload=_outcome_payload(
+            ordinary_low=0.0,
+            stratified_low=0.0,
+            opponent_rates={"a": 0.0},
+        ),
+    )
+    assert evidence == {
+        "schema": "native_tcp_strength_evidence_v2_outcome_first",
+        "criterion": "net_chips_after_70_hands_gt_zero",
+        "requested": True,
+        "execution_contract_passed": True,
+        "outcome_gate_passed": False,
+        "passed": False,
+        "request_errors": [],
+        "result_errors": [],
+        "statistical_errors": errors,
+    }
+
+
+def test_unrequested_strength_evidence_is_explicitly_false() -> None:
+    tool = _load_tool()
+    evidence = tool._strength_evidence_payload(
+        requested=False,
+        request_errors=[],
+        result_errors=[],
+        payload={},
+    )
+
+    assert evidence["requested"] is False
+    assert evidence["execution_contract_passed"] is False
+    assert evidence["outcome_gate_passed"] is False
+    assert evidence["passed"] is False
+    assert evidence["statistical_errors"] == []
+
+
 def test_strength_result_rejects_short_or_noncompliant_rows() -> None:
     tool = _load_tool()
     payload = {
         "format": "native_tcp_evaluation_v2",
         "execution_mode": "native_tcp",
         "candidate_ablation": tool._candidate_ablation_contract("full"),
+        "runtime_contract": tool.native_strength_runtime_contract(),
         "paired": True,
         "requires_native_opponents": True,
         "legacy_debug_wrapper_enabled": False,
