@@ -14,6 +14,7 @@ import subprocess
 import re
 import asyncio
 import threading
+import uuid
 
 
 # Phase 4 feature flag (default OFF). PSRO = Pipeline Policy Response Operator
@@ -289,6 +290,8 @@ def append_locked_jsonl(path, entry):
     """Append a JSON entry as a single line to a JSONL file with exclusive lock."""
     with locked_file(path, "a", encoding="utf-8", lock_type=fcntl.LOCK_EX) as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def update_h2h(h2h, bot_a, bot_b, wins_a, wins_b, draws=0):
@@ -473,7 +476,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                repair_baseline_artifact_hash=None,
                                reset_runtime_contract_ledger=False,
                                expected_runtime_contract_ledger_digest=None,
-                               runtime_contract_ledger_reset_reason=None):
+                               runtime_contract_ledger_reset_reason=None,
+                               expected_checkpoint_revision=None,
+                               expected_checkpoint_stage=None,
+                               expected_workflow_run_id=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -491,15 +497,30 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         current_national_execution_mode = ""
 
     # Single exclusive lock covers read-merge-write-rename to prevent TOCTOU
-    with locked_file(PIPELINE_STATE_FILE, "a+", lock_type=fcntl.LOCK_EX) as f:
-        f.seek(0)
-        raw = f.read()
+    checkpoint_lock = PIPELINE_STATE_FILE.with_suffix(
+        PIPELINE_STATE_FILE.suffix + ".lock"
+    )
+    # Lock a stable sidecar inode. Locking PIPELINE_STATE_FILE itself is unsafe
+    # because os.replace swaps that inode while waiters may still hold an open
+    # descriptor to the retired file and later overwrite a newer projection.
+    with locked_file(checkpoint_lock, "a+", lock_type=fcntl.LOCK_EX):
+        try:
+            raw = PIPELINE_STATE_FILE.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raw = ""
         existing = None
         if raw.strip():
             try:
                 existing = json.loads(raw)
-            except Exception:
-                existing = None
+            except Exception as exc:
+                log.error(
+                    "Refusing to overwrite non-empty corrupt pipeline checkpoint: %s",
+                    exc,
+                )
+                return False
+            if not isinstance(existing, dict):
+                log.error("Refusing non-object pipeline checkpoint")
+                return False
         if isinstance(existing, dict):
             try:
                 from pipeline_infrastructure import normalize_checkpoint_infrastructure
@@ -508,6 +529,64 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             except Exception as exc:
                 log.error("Checkpoint infrastructure normalization failed closed: %s", exc)
                 return False
+            active_stage = existing.get("stage")
+            try:
+                active_revision = int(existing.get("checkpoint_revision") or 0)
+            except (TypeError, ValueError):
+                active_revision = -1
+            if active_stage not in {
+                None,
+                "timed_out",
+                "infra_timed_out",
+                "archived",
+                "abandoned",
+            } and (
+                not str(existing.get("workflow_run_id") or "").strip()
+                or active_revision < 1
+            ):
+                log.error(
+                    "Refusing implicit upgrade of active legacy checkpoint at %s; "
+                    "central abandon is required",
+                    active_stage,
+                )
+                return False
+
+        if expected_checkpoint_revision is not None:
+            current_revision = (
+                int(existing.get("checkpoint_revision") or 0)
+                if isinstance(existing, dict)
+                else 0
+            )
+            if current_revision != int(expected_checkpoint_revision):
+                log.warning(
+                    "Checkpoint revision compare-and-swap rejected: expected=%s current=%s",
+                    expected_checkpoint_revision,
+                    current_revision,
+                )
+                return False
+        if expected_checkpoint_stage is not None and (
+            not isinstance(existing, dict)
+            or str(existing.get("stage") or "") != str(expected_checkpoint_stage)
+        ):
+            log.warning(
+                "Checkpoint stage compare-and-swap rejected: expected=%s current=%s",
+                expected_checkpoint_stage,
+                existing.get("stage") if isinstance(existing, dict) else None,
+            )
+            return False
+        if expected_workflow_run_id is not None and (
+            not isinstance(existing, dict)
+            or str(
+                existing.get("workflow_run_id")
+                or existing.get("run_id")
+                or (
+                    f"{int(existing.get('next_v'))}#"
+                    f"{int(existing.get('generation_attempt') or 0)}"
+                )
+            ) != str(expected_workflow_run_id)
+        ):
+            log.warning("Checkpoint workflow identity compare-and-swap rejected")
+            return False
 
         # Merge with existing — preserve gate_results, master_plan, etc.
         existing_gate_results = {}
@@ -530,6 +609,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_infra_failure = None
         existing_official_job = None
         existing_repair_baseline_artifact_hash = None
+        existing_workflow_run_id = ""
+        existing_checkpoint_revision = 0
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
@@ -575,6 +656,14 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_official_job = existing.get("official_job")
             existing_repair_baseline_artifact_hash = existing.get(
                 "repair_baseline_artifact_hash"
+            )
+            existing_workflow_run_id = str(
+                existing.get("workflow_run_id")
+                or expected_workflow_run_id
+                or ""
+            )
+            existing_checkpoint_revision = int(
+                existing.get("checkpoint_revision") or 0
             )
         elif existing:
             active_stage = existing.get("stage")
@@ -902,6 +991,11 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         if existing_official_rework_count is None:
             existing_official_rework_count = 0
         run_id = f"{next_v}#{existing_generation_attempt}"
+        if not existing_workflow_run_id:
+            existing_workflow_run_id = (
+                f"generation:{int(next_v)}:{uuid.uuid4().hex}"
+            )
+        next_checkpoint_revision = existing_checkpoint_revision + 1
         _contract_checkpoint = {
             "next_v": next_v,
             "source_v": source_v,
@@ -936,6 +1030,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         state = {
             "next_v": next_v, "source_v": source_v, "stage": stage,
             "run_id": run_id,
+            "workflow_run_id": existing_workflow_run_id,
+            "checkpoint_revision": next_checkpoint_revision,
             "master_plan": existing_master_plan, "reviewer_feedback": existing_reviewer_feedback,
             "generation_attempt": existing_generation_attempt,
             "audit_attempt": existing_audit_attempt,
@@ -1004,25 +1100,78 @@ def read_pipeline_checkpoint():
         return None
 
 
-def clear_pipeline_checkpoint():
+def clear_pipeline_checkpoint(
+    *,
+    expected_workflow_run_id=None,
+    expected_next_v=None,
+    expected_source_v=None,
+    expected_checkpoint_revision=None,
+    expected_checkpoint_stage=None,
+):
     """Delete pipeline checkpoint (called on successful commit).
 
     Uses exclusive lock to prevent race with concurrent writes.
     """
-    if not PIPELINE_STATE_FILE.exists():
-        return
     previous = None
-    with locked_file(PIPELINE_STATE_FILE, "a+", lock_type=fcntl.LOCK_EX) as f:
-        f.seek(0)
-        raw = f.read()
+    checkpoint_lock = PIPELINE_STATE_FILE.with_suffix(
+        PIPELINE_STATE_FILE.suffix + ".lock"
+    )
+    with locked_file(checkpoint_lock, "a+", lock_type=fcntl.LOCK_EX):
+        try:
+            raw = PIPELINE_STATE_FILE.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raw = ""
         if raw.strip():
             try:
                 previous = json.loads(raw)
             except Exception:
                 previous = None
-        # Truncate under lock, then unlink — both inside the lock to prevent TOCTOU
-        f.seek(0)
-        f.truncate(0)
+        if (
+            expected_workflow_run_id is not None
+            or expected_next_v is not None
+            or expected_source_v is not None
+            or expected_checkpoint_revision is not None
+            or expected_checkpoint_stage is not None
+        ):
+            if not isinstance(previous, dict):
+                return False
+            actual_workflow_run_id = str(
+                previous.get("workflow_run_id")
+                or previous.get("run_id")
+                or (
+                    f"{int(previous.get('next_v'))}#"
+                    f"{int(previous.get('generation_attempt') or 0)}"
+                )
+            )
+            if (
+                expected_workflow_run_id is not None
+                and actual_workflow_run_id != str(expected_workflow_run_id)
+            ):
+                return False
+            if (
+                expected_next_v is not None
+                and previous.get("next_v") != expected_next_v
+            ):
+                return False
+            if (
+                expected_source_v is not None
+                and previous.get("source_v") != expected_source_v
+            ):
+                return False
+            if (
+                expected_checkpoint_revision is not None
+                and int(previous.get("checkpoint_revision") or 0)
+                != int(expected_checkpoint_revision)
+            ):
+                return False
+            if (
+                expected_checkpoint_stage is not None
+                and str(previous.get("stage") or "")
+                != str(expected_checkpoint_stage)
+            ):
+                return False
+        # Unlink under the stable sidecar lock so writers cannot race a retired
+        # checkpoint inode.
         PIPELINE_STATE_FILE.unlink(missing_ok=True)
     try:
         from event_bus import emit
@@ -1056,6 +1205,7 @@ def clear_pipeline_checkpoint():
             )
         except Exception:
             pass
+    return True
 
 
 # ──────────────────────────────────────────────

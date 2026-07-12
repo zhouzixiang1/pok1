@@ -16,10 +16,14 @@ evolution_infra.PIPELINE_STATE_FILE to a tmp directory, so these tests never
 touch the real bots/ dir or production checkpoint file.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
 import pytest
 
 import evolution_infra
 from evolution_infra import (
+    clear_pipeline_checkpoint,
     write_pipeline_checkpoint,
     read_pipeline_checkpoint,
     MAX_PRECOMMIT_RETRIES,
@@ -54,9 +58,84 @@ def test_fresh_checkpoint_persists_log_correlation_fields():
     """Fresh checkpoints carry the same correlation key the event bus emits."""
     state = _write_basic(stage="prepared")
     assert state.get("run_id") == "100#0"
+    assert state.get("workflow_run_id", "").startswith("generation:100:")
+    assert state.get("checkpoint_revision") == 1
     assert state.get("generation_attempt") == 0
     assert state.get("audit_attempt") == 0
     assert state.get("precommit_attempt") == 0
+
+
+def test_checkpoint_revision_cas_serializes_concurrent_waiters():
+    state = _write_basic(stage="prepared")
+    barrier = threading.Barrier(2)
+
+    def advance(stage):
+        barrier.wait()
+        return write_pipeline_checkpoint(
+            next_v=100,
+            source_v=99,
+            stage=stage,
+            expected_checkpoint_revision=state["checkpoint_revision"],
+            expected_checkpoint_stage="prepared",
+            expected_workflow_run_id=state["workflow_run_id"],
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(advance, ["direction_audited", "master_planned"]))
+
+    assert sorted(outcomes) == [False, True]
+    final = read_pipeline_checkpoint()
+    assert final["checkpoint_revision"] == state["checkpoint_revision"] + 1
+    assert final["workflow_run_id"] == state["workflow_run_id"]
+
+
+def test_checkpoint_clear_requires_exact_actor_revision_and_stage():
+    state = _write_basic(stage="prepared")
+
+    assert clear_pipeline_checkpoint(
+        expected_workflow_run_id=state["workflow_run_id"],
+        expected_next_v=100,
+        expected_source_v=99,
+        expected_checkpoint_revision=state["checkpoint_revision"] + 1,
+        expected_checkpoint_stage="prepared",
+    ) is False
+    assert read_pipeline_checkpoint() == state
+
+    assert clear_pipeline_checkpoint(
+        expected_workflow_run_id=state["workflow_run_id"],
+        expected_next_v=100,
+        expected_source_v=99,
+        expected_checkpoint_revision=state["checkpoint_revision"],
+        expected_checkpoint_stage="prepared",
+    ) is True
+    assert read_pipeline_checkpoint() is None
+
+
+def test_corrupt_nonempty_checkpoint_cannot_be_overwritten(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline_state.json"
+    path.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", path)
+
+    assert write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="prepared",
+    ) is False
+    assert path.read_text(encoding="utf-8") == "{broken"
+
+
+def test_workflow_identity_survives_generation_attempt_changes():
+    first = _write_basic(stage="direction_audited", generation_attempt=2)
+    write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="master_planned",
+        reset_generation_attempt=True,
+    )
+    second = read_pipeline_checkpoint()
+    assert first["run_id"] == "100#2"
+    assert second["run_id"] == "100#0"
+    assert second["workflow_run_id"] == first["workflow_run_id"]
 
 
 def test_precommit_attempt_kwarg_persists_value():

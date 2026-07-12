@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-07-12",
+  "purpose": "content-only golden receipt captured before centralized legacy generation abandonment",
+  "runtime_head": "bc1d8595",
+  "checkpoint": {
+    "bytes": 5513165,
+    "sha256": "5ff34c8beb9f026afb1763a87b5a17b07f4712fc89ccff938cc99ac64eb562e0",
+    "next_v": 149,
+    "source_v": 122,
+    "stage": "rework_running",
+    "run_id": "149#0",
+    "workflow_run_id": null,
+    "checkpoint_revision": null,
+    "generation_attempt": 0,
+    "worker_failure_count": 0
+  },
+  "candidate": {
+    "path": "bots/national_v149",
+    "artifact_hash_algorithm": "web/core/bot_artifact.py:hash_path",
+    "artifact_hash": "5f30438c56630d4624bba1350152312fcce20d9c7941232c80fc66203d0d3549",
+    "committed_or_completed": false
+  },
+  "evidence": [
+    {
+      "path": "web/core/results/v149/evidence_snapshot/manifest.json",
+      "bytes": 3159,
+      "sha256": "2f431d7d4e4b545d556b1a37f0b0e4af8355022f7a19c325a0eb3f2eb2b135bc"
+    },
+    {
+      "path": "web/core/results/v149/logs/master_io.txt",
+      "bytes": 218625,
+      "sha256": "fee413c077541c0871a1ecf7795dcd6f7bab3b2625d3908b421cb88b88b3df2f"
+    },
+    {
+      "path": "web/core/results/v149/logs/worker_1_io.txt",
+      "bytes": 164944,
+      "sha256": "ba629e47cf950b22451a436227c2885b1b58979dad8e99e86c647461e3c9a08d"
+    },
+    {
+      "path": "web/core/results/v149/logs/worker_auto_runtime_architecture_national_runtime_v4_state_learning_io.txt",
+      "bytes": 588421,
+      "sha256": "9446e7e2984bf756dbcad3e255864eaab3255e74c0522fe44ae6883d32908699"
+    },
+    {
+      "path": "web/core/results/research_proposals/v149.json",
+      "bytes": 2304,
+      "sha256": "977e844e727c45672ef3d2cccce7a9d2b7347c66ec747b5e1168096a679b2d78"
+    }
+  ],
+  "privacy": "No prompt, source, card, credential, socket payload, or match body is copied into this receipt."
+}

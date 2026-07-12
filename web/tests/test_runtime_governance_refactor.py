@@ -1642,6 +1642,8 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
             "bots/neural_national_lab/data/run.json",
             "sever/server/tcp_server.py",
             "sever/国赛平台/通信协议.docx",
+            "docs/official-raise-boundary-oracle-2026-07-11.md",
+            "docs/official-terminal-settlement-oracle-2026-07-11.md",
             "docs/notes.md",
         ],
         contract,
@@ -1654,10 +1656,46 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
     assert "official_certificates/national_v45.json" in scope["contract_paths"]
     assert "official_certificates/national_v142.json" in scope["contract_paths"]
     assert "sever/server/tcp_server.py" in scope["contract_paths"]
+    assert "docs/official-raise-boundary-oracle-2026-07-11.md" in scope[
+        "contract_paths"
+    ]
+    assert "docs/official-terminal-settlement-oracle-2026-07-11.md" in scope[
+        "contract_paths"
+    ]
     assert "web/core/replay_spotlight.py" in scope["external_paths"]
     assert "sever/国赛平台/通信协议.docx" in scope["external_paths"]
     assert "bots/neural_national_lab/data/run.json" in scope["external_paths"]
     assert "docs/notes.md" in scope["external_paths"]
+
+
+def test_official_oracle_docs_override_docs_non_contract_prefix(monkeypatch):
+    import evaluation_contract
+
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+    contract = evaluation_contract.build_evaluation_contract(
+        Path.cwd(),
+        candidate_v=300,
+        source_v=299,
+        checkpoint={
+            "stage": "workers_done",
+            "next_v": 300,
+            "source_v": 299,
+        },
+    )
+    scope = evaluation_contract.classify_contract_paths(
+        [
+            "docs/official-raise-boundary-oracle-2026-07-11.md",
+            "docs/official-terminal-settlement-oracle-2026-07-11.md",
+            "docs/ordinary-note.md",
+        ],
+        contract,
+    )
+
+    assert scope["contract_paths"] == [
+        "docs/official-raise-boundary-oracle-2026-07-11.md",
+        "docs/official-terminal-settlement-oracle-2026-07-11.md",
+    ]
+    assert scope["external_paths"] == ["docs/ordinary-note.md"]
 
 
 def test_evaluation_contract_excludes_local_engine_under_native_profile(monkeypatch):

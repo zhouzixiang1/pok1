@@ -21,7 +21,12 @@ from tool_helpers import (
 )
 from system_log import log_system_event
 
-from evolution_infra import MAX_PRECOMMIT_RETRIES, read_pipeline_checkpoint, record_reaped_bot
+from evolution_infra import (
+    MAX_PRECOMMIT_RETRIES,
+    append_locked_jsonl,
+    read_pipeline_checkpoint,
+    record_reaped_bot,
+)
 from experience_pool import trim_experience_pool
 from code_verification import seed_initial_bots
 from pipeline_state import generic_abandon_block
@@ -268,7 +273,11 @@ async def abandon_generation(args):
     return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
 
-async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
+async def _do_abandon_generation(
+    reason: str = "abandon_generation",
+    *,
+    _actor_lock_owned: bool = False,
+) -> dict:
     """Core abandon logic — clears the pipeline checkpoint and removes the
     incomplete next-gen directory.
 
@@ -281,7 +290,19 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
     session BEFORE calling this if a stale session must not be resumed.
     """
     from evolution_core import PIPELINE_STATE_FILE
-    checkpoint = read_pipeline_checkpoint() if PIPELINE_STATE_FILE.exists() else None
+    checkpoint_exists = PIPELINE_STATE_FILE.exists()
+    checkpoint = read_pipeline_checkpoint() if checkpoint_exists else None
+    if checkpoint_exists and not isinstance(checkpoint, dict):
+        return {
+            "abandoned": False,
+            "reason": "checkpoint_corrupt",
+            "action": "operator_reconcile",
+            "directive": (
+                "The pipeline checkpoint exists but cannot be decoded or "
+                "normalized. Preserve it for diagnosis; do not infer a version "
+                "or delete a candidate from directory names."
+            ),
+        }
     infra_failure = (
         dict(checkpoint.get("infra_failure"))
         if isinstance(checkpoint, dict) and isinstance(checkpoint.get("infra_failure"), dict)
@@ -319,15 +340,133 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
             pass
         return {"abandoned": False, "rate_limited": True,
                 "reason": f"abandon cooldown active ({60 - (now - _LAST_ABANDON_TS[0]):.0f}s remaining)"}
+    workflow_fenced = False
+    workflow_run_id = None
+    if isinstance(checkpoint, dict):
+        try:
+            from worker_workflow import (
+                WorkerWorkflow,
+                workflow_run_id as checkpoint_workflow_run_id,
+            )
+
+            workflow = WorkerWorkflow.for_checkpoint(checkpoint)
+            workflow_run_id = workflow.run_id
+            # The actor terminal event and effect cancellation happen before any
+            # mutable projection or candidate cleanup. Completion/projector paths
+            # use the same short lock, so a late Worker can never recreate an
+            # abandoned candidate after rmtree.
+            def fence_latest_checkpoint():
+                latest = read_pipeline_checkpoint()
+                if not isinstance(latest, dict):
+                    raise RuntimeError(
+                        "checkpoint disappeared or became unreadable before fence"
+                    )
+                if checkpoint_workflow_run_id(latest) != workflow.run_id:
+                    raise RuntimeError(
+                        "checkpoint workflow identity changed before fence"
+                    )
+                latest_block = _generic_abandon_stage_block(latest, reason)
+                if latest_block:
+                    return latest_block, None
+                workflow.abandon(reason)
+                return None, latest
+
+            if _actor_lock_owned:
+                blocked_after_lock, latest_checkpoint = fence_latest_checkpoint()
+            else:
+                with workflow.store.command_lock(
+                    workflow.run_id,
+                    blocking=True,
+                ):
+                    blocked_after_lock, latest_checkpoint = (
+                        fence_latest_checkpoint()
+                    )
+            if blocked_after_lock:
+                log_system_event(
+                    "pipeline.abandon_refused_state_guard",
+                    "warn",
+                    blocked_after_lock["directive"],
+                    blocked_after_lock,
+                )
+                return blocked_after_lock
+            checkpoint = latest_checkpoint
+            infra_failure = (
+                dict(checkpoint.get("infra_failure"))
+                if isinstance(checkpoint.get("infra_failure"), dict)
+                else None
+            )
+            workflow_fenced = True
+        except Exception as exc:
+            log_system_event(
+                "pipeline.abandon_workflow_fence_failed",
+                "error",
+                "Refused generation cleanup because the durable actor could not be fenced",
+                {
+                    "reason": reason,
+                    "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                    "workflow_run_id": workflow_run_id,
+                },
+            )
+            return {
+                "abandoned": False,
+                "reason": "workflow_fence_failed",
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                "workflow_run_id": workflow_run_id,
+            }
     cleared_checkpoint = False
     removed_dir = None
-    abandoned_v = None
+    abandoned_v = checkpoint.get("next_v") if isinstance(checkpoint, dict) else None
+
+    def record_abandoned_floor(version):
+        if version is None:
+            return
+        append_locked_jsonl(
+            RESULTS_DIR / "abandoned_versions.jsonl",
+            {
+                "v": version,
+                "reason": reason,
+                "timestamp": __import__("time").time(),
+                "infra_failure": infra_failure,
+                "workflow_run_id": workflow_run_id,
+            },
+        )
 
     if checkpoint:
         next_v = checkpoint.get("next_v")
-        abandoned_v = next_v
-        clear_pipeline_checkpoint()
-        cleared_checkpoint = True
+        # Persist the monotonic version floor before unlink/rmtree.  A crash
+        # after either cleanup step therefore cannot silently reuse this
+        # generation number on restart.
+        record_abandoned_floor(abandoned_v)
+        cleared_checkpoint = bool(clear_pipeline_checkpoint(
+            expected_workflow_run_id=(
+                checkpoint.get("workflow_run_id")
+                or checkpoint.get("run_id")
+                or workflow_run_id
+            ),
+            expected_next_v=checkpoint.get("next_v"),
+            expected_source_v=checkpoint.get("source_v"),
+            expected_checkpoint_revision=checkpoint.get("checkpoint_revision"),
+            expected_checkpoint_stage=checkpoint.get("stage"),
+        ))
+        if not cleared_checkpoint:
+            log_system_event(
+                "pipeline.abandon_checkpoint_identity_conflict",
+                "error",
+                "Durable actor was fenced but checkpoint identity changed before cleanup",
+                {
+                    "reason": reason,
+                    "workflow_run_id": workflow_run_id,
+                    "next_v": next_v,
+                    "source_v": checkpoint.get("source_v"),
+                },
+            )
+            return {
+                "abandoned": False,
+                "reason": "checkpoint_identity_conflict",
+                "workflow_fenced": workflow_fenced,
+                "workflow_run_id": workflow_run_id,
+                "abandoned_v": abandoned_v,
+            }
         if next_v is not None:
             next_dir = get_bot_dir(next_v)
             if next_dir.exists() and not (next_dir / ".completed").exists():
@@ -353,6 +492,7 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
         next_dir = get_bot_dir(next_v)
         if next_dir.exists() and not (next_dir / ".completed").exists():
             abandoned_v = next_v
+            record_abandoned_floor(abandoned_v)
             if git_dir_is_committed(next_v):
                 log_system_event(
                     "pipeline.abandon_preserved_git_tracked",
@@ -364,30 +504,13 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
                 shutil.rmtree(next_dir)
                 removed_dir = bot_name(next_v)
 
-    # P2 (2026-06-29 reboot analysis): record the abandoned version number so the
-    # next prepare_generation skips it. Without this, the same next_v is reused
-    # (find_current_v returns the last TAGGED version, so next_v = tagged+1 == the
-    # just-abandoned number), causing the bot to retry the exact same dead-end
-    # version (observed: v218 abandoned then re-prepared as v218 and committed).
-    if abandoned_v is not None:
-        try:
-            from evolution_infra import RESULTS_DIR
-            ab_file = RESULTS_DIR / "abandoned_versions.jsonl"
-            with open(ab_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "v": abandoned_v,
-                    "reason": reason,
-                    "timestamp": __import__("time").time(),
-                    "infra_failure": infra_failure,
-                }) + "\n")
-        except Exception:
-            pass
-
     log_system_event("pipeline.abandoned", "warn",
                      f"Abandoned generation ({reason}, dir={removed_dir})",
                      {"removed_dir": removed_dir, "cleared_checkpoint": cleared_checkpoint,
                       "reason": reason, "abandoned_v": abandoned_v,
-                      "infra_failure": infra_failure})
+                      "infra_failure": infra_failure,
+                      "workflow_fenced": workflow_fenced,
+                      "workflow_run_id": workflow_run_id})
     # A4: update rate-limit timestamp on successful abandon.
     _LAST_ABANDON_TS[0] = now
     _LAST_ABANDON_TS[1] = reason
@@ -399,6 +522,8 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
         "reason": reason,
         "infra_failure": infra_failure,
         "abandoned_v": abandoned_v,
+        "workflow_fenced": workflow_fenced,
+        "workflow_run_id": workflow_run_id,
     }
 
 

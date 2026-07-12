@@ -763,6 +763,9 @@ def test_quality_failure_routes_one_structured_architecture_repair(tmp_path, mon
     ckpt = {
         "next_v": 2,
         "source_v": 1,
+        "run_id": "2#0",
+        "workflow_run_id": "test-architecture-recovery-2-1",
+        "checkpoint_revision": 1,
         "stage": "quality_failed",
         "master_plan": {
             "architecture_policy": policy,
@@ -1722,6 +1725,9 @@ def test_policy_identity_recovery_never_reports_replan_when_write_fails(
     ckpt = {
         "next_v": 2,
         "source_v": 1,
+        "run_id": "2#0",
+        "workflow_run_id": "test-architecture-recovery-2-1",
+        "checkpoint_revision": 1,
         "stage": "quality_failed",
         "gate_results": {
             "quality": {
@@ -1802,6 +1808,9 @@ def test_execute_workers_reports_architecture_recovery_failure_not_replan(
     ckpt = {
         "next_v": 2,
         "source_v": 1,
+        "run_id": "2#0",
+        "workflow_run_id": "test-execute-architecture-recovery-2-1",
+        "checkpoint_revision": 1,
         "stage": "quality_failed",
         "gate_results": {
             "quality": {
