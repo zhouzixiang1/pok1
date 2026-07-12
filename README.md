@@ -53,6 +53,29 @@ arena/
 scripts/                 验收脚本 + arena-ctl 进程管理
 ```
 
+## 扩展功能:天梯 / 历史 / 用户管理 / 认证
+
+持久化对战平台(SQLite `arena.db` + Glicko-2 评分 + 完整日志):
+
+- **天梯榜** `/leaderboard`:Glicko-2 评分(tanh 量级保留大胜/小胜,RD 不确定度)+ mbb/g(bb/100)+95% CI 副指标
+- **用户页** `/user/:name`:rating 卡 + 战绩 + 对各对手 bb/100 CI + 最近对局
+- **历史** `/history`:对局列表(用户筛选 + 分页);**对局详情** `/match/:id`(事件时间线 + THP)
+- **管理后台** `/admin`(需登录):bot 用户 CRUD(注册/编辑/停用/删除)
+- **日志**:每场 serve 自动写 `logs/<match_id>/{events.jsonl, result.json}`
+
+```bash
+pok-arena serve                          # 跑对局(自动建 arena.db + 评分 + 日志)
+pok-arena leaderboard                    # 天梯榜
+pok-arena user BotX                      # 用户战绩 + 对手 bb/100
+pok-arena history --user BotX            # 历史对局(按 bot 筛选)
+pok-arena register BotZ --team TZ        # 预注册 bot
+pok-arena admin set-password --password …  # 建管理员(/admin 登录用)
+```
+
+- API:`/api/leaderboard` `/api/users/{name}` `/api/matches` `/api/matches/{id}`(公开只读)+ `/api/admin/*`(需 token)
+- 认证:管理员密码登录(pbkdf2-sha256 + session cookie/token);bot 连接裸 name(兼容国赛),可选 `--require-registration` 白名单
+- 评分依据:国赛官方无赛事级评分(单场 W/L/D),arena 自建 Glicko-2(详见 `docs/EXPANSION_PLAN.md` 三方调研:国赛官方/ACPC/PokerBench)
+
 ## 协议要点(与用户确认的决策,见 `arena/backend/engine/PROVENANCE.md`)
 
 - **raise 边界** `>=2×`(精确 2× 合法,raise 200→400 合法)。与 `official-raise-boundary-oracle` + EXE 实测一致。HANDOFF.md 的 `>2×` 为笔误,已修正。
