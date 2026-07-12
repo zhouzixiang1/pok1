@@ -601,9 +601,35 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     })
     assert evidence_snapshot.ensure_generation_h2h_snapshot(24)["available"] is True
     captured = {}
+    targeted_failure = "The selected frozen-evidence mechanism fixes one reachable leak."
+    proposal = {
+        "schema_version": "master-proposal-v2",
+        "targeted_failure": targeted_failure,
+        "structural_change": "Replace one reachable frozen-evidence branch with a bounded mechanism.",
+        "counterfactual": "Hold cards, state, seed, and legality fixed while toggling only this mechanism.",
+        "measurement": "Run paired positive and control decisions before native regression.",
+        "why_not_threshold_tuning": "The mechanism replaces reachable state flow instead of changing one cutoff.",
+        "expected_diff": "The strategy decision path consumes the selected structural mechanism.",
+        "target_files": ["strategy.py"],
+        "source_symbols": ["strategy.py:get_action", "strategy.py:choose_action"],
+        "reachable_chain": ["strategy.py:get_action", "strategy.py:choose_action"],
+        "falsifier": {
+            "test_name": "test_frozen_evidence_mechanism",
+            "control": "The frozen parent preserves the original paired decision.",
+            "intervention": "Only the selected frozen-evidence mechanism is enabled.",
+            "expected_observation": "The intervention changes the target action while control does not.",
+        },
+        "evidence_refs": [
+            "source:strategy.py:get_action",
+            "source:strategy.py:choose_action",
+        ],
+        "risks": "Frozen evidence may be sparse, so the fallback and implementation remain bounded.",
+    }
+    proposal_id = agent_master._proposal_identity(proposal)
+    proposal["proposal_id"] = proposal_id
     valid_plan = {
         "analysis": "use stable snapshot",
-        "targeted_failure": "one leak",
+        "targeted_failure": targeted_failure,
         "expected_behavior_change": "one changed decision",
         "do_not_touch": ["opponent.py"],
         "measurement_plan": "compare to parent",
@@ -615,6 +641,7 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
             "skill_layer": "spr",
             "worker_prompt": "Change strategy.py in the target bot.",
         }],
+        "selected_proposal_id": proposal_id,
     }
 
     async def fake_run_claude_query(prompt, *_args, **_kwargs):
@@ -622,6 +649,19 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         return "```json\n" + json.dumps(valid_plan) + "\n```", 0.0, {}
 
     monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+    async def fake_ensemble(*_args, **_kwargs):
+        return json.dumps({
+            "schema_version": "master-proposal-packet-v2",
+            "valid": True,
+            "context_digest": "c" * 64,
+            "source_code_digest": "d" * 64,
+            "proposal_count": 1,
+            "valid_critic_count": 2,
+            "allowed_proposal_ids": [proposal_id],
+            "ordered_proposals": [proposal],
+            "critic_reviews": [],
+        })
+    monkeypatch.setattr(agent_master, "_run_master_proposal_ensemble", fake_ensemble)
 
     result = asyncio.run(agent_master._run_master_analysis(20, 24, "flat", _UI()))
 

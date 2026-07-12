@@ -239,7 +239,9 @@ class TestClearPipelineCheckpoint:
                     mock_lock.return_value.__enter__ = MagicMock(return_value=MagicMock())
                     mock_lock.return_value.__exit__ = MagicMock(return_value=False)
                     clear_pipeline_checkpoint()
-                    assert mock_lock.call_args_list[0].args[0] == fake_path
+                    assert mock_lock.call_args_list[0].args[0] == fake_path.with_suffix(
+                        fake_path.suffix + ".lock"
+                    )
         finally:
             if fake_path.exists():
                 fake_path.unlink()

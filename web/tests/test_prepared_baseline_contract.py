@@ -329,9 +329,35 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
         preplan_transition=_accepted_preplan_transition(),
     )
     captured = []
+    targeted_failure = "The selected prepared-child mechanism fixes one reachable failure."
+    proposal = {
+        "schema_version": "master-proposal-v2",
+        "targeted_failure": targeted_failure,
+        "structural_change": "Replace one reachable prepared-child branch with a bounded mechanism.",
+        "counterfactual": "Hold cards, state, seed, and legality fixed while toggling only this mechanism.",
+        "measurement": "Run paired positive and control decisions before native regression.",
+        "why_not_threshold_tuning": "The mechanism replaces reachable state flow instead of changing one cutoff.",
+        "expected_diff": "The prepared strategy path consumes the selected structural mechanism.",
+        "target_files": ["strategy.py"],
+        "source_symbols": ["strategy.py:get_action", "strategy.py:choose_action"],
+        "reachable_chain": ["strategy.py:get_action", "strategy.py:choose_action"],
+        "falsifier": {
+            "test_name": "test_prepared_child_mechanism",
+            "control": "The prepared baseline preserves the original paired decision.",
+            "intervention": "Only the selected prepared-child mechanism is enabled.",
+            "expected_observation": "The intervention changes the target action while control does not.",
+        },
+        "evidence_refs": [
+            "source:strategy.py:get_action",
+            "source:strategy.py:choose_action",
+        ],
+        "risks": "Prepared-child behavior may regress, so the fallback and scope remain bounded.",
+    }
+    proposal_id = agent_master._proposal_identity(proposal)
+    proposal["proposal_id"] = proposal_id
     plan = {
         "analysis": "Use the prepared child baseline.",
-        "targeted_failure": "one bounded weakness",
+        "targeted_failure": targeted_failure,
         "expected_behavior_change": "one action family changes",
         "do_not_touch": [],
         "measurement_plan": "run deterministic gates",
@@ -343,6 +369,7 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
             "skill_layer": "spr",
             "worker_prompt": "Change one prepared-child SPR decision in strategy.py.",
         }],
+        "selected_proposal_id": proposal_id,
     }
 
     async def fake_query(prompt, *_args, **_kwargs):
@@ -355,6 +382,19 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
     monkeypatch.setattr(agent_master, "get_bot_dir", bot_dir)
     monkeypatch.setattr(agent_master, "get_logs_dir", lambda _v: tmp_path)
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+    async def fake_ensemble(*_args, **_kwargs):
+        return json.dumps({
+            "schema_version": "master-proposal-packet-v2",
+            "valid": True,
+            "context_digest": "c" * 64,
+            "source_code_digest": "d" * 64,
+            "proposal_count": 1,
+            "valid_critic_count": 2,
+            "allowed_proposal_ids": [proposal_id],
+            "ordered_proposals": [proposal],
+            "critic_reviews": [],
+        })
+    monkeypatch.setattr(agent_master, "_run_master_proposal_ensemble", fake_ensemble)
     import evidence_snapshot
     snapshot_dir = tmp_path / "evidence_snapshot"
     snapshot_dir.mkdir()

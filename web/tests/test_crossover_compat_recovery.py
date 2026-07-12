@@ -379,9 +379,21 @@ def test_run_crossover_llm_incompatibility_is_advisory_only(tmp_path, monkeypatc
     monkeypatch.setattr(
         tool_bot_management,
         "read_pipeline_checkpoint",
-        lambda: {"next_v": 25, "source_v": 7, "parent2_v": 1, "stage": "selected"},
+        lambda: {
+            "next_v": 25,
+            "source_v": 7,
+            "parent2_v": 1,
+            "run_id": "25#0",
+            "workflow_run_id": "test-crossover-25-7",
+            "checkpoint_revision": 1,
+            "stage": "selected",
+        },
     )
-    monkeypatch.setattr(tool_bot_management, "clear_pipeline_checkpoint", lambda: cleared.append(True))
+    monkeypatch.setattr(
+        tool_bot_management,
+        "clear_pipeline_checkpoint",
+        lambda **_kwargs: cleared.append(True) or True,
+    )
     monkeypatch.setattr(tool_bot_management, "get_bot_dir", _bot_dir)
     monkeypatch.setattr(tool_bot_management, "git_dir_is_committed", lambda _v: False)
 
@@ -451,9 +463,21 @@ def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
     monkeypatch.setattr(
         tool_bot_management,
         "read_pipeline_checkpoint",
-        lambda: {"next_v": 25, "source_v": 7, "parent2_v": 1, "stage": "selected"},
+        lambda: {
+            "next_v": 25,
+            "source_v": 7,
+            "parent2_v": 1,
+            "run_id": "25#0",
+            "workflow_run_id": "test-crossover-exhausted-25-7",
+            "checkpoint_revision": 1,
+            "stage": "selected",
+        },
     )
-    monkeypatch.setattr(tool_bot_management, "clear_pipeline_checkpoint", lambda: cleared.append(True))
+    monkeypatch.setattr(
+        tool_bot_management,
+        "clear_pipeline_checkpoint",
+        lambda **_kwargs: cleared.append(True) or True,
+    )
     monkeypatch.setattr(tool_bot_management, "get_bot_dir", _bot_dir)
     monkeypatch.setattr(tool_bot_management, "git_dir_is_committed", lambda _v: False)
 

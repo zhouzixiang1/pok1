@@ -967,7 +967,14 @@ def normalize_worker_role(role):
     return "other"
 
 
-def _validate_worker_boundaries(tasks, source_v, next_v, worker_snapshots=None):
+def _validate_worker_boundaries(
+    tasks,
+    source_v,
+    next_v,
+    worker_snapshots=None,
+    *,
+    candidate_dir=None,
+):
     """Validate that workers respected their role boundaries.
 
     Args:
@@ -979,7 +986,7 @@ def _validate_worker_boundaries(tasks, source_v, next_v, worker_snapshots=None):
             when multiple workers share a target file.
     """
     source_dir = get_bot_dir(source_v)
-    next_dir = get_bot_dir(next_v)
+    next_dir = Path(candidate_dir) if candidate_dir is not None else get_bot_dir(next_v)
     all_targets = set()
     errors = []
 

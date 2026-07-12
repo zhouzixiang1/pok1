@@ -160,7 +160,7 @@ python -m pytest sever/tests -q               # Protocol regression suite
 Each evolution generation follows a three-phase cycle managed by `generation_scheduler.py`:
 
 1. **Phase 1 — `prepare_generation()`**: Code-layer analysis (stagnation + performance verification via `combined_analyst.py`). Decides the source version, target version, and strategy before the Master prompt runs. **Disposable** — safe to re-run on interrupt.
-2. **Phase 2 — `_run_one_cycle()` in `orchestrator.py`**: LLM-driven pipeline execution. Orchestrator Claude agent calls MCP tools in sequence. **Preserves state** on interrupt via session + checkpoint files.
+2. **Phase 2 — `_run_one_cycle()` in `orchestrator.py`**: LLM-driven pipeline execution. Orchestrator Claude agent calls MCP tools in sequence. **Preserves state** on interrupt via session + versioned checkpoint files; Worker preparation/effects additionally use the SQLite durable journal described below.
 3. **Phase 3 — `post_generation_cleanup()`**: Runs only for committed/tagged generations. Reaps weakest bot if pool > 30, consolidates experience every 3 gens or when `RECENT_LESSONS` is crowded, and launches post-commit probes/fingerprints. **Idempotent** — safe to re-run.
 
 ### Per-Generation Pipeline (inside Phase 2)
@@ -170,8 +170,8 @@ The Orchestrator LLM calls these MCP tools in order:
 1. **Prepare/Crossover**: Use `prepare_next_gen` first for normal Master/Worker generations so the target bot dir and `prepared` checkpoint exist. For crossover generations, use `run_crossover` as the alternative setup path; it creates only a recombination baseline and also finishes at `prepared`, so it never skips steps 2–5.
 2. **Direction Auditor**: Pre-Master LLM gate that checks git history for repetitive evolution directions. Forces structural alternatives if stuck.
 3. **Optional Literature Probe**: When stagnation or repetition is detected, run `run_literature_probe` before Master so web-derived strategy hypotheses are explicit and governed.
-4. **Master Architect** (`prompts/master_prompt.md`): Analyzes the generation-scoped frozen selection/H2H bundle, experience pool, match diagnostics, and the pre-selected source version. Produces JSON task plan with worker assignments. It must not reopen live strength files, set `branch_from`, or set source-override fields; source selection is handled before Master planning.
-5. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
+4. **Master Architect** (`prompts/master_prompt.md`): Analyzes the generation-scoped frozen selection/H2H bundle, experience pool, match diagnostics, and the pre-selected source version. Three independent typed proposal scouts are checked against a system-rendered source-symbol/call-leaf index, then two anonymous criterion critics score them. Master must select one proposal ID; the system compiles its mechanism/falsifier/digest into matching Worker prompts. It must not reopen live strength files, set `branch_from`, or set source-override fields; source selection is handled before Master planning.
+5. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore) inside lease-epoch isolated artifact workspaces. They never directly mutate the canonical bot directory. Successful output is captured content-addressably, then crash-safely materialized under the generation actor; infrastructure retries reuse the frozen envelope instead of rebuilding prompts or one-time preparation.
 6. **Quality Gates** (automated, no LLM): `py_compile`, runtime import contract, smoke test, decision tests (≥70% pass), national TCP protocol regression tests matching the active execution mode (`national_native` uses the adapter-free platform shard; adapter workflows use the legacy adapter shard), declared-scope/protected-contract checks, mandatory fix verification, telemetry/reachability checks, file size ≤2000 lines (core strategy files) / ≤1500 lines (helpers), adaptive limit based on source bot size + 15% growth budget, hard cap 2500.
 7. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
 8. **Critic** (`prompts/critic_prompt.md`): Independent advisory strategic review. A schema-valid run is required and its evidence is preserved, but native TCP precommit owns strategy acceptance and repair routing.
@@ -190,9 +190,12 @@ the immutable completion-tag tree.
 
 The local strategy reference pack is intentionally small and machine-checked.
 Compact import-time facts trade modest space for time; candidate-owned file,
-network, and subprocess I/O is forbidden. Large packed/mmap policy tables remain
-deferred until a system-owned immutable loader and packaging/hash/key/consumer
-contract exist. A large token budget may support deeper analysis, but does not
+network, and subprocess I/O is forbidden. `poker_assets.py` now supplies a
+system-owned ABI prototype: a content-addressed read-only mmap containing real
+1,326-combination/169-class metadata only. It is not an evaluator, equity table,
+policy, or bot decision consumer. Larger packed/mmap assets remain deferred
+until packaging/hash/key/consumer and live decision-influence contracts exist.
+A large token budget may support deeper analysis, but does not
 turn free-form prose into execution authority.
 
 ### LLM Integration
@@ -202,7 +205,7 @@ Uses `claude_agent_sdk` (not the Anthropic SDK directly). Two distinct patterns:
 **Pattern 1 — MCP Tool Server (Orchestrator only):**
 `orchestrator.py` → `tools.py` → `create_sdk_mcp_server()` registers the 17 Orchestrator-visible MCP tools from `tool_planning.py`, `tool_gates.py`, `tool_eval.py`, `tool_commit.py`, `tool_bot_management.py`, and query helpers from `tool_status.py`. `get_status` and maintenance helpers remain HTTP/control-only in `all_tools`; they are not callable from the Orchestrator MCP session. Each tool function receives `args` dict, runs business logic (often calling `run_claude_query()` for sub-agents), and returns MCP-formatted results. Session ID persisted for crash recovery (`orchestrator_session.json`). PreCompact hook injects pipeline state to survive LLM context compaction.
 
-**Pattern 2 — Direct `run_claude_query()` (Master, Workers, Reviewer, Critic, Analysts):**
+**Pattern 2 — Direct `run_claude_query()` (proposal scouts/critics, Master, Workers, Reviewer, Critic, Analysts):**
 `evolution_infra.py:run_claude_query()` → `llm_query.py:run_claude_query()` sends a prompt + context files to Claude. 700K char prompt budget (`MAX_PROMPT_CHARS`) — context files proportionally compressed when exceeded. Streaming via `AssistantMessage`/`ResultMessage` types. Output captured as text, cost tracked per role. Each agent gets specific tool access: Workers get Bash/Read/Edit, Reviewer/Critic get Bash/Read, Analysts get no tools. API rate limit (529) handled with automatic retry + exponential backoff (30s, 60s, 120s).
 
 `run_claude_query()` sets the Claude Code working directory to the repository
@@ -219,7 +222,9 @@ list and do not auto-start user/global MCP servers.
 | Agent | Tools | Purpose |
 |---|---|---|
 | Orchestrator | MCP tools only | Drives pipeline, decides evolution flow |
-| Master | Bash, Read | Analyzes state, plans worker tasks |
+| Proposal scouts | Read | Produce independently typed, source-evidenced mechanisms |
+| Proposal critics | None | Anonymous criterion ballots over validated proposal IDs |
+| Master | Read | Selects one validated proposal and plans worker tasks |
 | Workers | Bash, Read, Edit | Modify bot source code |
 | Reviewer | Bash, Read | Reviews diff, scores quality |
 | Critic | Bash, Read | Strategic assessment, score 1-10 |
@@ -506,7 +511,7 @@ Defaults: `r=1500`, `rd=350`, `sigma=0.06`; the Glicko-2 volatility constant is 
 
 - **ShutdownManager** (`shutdown_manager.py`): Asyncio-native SIGINT/SIGTERM handler. Double-signal kills process. All three generation phases check `shutdown_mgr.is_shutting_down` between operations.
 - **Orchestrator session persistence**: `orchestrator_session.json` stores the session ID. On restart, the Orchestrator resumes the exact LLM conversation. Cleared on natural cycle completion.
-- **Pipeline checkpoint**: `STAGE_ORDER` (defined in `pipeline_state.py`, re-exported by `evolution_infra.py`) defines 20 checkpoint labels. The exact early branch is `selected` → (`preparing` or `crossover_running`) → `prepared` → `direction_audited`; later labels are `master_planned` → `workers_done` → `quality_failed|quality_passed` → `reviewed` → `critic_checked` → `precommit_failed|repair_planned|rework_running` → `verified` → `official_bootstrap_required|official_certifying|official_failed|official_inconclusive` → `archived`. `STAGE_GATE_ALLOWLIST` enforces cumulative quality, review, critic, precommit, and official-full ledgers. `commit_bot` cannot publish until the content-bound signed EXE certificate validates. `pipeline_state.json` persists the current stage and durable official job attachment for crash recovery.
+- **Pipeline checkpoint and Worker journal**: `STAGE_ORDER` (defined in `pipeline_state.py`, re-exported by `evolution_infra.py`) defines 20 checkpoint labels. The exact early branch is `selected` → (`preparing` or `crossover_running`) → `prepared` → `direction_audited`; later labels are `master_planned` → `workers_done` → `quality_failed|quality_passed` → `reviewed` → `critic_checked` → `precommit_failed|repair_planned|rework_running` → `verified` → `official_bootstrap_required|official_certifying|official_failed|official_inconclusive` → `archived`. `pipeline_state.json` remains authoritative for non-Worker stages and carries immutable `workflow_run_id` plus monotonic `checkpoint_revision` CAS. `workflow_kernel.py`/`worker_workflow.py` own the Worker-only SQLite-WAL journal, effect/outbox leases, terminal fencing, immutable input/output artifacts, and crash recovery. Do not call the whole pipeline event-sourced yet. `STAGE_GATE_ALLOWLIST` enforces cumulative quality, review, critic, precommit, and official-full ledgers. The two official oracle Markdown files are always-critical exact-file contract inputs, with content hashes pinned by `runtime_architecture_policy.py`.
 - **Daemon lifecycle**: `start_daemon()` spawns `elo_daemon.py` as subprocess. `daemon_monitor_thread()` watches for crashes and auto-restarts. Daemon auto-exits on parent death via `getppid()==1` check.
 - **Orphan detection**: JSON PID file (`.daemon_pid`) for daemon process tracking. 5s orphan detection interval.
 
@@ -520,7 +525,7 @@ It is approximately grouped by scale (not a strict sort) and excludes `__init__.
 
 | File | Lines | Role |
 |---|---|---|
-| `tool_planning.py` | 9787 | Pipeline tools: direction audit, system-owned Master context, canonical repair authority, literature, transactional Workers |
+| `tool_planning.py` | 10929 | Pipeline tools: direction audit, system-owned Master context, canonical repair authority, literature, and durable Worker dispatch/projection |
 | `national_native.py` | 4279 | Native national TCP execution backend for evolved bots |
 | `official_certification.py` | 3947 | Official EXE policy, identity, evidence validation, signed certificates and explicit one-time bootstrap binding |
 | `tool_gates.py` | 3450 | Complete-artifact quality gates, code prep, review, and advisory Critic execution |
@@ -529,20 +534,20 @@ It is approximately grouped by scale (not a strict sort) and excludes `__init__.
 | `elo_daemon.py` | 2885 | Single-writer rating daemon: staged native admission, immutable evaluation cycles, Glicko-2, H2H and telemetry |
 | `tool_commit.py` | 2766 | Commit, signed official full gate, staged/tree-bound publication, archivist, and crossover routing |
 | `tool_eval.py` | 2727 | Frozen-contract precommit and diagnostic inline evaluation |
-| `evolution_infra.py` | 2663 | Shared infra: constants, Git/blob publication, checkpoints, ratings and repair receipts |
+| `evolution_infra.py` | 2813 | Shared infra: constants, Git/blob publication, revision-CAS checkpoints, ratings and repair receipts |
 | `llm_query.py` | 2756 | `run_claude_query()` primitive, output parsing, prompt budgets, sandboxing and exact-snapshot Master read guard |
 | `official_platform_harness.py` | 2443 | Wine/Xvfb driver for official EXE evidence |
 | `national_capability_contract.py` | 2006 | Static/runtime data-flow and external-I/O capability evidence for native bots |
 | `national_arena/manager.py` | 1946 | Local diagnostic/presentation Arena session lifecycle |
 | `runtime_architecture_policy.py` | 1823 | Parent/prepared-child capability preservation plus preplan/final runtime contracts |
 | `national_runtime_probe_worker.py` | 1726 | Resource-limited dynamic native capability probe with separated safety/baseline and sampled 2s/8s evidence |
-| `agent_workers.py` | 1569 | Binary-safe Worker execution with retries and runtime-contract isolation |
+| `agent_workers.py` | 1631 | Binary-safe Worker execution in lease workspaces with frozen prompt/runtime contracts |
 | `decision_tester.py` | 1318 | Decision scenarios and dynamic regression generation |
 | `battle_experience.py` | 1311 | Incremental match analysis via background LLM thread |
 | `crossover_provenance.py` | 1091 | Complete-artifact and single-use Parent-B-symbol provenance gate for pure crossover |
 | `official_llm_analysis.py` | 1073 | Advisory-only EXE evidence explanation and repair guidance |
 | `official_certification_job.py` | 1036 | Durable process-owned official EXE job state machine |
-| `tool_helpers.py` | 1054 | Shared MCP tool helpers, strength snapshots, gates and repair contracts |
+| `tool_helpers.py` | 1061 | Shared MCP tool helpers, strength snapshots, gates and repair contracts |
 | `code_verification.py` | 1029 | Resource-limited compile/import, size, smoke, decisions, reachability and runtime evidence |
 | `agent_review.py` | 1024 | Reviewer, advisory Critic, performance and provenance-gated crossover agents |
 | `orchestrator_context.py` | 933 | Orchestrator context building and PreCompact hook |
@@ -559,9 +564,12 @@ It is approximately grouped by scale (not a strict sort) and excludes `__init__.
 | `candidate_store.py` | 654 | Candidate ledger plus SQLite query store |
 | `official_bootstrap.py` | 642 | Fail-closed pinned v5 signed-ledger bootstrap root selector and receipt validator |
 | `replay_analysis.py` | 639 | Replay statistics and behavior fingerprints |
-| `evaluation_contract.py` | 618 | Active exact-file evaluation contract and HEAD drift policy |
+| `evaluation_contract.py` | 628 | Active exact-file evaluation contract, official-oracle inputs, and HEAD drift policy |
 | `evidence_snapshot.py` | 862 | Immutable per-generation evidence snapshots with bounded diagnostic staleness |
-| `agent_master.py` | 881 | Master Architect with 3-proposal/2-critic advisory ensemble over exact frozen evidence |
+| `agent_master.py` | 1688 | Master Architect with source-validated 3-proposal/2-critic selection, local schema repair, and Worker mechanism binding |
+| `worker_workflow.py` | 985 | Pure Worker reducer, frozen envelopes, immutable artifacts, materialization journal and actor commands |
+| `workflow_kernel.py` | 974 | SQLite-WAL event/effect/outbox store with leases, replay integrity and terminal fencing |
+| `poker_assets.py` | 785 | System-owned content-addressed mmap ABI for 1,326 hole-combination metadata (not equity/policy) |
 | `engine/judge.py` | 592 | Poker hand judge: suits, hand types, game engine rules |
 | `national_acceptance.py` | 566 | In-process national-platform acceptance runner (gate API) |
 | `national_runtime_probe.py` | 558 | Trusted launcher, complete-artifact cache identity, and result contract for runtime probes |
@@ -582,7 +590,7 @@ It is approximately grouped by scale (not a strict sort) and excludes `__init__.
 | `qd_async_eval.py` | 436 | Async QD background fitness evaluation |
 | `evolution_scope.py` | 435 | Runtime change classification and protected scopes |
 | `prepared_baseline_contract.py` | 433 | Common prepared artifact plus rich crossover Parent-A/Parent-B/child capability receipt |
-| `tool_bot_management.py` | 431 | Reaping, cleanup, abandonment and experience management |
+| `tool_bot_management.py` | 556 | Reaping, actor-fenced CAS abandonment, cleanup and experience management |
 | `official_evidence_archive.py` | 428 | Immutable official evidence archive |
 | `national_arena/sandbox.py` | 408 | Read-only managed-bot Arena sandbox |
 | `spot_analyzer.py` | 396 | Diff analyzer identifying changed .py files/functions in bot dirs |
@@ -595,7 +603,7 @@ It is approximately grouped by scale (not a strict sort) and excludes `__init__.
 | `experience_archivist.py` | 317 | Experience pool consolidation and archivist analysis |
 | `precommit_eval_contract.py` | 314 | Frozen evaluator/opponent/deck/seed precommit contract |
 | `web_ui.py` | 314 | `EventBroadcaster` (ring buffer 500) + `WebUI` (terminal + SSE) |
-| `pipeline_infrastructure.py` | 303 | Identity-bound infrastructure retry overlay |
+| `pipeline_infrastructure.py` | 304 | Legacy infrastructure-overlay validation retained for migration refusal |
 | `fix_verification.py` | 301 | Structural/runtime verification of mandatory bot fixes |
 | `plan_compiler.py` | 297 | Deterministic Master-plan contract binding and brief-file offload |
 | `strategy_reference_pack.py` | 295 | Typed, source-controlled strategy cards and exact worker execution terms |

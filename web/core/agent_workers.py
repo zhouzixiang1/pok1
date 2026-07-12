@@ -342,6 +342,29 @@ def _extract_exhausted_block():
     return "\n\n".join(blocks) + "\n\n" if blocks else ""
 
 
+def build_worker_execution_context():
+    """Freeze live prompt additions for one outer Worker transaction.
+
+    Infrastructure retries must replay the prompt that actually reached the
+    Worker, not re-read mutable cross-generation guidance between attempts.
+    The caller persists this bounded object inside the identity-bound
+    infrastructure overlay when transport fails.
+    """
+    return {
+        "schema_version": 1,
+        "exhausted_block": _extract_exhausted_block(),
+        "recent_failures": deepcopy_jsonable(_load_recent_failures(5)),
+    }
+
+
+def deepcopy_jsonable(value):
+    """Return a detached JSON-compatible copy of bounded prompt context."""
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        return []
+
+
 def _target_rel_set(task, next_v):
     """Extract the task's complete normalized writable file set.
 
@@ -808,7 +831,15 @@ def _cot_inconsistency_override_reason(task, task_skipper, worker_id, next_v, so
     return reason
 
 
-async def _run_debug_agent(error_output, changed_diff, target_file, next_v, ui):
+async def _run_debug_agent(
+    error_output,
+    changed_diff,
+    target_file,
+    next_v,
+    ui,
+    *,
+    candidate_dir=None,
+):
     """Run the DeepEvolve debug sub-agent to diagnose and fix a compile/crash error.
 
     This is a lightweight LLM call with only the Read tool (budget=5 turns max).
@@ -829,7 +860,10 @@ async def _run_debug_agent(error_output, changed_diff, target_file, next_v, ui):
 
         target_rel = _target_rel(target_file, next_v) or str(target_file or "").strip()
         target_display = f"{bot_relpath(next_v)}/{target_rel}" if target_rel else str(target_file or "")
-        target_abs = get_bot_dir(next_v) / target_rel if target_rel else get_bot_dir(next_v)
+        candidate_root = (
+            Path(candidate_dir) if candidate_dir is not None else get_bot_dir(next_v)
+        )
+        target_abs = candidate_root / target_rel if target_rel else candidate_root
 
         debug_prompt = (
             f"{prompt_template}\n\n"
@@ -978,21 +1012,43 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
                               source_v=None, parallel_mode=False, worker_snapshots=None,
                               boundary_allowed_files=None, task_skipper=None,
-                              boundary_snapshot=None):
+                              boundary_snapshot=None,
+                              worker_execution_context=None):
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
     base_worker_prompt = _compose_worker_task_prompt(task, reviewer_feedback)
+    base_worker_prompt = (
+        "# Lease-Isolated Candidate\n"
+        f"The only writable candidate tree for this attempt is `{next_dir}`. "
+        f"Any older instruction that names `bots/national_v{next_v}` means this "
+        "lease-isolated tree, never the canonical bot directory. Read, edit, "
+        "compile, and probe only this tree; publication is owned by the harness.\n\n"
+        + base_worker_prompt
+    )
 
     # Inject EXHAUSTED constraint block from experience pool.
     # Prepended (not appended) so it appears before the worker's task instructions
     # and cannot be missed or dismissed as a footnote.
-    exhausted_block = _extract_exhausted_block()
+    frozen_context = (
+        worker_execution_context
+        if isinstance(worker_execution_context, dict)
+        else None
+    )
+    exhausted_block = (
+        str(frozen_context.get("exhausted_block") or "")
+        if frozen_context is not None
+        else _extract_exhausted_block()
+    )
     if exhausted_block:
         base_worker_prompt = exhausted_block + base_worker_prompt
 
     # Inject recent worker failure memory
-    recent_failures = _load_recent_failures(5)
+    recent_failures = (
+        deepcopy_jsonable(frozen_context.get("recent_failures") or [])
+        if frozen_context is not None
+        else _load_recent_failures(5)
+    )
     if recent_failures:
         failure_lines = ["# Recent Worker Failures (avoid repeating these mistakes):"]
         for f in recent_failures:
@@ -1074,6 +1130,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                         target_file=_target_file,
                         next_v=next_v,
                         ui=ui,
+                        candidate_dir=next_dir,
                     )
                     if debug_result.get("confidence") in ("high", "medium"):
                         attempt_note += (
@@ -1093,6 +1150,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             "worker_prompt": base_worker_prompt + attempt_note,
             "version": str(next_v),
             "parent_version": str(source_v),
+            "candidate_path": str(next_dir),
         })
 
         # ── Timeout isolation: abort and retry if worker hangs for >WORKER_TIMEOUT sec ──
@@ -1285,7 +1343,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             context_files, ui, reviewer_feedback,
                             source_v=None, force_sequential=False,
-                            task_skipper=None):
+                            task_skipper=None,
+                            worker_execution_context=None):
     """Execute worker tasks, capturing per-worker file snapshots.
 
     When all workers have disjoint target_files, executes in parallel via
@@ -1339,6 +1398,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v, worker_snapshots=worker_snapshots,
             task_skipper=task_skipper,
+            worker_execution_context=worker_execution_context,
         )
         # P0-2: Worker CoT consistency check
         if ok:
@@ -1411,6 +1471,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     worker_snapshots=worker_snapshots,
                     boundary_allowed_files=parallel_allowed_files,
                     boundary_snapshot=parallel_boundary_snapshot,
+                    worker_execution_context=worker_execution_context,
                 )
 
         results = await asyncio.gather(
@@ -1540,6 +1601,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v, worker_snapshots=worker_snapshots,
             task_skipper=task_skipper,
+            worker_execution_context=worker_execution_context,
         )
         if not ok:
             return False, worker_snapshots, audit_focus_areas
