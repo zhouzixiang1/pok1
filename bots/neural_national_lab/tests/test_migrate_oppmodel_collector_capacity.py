@@ -135,7 +135,9 @@ def _resign(payload: dict, *, field: str = "receipt_sha256") -> None:
     payload[field] = freeze._canonical_sha256(unsigned)
 
 
-def _prepare_full_schema5_source(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _prepare_full_schema5_source(
+    tmp_path: Path, *, legacy_completed_plan: bool = True
+) -> tuple[Path, Path, Path]:
     source = schema6_fixture._source(tmp_path)
     manifest_path = source / "collection_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -238,6 +240,9 @@ def _prepare_full_schema5_source(tmp_path: Path) -> tuple[Path, Path, Path]:
             "ratings_snapshot": ratings_snapshot,
             "tasks": [task],
         }
+        if legacy_completed_plan and pass_number == 1:
+            plan.pop("schema_version")
+            plan.pop("ratings_snapshot")
         path = source / "pass_plans" / f"pass_{pass_number:04d}.json"
         _write_json(path, plan)
         plan_hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -254,9 +259,14 @@ def _prepare_full_schema5_source(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 def _schema6_source(
-    tmp_path: Path, *, planned_tail: bool = False
+    tmp_path: Path,
+    *,
+    planned_tail: bool = False,
+    legacy_completed_plan: bool = True,
 ) -> tuple[Path, Path, Path]:
-    source, candidate, ratings = _prepare_full_schema5_source(tmp_path)
+    source, candidate, ratings = _prepare_full_schema5_source(
+        tmp_path, legacy_completed_plan=legacy_completed_plan
+    )
     assert schema6_fixture._run(source, apply=True) == 0
     manifest_path = source / "collection_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -340,6 +350,47 @@ def test_schema7_capacity_migration_dry_run_is_read_only(
     assert result["strength_evidence"] is False
     assert result["deployment_policy_value"] is False
     assert manifest_path.read_bytes() == before
+
+
+def test_schema7_capacity_migration_replays_receipted_legacy_plan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source, _candidate, _ratings = _schema6_source(
+        tmp_path, legacy_completed_plan=True
+    )
+    legacy_plan = json.loads(
+        (source / "pass_plans" / "pass_0001.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(legacy_plan) == {"pass", "seed_scheme", "tasks"}
+    capsys.readouterr()
+
+    assert migration.main(_args(source, apply=False)) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "ready_for_explicit_apply"
+    assert json.loads(
+        (source / "pass_plans" / "pass_0001.json").read_text(
+            encoding="utf-8"
+        )
+    ) == legacy_plan
+
+    legacy_plan["tasks"][0]["bot_seed_base"] += 1
+    _write_json(source / "pass_plans" / "pass_0001.json", legacy_plan)
+    with pytest.raises(
+        RuntimeError,
+        match="concurrency migration plan changed|legacy completed pass plan changed",
+    ):
+        migration._migration_intent(
+            source,
+            boundary=2,
+            workers=6,
+            probe_workers=4,
+            max_active_native_matches=24,
+            capacity_total_slots=28,
+            capacity_first_slot=4,
+        )
 
 
 def test_cli_rejects_missing_running_unit_receipt(tmp_path: Path) -> None:
