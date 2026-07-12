@@ -483,6 +483,19 @@ Evolution Glicko-2:
 - Defaults: `r=1500`, `rd=350`, `sigma=0.06`; the Glicko-2 volatility constant is `TAU=0.3` in `glicko2.py` (NOT 0.5).
 - Conservative rating is `r - 2 * rd`.
 - Each national strength sample is exactly one completed 70-hand native TCP match. Match-result sign is primary; net-chip magnitude is retained only as a secondary tie-breaker.
+- Host capacity leases default to slots 0 through 11. Explicit layouts must be
+  strict contiguous ranges within slots 0 through 27. The opponent-model
+  schema-7 collector is pinned to 6x4, at most 24 native matches, and slots 4
+  through 27 so slots 0 through 3 remain available to operator services. Its
+  resume/migration trust chain binds both `runtime_capacity.py` and the
+  `national_native.py` consumer; do not weaken or bypass those bindings.
+- A live schema-6-to-7 collector switch must stop the explicit transient
+  systemd unit as a control group. Capacity migration apply is valid only with
+  its receipt-bound zero-process proof (`KillMode=control-group`, `Restart=no`,
+  inactive, `MainPID=0`, empty cgroup subtree, and no matching same-UID
+  collector/probe command line). The migration also rejects duplicate stable
+  row identities in both value and opponent-action prefixes and revalidates all
+  bound evidence immediately before manifest replacement.
 - The daemon maintains H2H and bot statistics in addition to ratings.
 - Reaping sorts by conservative Glicko rating as the primary cull key. Reap events include `selection_key=conservative_glicko`, `conservative_rating`, `leaderboard_score`, and `h2h_avg_wr` so logs show both the actual decision key and contextual matchup metrics.
 

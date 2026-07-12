@@ -7,7 +7,7 @@ Designed to run detached under ``nohup`` for hours. Each pass:
      never rotated across splits within one collection run.
   3. Rotates early/middle/late hand windows so cross-hand features receive
      actual match-history coverage. Probes emit hand, tail, and match deltas.
-  4. Runs port-isolated probes under the host-wide twelve-match capacity lease.
+  4. Runs port-isolated probes in reviewed host-capacity slots 4 through 27.
   5. Appends annotated rows to cumulative train/val/held_out JSONL and logs
      progress.
 
@@ -46,12 +46,19 @@ DECK_SEED_SLOTS_PER_PASS = 1024
 DEFAULT_DECK_SEED_BASE = 5_000_000
 DEFAULT_DECK_SEED_GUARD = 10
 DEFAULT_BOT_SEED_BASE = 1_000_000
+# Kept for the immutable schema-5 -> schema-6 migration tool, which imports
+# this historical target without modifying its already-published receipt hash.
 COLLECTION_CONTRACT_SCHEMA_VERSION = 6
+ACTIVE_COLLECTION_CONTRACT_SCHEMA_VERSION = 7
 RATINGS_SNAPSHOT_SCHEMA_VERSION = 1
 PASS_PLAN_SCHEMA_VERSION = 2
 MAX_OUTER_WORKERS = 6
 MAX_PROBE_WORKERS = 4
-MAX_CONCURRENT_NATIVE_MATCHES = 12
+MAX_CONCURRENT_NATIVE_MATCHES = 24
+CAPACITY_TOTAL_SLOTS = 28
+CAPACITY_FIRST_SLOT = 4
+CAPACITY_TOTAL_SLOTS_ENV = "POK_RUNTIME_CAPACITY_TOTAL_SLOTS"
+CAPACITY_FIRST_SLOT_ENV = "POK_RUNTIME_CAPACITY_FIRST_SLOT"
 
 
 def _operator_root() -> Path:
@@ -185,6 +192,19 @@ def _resolve(p: str) -> Path:
     return raw if raw.is_absolute() else (ROOT / raw).resolve()
 
 
+def _probe_environment(
+    *, capacity_total_slots: int, capacity_first_slot: int
+) -> dict[str, str]:
+    environment = os.environ.copy()
+    inherited_pythonpath = environment.get("PYTHONPATH", "").strip()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(ROOT), inherited_pythonpath) if value
+    )
+    environment[CAPACITY_TOTAL_SLOTS_ENV] = str(capacity_total_slots)
+    environment[CAPACITY_FIRST_SLOT_ENV] = str(capacity_first_slot)
+    return environment
+
+
 def live_strongest(
     ratings_path: Path, n: int = 12, *, allow_fallback: bool = False
 ) -> list[str]:
@@ -203,7 +223,9 @@ def probe_one(candidate: str, opponent_dir: str, split: str, name: str,
               hands: int, seed_base: int, bot_seed_base: int, out_dir: str,
               timeout_sec: int, min_hand: int, max_decisions: int,
               max_alternatives: int, ratings_path: str, probe_workers: int,
-              decision_sampling: str) -> tuple[int, int, str]:
+              decision_sampling: str,
+              capacity_total_slots: int = CAPACITY_TOTAL_SLOTS,
+              capacity_first_slot: int = CAPACITY_FIRST_SLOT) -> tuple[int, int, str]:
     """Run one probe and append value and opponent-response rows."""
     tag = f"{split}_{name}_s{seed_base}_b{bot_seed_base}"
     tmp_jsonl = Path(out_dir) / f"_tmp_{tag}.jsonl"
@@ -226,10 +248,9 @@ def probe_one(candidate: str, opponent_dir: str, split: str, name: str,
     ]
     try:
         forced_waves = math.ceil(max_decisions * max_alternatives / max(1, probe_workers))
-        probe_env = os.environ.copy()
-        inherited_pythonpath = probe_env.get("PYTHONPATH", "").strip()
-        probe_env["PYTHONPATH"] = os.pathsep.join(
-            value for value in (str(ROOT), inherited_pythonpath) if value
+        probe_env = _probe_environment(
+            capacity_total_slots=capacity_total_slots,
+            capacity_first_slot=capacity_first_slot,
         )
         completed = subprocess.run(
             cmd,
@@ -826,8 +847,19 @@ def main(argv=None) -> int:
     ap.add_argument("--candidate", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--passes", type=int, default=40)
-    ap.add_argument("--workers", type=int, default=3)
-    ap.add_argument("--probe-workers", type=int, default=1)
+    ap.add_argument("--workers", type=int, default=MAX_OUTER_WORKERS)
+    ap.add_argument("--probe-workers", type=int, default=MAX_PROBE_WORKERS)
+    ap.add_argument(
+        "--max-active-native-matches",
+        type=int,
+        default=MAX_CONCURRENT_NATIVE_MATCHES,
+    )
+    ap.add_argument(
+        "--capacity-total-slots", type=int, default=CAPACITY_TOTAL_SLOTS
+    )
+    ap.add_argument(
+        "--capacity-first-slot", type=int, default=CAPACITY_FIRST_SLOT
+    )
     ap.add_argument("--hands", type=int, default=16)
     ap.add_argument("--timeout-sec", type=int, default=55)
     ap.add_argument("--ratings", default=str(DEFAULT_RATINGS))
@@ -853,15 +885,38 @@ def main(argv=None) -> int:
             "--allow-fallback-pool is incompatible with frozen match-scope "
             "ratings evidence"
         )
-    args.workers = max(1, min(MAX_OUTER_WORKERS, int(args.workers)))
-    args.probe_workers = max(1, min(MAX_PROBE_WORKERS, int(args.probe_workers)))
+    reviewed_topology = (
+        MAX_OUTER_WORKERS,
+        MAX_PROBE_WORKERS,
+        MAX_CONCURRENT_NATIVE_MATCHES,
+        CAPACITY_TOTAL_SLOTS,
+        CAPACITY_FIRST_SLOT,
+    )
+    requested_topology = (
+        args.workers,
+        args.probe_workers,
+        args.max_active_native_matches,
+        args.capacity_total_slots,
+        args.capacity_first_slot,
+    )
+    if requested_topology != reviewed_topology:
+        raise SystemExit(
+            "schema-7 collector requires reviewed topology "
+            "--workers 6 --probe-workers 4 "
+            "--max-active-native-matches 24 "
+            "--capacity-total-slots 28 --capacity-first-slot 4"
+        )
     if args.passes <= 0:
         raise SystemExit("--passes must be positive")
-    if args.workers * args.probe_workers > MAX_CONCURRENT_NATIVE_MATCHES:
+    if args.workers * args.probe_workers != args.max_active_native_matches:
         raise SystemExit(
-            "--workers * --probe-workers must not exceed "
-            f"{MAX_CONCURRENT_NATIVE_MATCHES} native matches"
+            "reviewed collector topology must exactly fill its native-match budget"
         )
+    if (
+        args.capacity_total_slots - args.capacity_first_slot
+        != args.max_active_native_matches
+    ):
+        raise SystemExit("reviewed collector capacity slot range changed")
     if args.hands <= 0 or args.deck_seed_guard < 0:
         raise SystemExit("--hands must be positive and --deck-seed-guard non-negative")
     ratings_path = Path(args.ratings).expanduser().resolve()
@@ -910,7 +965,7 @@ def main(argv=None) -> int:
     if _directory_digest(candidate_execution_path) != candidate_digest:
         raise RuntimeError("candidate execution snapshot digest mismatch")
     resume_contract = {
-        "schema_version": COLLECTION_CONTRACT_SCHEMA_VERSION,
+        "schema_version": ACTIVE_COLLECTION_CONTRACT_SCHEMA_VERSION,
         "candidate": str(candidate_path),
         "candidate_sha256": candidate_digest,
         "candidate_execution_path": str(candidate_execution_path),
@@ -918,6 +973,9 @@ def main(argv=None) -> int:
         "ratings_path": str(ratings_path),
         "workers": args.workers,
         "probe_workers": args.probe_workers,
+        "max_active_native_matches": args.max_active_native_matches,
+        "capacity_total_slots": args.capacity_total_slots,
+        "capacity_first_slot": args.capacity_first_slot,
         "hands": args.hands,
         "timeout_sec": args.timeout_sec,
         "strongest": args.strongest,
@@ -939,6 +997,12 @@ def main(argv=None) -> int:
         ).hexdigest(),
         "cross_hand_sequence_sha256": hashlib.sha256(
             (TOOLS / "cross_hand_sequence.py").read_bytes()
+        ).hexdigest(),
+        "runtime_capacity_sha256": hashlib.sha256(
+            (ROOT / "web" / "core" / "runtime_capacity.py").read_bytes()
+        ).hexdigest(),
+        "national_native_sha256": hashlib.sha256(
+            (ROOT / "web" / "core" / "national_native.py").read_bytes()
         ).hexdigest(),
     }
     startup_ratings_snapshot: dict | None = None
@@ -1154,7 +1218,9 @@ def main(argv=None) -> int:
                               str(out_dir), args.timeout_sec, min_hand,
                               args.max_decisions, args.max_alternatives,
                               str(ratings_path), args.probe_workers,
-                              args.decision_sampling): (n, s)
+                              args.decision_sampling,
+                              args.capacity_total_slots,
+                              args.capacity_first_slot): (n, s)
                     for n, p, s, h, sb, bsb in tasks}
             for fut in as_completed(futs):
                 try:
@@ -1183,6 +1249,9 @@ def main(argv=None) -> int:
                 "hands": args.hands,
                 "workers": args.workers,
                 "probe_workers": args.probe_workers,
+                "max_active_native_matches": args.max_active_native_matches,
+                "capacity_total_slots": args.capacity_total_slots,
+                "capacity_first_slot": args.capacity_first_slot,
                 "decision_sampling": args.decision_sampling,
                 "pool": [{
                     "name": name,

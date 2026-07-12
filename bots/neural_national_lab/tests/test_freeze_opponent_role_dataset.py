@@ -176,12 +176,15 @@ def _collection(tmp_path: Path) -> Path:
     (source / "collection_manifest.json").write_text(json.dumps({
         "passes_requested": 2,
         "resume_contract": {
-            "schema_version": collector.COLLECTION_CONTRACT_SCHEMA_VERSION,
+            "schema_version": collector.ACTIVE_COLLECTION_CONTRACT_SCHEMA_VERSION,
             "candidate": str(candidate),
             "candidate_sha256": candidate_digest,
             "ratings_path": str(ratings_path.resolve()),
-            "workers": 1,
-            "probe_workers": 4,
+            "workers": collector.MAX_OUTER_WORKERS,
+            "probe_workers": collector.MAX_PROBE_WORKERS,
+            "max_active_native_matches": collector.MAX_CONCURRENT_NATIVE_MATCHES,
+            "capacity_total_slots": collector.CAPACITY_TOTAL_SLOTS,
+            "capacity_first_slot": collector.CAPACITY_FIRST_SLOT,
             "hands": 70,
             "timeout_sec": 55,
             "strongest": 5,
@@ -206,6 +209,12 @@ def _collection(tmp_path: Path) -> Path:
             "cross_hand_sequence_sha256": hashlib.sha256(
                 (TOOLS / "cross_hand_sequence.py").read_bytes()
             ).hexdigest(),
+            "runtime_capacity_sha256": hashlib.sha256(
+                (ROOT / "web" / "core" / "runtime_capacity.py").read_bytes()
+            ).hexdigest(),
+            "national_native_sha256": hashlib.sha256(
+                (ROOT / "web" / "core" / "national_native.py").read_bytes()
+            ).hexdigest(),
             "candidate_execution_path": str(candidate),
             "candidate_snapshot_sha256": candidate_digest,
         },
@@ -224,8 +233,11 @@ def _collection(tmp_path: Path) -> Path:
         "ratings_snapshot_sha256": ratings_snapshot["snapshot_sha256"],
         "min_hand": 1,
         "hands": 70,
-        "workers": 1,
-        "probe_workers": 4,
+        "workers": collector.MAX_OUTER_WORKERS,
+        "probe_workers": collector.MAX_PROBE_WORKERS,
+        "max_active_native_matches": collector.MAX_CONCURRENT_NATIVE_MATCHES,
+        "capacity_total_slots": collector.CAPACITY_TOTAL_SLOTS,
+        "capacity_first_slot": collector.CAPACITY_FIRST_SLOT,
         "decision_sampling": "uniform",
         "pool": [{
             "name": task["name"],
@@ -278,6 +290,13 @@ def test_freeze_creates_five_opponent_disjoint_roles(tmp_path: Path) -> None:
         freeze.STRATEGY_CONTEXT_RUNTIME_MODE
     )
     assert manifest["invariants"]["deck_blocks_non_overlapping"] is True
+    assert manifest["row_identity"]["schema"] == (
+        "collector_row_identity_v1"
+    )
+    assert manifest["row_identity"]["modalities"]["cf"]["rows"] == 5
+    assert manifest["row_identity"]["modalities"]["opponent_actions"][
+        "rows"
+    ] == 5
     assert manifest["invariants"]["national_response_v2_validated"] is True
     assert manifest["invariants"]["national_70_hand_outcome_validated"] is True
     assert manifest["match_outcome_supervision"]["hands"] == 70
@@ -333,6 +352,27 @@ def test_freeze_rejects_overlapping_deck_blocks(tmp_path: Path) -> None:
         _freeze(source, tmp_path / "out")
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_active_native_matches",
+        "capacity_total_slots",
+        "capacity_first_slot",
+    ],
+)
+def test_freeze_rejects_float_pool_capacity(
+    tmp_path: Path, field: str
+) -> None:
+    source = _collection(tmp_path)
+    path = source / "pool_snapshots.jsonl"
+    row = json.loads(path.read_text(encoding="utf-8"))
+    row[field] = float(row[field])
+    _write_jsonl(path, [row])
+
+    with pytest.raises(RuntimeError, match="pool snapshot capacity contract"):
+        _freeze(source, tmp_path / "out")
+
+
 def test_formal_role_freeze_rejects_legacy_plan_without_ratings_evidence(
     tmp_path: Path,
 ) -> None:
@@ -355,6 +395,36 @@ def test_freeze_rejects_inconsistent_ipw(tmp_path: Path) -> None:
     _write_jsonl(path, rows)
 
     with pytest.raises(RuntimeError, match="inconsistent IPW"):
+        _freeze(source, tmp_path / "out")
+
+
+@pytest.mark.parametrize(
+    ("filename", "state_field", "modality"),
+    [
+        ("cf_train.jsonl", "total_rows", "cf"),
+        (
+            "opponent_actions_train.jsonl",
+            "total_behavior_rows",
+            "opponent_actions",
+        ),
+    ],
+)
+def test_freeze_rejects_duplicate_stable_row_identity(
+    tmp_path: Path, filename: str, state_field: str, modality: str
+) -> None:
+    source = _collection(tmp_path)
+    path = source / filename
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows.append(dict(rows[0]))
+    _write_jsonl(path, rows)
+    state_path = source / "collector_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state[state_field]["train"] = len(rows)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(
+        RuntimeError, match=f"duplicate collector row identity in {modality}"
+    ):
         _freeze(source, tmp_path / "out")
 
 
@@ -399,11 +469,23 @@ def test_freeze_binds_candidate_snapshot_digest(tmp_path: Path) -> None:
         _freeze(source, tmp_path / "out")
 
 
-def test_freeze_requires_current_collector_code_trust_root(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "field",
+    [
+        "collector_sha256",
+        "probe_sha256",
+        "cross_hand_sequence_sha256",
+        "runtime_capacity_sha256",
+        "national_native_sha256",
+    ],
+)
+def test_freeze_requires_current_collector_code_trust_root(
+    tmp_path: Path, field: str
+) -> None:
     source = _collection(tmp_path)
     manifest_path = source / "collection_manifest.json"
     payload = json.loads(manifest_path.read_text())
-    payload["resume_contract"]["collector_sha256"] = "0" * 64
+    payload["resume_contract"][field] = "0" * 64
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="collector code trust root"):

@@ -617,7 +617,7 @@ It is approximately grouped by scale (not a strict sort) and excludes `__init__.
 | `skill_library.py` | 198 | Offline poker skill-library metadata for prompts/harnesses/gates |
 | `qd_fitness.py` | 192 | Phase 4 QD k=3 fitness: median over 3 mirror-battle evals |
 | `candidate_hygiene.py` | 175 | Safe transient artifact cleanup and forbidden runtime-dependency checks |
-| `runtime_capacity.py` | 172 | Cross-process shared host-capacity leases |
+| `runtime_capacity.py` | 236 | Cross-process capacity leases; default 0..11, strict offset ranges through 27 |
 | `official_bot_sandbox.py` | 172 | Official managed-bot read-only sandbox |
 | `eval_stats.py` | 158 | Precommit eval stats: paired bootstrap CI + anytime-valid CS |
 | `publish_reconcile.py` | 138 | Contract-neutral publication reconciliation |

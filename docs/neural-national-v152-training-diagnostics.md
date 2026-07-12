@@ -1575,23 +1575,51 @@ count, and prefix SHA-256 of each of the six cumulative JSONL files. It never
 executes a probe, reads current ratings, or grants deployment or strength
 authority.
 
-The schema-6 collector accepts at most six outer workers, four inner probe
-workers, and 12 concurrent native matches in their product. The reviewed real
-resume topology is 6x2, up from the historical 1x4 topology while retaining the
-inner probe's four-worker ceiling. Formal role freezing replays passes 1 through
-76 against the embedded schema-5 contract and every pass from 77 onward against
-the schema-6 contract. It also reconstructs the complete legacy-recovery to
-concurrency-migration to current-code trust chain; changing the data, plans,
-ratings receipts, topology boundary, or any bound code root fails closed.
+Schema 6 was the reviewed 6x2 intermediate topology, capped at 12 concurrent
+native matches. `migrate_oppmodel_collector_capacity.py` is the only authorized
+schema-6-to-7 transition. It takes the idle collector lock at an exact atomic
+boundary, preserves and replays the complete schema-5-to-6 receipt, and accepts
+either the exact completed plan prefix or that prefix plus exactly one already
+persisted next-pass plan. The receipt does not claim that the plan never ran:
+it records `execution_status=unknown_no_published_output` and proves zero rows
+from it entered the atomic prefix. The byte/hash-bound plan is safe to reuse on
+resume because publication is idempotent at that boundary. A second extra plan,
+temporary probe output, or data past `collector_state.json` fails closed.
+Dry-run is read-only and apply uses an fsync-backed atomic manifest replacement.
+
+The reviewed schema-7 topology is 6 outer workers by 4 probe workers, with at
+most 24 native matches. It explicitly gives native probe children capacity
+slots 4 through 27 from a 28-slot host namespace, reserving slots 0 through 3
+for operator services. `runtime_capacity.py` remains backward compatible for
+ordinary callers, whose default range is slots 0 through 11; the collector
+passes the reserved layout through strict environment bindings so the unchanged
+`national_native.py` consumer acquires 4 through 27. Invalid, noncanonical, or
+out-of-range layout values fail closed. The schema-7 resume contract and
+migration receipt bind the collector, probe, cross-hand helper,
+`runtime_capacity.py`, and the consuming `national_native.py` code hashes.
+Both value and opponent-action prefixes carry a receipt over the stable row
+identity `(opponent, deck seed, bot seed, hand, hand decision index)`; duplicate
+identities fail at migration build, receipt replay, final role freeze, and
+protected-role provenance validation.
+
+Formal role freezing replays passes 1 through 76 against the embedded schema-5
+contract, the next historical segment against schema 6, and post-capacity
+migration passes against schema 7. It reconstructs the complete legacy-recovery
+to concurrency-migration to capacity-migration to current-code trust chain;
+changing data, plans, ratings receipts, either topology boundary, reserved-slot
+layout, or any bound producer/consumer code root fails closed.
 
 The durable launch plan uses `systemd-run --user` to create a transient unit
 named `neural-v4-collector.service`, with `Type=exec`, `Restart=no`, and
 `KillMode=control-group`. It starts the collector from a dedicated pinned
 runtime worktree with `--workers 6 --probe-workers 2`, the existing absolute
-data directory, and the reviewed 70-hand/seed/split arguments. Numeric-library
+data directory, and the reviewed 70-hand/seed/split arguments. After the atomic
+schema-7 migration, the reviewed resume arguments are `--workers 6
+--probe-workers 4 --max-active-native-matches 24 --capacity-total-slots 28
+--capacity-first-slot 4`. Numeric-library
 thread variables remain fixed at two, no CPU affinity or CPU quota hides any of
 the host's 32 cores, and
-stdout/stderr append to the schema-6 collector log while `progress.log` remains
+stdout/stderr append to the collector log while `progress.log` remains
 the business-progress authority. `Restart=no` makes an integrity failure stop
 for inspection instead of silently replaying work, while the control group
 ensures an operator stop also terminates every probe child. The current user
@@ -1600,15 +1628,27 @@ lifetimes while a user login remains, but not across a final logout or reboot;
 full unattended reboot durability would separately require administrator
 authorization for `loginctl enable-linger zzx`.
 
+Capacity apply additionally requires the explicit collector unit name and does
+not trust `.collector.lock` or `MainPID` alone. Immediately before building and
+again immediately before manifest replacement, it machine-verifies a loaded
+transient unit with `KillMode=control-group`, `Restart=no`, `MainPID=0`, and
+`ActiveState=inactive`; every `cgroup.procs` in its control-group subtree must
+be empty, and a same-UID `/proc` scan must find no long-run collector or native
+probe command line containing the absolute source directory. The quiescence
+proof is receipt-bound. The pre-publish check also revalidates the exact state,
+pool prefix, completed plan set, optional next plan, all six data prefixes and
+row identities, opponent registry and snapshots, temporary-file absence, and
+code hashes, so a non-cooperating writer cannot race build-to-replace.
+
 The collector now treats a probe timeout, nonzero exit, missing output,
 noncompliant baseline, malformed JSONL, or any summary/JSONL mismatch as a hard
 pass failure before cumulative rows or completion metadata are published. It
 also prepends the pinned runtime root to the probe subprocess `PYTHONPATH` while
 preserving any inherited entries; a real one-hand native TCP smoke produced one
-value row and two behavior rows from an isolated temporary directory. With the
-schema-6 migration, mixed-topology replay, and probe fail-closed coverage, the
-complete neural-lab suite passes 696 tests and all 33 national protocol tests
-pass.
+value row and two behavior rows from an isolated temporary directory.
+Regression coverage includes both migrations, three-topology formal replay,
+planned-tail reuse, reserved-slot isolation, producer/consumer hash tamper
+rejection, and probe fail-closed behavior.
 
 ## Candidate-Only Native V4 Ablation Contract
 
@@ -1813,15 +1853,19 @@ Learning with Quantile Regression*, 2018:
 
 ## Next Evidence
 
-1. Apply and replay-validate the reviewed schema-6 concurrency migration at the
-   exact pass-76 boundary, then let `neural-v4-collector.service` complete passes
-   77 through 160 with the 6x2 topology. Monitor the self-hashed atomic state and
-   `progress.log`; never commit the corpus, probe traces, logs, or control
-   receipts to Git.
+1. At an idle atomic boundary, dry-run and explicitly apply the reviewed
+   schema-6-to-7 capacity migration, then let `neural-v4-collector.service`
+   complete the remaining prefix through exactly 160/160 with the 6x4 topology
+   and slots 4 through 27. Reuse a receipt-bound next-pass plan if one was
+   already persisted. Stop through the systemd control group, never by killing
+   only `MainPID`, and pass `--collector-unit neural-v4-collector.service` so
+   both dry-run and apply bind the zero-process quiescence proof. Monitor the
+   self-hashed atomic state and `progress.log`; never commit the corpus, probe
+   traces, logs, or control receipts to Git.
 2. Only after an exact 160/160 state, freeze the opponent-disjoint role datasets
-   from that atomic prefix. Recheck the legacy-recovery and concurrency-migration
-   chain, every plan and data prefix, and the exposure ledger before opening any
-   protected role.
+   from that atomic prefix. Recheck the legacy-recovery, concurrency-migration,
+   and capacity-migration chain, every plan and data prefix, and the exposure
+   ledger before opening any protected role.
 3. On GPU, compare multiple architectures and parameter scales with at least
    three seeds each. Preserve the predeclared early-stop, model-calibration,
    policy-selection, policy-gate, and final-blind opponent boundaries; a failed

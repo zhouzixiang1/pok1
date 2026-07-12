@@ -17,6 +17,7 @@ if str(TOOLS) not in sys.path:
 
 import freeze_opponent_role_dataset as freeze  # noqa: E402
 import migrate_oppmodel_collector_concurrency as migration  # noqa: E402
+import migrate_oppmodel_collector_capacity as capacity_migration  # noqa: E402
 from role_provenance_fixture import (  # noqa: E402
     add_formal_role_provenance,
     convert_to_legacy_recovery_prefix,
@@ -351,7 +352,9 @@ def test_reviewed_topology_and_exact_change_set_are_enforced(tmp_path: Path) -> 
         )
 
 
-def test_formal_freezer_replays_mixed_1x4_then_6x2_profiles(tmp_path: Path) -> None:
+def test_formal_freezer_replays_mixed_1x4_6x2_and_6x4_profiles(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "frozen"
     root.mkdir()
     candidate = tmp_path / "candidate"
@@ -367,12 +370,18 @@ def test_formal_freezer_replays_mixed_1x4_then_6x2_profiles(tmp_path: Path) -> N
             "policy_gate": ["national_v5"],
         },
     }
-    add_formal_role_provenance(root, role_manifest, passes=3)
+    add_formal_role_provenance(root, role_manifest, passes=4)
     convert_to_legacy_recovery_prefix(root, role_manifest, completed_prefix=1)
 
     collection_path = root / "collection_manifest.json"
     previous = json.loads(collection_path.read_text(encoding="utf-8"))
     old_contract = dict(previous["resume_contract"])
+    for field in (
+        "max_active_native_matches", "capacity_total_slots",
+        "capacity_first_slot", "runtime_capacity_sha256",
+        "national_native_sha256",
+    ):
+        old_contract.pop(field)
     old_contract.update({
         "schema_version": migration.SOURCE_SCHEMA_VERSION,
         "workers": migration.SOURCE_WORKERS,
@@ -380,44 +389,93 @@ def test_formal_freezer_replays_mixed_1x4_then_6x2_profiles(tmp_path: Path) -> N
         "collector_sha256": "a" * 64,
     })
     previous["resume_contract"] = old_contract
-    previous["legacy_recovery"]["after"].update({
+    pool_path = root / "pool_snapshots.completed.jsonl"
+    pool_rows = [json.loads(line) for line in pool_path.read_text().splitlines()]
+    for row in pool_rows[:2]:
+        row.update({"workers": 1, "probe_workers": 4})
+        for field in (
+            "max_active_native_matches", "capacity_total_slots",
+            "capacity_first_slot",
+        ):
+            row.pop(field, None)
+    pool_rows[2].update({"workers": 6, "probe_workers": 2})
+    for field in (
+        "max_active_native_matches", "capacity_total_slots",
+        "capacity_first_slot",
+    ):
+        pool_rows[2].pop(field, None)
+    pool_rows[3].update({
+        "workers": 6,
+        "probe_workers": 4,
+        "max_active_native_matches": 24,
+        "capacity_total_slots": 28,
+        "capacity_first_slot": 4,
+    })
+    pool_lines = [
+        (json.dumps(row, separators=(",", ":")) + "\n").encode()
+        for row in pool_rows
+    ]
+    pool_path.write_bytes(b"".join(pool_lines))
+
+    empty_sha = hashlib.sha256(b"").hexdigest()
+    empty_data = {
+        filename: {"rows": 0, "bytes": 0, "sha256": empty_sha}
+        for filename in migration.DATA_FILES
+    }
+
+    def state_binding(completed_passes: int) -> tuple[bytes, dict]:
+        raw = json.dumps({
+            "completed_passes": completed_passes,
+            "total_rows": {split: 0 for split in migration.SOURCE_SPLITS},
+            "total_behavior_rows": {
+                split: 0 for split in migration.SOURCE_SPLITS
+            },
+            "updated_at": "fixture",
+        }, indent=2, sort_keys=True).encode()
+        return raw, {
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes_base64": base64.b64encode(raw).decode("ascii"),
+        }
+
+    state2_raw, state2 = state_binding(2)
+    legacy = previous["legacy_recovery"]
+    legacy["after"].update({
         "collector_schema_version": migration.SOURCE_SCHEMA_VERSION,
         "collector_sha256": old_contract["collector_sha256"],
+        "collector_state_sha256": state2["sha256"],
+        "pool_snapshots_sha256": hashlib.sha256(
+            b"".join(pool_lines[:2])
+        ).hexdigest(),
+        "total_rows": {split: 0 for split in migration.SOURCE_SPLITS},
+        "total_behavior_rows": {
+            split: 0 for split in migration.SOURCE_SPLITS
+        },
     })
-    previous["legacy_recovery"]["reviewed_hashes"]["current_collector"] = (
+    legacy["reviewed_hashes"]["current_collector"] = (
         old_contract["collector_sha256"]
     )
-    legacy_unsigned = dict(previous["legacy_recovery"])
+    legacy["reviewed_hashes"]["pool_snapshots"] = hashlib.sha256(
+        pool_lines[0]
+    ).hexdigest()
+    legacy["before"]["pool_snapshots_sha256"] = legacy[
+        "reviewed_hashes"
+    ]["pool_snapshots"]
+    legacy_unsigned = dict(legacy)
     legacy_unsigned.pop("receipt_sha256")
-    previous["legacy_recovery"]["receipt_sha256"] = freeze._canonical_sha256(
+    legacy["receipt_sha256"] = freeze._canonical_sha256(
         legacy_unsigned
     )
     previous_raw = json.dumps(previous, sort_keys=True).encode("utf-8")
 
-    current_contract = dict(old_contract)
-    current_contract.update({
+    schema6_contract = dict(old_contract)
+    schema6_contract.update({
         "schema_version": migration.TARGET_SCHEMA_VERSION,
         "workers": migration.TARGET_WORKERS,
         "probe_workers": migration.TARGET_PROBE_WORKERS,
-        "collector_sha256": hashlib.sha256(
-            Path(migration.collector.__file__).read_bytes()
-        ).hexdigest(),
+        "collector_sha256": "e" * 64,
     })
-    pool_path = root / "pool_snapshots.completed.jsonl"
-    pool_lines = pool_path.read_bytes().splitlines(keepends=True)
-    third = json.loads(pool_lines[2])
-    third.update({"workers": 6, "probe_workers": 2})
-    pool_lines[2] = (json.dumps(third, separators=(",", ":")) + "\n").encode()
-    pool_path.write_bytes(b"".join(pool_lines))
     boundary_pool = b"".join(pool_lines[:2])
-    state = {
-        "completed_passes": 2,
-        "total_rows": {split: 0 for split in migration.SOURCE_SPLITS},
-        "total_behavior_rows": {split: 0 for split in migration.SOURCE_SPLITS},
-        "updated_at": "fixture",
-    }
-    state_raw = json.dumps(state, indent=2, sort_keys=True).encode()
-    empty_sha = hashlib.sha256(b"").hexdigest()
     before = {
         "resume_contract_sha256": freeze._canonical_sha256(old_contract),
         "schema_version": 5,
@@ -426,11 +484,11 @@ def test_formal_freezer_replays_mixed_1x4_then_6x2_profiles(tmp_path: Path) -> N
         "collector_sha256": old_contract["collector_sha256"],
     }
     after = {
-        "resume_contract_sha256": freeze._canonical_sha256(current_contract),
+        "resume_contract_sha256": freeze._canonical_sha256(schema6_contract),
         "schema_version": 6,
         "workers": 6,
         "probe_workers": 2,
-        "collector_sha256": current_contract["collector_sha256"],
+        "collector_sha256": schema6_contract["collector_sha256"],
         "max_concurrent_native_matches": 12,
     }
     unsigned = {
@@ -452,9 +510,7 @@ def test_formal_freezer_replays_mixed_1x4_then_6x2_profiles(tmp_path: Path) -> N
         "after": after,
         "completed_prefix": {
             "collector_state": {
-                "bytes": len(state_raw),
-                "sha256": hashlib.sha256(state_raw).hexdigest(),
-                "bytes_base64": base64.b64encode(state_raw).decode("ascii"),
+                **state2,
             },
             "pool_snapshots": {
                 "rows": 2,
@@ -467,20 +523,132 @@ def test_formal_freezer_replays_mixed_1x4_then_6x2_profiles(tmp_path: Path) -> N
                 ).hexdigest()
                 for index in (1, 2)
             },
-            "data": {
-                filename: {"rows": 0, "bytes": 0, "sha256": empty_sha}
-                for filename in migration.DATA_FILES
-            },
+            "data": empty_data,
         },
         "probe_execution_count": 0,
         "read_current_ratings": False,
         "strength_evidence": False,
         "deployment_policy_value": False,
     }
-    receipt = {**unsigned, "receipt_sha256": freeze._canonical_sha256(unsigned)}
-    current = dict(previous)
+    receipt6 = {**unsigned, "receipt_sha256": freeze._canonical_sha256(unsigned)}
+    schema6_manifest = dict(previous)
+    schema6_manifest["resume_contract"] = schema6_contract
+    schema6_manifest["concurrency_migration"] = receipt6
+    schema6_raw = json.dumps(schema6_manifest, sort_keys=True).encode()
+
+    current_contract = capacity_migration._new_contract(
+        schema6_contract,
+        workers=6,
+        probe_workers=4,
+        max_active_native_matches=24,
+        capacity_total_slots=28,
+        capacity_first_slot=4,
+    )
+    state3_raw, state3 = state_binding(3)
+    before7 = {
+        "resume_contract_sha256": freeze._canonical_sha256(schema6_contract),
+        "schema_version": 6,
+        "workers": 6,
+        "probe_workers": 2,
+        "collector_sha256": schema6_contract["collector_sha256"],
+        "probe_sha256": schema6_contract["probe_sha256"],
+    }
+    after7 = {
+        "resume_contract_sha256": freeze._canonical_sha256(current_contract),
+        "schema_version": 7,
+        "workers": 6,
+        "probe_workers": 4,
+        "max_active_native_matches": 24,
+        "capacity_total_slots": 28,
+        "capacity_first_slot": 4,
+        "collector_sha256": current_contract["collector_sha256"],
+        "probe_sha256": current_contract["probe_sha256"],
+        "runtime_capacity_sha256": current_contract["runtime_capacity_sha256"],
+        "national_native_sha256": current_contract["national_native_sha256"],
+    }
+    tail_path = root / "pass_plans" / "pass_0004.json"
+    unsigned7 = {
+        "schema_version": capacity_migration.MIGRATION_SCHEMA_VERSION,
+        "mode": capacity_migration.MIGRATION_MODE,
+        "boundary_pass": 3,
+        "migration_tool_sha256": hashlib.sha256(
+            Path(capacity_migration.__file__).read_bytes()
+        ).hexdigest(),
+        "previous_manifest": {
+            "bytes": len(schema6_raw),
+            "sha256": hashlib.sha256(schema6_raw).hexdigest(),
+            "bytes_base64": base64.b64encode(schema6_raw).decode("ascii"),
+        },
+        "schema6_concurrency_receipt_sha256": receipt6["receipt_sha256"],
+        "before": before7,
+        "after": after7,
+        "code_artifacts": capacity_migration._current_code_artifacts(
+            schema6_contract
+        ),
+        "completed_prefix": {
+            "collector_state": state3,
+            "pool_snapshots": {
+                "rows": 3,
+                "bytes": len(b"".join(pool_lines[:3])),
+                "sha256": hashlib.sha256(
+                    b"".join(pool_lines[:3])
+                ).hexdigest(),
+            },
+            "pass_plan_sha256": {
+                f"pass_{index:04d}.json": hashlib.sha256(
+                    (root / "pass_plans" / f"pass_{index:04d}.json").read_bytes()
+                ).hexdigest()
+                for index in (1, 2, 3)
+            },
+            "data": empty_data,
+            "row_identity": capacity_migration.stable_row_identity_receipt({
+                "cf": [], "opponent_actions": [],
+            }),
+            "opponent_registry": {
+                "bytes": (
+                    root / "opponent_snapshots.completed.json"
+                ).stat().st_size,
+                "sha256": hashlib.sha256(
+                    (root / "opponent_snapshots.completed.json").read_bytes()
+                ).hexdigest(),
+            },
+        },
+        "planned_tail": {
+            "name": tail_path.name,
+            "bytes": tail_path.stat().st_size,
+            "sha256": hashlib.sha256(tail_path.read_bytes()).hexdigest(),
+            "published_rows_at_migration": 0,
+            "execution_status": capacity_migration.TAIL_EXECUTION_STATUS,
+        },
+        "collector_quiescence": {
+            "schema": capacity_migration.QUIESCENCE_SCHEMA,
+            "collector_unit": "neural-v4-collector.service",
+            "source_dir": str(root.resolve()),
+            "load_state": "loaded",
+            "transient": "yes",
+            "kill_mode": "control-group",
+            "restart": "no",
+            "main_pid": 0,
+            "active_state": "inactive",
+            "control_group": "/fixture/collector.service",
+            "control_group_present": False,
+            "cgroup_process_count": 0,
+            "process_scan_uid": 1000,
+            "process_markers": list(capacity_migration.PROCESS_MARKERS),
+            "matching_process_count": 0,
+        },
+        "probe_execution_count": 0,
+        "read_current_ratings": False,
+        "strength_evidence": False,
+        "deployment_policy_value": False,
+    }
+    receipt7 = {
+        **unsigned7,
+        "receipt_sha256": freeze._canonical_sha256(unsigned7),
+    }
+    current = dict(schema6_manifest)
     current["resume_contract"] = current_contract
-    current["concurrency_migration"] = receipt
+    current[capacity_migration.MIGRATION_KEY] = receipt7
     collection_raw = json.dumps(current, sort_keys=True).encode()
     collection_path.write_bytes(collection_raw)
 
@@ -489,15 +657,15 @@ def test_formal_freezer_replays_mixed_1x4_then_6x2_profiles(tmp_path: Path) -> N
         collection_raw
     ).hexdigest()
     role_manifest["completed_pool_snapshot"].update({
-        "bytes": len(pool_raw), "rows": 3,
+        "bytes": len(pool_raw), "rows": 4,
         "sha256": hashlib.sha256(pool_raw).hexdigest(),
         "source_bytes_at_read": len(pool_raw),
     })
     role_manifest["frozen_pool_snapshot"] = {
-        "bytes": len(pool_raw), "rows": 3,
+        "bytes": len(pool_raw), "rows": 4,
         "sha256": hashlib.sha256(pool_raw).hexdigest(),
     }
 
     freeze.validate_frozen_role_provenance(
-        root, role_manifest, expected_passes=3
+        root, role_manifest, expected_passes=4
     )

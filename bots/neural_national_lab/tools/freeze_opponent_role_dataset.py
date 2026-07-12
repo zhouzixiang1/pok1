@@ -27,6 +27,7 @@ from freeze_oppmodel_dataset import (  # noqa: E402
 )
 import longrun_collect_oppmodel as collector  # noqa: E402
 import migrate_oppmodel_collector_concurrency as concurrency_migration  # noqa: E402
+import migrate_oppmodel_collector_capacity as capacity_migration  # noqa: E402
 from match_outcome_schema import (  # noqa: E402
     derive_match_outcome_supervision,
     match_outcome_metadata,
@@ -667,6 +668,7 @@ def _validate_pool_row(
     min_hand = max(1, min(
         hands, 1 + int((hands - 1) * fractions[(pass_index - 1) % len(fractions)])
     ))
+    capacity_migration.validate_pool_capacity(row, contract, pass_index)
     if (
         row.get("pass") != pass_index
         or row.get("ratings_path") != str(Path(str(contract["ratings_path"])).resolve())
@@ -724,8 +726,7 @@ def _completed_plans(
     resume_contract = collection_manifest.get("resume_contract")
     if (
         not isinstance(resume_contract, dict)
-        or resume_contract.get("schema_version")
-        != collector.COLLECTION_CONTRACT_SCHEMA_VERSION
+        or not capacity_migration.current_contract_is_reviewed(resume_contract)
     ):
         raise RuntimeError("role freeze requires the current collector contract")
     try:
@@ -750,6 +751,7 @@ def _completed_plans(
         "collector_sha256": _sha256(Path(collector.__file__).resolve()),
         "probe_sha256": _sha256(TOOLS / "native_tcp_counterfactual_probe.py"),
         "cross_hand_sequence_sha256": _sha256(TOOLS / "cross_hand_sequence.py"),
+        **capacity_migration.current_runtime_code_bindings(),
     }
     if any(
         resume_contract.get(field) != digest
@@ -758,14 +760,12 @@ def _completed_plans(
         raise RuntimeError("role freeze collector code trust root changed")
     if len(pool_rows) != completed_passes:
         raise RuntimeError("completed pool snapshot count changed")
-    migration = _concurrency_migration_contract(
-        collection_manifest,
-        completed_passes=completed_passes,
-        source_dir=source_dir,
-        validate_data_prefix=validate_data_prefix,
+    history = capacity_migration.resolve_contract_history(
+        collection_manifest, completed_passes=completed_passes,
+        source_dir=source_dir, validate_data_prefix=validate_data_prefix,
+        current_contract=resume_contract,
     )
-    migration_boundary = migration[0] if migration else 0
-    historical_contract = migration[1] if migration else resume_contract
+    historical_contract = history[3]
     legacy = _legacy_recovery_contract(
         collection_manifest,
         completed_passes=completed_passes,
@@ -795,10 +795,8 @@ def _completed_plans(
     intervals = []
     bot_seeds: dict[int, tuple[str, int, int]] = {}
     for pass_index in range(1, completed_passes + 1):
-        pass_contract = (
-            historical_contract
-            if migration is not None and pass_index <= migration_boundary
-            else resume_contract
+        pass_contract = capacity_migration.contract_for_pass(
+            history, pass_index, resume_contract
         )
         path = source_dir / "pass_plans" / f"pass_{pass_index:04d}.json"
         payload, digest = _load_json_snapshot(path)
@@ -975,8 +973,12 @@ def _validate_ipw(row: dict[str, Any]) -> None:
 def _validate_rows(
     data: dict[str, dict[str, list[dict[str, Any]]]],
     tasks: dict[tuple[str, int, int], dict[str, Any]],
-) -> None:
-    seen_value_decisions = set()
+) -> dict[str, Any]:
+    row_identity = capacity_migration.stable_row_identity_receipt({
+        prefix: [
+            row for split in SOURCE_SPLITS for row in data[prefix][split]
+        ] for prefix in PREFIXES
+    })
     for prefix in PREFIXES:
         for source_split in SOURCE_SPLITS:
             for row in data[prefix][source_split]:
@@ -1005,18 +1007,7 @@ def _validate_rows(
                         raise RuntimeError(
                             f"value row has invalid 70-hand outcome: {key}: {exc}"
                         ) from exc
-                    decision = (
-                        key,
-                        _integer(row.get("hand"), field="hand", minimum=1),
-                        _integer(
-                            row.get("hand_decision_index"),
-                            field="hand_decision_index",
-                            minimum=0,
-                        ),
-                    )
-                    if decision in seen_value_decisions:
-                        raise RuntimeError(f"duplicate sampled decision: {decision}")
-                    seen_value_decisions.add(decision)
+    return row_identity
 
 
 def _verify_snapshots(
@@ -1082,6 +1073,9 @@ def validate_frozen_role_provenance(
         raise ValueError("role dataset freeze-tool trust root changed")
     if manifest.get("role_source_contract") != EXPECTED_SOURCE_SPLIT:
         raise ValueError("role dataset source-role contract changed")
+    capacity_migration.validate_frozen_row_identity_manifest(
+        manifest, prefixes=PREFIXES, roles=EVIDENCE_ROLES
+    )
 
     collection_path = root / "collection_manifest.json"
     collection, collection_digest = _load_json_snapshot(collection_path)
@@ -1260,7 +1254,7 @@ def freeze_role_dataset(
             )
             data[prefix][split] = rows
             input_files[path.name] = details
-    _validate_rows(data, tasks)
+    row_identity = _validate_rows(data, tasks)
     response_counts = {}
     for split in SOURCE_SPLITS:
         upgraded = annotate_response_rows(
@@ -1403,6 +1397,7 @@ def freeze_role_dataset(
             "roles": {role: sorted(names) for role, names in roles.items()},
             "role_source_contract": EXPECTED_SOURCE_SPLIT,
             "input_files": input_files,
+            "row_identity": row_identity,
             "completed_pool_snapshot": pool_manifest,
             "frozen_pool_snapshot": {
                 "bytes": (
@@ -1434,6 +1429,7 @@ def freeze_role_dataset(
                 "national_response_v2_validated": True,
                 "national_70_hand_outcome_validated": True,
                 "artifact_snapshots_verified": True,
+                "stable_row_identity_unique": True,
                 "final_blind_in_dataset": False,
             },
             "freeze_tool_sha256": _sha256(Path(__file__)),

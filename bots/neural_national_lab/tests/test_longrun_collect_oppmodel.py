@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -51,8 +52,8 @@ def _minimal_collection_args(
         "--candidate", str(candidate),
         "--out-dir", str(out_dir),
         "--passes", str(passes),
-        "--workers", "1",
-        "--probe-workers", "1",
+        "--workers", "6",
+        "--probe-workers", "4",
         "--hands", "1",
         "--timeout-sec", "1",
         "--ratings", str(ratings),
@@ -193,6 +194,39 @@ def test_probe_nonzero_exit_is_not_published(tmp_path: Path, monkeypatch) -> Non
     assert not list((tmp_path / "data").glob("cf_*.jsonl"))
 
 
+def test_collector_probe_environment_moves_national_native_default_to_slots_4_27(
+    tmp_path: Path,
+) -> None:
+    tool = _load_tool()
+    capacity_root = tmp_path / "capacity"
+    environment = tool._probe_environment(
+        capacity_total_slots=28,
+        capacity_first_slot=4,
+    )
+    script = (
+        "import asyncio, json, pathlib, sys\n"
+        f"sys.path.insert(0, {str(ROOT / 'web' / 'core')!r})\n"
+        "import national_native\n"
+        "root = pathlib.Path(sys.argv[1])\n"
+        "lease = asyncio.run(national_native.acquire_match_slots_async(\n"
+        "    'collector-child', count=24, root=root, timeout=0.1))\n"
+        "print(json.dumps(sorted(path.name for path in root.iterdir())))\n"
+        "lease.release()\n"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(capacity_root)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert json.loads(completed.stdout) == [
+        f"match-slot-{index:02d}.lock" for index in range(4, 28)
+    ]
+
+
 def test_probe_timeout_is_not_published(tmp_path: Path, monkeypatch) -> None:
     tool = _load_tool()
 
@@ -230,6 +264,8 @@ def test_probe_noncompliant_summary_is_not_published(
         assert _kwargs["env"]["PYTHONPATH"].split(os.pathsep)[:2] == [
             str(ROOT), "/fixture/existing-pythonpath",
         ]
+        assert _kwargs["env"][tool.CAPACITY_FIRST_SLOT_ENV] == "4"
+        assert _kwargs["env"][tool.CAPACITY_TOTAL_SLOTS_ENV] == "28"
         def argument(flag: str) -> str:
             return cmd[cmd.index(flag) + 1]
 
@@ -508,7 +544,7 @@ def test_pass_completion_uses_plan_ratings_after_live_file_disappears(
     )
     expected_digest = hashlib.sha256(raw).hexdigest()
     assert manifest["resume_contract"]["schema_version"] == (
-        tool.COLLECTION_CONTRACT_SCHEMA_VERSION
+        tool.ACTIVE_COLLECTION_CONTRACT_SCHEMA_VERSION
     )
     assert plan["schema_version"] == tool.PASS_PLAN_SCHEMA_VERSION
     assert plan["ratings_snapshot"]["ratings_sha256"] == expected_digest
@@ -793,7 +829,7 @@ def test_durable_collection_rejects_fallback_pool() -> None:
         ])
 
 
-def test_schema6_accepts_reviewed_six_by_two_runtime_topology(
+def test_schema7_accepts_reviewed_six_by_four_reserved_runtime_topology(
     tmp_path: Path, monkeypatch
 ) -> None:
     tool = _load_tool()
@@ -811,7 +847,7 @@ def test_schema6_accepts_reviewed_six_by_two_runtime_topology(
         candidate=candidate, out_dir=out_dir, ratings=ratings_path, passes=1
     )
     args[args.index("--workers") + 1] = "6"
-    args[args.index("--probe-workers") + 1] = "2"
+    args[args.index("--probe-workers") + 1] = "4"
 
     assert tool.main(args) == 0
 
@@ -821,18 +857,42 @@ def test_schema6_accepts_reviewed_six_by_two_runtime_topology(
     snapshot = json.loads(
         (out_dir / "pool_snapshots.jsonl").read_text(encoding="utf-8")
     )
-    assert manifest["resume_contract"]["schema_version"] == 6
-    assert (manifest["resume_contract"]["workers"], manifest["resume_contract"]["probe_workers"]) == (6, 2)
-    assert (snapshot["workers"], snapshot["probe_workers"]) == (6, 2)
+    contract = manifest["resume_contract"]
+    assert contract["schema_version"] == 7
+    assert (contract["workers"], contract["probe_workers"]) == (6, 4)
+    assert contract["max_active_native_matches"] == 24
+    assert (contract["capacity_first_slot"], contract["capacity_total_slots"]) == (
+        4, 28
+    )
+    assert contract["runtime_capacity_sha256"] == hashlib.sha256(
+        (ROOT / "web" / "core" / "runtime_capacity.py").read_bytes()
+    ).hexdigest()
+    assert contract["national_native_sha256"] == hashlib.sha256(
+        (ROOT / "web" / "core" / "national_native.py").read_bytes()
+    ).hexdigest()
+    assert (snapshot["workers"], snapshot["probe_workers"]) == (6, 4)
+    assert snapshot["max_active_native_matches"] == 24
+    assert (snapshot["capacity_first_slot"], snapshot["capacity_total_slots"]) == (
+        4, 28
+    )
 
 
-def test_native_match_concurrency_above_host_capacity_is_rejected() -> None:
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--workers", "5", "--probe-workers", "4"],
+        ["--workers", "6", "--probe-workers", "3"],
+        ["--max-active-native-matches", "23"],
+        ["--capacity-total-slots", "27"],
+        ["--capacity-first-slot", "3"],
+    ],
+)
+def test_unreviewed_schema7_capacity_topology_is_rejected(arguments) -> None:
     tool = _load_tool()
 
-    with pytest.raises(SystemExit, match="must not exceed 12 native matches"):
+    with pytest.raises(SystemExit, match="schema-7 collector requires"):
         tool.main([
             "--candidate", "unused",
             "--out-dir", "unused",
-            "--workers", "6",
-            "--probe-workers", "3",
+            *arguments,
         ])
