@@ -255,7 +255,10 @@ def _migration_intent(
         source_dir / "pool_snapshots.jsonl", boundary
     )
     plans, tail = _plan_prefix(
-        source_dir, boundary=boundary, contract=contract
+        source_dir,
+        boundary=boundary,
+        contract=contract,
+        collection_manifest=manifest,
     )
     data, identity = _data_prefix_with_identity(
         source_dir, state_payload, exact=True
@@ -499,16 +502,12 @@ def _new_contract(
     return updated
 
 
-def _validated_plan(
-    path: Path,
+def _validate_plan_payload(
+    payload: object,
     *,
     pass_number: int,
     contract: dict[str, Any],
 ) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"invalid pass plan: {path}") from exc
     collector._validate_pass_plan(
         payload,
         pass_number=pass_number,
@@ -526,12 +525,44 @@ def _validated_plan(
         val_opponents=set(contract["val_opponents"]),
         held_out_opponents=set(contract["held_out_opponents"]),
     )
+    if not isinstance(payload, dict):  # Kept explicit for the return type.
+        raise RuntimeError("persisted pass plan must be an object")
     return payload
 
 
 def _plan_prefix(
-    source_dir: Path, *, boundary: int, contract: dict[str, Any]
+    source_dir: Path,
+    *,
+    boundary: int,
+    contract: dict[str, Any],
+    collection_manifest: dict[str, Any],
 ) -> tuple[dict[str, str], dict[str, Any] | None]:
+    # A schema-6 source can contain three immutable plan eras: legacy schema-4
+    # completed plans, the schema-5 recovery plan, and native schema-6 plans.
+    # Replay the signed migration history instead of applying the latest plan
+    # validator retroactively to every historical file.
+    import freeze_opponent_role_dataset as role_freeze
+
+    history = resolve_contract_history(
+        collection_manifest,
+        completed_passes=boundary,
+        source_dir=source_dir,
+        validate_data_prefix=False,
+        current_contract=contract,
+    )
+    historical_contract = history[3]
+    legacy = role_freeze._legacy_recovery_contract(
+        collection_manifest,
+        completed_passes=boundary,
+        source_dir=source_dir,
+        validate_data_prefix=False,
+        resume_contract=historical_contract,
+    )
+    if legacy is None or legacy[1] != history[0]:
+        raise RuntimeError(
+            "schema-6 concurrency boundary is not the recovered legacy pass"
+        )
+    legacy_prefix, recovered_pass, legacy_hashes = legacy
     root = source_dir / "pass_plans"
     completed_names = {
         f"pass_{index:04d}.json" for index in range(1, boundary + 1)
@@ -552,13 +583,50 @@ def _plan_prefix(
     for index in range(1, boundary + 1):
         name = f"pass_{index:04d}.json"
         path = root / name
-        _validated_plan(path, pass_number=index, contract=contract)
-        completed[name] = _sha256(path)
+        try:
+            raw = path.read_bytes()
+            payload = json.loads(raw)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"invalid pass plan: {path}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"pass plan must be an object: {path}")
+        digest = _sha256_bytes(raw)
+        pass_contract = contract_for_pass(history, index, contract)
+        if index <= legacy_prefix:
+            if digest != legacy_hashes.get(name):
+                raise RuntimeError(f"legacy completed pass plan changed: {name}")
+            if (
+                payload.get("seed_scheme") != "disjoint_match_blocks_v1"
+                or _integer(payload.get("pass"), field=f"{name}.pass", minimum=1)
+                != index
+            ):
+                raise RuntimeError(f"legacy pass-plan identity changed: {path}")
+            role_freeze._legacy_plan_tasks(
+                payload, pass_index=index, contract=pass_contract
+            )
+        else:
+            _validate_plan_payload(
+                payload, pass_number=index, contract=pass_contract
+            )
+            if index == recovered_pass:
+                expected = collection_manifest["legacy_recovery"]["after"][
+                    "recovery_plan_sha256"
+                ]
+                if digest != expected:
+                    raise RuntimeError("recovered pass plan changed")
+        completed[name] = digest
     if tail_name not in observed:
         return completed, None
     tail_path = root / tail_name
-    _validated_plan(tail_path, pass_number=boundary + 1, contract=contract)
-    raw = tail_path.read_bytes()
+    try:
+        raw = tail_path.read_bytes()
+        tail_payload = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid pass plan: {tail_path}") from exc
+    tail_contract = contract_for_pass(history, boundary + 1, contract)
+    _validate_plan_payload(
+        tail_payload, pass_number=boundary + 1, contract=tail_contract
+    )
     return completed, {
         "name": tail_name,
         "bytes": len(raw),
@@ -1075,7 +1143,10 @@ def build_migration(
         source_dir / "pool_snapshots.jsonl", boundary
     )
     plans, planned_tail = _plan_prefix(
-        source_dir, boundary=boundary, contract=old_contract
+        source_dir,
+        boundary=boundary,
+        contract=old_contract,
+        collection_manifest=previous,
     )
     data, row_identity = _data_prefix_with_identity(
         source_dir, state, exact=True
@@ -1210,7 +1281,10 @@ def _revalidate_source_evidence(
     if pool != prefix.get("pool_snapshots"):
         raise RuntimeError("pool snapshots changed before migration publish")
     plans, tail = _plan_prefix(
-        source_dir, boundary=boundary, contract=old_contract
+        source_dir,
+        boundary=boundary,
+        contract=old_contract,
+        collection_manifest=previous,
     )
     if plans != prefix.get("pass_plan_sha256") or tail != receipt.get(
         "planned_tail"
