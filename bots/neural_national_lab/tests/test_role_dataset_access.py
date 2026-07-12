@@ -47,7 +47,7 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
     }
     outputs = {}
     for prefix in freeze.PREFIXES:
-        for role, opponents in roles.items():
+        for role_index, (role, opponents) in enumerate(roles.items(), 1):
             filename = f"{prefix}_{role}.jsonl"
             row = {
                 "opponent": opponents[0],
@@ -97,7 +97,17 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
                 role_plan.FORMAL_MINIMUM_ROWS[prefix][role]
                 if complete else 1
             )
-            raw = (json.dumps(row) + "\n").encode() * count
+            rows = []
+            for index in range(count):
+                sample = dict(row)
+                sample.update({
+                    "deck_seed_base": role_index * 1_000_000 + index // 70,
+                    "bot_seed_base": role_index * 2_000_000 + index // 70,
+                    "hand": index % 70 + 1,
+                    "hand_decision_index": 0,
+                })
+                rows.append(json.dumps(sample) + "\n")
+            raw = "".join(rows).encode()
             (root / filename).write_bytes(raw)
             outputs[filename] = {
                 "rows": count,

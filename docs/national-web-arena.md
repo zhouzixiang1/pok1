@@ -53,8 +53,14 @@ external bot / managed national_bot.py
   machine, listener, managed process groups, cleanup, and SSE notifications.
 - `web/core/national_arena/storage.py` owns locked metadata, semantic events,
   wire journals, bot logs, and THP artifacts.
-- `web/core/runtime_capacity.py` provides 12 host-shared cross-process match
-  slots under `/tmp/pok-runtime-capacity-<uid>` by default. The path is
+- `web/core/runtime_capacity.py` provides host-shared cross-process match slots
+  under `/tmp/pok-runtime-capacity-<uid>`. Ordinary callers remain on the
+  backward-compatible default range 0 through 11. Explicit layouts are strict
+  contiguous subranges of the host maximum 0 through 27; invalid environment or
+  argument values fail closed. The schema-7 neural collector sets
+  `POK_RUNTIME_CAPACITY_FIRST_SLOT=4` and
+  `POK_RUNTIME_CAPACITY_TOTAL_SLOTS=28`, so its native probe children use slots
+  4 through 27 and leave 0 through 3 for operator services. The path is
   independent of a checkout and can be overridden with
   `POK_RUNTIME_CAPACITY_ROOT`. A managed Arena holds two slots; every native TCP
   match acquires one in the shared runner, while legacy daemon matches retain a
