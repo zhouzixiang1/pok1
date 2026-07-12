@@ -111,7 +111,6 @@ MAX_PRECOMMIT_RETRIES = 3   # Max run_precommit_eval attempts against the SAME b
 MAX_PRECOMMIT_REWORK_ROUNDS = int(os.environ.get("POK_MAX_PRECOMMIT_REWORK_ROUNDS", "3"))
 MAX_OFFICIAL_REWORK_ROUNDS = int(os.environ.get("POK_MAX_OFFICIAL_REWORK_ROUNDS", "2"))
 MAX_MASTER_AUDIT_RETRIES = 1  # Initial Master plan + one corrective re-plan only
-MAX_GEN_COST = 7.0            # Per-cycle LLM cost cap (safety net above normal 4-attempt retry budget ~$5-7)
 WORKER_TIMEOUT = 1000         # Seconds before a hung worker call is aborted + retried
 MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semaphore)
 
@@ -479,7 +478,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                runtime_contract_ledger_reset_reason=None,
                                expected_checkpoint_revision=None,
                                expected_checkpoint_stage=None,
-                               expected_workflow_run_id=None):
+                               expected_workflow_run_id=None,
+                               workflow_run_id=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -610,6 +610,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_official_job = None
         existing_repair_baseline_artifact_hash = None
         existing_workflow_run_id = ""
+        requested_workflow_run_id = str(workflow_run_id or "").strip()
         existing_checkpoint_revision = 0
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
@@ -662,6 +663,13 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 or expected_workflow_run_id
                 or ""
             )
+            if (
+                requested_workflow_run_id
+                and existing_workflow_run_id
+                and requested_workflow_run_id != existing_workflow_run_id
+            ):
+                log.error("Refusing checkpoint workflow identity replacement")
+                return False
             existing_checkpoint_revision = int(
                 existing.get("checkpoint_revision") or 0
             )
@@ -993,7 +1001,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         run_id = f"{next_v}#{existing_generation_attempt}"
         if not existing_workflow_run_id:
             existing_workflow_run_id = (
-                f"generation:{int(next_v)}:{uuid.uuid4().hex}"
+                requested_workflow_run_id
+                or f"generation:{int(next_v)}:{uuid.uuid4().hex}"
             )
         next_checkpoint_revision = existing_checkpoint_revision + 1
         _contract_checkpoint = {
@@ -1221,6 +1230,8 @@ class BaseUI:
     def update_daemon_status(self, stats, ratings): pass
     def set_header(self, msg): pass
     def update_cost(self, role, cost_usd, usage): pass
+    def begin_generation_cost(self, generation_id, spent_usd, policy_receipt=None): pass
+    def reset_gen_cost(self): pass
     def update_metrics(self, metrics): pass
     def emit_tool_call(self, tool_name: str, args: dict, role: str = ""): pass
 
@@ -1393,17 +1404,23 @@ def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versio
 
 
 def active_native_contract_filter_enabled() -> bool:
+    # The national-native epoch has no operator escape hatch: disabling this
+    # check would immediately repopulate ratings/opponents with quarantined raw
+    # runtimes. The environment flag remains only for non-national legacy test
+    # profiles where no national executable authority exists.
+    if EVALUATION_EPOCH == "national_native_v1":
+        return True
     raw = os.environ.get("POK_ACTIVE_NATIVE_CONTRACT_FILTER")
     if raw is None:
-        return EVALUATION_EPOCH == "national_native_v1"
+        return False
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-_ACTIVE_BOT_PROTOCOL_CACHE: dict[tuple[int, str, tuple[tuple[str, int, int], ...]], tuple[str, ...]] = {}
+_ACTIVE_BOT_PROTOCOL_CACHE: dict[tuple, tuple[str, ...]] = {}
 
 
-def _bot_protocol_fingerprint(bot_dir: Path) -> tuple[tuple[str, int, int], ...]:
-    files: list[tuple[str, int, int]] = []
+def _bot_protocol_fingerprint(bot_dir: Path) -> tuple[tuple, ...]:
+    files: list[tuple] = []
     if not bot_dir.exists():
         return (("<missing>", 0, 0),)
     for path in sorted(bot_dir.rglob("*.py")):
@@ -1412,13 +1429,25 @@ def _bot_protocol_fingerprint(bot_dir: Path) -> tuple[tuple[str, int, int], ...]
         try:
             st = path.stat()
             rel = str(path.relative_to(bot_dir)).replace(os.sep, "/")
-            files.append((rel, int(st.st_mtime_ns), int(st.st_size)))
+            files.append(
+                (
+                    rel,
+                    int(st.st_mtime_ns),
+                    int(st.st_ctime_ns),
+                    int(st.st_size),
+                    int(st.st_ino),
+                )
+            )
         except OSError:
             continue
     return tuple(files)
 
 
-def active_bot_protocol_errors(version: int) -> list[str]:
+def active_bot_protocol_errors(
+    version: int,
+    *,
+    quarantine_health: dict | None = None,
+) -> list[str]:
     """Return active-pool protocol errors for a tagged bot version.
 
     Historical active-epoch tags are retained for auditability, but the current
@@ -1429,24 +1458,62 @@ def active_bot_protocol_errors(version: int) -> list[str]:
 
     if not active_native_contract_filter_enabled():
         return []
+    try:
+        from national_protocol_quarantine import (
+            is_quarantined_version,
+            protocol_quarantine_health,
+        )
+
+        quarantine = (
+            quarantine_health
+            if quarantine_health is not None
+            else protocol_quarantine_health()
+        )
+    except Exception as exc:
+        return [
+            "protocol_quarantine_check_error: "
+            f"{type(exc).__name__}: {str(exc)[:200]}"
+        ]
+    if not quarantine.get("valid"):
+        detail = "; ".join(
+            str(item) for item in (quarantine.get("issues") or [])[:5]
+        )
+        return [f"protocol_quarantine_policy_invalid: {detail}"]
     bot_dir = BOTS_DIR / bot_name(version)
     fingerprint = _bot_protocol_fingerprint(bot_dir)
-    cache_key = (int(version), str(bot_dir.resolve()), fingerprint)
+    cache_key = (
+        int(version),
+        str(bot_dir.resolve()),
+        fingerprint,
+        str(quarantine.get("policy_digest") or ""),
+    )
     cached = _ACTIVE_BOT_PROTOCOL_CACHE.get(cache_key)
     if cached is not None:
         return list(cached)
 
-    errors = []
-    try:
-        from national_native import check_native_contract
-        errors.extend(check_native_contract(bot_dir))
-    except Exception as exc:
-        errors.append(f"native_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
-    try:
-        from national_position_contract import detect_position_semantics_errors
-        errors.extend(detect_position_semantics_errors(bot_dir))
-    except Exception as exc:
-        errors.append(f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
+    if is_quarantined_version(version, health=quarantine):
+        errors = [
+            "protocol_quarantined_historical_artifact: published strategy is "
+            "non-executable under the current stream/decision runtime contract"
+        ]
+    else:
+        errors = []
+        try:
+            from national_native import check_native_contract
+            errors.extend(
+                check_native_contract(
+                    bot_dir,
+                    require_current_stream_decoder=True,
+                    require_current_decision_runtime=True,
+                )
+            )
+        except Exception as exc:
+            errors.append(f"native_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
+        try:
+            from national_position_contract import detect_position_semantics_errors
+            errors.extend(detect_position_semantics_errors(bot_dir))
+        except Exception as exc:
+            errors.append(f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
     stale_keys = [
         key for key in _ACTIVE_BOT_PROTOCOL_CACHE
         if key[0] == int(version) and key[1] == str(bot_dir.resolve())
@@ -1457,8 +1524,29 @@ def active_bot_protocol_errors(version: int) -> list[str]:
     return errors
 
 
-def is_active_bot_protocol_eligible(version: int) -> bool:
-    return not active_bot_protocol_errors(version)
+def is_active_bot_protocol_eligible(
+    version: int,
+    *,
+    quarantine_health: dict | None = None,
+) -> bool:
+    return not active_bot_protocol_errors(
+        version,
+        quarantine_health=quarantine_health,
+    )
+
+
+_ORIGINAL_IS_ACTIVE_BOT_PROTOCOL_ELIGIBLE = is_active_bot_protocol_eligible
+
+
+def _protocol_eligible_for_discovery(version: int, quarantine_health: dict | None) -> bool:
+    """Reuse one verified policy report while preserving test/plugin overrides."""
+
+    if is_active_bot_protocol_eligible is _ORIGINAL_IS_ACTIVE_BOT_PROTOCOL_ELIGIBLE:
+        return is_active_bot_protocol_eligible(
+            version,
+            quarantine_health=quarantine_health,
+        )
+    return bool(is_active_bot_protocol_eligible(version))
 
 
 def _target_rel(path, version):
@@ -1500,6 +1588,27 @@ def _discover_active_bots(
     keeps this O(1 git call) regardless of bot count, plus local file checks for
     protocol eligibility.
     """
+    quarantine_health = None
+    if active_native_contract_filter_enabled():
+        try:
+            from national_protocol_quarantine import protocol_quarantine_health
+
+            quarantine_health = protocol_quarantine_health()
+        except Exception as exc:
+            quarantine_health = {
+                "valid": False,
+                "issues": [
+                    f"protocol_quarantine_check_error:{type(exc).__name__}:"
+                    f"{str(exc)[:200]}"
+                ],
+            }
+        if not quarantine_health.get("valid"):
+            log.error(
+                "National protocol quarantine unavailable; active pool fails closed: %s",
+                quarantine_health.get("issues"),
+            )
+            return []
+
     tag_versions = _tagged_bot_versions()
     try:
         reaped_versions = load_reaped_bot_versions()
@@ -1533,7 +1642,7 @@ def _discover_active_bots(
                 if (
                     v in tag_versions
                     and v not in reaped_versions
-                    and is_active_bot_protocol_eligible(v)
+                    and _protocol_eligible_for_discovery(v, quarantine_health)
                     and _official_parent_eligible(BOTS_DIR / d)
                 ):
                     bots.append(d)

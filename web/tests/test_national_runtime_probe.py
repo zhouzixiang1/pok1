@@ -255,9 +255,22 @@ def test_probe_measures_postflop_consumer_across_scenario_bank_and_caches(tmp_pa
         static_artifacts=_artifact_request(),
     )
 
-    assert first["ok"] is True
+    assert first["failure_class"] != "probe_infra"
+    assert first["evidence_integrity_ok"] is first["repeatability_ok"]
+    if not first["repeatability_ok"]:
+        assert "runtime_probe_non_repeatable" in first["issues"]
+    migration_repeatability = first["migration_evidence_repeatability"]
+    assert migration_repeatability["candidate_fingerprint_unchanged"] is True
+    assert all(
+        row["stable"] is True
+        for row in migration_repeatability["dimensions"].values()
+    )
+    assert all(
+        row["authority_tier"] == "baseline"
+        for row in migration_repeatability["dimensions"].values()
+    )
     assert first["cache_hit"] is False
-    assert second["ok"] is True
+    assert second["ok"] is first["ok"]
     assert second["cache_hit"] is True
     assert second["cache_key"] == first["cache_key"]
     multifidelity = first["decision_runtime"]["budget_scaling"]
@@ -398,7 +411,160 @@ def test_probe_infrastructure_failure_is_never_cached(monkeypatch, tmp_path):
 
     assert first["failure_class"] == "probe_infra"
     assert second["failure_class"] == "probe_infra"
+    assert first["repeatability_ok"] is False
+    assert first["evidence_integrity_ok"] is False
+    assert not any(
+        row["stable"]
+        for row in first["migration_evidence_repeatability"]["dimensions"].values()
+    )
     assert len(calls) == 2
+
+
+def test_global_probe_jitter_preserves_repeatable_donk_baseline_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    bot = _write_probe_bot(tmp_path / "national_v_global_jitter")
+    national_runtime_probe.clear_runtime_probe_cache()
+    calls = []
+
+    def _candidate_result(_root, spec, _timeout):
+        trusted_steps = 8 if not calls else 0
+        calls.append(trusted_steps)
+        return {
+            "ok": True,
+            "failure_class": "none",
+            "issues": [],
+            "schema_version": 2,
+            "worker_version": 1,
+            "scenario_version": 1,
+            "scenario_digest": spec["scenario_digest"],
+            "spec_digest": spec["spec_digest"],
+            "code_fingerprint": spec["code_fingerprint"],
+            "artifacts": [],
+            "tracker": {},
+            "decision_runtime": {
+                "budget_scaling": {
+                    "probe_kind": "unrelated_wall_clock_probe",
+                    "short": {"trusted_steps": trusted_steps},
+                    "long": {"trusted_steps": 8},
+                },
+            },
+            "strategy_influence": {
+                "dimensions": {
+                    "semantic_lines": {
+                        "rows": [{
+                            "dimension": "donk",
+                            "scenario_id": "flop_donk_vs_opponent_pfr",
+                            "control_kind": "same_scenario_flag_false",
+                            "flag": "can_donk",
+                            "tiers": {
+                                "baseline": {
+                                    "positive": {"wire": "raise 600"},
+                                    "negative": {"wire": "check"},
+                                    "changed": True,
+                                },
+                            },
+                        }],
+                    },
+                },
+            },
+        }
+
+    monkeypatch.setattr(national_runtime_probe, "_run_once", _candidate_result)
+
+    result = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert calls == [8, 0]
+    assert result["repeatability_ok"] is False
+    assert result["evidence_integrity_ok"] is False
+    donk = result["migration_evidence_repeatability"]["dimensions"]["donk"]
+    assert donk["stable"] is True
+    assert donk["authority_tier"] == "baseline"
+    assert donk["evidence"][0]["left_wire"] == "raise 600"
+    assert donk["evidence"][0]["right_wire"] == "check"
+
+
+def test_nonrepeatable_nested_strategy_evidence_is_marked_untrusted(
+    monkeypatch,
+    tmp_path,
+):
+    bot = _write_probe_bot(tmp_path / "national_v_nonrepeatable")
+    national_runtime_probe.clear_runtime_probe_cache()
+    calls = []
+
+    def _candidate_result(_root, spec, _timeout):
+        wire = "raise 600" if not calls else "check"
+        calls.append(wire)
+        return {
+            "ok": True,
+            "failure_class": "none",
+            "issues": [],
+            "schema_version": 2,
+            "worker_version": 1,
+            "scenario_version": 1,
+            "scenario_digest": spec["scenario_digest"],
+            "spec_digest": spec["spec_digest"],
+            "code_fingerprint": spec["code_fingerprint"],
+            "artifacts": [],
+            "tracker": {},
+            "strategy_influence": {
+                "dimensions": {
+                    "semantic_lines": {
+                        "rows": [{
+                            "dimension": "donk",
+                            "scenario_id": "flop_donk_vs_opponent_pfr",
+                            "control_kind": "same_scenario_flag_false",
+                            "flag": "can_donk",
+                            "tiers": {
+                                "baseline": {
+                                    "positive": {"wire": wire},
+                                    "negative": {"wire": "fold"},
+                                    "changed": wire != "fold",
+                                }
+                            },
+                        }]
+                    }
+                }
+            },
+        }
+
+    monkeypatch.setattr(national_runtime_probe, "_run_once", _candidate_result)
+
+    result = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert calls == ["raise 600", "check"]
+    assert result["repeatability_ok"] is False
+    assert result["evidence_integrity_ok"] is False
+    assert "runtime_probe_non_repeatable" in result["issues"]
+    assert result["ok"] is False
+    donk = result["migration_evidence_repeatability"]["dimensions"]["donk"]
+    assert donk["stable"] is False
+    assert donk["observations_identical"] is False
+    assert donk["evidence"] == []
+
+
+def test_probe_classifies_candidate_output_limit_without_internal_error(
+    monkeypatch, tmp_path
+):
+    bot = _write_probe_bot(tmp_path / "national_v_output_limit")
+    strategy = bot / "strategy.py"
+    strategy.write_text(
+        "import os\nos.write(1, b'runtime-probe-noise')\n"
+        + strategy.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    spec = national_runtime_probe.build_runtime_probe_spec(
+        bot,
+        static_artifacts=_artifact_request(),
+    )
+    monkeypatch.setattr(national_runtime_probe, "RUNTIME_PROBE_MAX_OUTPUT_BYTES", 1)
+
+    result = national_runtime_probe._run_once(bot, spec, timeout_sec=30.0)
+
+    assert result["ok"] is False
+    assert result["failure_class"] == "candidate_contract"
+    assert result["issues"] == ["runtime_probe_output_limit_exceeded"]
 
 
 def test_probe_cache_is_bound_to_code_fingerprint(monkeypatch, tmp_path):
@@ -433,6 +599,8 @@ def test_probe_cache_is_bound_to_code_fingerprint(monkeypatch, tmp_path):
     changed = national_runtime_probe.run_national_runtime_probe(bot)
 
     assert first["cache_hit"] is False
+    assert first["repeatability_ok"] is True
+    assert first["evidence_integrity_ok"] is True
     assert cached["cache_hit"] is True
     assert changed["cache_hit"] is False
     assert first["code_fingerprint"] != changed["code_fingerprint"]

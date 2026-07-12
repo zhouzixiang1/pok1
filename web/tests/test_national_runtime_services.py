@@ -5,10 +5,11 @@ import threading
 
 import pytest
 
+import national_bot_launcher
 from national_arena.manager import ArenaConflict, NationalArenaManager, _ArenaRuntime
 from national_arena.models import ArenaSession
 from national_arena.storage import ArenaStore
-from national_bot_launcher import build_native_bot_launch
+from national_bot_launcher import native_entry_supports_log_arg
 from runtime_capacity import (
     DEFAULT_CAPACITY_ROOT,
     acquire_match_slots_async,
@@ -17,7 +18,7 @@ from runtime_capacity import (
 )
 
 
-def test_native_launcher_uses_allowlisted_environment_for_arena(tmp_path, monkeypatch):
+def test_native_entry_log_capability_is_static_only(tmp_path):
     bot = tmp_path / "national_v1"
     bot.mkdir()
     entry = bot / "national_bot.py"
@@ -27,51 +28,12 @@ def test_native_launcher_uses_allowlisted_environment_for_arena(tmp_path, monkey
         "p.add_argument('--log')\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-reach-bot")
-    monkeypatch.setenv("PATH", "/usr/bin")
-
-    plan = build_native_bot_launch(
-        bot_dir=bot,
-        entry=entry,
-        label="national_v1",
-        host="127.0.0.1",
-        port=10001,
-        action_delay=0.3,
-        hard_deadline=55,
-        refinement_budget=54,
-        baseline_target=0.25,
-        decision_log=tmp_path / "decision.log",
-        extra_environment={"POK_ARENA_SESSION_ID": "arena_test"},
-    )
-
-    assert "ANTHROPIC_API_KEY" not in plan.environment
-    assert plan.environment["POK_ARENA_SESSION_ID"] == "arena_test"
-    assert plan.environment["POK_OFFICIAL_ACTION_DELAY"] == "0.3"
-    assert "--log" in plan.command
+    assert native_entry_supports_log_arg(entry) is True
 
 
-def test_native_launcher_respects_explicit_empty_environment(tmp_path, monkeypatch):
-    bot = tmp_path / "national_v1"
-    bot.mkdir()
-    entry = bot / "national_bot.py"
-    entry.write_text("print('unused')\n", encoding="utf-8")
-    monkeypatch.setenv("PARENT_ONLY_SECRET", "must-not-be-inherited")
-
-    plan = build_native_bot_launch(
-        bot_dir=bot,
-        entry=entry,
-        label="national_v1",
-        host="127.0.0.1",
-        port=10001,
-        action_delay=0.0,
-        hard_deadline=2.0,
-        refinement_budget=1.8,
-        baseline_target=0.2,
-        base_environment={},
-        inherit_all_environment=True,
-    )
-
-    assert "PARENT_ONLY_SECRET" not in plan.environment
+def test_native_launcher_module_has_no_subprocess_plan_api():
+    assert not hasattr(national_bot_launcher, "build_native_bot_launch")
+    assert not hasattr(national_bot_launcher, "NativeBotLaunchPlan")
 
 
 def test_runtime_capacity_lease_reserves_slots_across_callers(tmp_path):

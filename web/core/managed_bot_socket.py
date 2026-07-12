@@ -21,6 +21,7 @@ PRECONNECTED_PORT_ENV = "POK_PRECONNECTED_SOCKET_PORT"
 
 SANDBOX_BOOTSTRAP = r"""
 import os
+import random
 import runpy
 import socket
 import sys
@@ -59,6 +60,9 @@ def _pok_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
     return connected
 
 socket.create_connection = _pok_create_connection
+_pok_seed = os.environ.get("POK_NATIVE_BOT_SEED")
+if _pok_seed not in (None, ""):
+    random.seed(int(_pok_seed))
 entry = sys.argv[1]
 sys.path.insert(0, "/bot")
 sys.argv = [entry] + sys.argv[2:]

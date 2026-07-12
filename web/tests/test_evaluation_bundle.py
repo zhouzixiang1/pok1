@@ -32,7 +32,7 @@ def _patch_results(monkeypatch, tmp_path):
     monkeypatch.setattr(evolution_infra, "MATCH_HISTORY_FILE", results / "match_history.jsonl")
     monkeypatch.setattr(evolution_infra, "RATING_HISTORY_FILE", results / "rating_history.jsonl")
     identity_manifest = evaluation_data_identity.ensure_evaluation_data_identity(results)
-    assert identity_manifest["schema_version"] == 2
+    assert identity_manifest["schema_version"] == 3
     return results, identity_manifest
 
 

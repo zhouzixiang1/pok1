@@ -1,16 +1,12 @@
 import json
-from pathlib import Path
 import select
-import shutil
 import socket
-import subprocess
 
 import pytest
 
 from bot_artifact import hash_path
-from managed_bot_socket import endpoint_environment
-from official_bot_sandbox import build_sandboxed_bot_command, seal_bot_artifact
-from official_execution_profile import load_execution_profile
+from managed_bot_executor import EndpointLease, EndpointLeaseError
+from official_bot_sandbox import launch_sandboxed_bot, seal_bot_artifact
 
 
 def _listener() -> socket.socket:
@@ -21,27 +17,23 @@ def _listener() -> socket.socket:
     return listener
 
 
-def test_endpoint_environment_requires_a_real_loopback_socket():
+def test_endpoint_lease_rejects_unix_and_non_loopback_authority():
     peer, inherited = socket.socketpair()
     try:
-        environment = endpoint_environment(inherited.fileno(), "127.0.0.1", 10001)
-        assert environment["POK_PRECONNECTED_SOCKET_FD"] == str(inherited.fileno())
-        with pytest.raises(ValueError, match="loopback"):
-            endpoint_environment(inherited.fileno(), "8.8.8.8", 10001)
-        with pytest.raises(ValueError, match="port"):
-            endpoint_environment(inherited.fileno(), "127.0.0.1", 0)
+        with pytest.raises(EndpointLeaseError, match="family"):
+            EndpointLease.adopt(
+                inherited,
+                peer_host="127.0.0.1",
+                peer_port=10001,
+            )
     finally:
         peer.close()
         inherited.close()
+    with pytest.raises(EndpointLeaseError, match="loopback"):
+        EndpointLease.connect("8.8.8.8", 10001, timeout=0.1)
 
 
 def test_bwrap_bot_can_use_only_inherited_stream(tmp_path):
-    profile = load_execution_profile()
-    bwrap = Path(profile["tools"]["bwrap"]["command_path"])
-    python = Path(profile["tools"]["python"]["command_path"])
-    if not bwrap.is_file() or not python.is_file() or shutil.which(str(bwrap)) is None:
-        pytest.skip("tracked formal Bubblewrap/Python profile is unavailable")
-
     authorized_listener = _listener()
     forbidden_listener = _listener()
     authorized_port = authorized_listener.getsockname()[1]
@@ -54,9 +46,9 @@ def test_bwrap_bot_can_use_only_inherited_stream(tmp_path):
         f"forbidden_port = {forbidden_port}\n"
         "wire = socket.create_connection(('127.0.0.1', authorized_port), timeout=2)\n"
         "report = {'inheritable': os.get_inheritable(wire.fileno())}\n"
-        "probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)\n"
-        "probe.settimeout(0.25)\n"
         "try:\n"
+        "    probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)\n"
+        "    probe.settimeout(0.25)\n"
         "    probe.connect(('127.0.0.1', forbidden_port))\n"
         "except OSError:\n"
         "    report['second_endpoint_blocked'] = True\n"
@@ -75,34 +67,22 @@ def test_bwrap_bot_can_use_only_inherited_stream(tmp_path):
         tmp_path / "sealed" / "candidate",
         expected_hash=hash_path(source),
     )
-    preconnected = socket.create_connection(
-        ("127.0.0.1", authorized_port),
-        timeout=2,
-    )
-    accepted, _peer = authorized_listener.accept()
     try:
-        command, environment = build_sandboxed_bot_command(
-            sealed,
-            host="127.0.0.1",
-            port=authorized_port,
-            name="candidate",
-            seat="upper",
-            log_path=None,
-            supports_log=False,
-            preconnected_fd=preconnected.fileno(),
-        )
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-            pass_fds=(preconnected.fileno(),),
-        )
-        preconnected.close()
+        with EndpointLease.connect(
+            "127.0.0.1", authorized_port, timeout=2
+        ) as endpoint:
+            accepted, _peer = authorized_listener.accept()
+            managed = launch_sandboxed_bot(
+                sealed,
+                endpoint,
+                name="candidate",
+                seat="upper",
+                log_path=None,
+                supports_log=False,
+            )
         payload = accepted.recv(4096)
-        stdout, stderr = process.communicate(timeout=10)
-        assert process.returncode == 0, (stdout, stderr)
+        stdout, stderr = managed.process.communicate(timeout=10)
+        assert managed.process.returncode == 0, (stdout, stderr)
         report = json.loads(payload.decode())
         assert report == {
             "exec_inherited_wire": False,
@@ -111,9 +91,9 @@ def test_bwrap_bot_can_use_only_inherited_stream(tmp_path):
         }
         readable, _, _ = select.select([forbidden_listener], [], [], 0.1)
         assert readable == []
-        assert "--share-net" not in command
+        assert managed.isolation.bpf_size > 0
     finally:
-        preconnected.close()
-        accepted.close()
+        if "accepted" in locals():
+            accepted.close()
         authorized_listener.close()
         forbidden_listener.close()

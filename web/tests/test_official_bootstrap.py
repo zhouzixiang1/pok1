@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from pathlib import Path
 import subprocess
+
+import pytest
 
 from bot_artifact import canonical_digest
 import official_bootstrap
@@ -85,6 +88,54 @@ def test_configured_v141_root_selects_only_with_exact_signed_entry(monkeypatch, 
     assert receipt["ledger_entry_digest"] == root["ledger_entry"]["entry_digest"]
     assert receipt["receipt_digest"]
     assert selected["candidate_binding"]["candidate_hash"] == "a" * 64
+
+
+def test_locked_bootstrap_validator_uses_supplied_entries_without_relocking(
+    monkeypatch, tmp_path
+):
+    root, entry = _root_runtime(monkeypatch, tmp_path)
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
+    monkeypatch.setattr(official_bootstrap, "hash_path", lambda _path: "a" * 64)
+    selected = official_bootstrap.select_signed_v5_ledger_bootstrap_root(
+        root["root_id"], candidate
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_validated_ledger_entries",
+        lambda: (_ for _ in ()).throw(AssertionError("nested ledger lock")),
+    )
+
+    validation = (
+        official_bootstrap.validate_signed_v5_ledger_bootstrap_selection_from_entries(
+            selected,
+            root["root_id"],
+            candidate,
+            [entry],
+            allow_consumed=False,
+        )
+    )
+
+    assert validation["valid"] is True
+    assert validation["issues"] == []
+
+
+def test_bootstrap_manifest_is_cross_bound_to_retired_signer_policy(monkeypatch, tmp_path):
+    policy = official_certificate_signing.load_signer_trust_policy()
+    policy["historical_signers"][0]["historical_chain"]["candidate_hash"] = "f" * 64
+    policy["policy_digest"] = official_certificate_signing._policy_digest(policy)
+    policy_path = tmp_path / "mismatched-policy.json"
+    policy_path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        official_certificate_signing, "DEFAULT_TRUST_POLICY", policy_path
+    )
+
+    with pytest.raises(
+        official_bootstrap.BootstrapRootConfigurationError,
+        match="bootstrap root signer policy mismatch.*candidate_hash",
+    ):
+        official_bootstrap.load_signed_v5_ledger_bootstrap_roots()
 
 
 def test_selector_fails_closed_on_published_tag_or_tree_mismatch(monkeypatch, tmp_path):
@@ -287,12 +338,446 @@ def test_normal_full_identity_omits_the_none_bootstrap_field(tmp_path):
 
 def test_bootstrap_authority_files_are_exact_evaluation_contract_inputs():
     expected = {
+        "scripts/official_certify.py",
         "web/core/official_bootstrap.py",
         "web/core/official_bootstrap_roots.json",
     }
 
     assert expected <= ALWAYS_CRITICAL_EXACT
     assert expected <= CRITICAL_EVALUATION_GATE_EXACT
+
+    from evaluation_contract import CONTRACT_VERSION
+    from official_certification_job import JOB_SCHEMA_VERSION
+    from official_execution_profile import load_execution_profile
+    from official_job_envelope import JOB_ENVELOPE_SCHEMA_VERSION
+
+    profile = load_execution_profile()
+    assert CONTRACT_VERSION == 11
+    assert JOB_SCHEMA_VERSION == 4
+    assert JOB_ENVELOPE_SCHEMA_VERSION == 3
+    assert profile["schema_version"] == 3
+    assert profile["profile_id"].endswith("-v5")
+
+
+def test_operator_bootstrap_facts_reject_stage_bot_hash_and_strict_pool_drift(
+    monkeypatch, tmp_path
+):
+    import evolution_infra
+    import national_protocol_quarantine as quarantine
+    import tool_commit
+
+    candidate = tmp_path / "national_v150"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
+    wrong_bot = tmp_path / "national_v151"
+    wrong_bot.mkdir()
+    (wrong_bot / "national_bot.py").write_text("# native\n", encoding="utf-8")
+    candidate_hash = "a" * 64
+    receipt = {
+        "mode": "legacy_strategy_migration",
+        "receipt_digest": "b" * 64,
+    }
+    checkpoint = {
+        "next_v": 150,
+        "source_v": 142,
+        "stage": "official_bootstrap_required",
+        "workflow_run_id": "generation:150:test",
+        "audit_context": {"protocol_bootstrap": receipt},
+        "gate_results": {"precommit_eval": {"passed": True}},
+    }
+    strict = []
+    monkeypatch.setattr(official_bootstrap, "BOTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_configured_root",
+        lambda _root_id: ({"root_id": ROOT_ID}, None),
+    )
+    monkeypatch.setattr(official_bootstrap, "_completion_tag_exists", lambda _v: False)
+    monkeypatch.setattr(
+        official_bootstrap,
+        "hash_path",
+        lambda path: candidate_hash if Path(path).name == "national_v150" else "c" * 64,
+    )
+    monkeypatch.setattr(evolution_infra, "get_active_bots_read_only", lambda: [])
+    monkeypatch.setattr(quarantine, "strict_published_bot_names", lambda: tuple(strict))
+    monkeypatch.setattr(
+        quarantine,
+        "validate_protocol_bootstrap_receipt",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        quarantine,
+        "select_protocol_bootstrap_source",
+        lambda *_args, **_kwargs: {
+            "available": True,
+            "reason": "legacy_strategy_migration",
+            "source_v": 142,
+            "receipt": receipt,
+        },
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "validate_commit_gate_ledger",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "missing_gates": [],
+            "failed_gates": [],
+            "current_code_fingerprint": candidate_hash,
+        },
+    )
+
+    facts, issues = official_bootstrap._current_operator_bootstrap_facts(
+        candidate,
+        ROOT_ID,
+        checkpoint=checkpoint,
+        expected_stage="official_bootstrap_required",
+        expected_candidate_hash=candidate_hash,
+    )
+    assert issues == []
+    assert facts["candidate_hash"] == candidate_hash
+
+    wrong_stage = {**checkpoint, "stage": "verified"}
+    assert any(
+        "checkpoint_stage_mismatch" in issue
+        for issue in official_bootstrap._current_operator_bootstrap_facts(
+            candidate,
+            ROOT_ID,
+            checkpoint=wrong_stage,
+            expected_stage="official_bootstrap_required",
+            expected_candidate_hash=candidate_hash,
+        )[1]
+    )
+    assert "official_bootstrap_candidate_version_mismatch" in (
+        official_bootstrap._current_operator_bootstrap_facts(
+            wrong_bot,
+            ROOT_ID,
+            checkpoint=checkpoint,
+            expected_stage="official_bootstrap_required",
+            expected_candidate_hash="c" * 64,
+        )[1]
+    )
+    assert "official_bootstrap_candidate_hash_mismatch" in (
+        official_bootstrap._current_operator_bootstrap_facts(
+            candidate,
+            ROOT_ID,
+            checkpoint=checkpoint,
+            expected_stage="official_bootstrap_required",
+            expected_candidate_hash="d" * 64,
+        )[1]
+    )
+    strict.append("national_v149")
+    assert "official_bootstrap_strict_publication_exists" in (
+        official_bootstrap._current_operator_bootstrap_facts(
+            candidate,
+            ROOT_ID,
+            checkpoint=checkpoint,
+            expected_stage="official_bootstrap_required",
+            expected_candidate_hash=candidate_hash,
+        )[1]
+    )
+
+
+def test_operator_bootstrap_correct_parked_request_authorizes_exact_selection(
+    monkeypatch, tmp_path
+):
+    candidate = tmp_path / "national_v150"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
+    candidate_hash = "a" * 64
+    receipt = {"receipt_digest": "b" * 64}
+    base_facts = {
+        "candidate_path": str(candidate.resolve()),
+        "candidate_label": "national_v150",
+        "candidate_version": 150,
+        "candidate_hash": candidate_hash,
+        "source_v": 142,
+        "workflow_run_id": "generation:150:test",
+        "checkpoint_contract_digest": "c" * 64,
+        "evaluation_contract_version": 11,
+        "evaluation_contract_hash": "f" * 64,
+        "protocol_bootstrap_receipt": receipt,
+        "protocol_bootstrap_receipt_digest": receipt["receipt_digest"],
+        "transition_receipt_digest": receipt["receipt_digest"],
+        "active_bots": [],
+        "strict_published_bots": [],
+        "root_id": ROOT_ID,
+    }
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_current_operator_bootstrap_facts",
+        lambda *_args, **_kwargs: (dict(base_facts), []),
+    )
+    verified = {"stage": "verified", "audit_context": {}}
+    parked_result = official_bootstrap.build_operator_bootstrap_parked_request(
+        candidate,
+        verified,
+        candidate_hash=candidate_hash,
+    )
+    parked = parked_result["request"]
+    checkpoint = {
+        "stage": "official_bootstrap_required",
+        "audit_context": {"official_bootstrap_request": parked},
+    }
+    selection = {
+        "selected": True,
+        "root_id": ROOT_ID,
+        "bootstrap_root_receipt": {"receipt_digest": "d" * 64},
+        "candidate_binding": {"candidate_binding_digest": "e" * 64},
+        "opponent": {"path": "bots/national_v141"},
+    }
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_signed_v5_ledger_bootstrap_selection",
+        lambda *_args, **_kwargs: {"valid": True, "issues": []},
+    )
+
+    authorized = official_bootstrap.authorize_operator_bootstrap_selection(
+        selection,
+        ROOT_ID,
+        candidate,
+        checkpoint=checkpoint,
+    )
+
+    assert authorized["valid"] is True
+    authorization = authorized["authorization"]
+    assert authorization["parked_request_digest"] == parked["request_digest"]
+    assert authorization["candidate_hash"] == candidate_hash
+    assert len(authorization["authorization_digest"]) == 64
+
+    base_facts["evaluation_contract_hash"] = "0" * 64
+    drifted = official_bootstrap.validate_operator_bootstrap_authorized_selection(
+        authorized["selection"],
+        ROOT_ID,
+        candidate,
+        checkpoint=checkpoint,
+    )
+    assert drifted["valid"] is False
+    assert "official_bootstrap_parked_request_evaluation_contract_hash_mismatch" in (
+        drifted["issues"]
+    )
+
+
+def test_completed_bootstrap_rebinds_certificate_envelope_consumption_and_checkpoint(
+    monkeypatch, tmp_path
+):
+    import official_certification
+    import official_job_envelope
+
+    candidate = tmp_path / "national_v150"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
+    candidate_hash = "a" * 64
+    root_receipt = {"receipt_digest": "b" * 64}
+    facts = {
+        "candidate_path": str(candidate.resolve()),
+        "candidate_label": candidate.name,
+        "candidate_version": 150,
+        "candidate_hash": candidate_hash,
+        "source_v": 142,
+        "workflow_run_id": "generation:150:test",
+        "checkpoint_contract_digest": "c" * 64,
+        "evaluation_contract_version": 11,
+        "evaluation_contract_hash": "d" * 64,
+        "protocol_bootstrap_receipt": {"receipt_digest": "e" * 64},
+        "protocol_bootstrap_receipt_digest": "e" * 64,
+        "transition_receipt_digest": "e" * 64,
+        "active_bots": [],
+        "strict_published_bots": [],
+        "root_id": ROOT_ID,
+    }
+    parked = {
+        "schema_version": official_bootstrap.PARKED_REQUEST_SCHEMA_VERSION,
+        "kind": official_bootstrap.PARKED_REQUEST_KIND,
+        **facts,
+    }
+    parked["request_digest"] = canonical_digest(parked)
+    selection = {
+        "selected": True,
+        "bootstrap_root_id": ROOT_ID,
+        "bootstrap_root_receipt": root_receipt,
+        "candidate_binding": {"candidate_binding_digest": "f" * 64},
+        "opponent": {"eligible": True, "path": "bots/national_v141"},
+    }
+    selection["operator_bootstrap_authorization"] = (
+        official_bootstrap._operator_bootstrap_authorization(
+            selection,
+            ROOT_ID,
+            parked,
+            facts,
+        )
+    )
+    envelope = {
+        "opponent_selection": selection,
+        "envelope_digest": "1" * 64,
+    }
+    identity = {
+        "candidate_hash": candidate_hash,
+        "opponent_hash": "2" * 64,
+        "spec": {
+            "candidate": str(candidate.resolve()),
+            "bootstrap_root_id": ROOT_ID,
+        },
+    }
+    deterministic = {"receipt_digest": "3" * 64}
+    certificate_digest = "4" * 64
+    record = {
+        "certificate_digest": certificate_digest,
+        "identity": identity,
+        "opponent_selection": selection,
+        "job_envelope": envelope,
+    }
+    entry = {
+        "entry_digest": "5" * 64,
+        "candidate_label": candidate.name,
+        "candidate_hash": candidate_hash,
+        "policy_id": "official-full-v5",
+        "mode": "full",
+        "outcome": "official-certified",
+        "authoritative": True,
+        "blocking": False,
+        "classification": "pass",
+        "certificate_digest": certificate_digest,
+        "deterministic_status_receipt_digest": deterministic["receipt_digest"],
+        "job_envelope_digest": envelope["envelope_digest"],
+        "request_started_ns": 10,
+        "request_completed_ns": 20,
+        "bootstrap_root_id": ROOT_ID,
+        "bootstrap_root_receipt_digest": root_receipt["receipt_digest"],
+    }
+    status = {
+        "bot": candidate.name,
+        "status": "official-certified",
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "certificate_digest": certificate_digest,
+        "certificate_path": str(tmp_path / "certificate.json"),
+        "certification_identity": identity,
+        "opponent_selection": selection,
+        "official_job_envelope": envelope,
+        "official_deterministic_status_receipt": deterministic,
+        "request_started_ns": 10,
+        "request_completed_ns": 20,
+        "official_verdict_ledger_entry": entry,
+    }
+    checkpoint = {
+        "stage": "official_bootstrap_required",
+        "audit_context": {"official_bootstrap_request": parked},
+    }
+    current_facts = {"value": facts}
+    current_entries = {"value": [entry]}
+    current_consumption = {
+        "value": {
+            "valid": True,
+            "consumed": True,
+            "successful_count": 1,
+            "successful_entry_digests": [entry["entry_digest"]],
+        }
+    }
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_current_operator_bootstrap_facts",
+        lambda *_args, **_kwargs: (dict(current_facts["value"]), []),
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_signed_v5_ledger_bootstrap_selection",
+        lambda *_args, **_kwargs: {"valid": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_validated_ledger_entries",
+        lambda: (deepcopy(current_entries["value"]), []),
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "signed_v5_ledger_bootstrap_root_consumption",
+        lambda _root_id: deepcopy(current_consumption["value"]),
+    )
+    monkeypatch.setattr(
+        official_certification,
+        "official_full_certified",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        official_certification,
+        "_load_certificate_container",
+        lambda _path: (record, {}, []),
+    )
+    monkeypatch.setattr(
+        official_job_envelope,
+        "job_envelope_issues",
+        lambda *_args, **_kwargs: [],
+    )
+
+    valid = official_bootstrap.validate_completed_operator_bootstrap_authorization(
+        status,
+        candidate,
+        checkpoint=checkpoint,
+    )
+    assert valid["valid"] is True
+    assert valid["ledger_entry_digest"] == entry["entry_digest"]
+
+    current_facts["value"] = {**facts, "workflow_run_id": "generation:150:drift"}
+    workflow_drift = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            status, candidate, checkpoint=checkpoint
+        )
+    )
+    assert workflow_drift["valid"] is False
+    assert "official_bootstrap_completed_authorization_drift" in workflow_drift["issues"]
+
+    current_facts["value"] = {
+        **facts,
+        "evaluation_contract_hash": "0" * 64,
+    }
+    contract_drift = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            status, candidate, checkpoint=checkpoint
+        )
+    )
+    assert contract_drift["valid"] is False
+    assert (
+        "official_bootstrap_parked_request_evaluation_contract_hash_mismatch"
+        in contract_drift["issues"]
+    )
+
+    current_facts["value"] = {**facts, "candidate_hash": "0" * 64}
+    candidate_drift = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            status, candidate, checkpoint=checkpoint
+        )
+    )
+    assert candidate_drift["valid"] is False
+    assert "official_bootstrap_parked_request_candidate_hash_mismatch" in (
+        candidate_drift["issues"]
+    )
+
+    current_facts["value"] = facts
+    envelope_drift_status = deepcopy(status)
+    envelope_drift_status["official_job_envelope"]["envelope_digest"] = "0" * 64
+    envelope_drift = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            envelope_drift_status, candidate, checkpoint=checkpoint
+        )
+    )
+    assert envelope_drift["valid"] is False
+    assert "official_bootstrap_completed_certificate_envelope_mismatch" in (
+        envelope_drift["issues"]
+    )
+
+    current_consumption["value"] = {
+        **current_consumption["value"],
+        "successful_count": 2,
+    }
+    duplicate_consumption = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            status, candidate, checkpoint=checkpoint
+        )
+    )
+    assert duplicate_consumption["valid"] is False
+    assert "official_bootstrap_completed_root_consumption_invalid" in (
+        duplicate_consumption["issues"]
+    )
 
 
 def test_bootstrap_job_revalidation_replays_exact_root_selector(monkeypatch, tmp_path):
@@ -335,15 +820,32 @@ def _ledger_signing_material(tmp_path, monkeypatch):
         ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
         check=True,
     )
+    pending = deepcopy(official_certificate_signing.load_signer_trust_policy())
+    pending["current_signer"] = {
+        "epoch": pending["current_epoch"],
+        "state": "rotation-required",
+        "key_fingerprint": None,
+        "public_key_sha256": None,
+    }
+    pending["policy_digest"] = official_certificate_signing._policy_digest(pending)
+    pending_path = tmp_path / "pending-signer-policy.json"
+    pending_path.write_text(json.dumps(pending, indent=2) + "\n", encoding="utf-8")
+    policy_payload, allowed_payload = (
+        official_certificate_signing.build_signer_rotation_material(
+            Path(str(key) + ".pub"), trust_policy=pending_path
+        )
+    )
     allowed = tmp_path / "allowed-signers"
-    allowed.write_text(
-        "pok-official-certifier namespaces=\"pok-official-cert-v4\" "
-        + Path(str(key) + ".pub").read_text(encoding="utf-8"),
+    allowed.write_text(allowed_payload, encoding="utf-8")
+    policy = tmp_path / "signer-policy.json"
+    policy.write_text(
+        json.dumps(policy_payload, indent=2) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("POK_OFFICIAL_VERDICT_LEDGER", str(tmp_path / "ledger.jsonl"))
     monkeypatch.setenv("POK_OFFICIAL_SIGNING_KEY", str(key))
     monkeypatch.setattr(official_certificate_signing, "DEFAULT_ALLOWED_SIGNERS", allowed)
+    monkeypatch.setattr(official_certificate_signing, "DEFAULT_TRUST_POLICY", policy)
     official_verdict_ledger.initialize_verdict_ledger()
 
 
@@ -375,7 +877,11 @@ def _synthetic_bootstrap_status(root_id: str, *, outcome: str):
 
 def test_signed_ledger_records_bootstrap_consumption_only_for_success(monkeypatch, tmp_path):
     _ledger_signing_material(tmp_path, monkeypatch)
-    monkeypatch.setattr(official_certification, "authoritative_verdict_status_issues", lambda _status: [])
+    monkeypatch.setattr(
+        official_certification,
+        "authoritative_verdict_status_issues",
+        lambda _status, **_kwargs: [],
+    )
     root_id = ROOT_ID
 
     certified = official_verdict_ledger.append_verdict(

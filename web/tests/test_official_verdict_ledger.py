@@ -1,12 +1,16 @@
 from pathlib import Path
+from copy import deepcopy
+import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
 import pytest
 
+from bot_artifact import canonical_digest
 import official_certification
 import official_certificate_signing
+import official_verdict_ledger
 from official_verdict_ledger import (
     append_verdict,
     initialize_verdict_ledger,
@@ -23,14 +27,31 @@ def _signing_material(tmp_path: Path, monkeypatch, *, initialize: bool = True):
         ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
         check=True,
     )
+    pending = deepcopy(official_certificate_signing.load_signer_trust_policy())
+    pending["current_signer"] = {
+        "epoch": pending["current_epoch"],
+        "state": "rotation-required",
+        "key_fingerprint": None,
+        "public_key_sha256": None,
+    }
+    pending["policy_digest"] = official_certificate_signing._policy_digest(pending)
+    pending_path = tmp_path / "pending-signer-policy.json"
+    pending_path.write_text(json.dumps(pending, indent=2) + "\n", encoding="utf-8")
+    policy_payload, allowed_payload = (
+        official_certificate_signing.build_signer_rotation_material(
+            Path(str(key) + ".pub"), trust_policy=pending_path
+        )
+    )
     allowed = tmp_path / "allowed-signers"
-    allowed.write_text(
-        "pok-official-certifier namespaces=\"pok-official-cert-v4\" "
-        + Path(str(key) + ".pub").read_text(encoding="utf-8"),
+    allowed.write_text(allowed_payload, encoding="utf-8")
+    policy = tmp_path / "signer-policy.json"
+    policy.write_text(
+        json.dumps(policy_payload, indent=2) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("POK_OFFICIAL_SIGNING_KEY", str(key))
     monkeypatch.setattr(official_certificate_signing, "DEFAULT_ALLOWED_SIGNERS", allowed)
+    monkeypatch.setattr(official_certificate_signing, "DEFAULT_TRUST_POLICY", policy)
     if initialize:
         initialize_verdict_ledger()
 
@@ -55,11 +76,36 @@ def _status(outcome: str, candidate_hash: str, *, certificate_digest: str = ""):
     }
 
 
+def _bootstrap_status(outcome: str, candidate_hash: str, *, bot: str):
+    root_id = "national-v141-official-full-v5-signed-ledger-root"
+    receipt_payload = {
+        "kind": "signed-v5-ledger-bootstrap-root-receipt",
+        "root_id": root_id,
+    }
+    receipt = {
+        **receipt_payload,
+        "receipt_digest": canonical_digest(receipt_payload),
+    }
+    status = _status(
+        outcome,
+        candidate_hash,
+        certificate_digest="d" * 64 if outcome == "official-certified" else "",
+    )
+    status["bot"] = bot
+    status["certification_identity"]["spec"] = {"bootstrap_root_id": root_id}
+    status["opponent_selection"] = {
+        "bootstrap_root_id": root_id,
+        "bootstrap_root_receipt": receipt,
+        "opponent": {"eligibility_receipt": receipt},
+    }
+    return status
+
+
 def _allow_synthetic_status(monkeypatch):
     monkeypatch.setattr(
         official_certification,
         "authoritative_verdict_status_issues",
-        lambda _status: [],
+        lambda _status, **_kwargs: [],
     )
 
 
@@ -76,6 +122,10 @@ def test_latest_signed_authoritative_verdict_is_monotonic(tmp_path, monkeypatch)
     latest = latest_authoritative_verdict(candidate_hash)
 
     assert certified["sequence"] == 1
+    assert certified["signer_epoch"] == 2
+    assert certified["signer_key_fingerprint"].startswith("SHA256:")
+    head_wrapper = json.loads(ledger_head_path().read_text(encoding="utf-8"))
+    assert head_wrapper["head"]["signer_epoch"] == 2
     assert failed["sequence"] == 2
     assert latest["valid"] is True
     assert latest["entry"]["outcome"] == "official-failed"
@@ -107,6 +157,12 @@ def test_missing_ledger_and_head_fail_closed(tmp_path, monkeypatch):
 
     assert result["valid"] is False
     assert result["issues"] == ["official_verdict_ledger_missing"]
+    assert result["threat_model"] == {
+        "scope": "operational-serialization-crash-recovery-and-chain-integrity",
+        "same_uid_tamper_resistance": False,
+        "rollback_resistance_without_external_anchor": False,
+        "external_latest_head_anchor": "not-configured",
+    }
 
 
 def test_signed_head_detects_complete_tail_truncation(tmp_path, monkeypatch):
@@ -211,3 +267,182 @@ def test_append_does_not_reinitialize_missing_history(tmp_path, monkeypatch):
         )
 
     assert not ledger_path().exists()
+
+
+def test_concurrent_bootstrap_append_consumes_root_exactly_once(
+    tmp_path, monkeypatch
+):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    barrier = threading.Barrier(2)
+    statuses = (
+        _bootstrap_status("official-certified", "a" * 64, bot="national_v200"),
+        _bootstrap_status("official-certified", "b" * 64, bot="national_v201"),
+    )
+
+    def append_together(status):
+        barrier.wait(timeout=5)
+        try:
+            return ("ok", append_verdict(status))
+        except ValueError as exc:
+            return ("rejected", str(exc))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(append_together, statuses))
+
+    assert sorted(result[0] for result in results) == ["ok", "rejected"]
+    rejected = next(result[1] for result in results if result[0] == "rejected")
+    assert "already successfully consumed" in rejected
+    health = ledger_integrity()
+    assert health["valid"] is True
+    assert health["entry_count"] == 1
+
+
+def test_failed_bootstrap_append_does_not_consume_root(tmp_path, monkeypatch):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+
+    failed = append_verdict(
+        _bootstrap_status("official-failed", "a" * 64, bot="national_v200")
+    )
+    certified = append_verdict(
+        _bootstrap_status("official-certified", "b" * 64, bot="national_v201")
+    )
+
+    assert "bootstrap_root_id" not in failed
+    assert certified["bootstrap_root_id"].endswith("signed-ledger-root")
+    assert ledger_integrity()["entry_count"] == 2
+
+
+def test_old_valid_ledger_and_head_pair_is_explicitly_outside_threat_model(
+    tmp_path, monkeypatch
+):
+    """Do not accidentally describe the local history as an anti-rollback log."""
+
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    append_verdict(
+        _status("official-certified", "a" * 64, certificate_digest="d" * 64)
+    )
+    old_ledger = ledger_path().read_bytes()
+    old_head = ledger_head_path().read_bytes()
+
+    append_verdict(_status("official-failed", "b" * 64))
+    assert ledger_integrity()["entry_count"] == 2
+
+    # Both objects are same-uid writable and there is no independently
+    # protected latest-head checkpoint. Restoring a previously valid pair is
+    # internally consistent and therefore intentionally accepted.
+    ledger_path().write_bytes(old_ledger)
+    ledger_head_path().write_bytes(old_head)
+    health = ledger_integrity()
+
+    assert health["valid"] is True
+    assert health["entry_count"] == 1
+    assert health["threat_model"][
+        "rollback_resistance_without_external_anchor"
+    ] is False
+
+
+def test_complete_signed_suffix_rolls_head_forward_after_crash(
+    tmp_path, monkeypatch
+):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    original = official_verdict_ledger._write_signed_head
+
+    def crash_before_head(path, entry=None):
+        if entry is not None:
+            raise RuntimeError("crash-before-head")
+        return original(path, entry)
+
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_write_signed_head",
+        crash_before_head,
+    )
+    with pytest.raises(RuntimeError, match="crash-before-head"):
+        append_verdict(_status("official-certified", "a" * 64, certificate_digest="d" * 64))
+    assert ledger_path().stat().st_size > 0
+    assert json.loads(ledger_head_path().read_text(encoding="utf-8"))["head"][
+        "sequence"
+    ] == 0
+
+    monkeypatch.setattr(official_verdict_ledger, "_write_signed_head", original)
+    health = ledger_integrity()
+    assert health["valid"] is True
+    assert health["entry_count"] == 1
+    assert json.loads(ledger_head_path().read_text(encoding="utf-8"))["head"][
+        "sequence"
+    ] == 1
+
+
+def test_partial_append_is_truncated_to_exact_signed_head_boundary(
+    tmp_path, monkeypatch
+):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    original = official_verdict_ledger._write_all
+
+    def partial_then_crash(descriptor, data):
+        os_written = official_verdict_ledger.os.write(
+            descriptor,
+            bytes(data[: max(1, len(data) // 2)]),
+        )
+        assert os_written > 0
+        raise RuntimeError("crash-during-line")
+
+    monkeypatch.setattr(official_verdict_ledger, "_write_all", partial_then_crash)
+    with pytest.raises(RuntimeError, match="crash-during-line"):
+        append_verdict(_status("official-certified", "a" * 64, certificate_digest="d" * 64))
+    assert ledger_path().stat().st_size > 0
+
+    monkeypatch.setattr(official_verdict_ledger, "_write_all", original)
+    health = ledger_integrity()
+    assert health["valid"] is True
+    assert health["entry_count"] == 0
+    assert ledger_path().stat().st_size == 0
+
+
+def test_head_committed_before_exception_remains_a_valid_commit(
+    tmp_path, monkeypatch
+):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    original = official_verdict_ledger._write_signed_head
+
+    def crash_after_head(path, entry=None):
+        original(path, entry)
+        if entry is not None:
+            raise RuntimeError("crash-after-head")
+
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_write_signed_head",
+        crash_after_head,
+    )
+    with pytest.raises(RuntimeError, match="crash-after-head"):
+        append_verdict(_status("official-certified", "a" * 64, certificate_digest="d" * 64))
+
+    health = ledger_integrity()
+    assert health["valid"] is True
+    assert health["entry_count"] == 1
+
+
+def test_write_all_retries_short_os_writes(tmp_path, monkeypatch):
+    target = tmp_path / "short-write.bin"
+    payload = b"signed-ledger-write" * 17
+    real_write = official_verdict_ledger.os.write
+    calls = []
+
+    def short_write(descriptor, data):
+        chunk = bytes(data[:3])
+        calls.append(len(chunk))
+        return real_write(descriptor, chunk)
+
+    with target.open("wb") as handle:
+        monkeypatch.setattr(official_verdict_ledger.os, "write", short_write)
+        official_verdict_ledger._write_all(handle.fileno(), payload)
+
+    assert len(calls) > 1
+    assert target.read_bytes() == payload

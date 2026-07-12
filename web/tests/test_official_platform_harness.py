@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from bot_artifact import hash_path
+from bot_artifact import canonical_digest, hash_path
+from managed_bot_executor import IsolationIdentity
 import official_platform_harness as harness
+from official_job_envelope import build_job_envelope, job_envelope_issues
 from official_platform_harness import (
     BotLaunchConfig,
     OfficialPlatformConfig,
@@ -307,6 +309,425 @@ def test_build_bot_command_uses_native_launch_contract(tmp_path):
     assert "--name" in cmd and "BotA" in cmd
     assert "--seat" in cmd and "upper" in cmd
     assert "--log" in cmd and str(tmp_path / "botA.log") in cmd
+
+
+def test_low_authority_bot_launch_still_uses_central_executor(
+    tmp_path, monkeypatch
+):
+    bot_dir = tmp_path / "national_v1"
+    bot_dir.mkdir()
+    (bot_dir / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    artifact_hash = hash_path(bot_dir)
+    sealed = harness.SealedBotArtifact(
+        source=bot_dir,
+        root=tmp_path / "round" / "managed_inputs" / "botA.stdout",
+        entry_relative="national_bot.py",
+        artifact_hash=artifact_hash,
+        manifest_digest="d" * 64,
+    )
+    process = SimpleNamespace()
+    calls = {}
+
+    class FakeEndpoint:
+        consumed = True
+        closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        harness,
+        "seal_bot_artifact",
+        lambda source, destination, expected_hash: (
+            calls.update({
+                "source": source,
+                "destination": destination,
+                "expected_hash": expected_hash,
+            })
+            or sealed
+        ),
+    )
+    monkeypatch.setattr(
+        harness.EndpointLease,
+        "connect",
+        lambda *_args, **_kwargs: FakeEndpoint(),
+    )
+    monkeypatch.setattr(
+        harness,
+        "launch_sandboxed_bot",
+        lambda artifact, _endpoint, **kwargs: (
+            calls.update({"artifact": artifact, "launch_kwargs": kwargs})
+            or SimpleNamespace(process=process, isolation=IsolationIdentity(
+                policy_sha256="a" * 64,
+                bpf_sha256="b" * 64,
+                bpf_size=64,
+            ))
+        ),
+    )
+    monkeypatch.setattr(
+        harness,
+        "_popen",
+        lambda *_args, **_kwargs: pytest.fail("bot launch bypassed central executor"),
+    )
+    round_dir = tmp_path / "round"
+    round_dir.mkdir()
+    config = OfficialPlatformConfig(
+        exe_path=tmp_path / "platform.exe",
+        wineprefix=tmp_path / "wine",
+        results_dir=tmp_path / "results",
+        lock_path=tmp_path / "lock",
+    )
+
+    launched = harness._launch_bot(
+        BotLaunchConfig(bot_dir, name="BotA", seat="upper"),
+        config=config,
+        env={"HOST_SECRET": "must-not-be-forwarded"},
+        log_path=round_dir / "botA.log",
+        stdout_path=round_dir / "botA.stdout.log",
+        stderr_path=round_dir / "botA.stderr.log",
+    )
+
+    assert launched is process
+    assert calls["source"] == bot_dir
+    assert calls["expected_hash"] == artifact_hash
+    assert calls["artifact"] is sealed
+    assert "environment" not in calls["launch_kwargs"]
+    assert launched._pok_managed_artifact_hash == artifact_hash
+    assert launched._pok_managed_isolation["network"] == (
+        "isolated-netns-inherited-exact-peer-only"
+    )
+    harness._close_process_files(launched)
+
+
+@pytest.mark.parametrize(
+    ("sealed_a", "sealed_b", "job_envelope", "expected_issue"),
+    [
+        (True, False, None, "official_formal_sandbox_asymmetric"),
+        (False, False, {"schema_version": 1}, "official_formal_sandbox_required"),
+    ],
+)
+def test_official_round_rejects_non_symmetric_formal_launch_contract(
+    tmp_path, monkeypatch, sealed_a, sealed_b, job_envelope, expected_issue
+):
+    bot_a_path = tmp_path / "bot_a"
+    bot_b_path = tmp_path / "bot_b"
+    bot_a_path.mkdir()
+    bot_b_path.mkdir()
+    (bot_a_path / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    (bot_b_path / "national_bot.py").write_text("pass\n", encoding="utf-8")
+
+    def artifact(path):
+        return harness.SealedBotArtifact(
+            source=path,
+            root=path,
+            entry_relative="national_bot.py",
+            artifact_hash=hash_path(path),
+            manifest_digest="e" * 64,
+        )
+
+    config = OfficialPlatformConfig(
+        exe_path=tmp_path / "platform.exe",
+        wineprefix=tmp_path / "wine",
+        results_dir=tmp_path / "results",
+        lock_path=tmp_path / "lock",
+    )
+    monkeypatch.setattr(
+        harness,
+        "check_environment",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "issues": [],
+            "warnings": [],
+            "execution_profile": None,
+        },
+    )
+    monkeypatch.setattr(
+        harness,
+        "_popen",
+        lambda *_args, **_kwargs: pytest.fail("invalid formal round started a process"),
+    )
+
+    receipt = harness.run_official_round(
+        BotLaunchConfig(
+            bot_a_path,
+            name="BotA",
+            sealed_artifact=artifact(bot_a_path) if sealed_a else None,
+        ),
+        BotLaunchConfig(
+            bot_b_path,
+            name="BotB",
+            sealed_artifact=artifact(bot_b_path) if sealed_b else None,
+        ),
+        config=config,
+        out_dir=tmp_path / "round",
+        job_envelope=job_envelope,
+    )
+
+    assert receipt["passed"] is False
+    assert expected_issue in receipt["issues"]
+    assert receipt["formal_execution"]["sandboxed"] is False
+
+
+def _bootstrap_authorization_case(tmp_path):
+    candidate = tmp_path / "national_v200"
+    opponent = tmp_path / "national_v141"
+    candidate.mkdir()
+    opponent.mkdir()
+    (candidate / "national_bot.py").write_text("candidate\n", encoding="utf-8")
+    (opponent / "national_bot.py").write_text("legacy\n", encoding="utf-8")
+    candidate_hash = hash_path(candidate)
+    opponent_hash = hash_path(opponent)
+    receipt = {"kind": "signed-v5-ledger-bootstrap-root-receipt"}
+    selection = {
+        "selected": True,
+        "eligible": True,
+        "reason": "signed_v5_ledger_bootstrap_root",
+        "bootstrap_root_id": "national-v141-official-full-v5-signed-ledger-root",
+        "candidate": str(candidate),
+        "candidate_binding": {"candidate_hash": candidate_hash},
+        "bootstrap_root_receipt": receipt,
+        "operator_bootstrap_authorization": {
+            "authorization_digest": "d" * 64,
+        },
+        "opponent": {
+            "bot": "national_v141",
+            "path": str(opponent),
+            "artifact_hash": opponent_hash,
+            "tag": "national-bot-v141",
+            "tag_object": "a" * 40,
+            "completion_tree_oid": "b" * 40,
+            "eligible": True,
+            "reason": "signed_v5_ledger_bootstrap_root",
+            "eligibility_receipt": receipt,
+        },
+    }
+    envelope = {
+        "bootstrap_root_id": "national-v141-official-full-v5-signed-ledger-root",
+        "candidate_hash": candidate_hash,
+        "opponent_hash": opponent_hash,
+        "opponent_selection": selection,
+        "opponent_selection_digest": canonical_digest(selection),
+        "operator_bootstrap_authorization_digest": "d" * 64,
+    }
+    candidate_launch = BotLaunchConfig(candidate, name="Candidate", role="candidate")
+    opponent_launch = BotLaunchConfig(
+        opponent,
+        name="Opponent",
+        role="opponent",
+        sealed_artifact=harness.SealedBotArtifact(
+            source=opponent,
+            root=opponent,
+            entry_relative="national_bot.py",
+            artifact_hash=opponent_hash,
+            manifest_digest="c" * 64,
+        ),
+    )
+    return candidate_launch, opponent_launch, envelope
+
+
+def test_job_envelope_v3_binds_full_bootstrap_selection_and_detects_tamper(
+    tmp_path
+):
+    candidate, opponent, _ = _bootstrap_authorization_case(tmp_path)
+    selection = _["opponent_selection"]
+    envelope = build_job_envelope(
+        {
+            "job_id": "1" * 64,
+            "request_digest": "2" * 64,
+            "manager_sha256": "3" * 64,
+            "identity": {
+                "identity_digest": "4" * 64,
+                "candidate_hash": hash_path(candidate.path),
+                "opponent_hash": hash_path(opponent.path),
+            },
+            "opponent_selection": selection,
+            "source_v": 199,
+        },
+        attempt=1,
+        attempt_nonce="5" * 64,
+        suite_dir=tmp_path / "suite",
+    )
+
+    assert envelope["schema_version"] == 3
+    assert envelope["opponent_selection"] == selection
+    assert envelope["bootstrap_root_id"] == (
+        "national-v141-official-full-v5-signed-ledger-root"
+    )
+    assert envelope["operator_bootstrap_authorization_digest"] == "d" * 64
+    assert job_envelope_issues(envelope) == []
+
+    tampered = json.loads(json.dumps(envelope))
+    tampered["opponent_selection"]["opponent"]["completion_tree_oid"] = "f" * 40
+    issues = job_envelope_issues(tampered)
+    assert "official_job_envelope_digest_mismatch" in issues
+    assert "official_job_envelope_opponent_selection_digest_mismatch" in issues
+
+    arbitrary_v1 = {
+        key: value
+        for key, value in envelope.items()
+        if key not in {"opponent_selection", "bootstrap_root_id", "envelope_digest"}
+    }
+    arbitrary_v1["schema_version"] = 1
+    arbitrary_v1["envelope_digest"] = canonical_digest(arbitrary_v1)
+    assert "official_job_envelope_schema_mismatch" in job_envelope_issues(
+        arbitrary_v1
+    )
+
+
+def test_bootstrap_quarantine_exception_is_exact_and_preconsumption_only(
+    tmp_path, monkeypatch
+):
+    candidate, opponent, envelope = _bootstrap_authorization_case(tmp_path)
+    monkeypatch.setattr(
+        harness,
+        "quarantined_native_entry_sources",
+        lambda _path: ("national_v141",),
+    )
+    observed = {}
+
+    def valid(selection, root_id, candidate_path, *, allow_consumed):
+        observed.update({
+            "selection": selection,
+            "root_id": root_id,
+            "candidate_path": candidate_path,
+            "allow_consumed": allow_consumed,
+        })
+        return {"valid": True, "issues": []}
+
+    monkeypatch.setattr(
+        "official_bootstrap.validate_signed_v5_ledger_bootstrap_selection",
+        valid,
+    )
+    monkeypatch.setattr(
+        "official_bootstrap.validate_operator_bootstrap_authorized_selection",
+        lambda *_args, **_kwargs: {"valid": True, "issues": []},
+    )
+
+    authorization, issues = harness._official_quarantine_authorization(
+        opponent,
+        candidate,
+        envelope,
+    )
+
+    assert authorization is not None
+    assert issues == []
+    assert observed["root_id"] == envelope["bootstrap_root_id"]
+    assert observed["candidate_path"] == candidate.path
+    assert observed["allow_consumed"] is False
+
+    def consumed(*_args, **kwargs):
+        assert kwargs["allow_consumed"] is False
+        return {"valid": False, "issues": ["bootstrap_root_already_consumed"]}
+
+    monkeypatch.setattr(
+        "official_bootstrap.validate_signed_v5_ledger_bootstrap_selection",
+        consumed,
+    )
+    authorization, issues = harness._official_quarantine_authorization(
+        opponent,
+        candidate,
+        envelope,
+    )
+    assert authorization is None
+    assert any("bootstrap_root_already_consumed" in issue for issue in issues)
+
+
+@pytest.mark.parametrize("mutation", ["wrong_role", "v142", "tampered_selection"])
+def test_bootstrap_quarantine_exception_rejects_wrong_authority(
+    tmp_path, monkeypatch, mutation
+):
+    candidate, opponent, envelope = _bootstrap_authorization_case(tmp_path)
+    monkeypatch.setattr(
+        harness,
+        "quarantined_native_entry_sources",
+        lambda _path: ("national_v141", "national_v142"),
+    )
+    monkeypatch.setattr(
+        "official_bootstrap.validate_signed_v5_ledger_bootstrap_selection",
+        lambda *_args, **_kwargs: {"valid": True, "issues": []},
+    )
+    if mutation == "wrong_role":
+        opponent = BotLaunchConfig(
+            opponent.path,
+            name=opponent.name,
+            role="candidate",
+            sealed_artifact=opponent.sealed_artifact,
+        )
+    elif mutation == "v142":
+        v142 = tmp_path / "national_v142"
+        v142.mkdir()
+        (v142 / "national_bot.py").write_text("legacy\n", encoding="utf-8")
+        opponent = BotLaunchConfig(
+            v142,
+            name="Opponent",
+            role="opponent",
+            sealed_artifact=harness.SealedBotArtifact(
+                source=v142,
+                root=v142,
+                entry_relative="national_bot.py",
+                artifact_hash=hash_path(v142),
+                manifest_digest="d" * 64,
+            ),
+        )
+    else:
+        envelope = json.loads(json.dumps(envelope))
+        envelope["opponent_selection"]["opponent"]["completion_tree_oid"] = "f" * 40
+
+    authorization, issues = harness._official_quarantine_authorization(
+        opponent,
+        candidate,
+        envelope,
+    )
+
+    assert authorization is None
+    assert any("protocol_quarantined_native_entry_forbidden" in issue for issue in issues)
+
+
+def test_manual_official_round_rejects_v142_raw_before_process_start(
+    tmp_path, monkeypatch
+):
+    repository_root = Path(__file__).resolve().parents[2]
+    v142 = repository_root / "bots" / "national_v142"
+    peer = tmp_path / "peer"
+    peer.mkdir()
+    (peer / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    config = OfficialPlatformConfig(
+        exe_path=tmp_path / "platform.exe",
+        wineprefix=tmp_path / "wine",
+        results_dir=tmp_path / "results",
+        lock_path=tmp_path / "lock",
+    )
+    monkeypatch.setattr(
+        harness,
+        "check_environment",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "issues": [],
+            "warnings": [],
+            "execution_profile": None,
+        },
+    )
+    monkeypatch.setattr(
+        harness,
+        "_popen",
+        lambda *_args, **_kwargs: pytest.fail("v142 raw process was started"),
+    )
+
+    receipt = harness.run_official_round(
+        BotLaunchConfig(v142, name="Legacy", role="opponent"),
+        BotLaunchConfig(peer, name="Peer", role="candidate"),
+        config=config,
+        out_dir=tmp_path / "round-v142",
+    )
+
+    assert receipt["passed"] is False
+    assert any(
+        "protocol_quarantined_native_entry_forbidden" in issue
+        for issue in receipt["issues"]
+    )
 
 
 def test_official_wire_capture_writes_round_artifacts(tmp_path):

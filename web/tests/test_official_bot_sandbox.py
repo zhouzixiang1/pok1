@@ -1,8 +1,16 @@
 from pathlib import Path
 import socket
 
-from bot_artifact import hash_path
-from official_bot_sandbox import build_sandboxed_bot_command, seal_bot_artifact
+import pytest
+
+from bot_artifact import canonical_digest, hash_path
+from managed_bot_executor import EndpointLease
+from official_bot_sandbox import (
+    OfficialBootstrapLaunchAuthorization,
+    SealedBotArtifact,
+    launch_sandboxed_bot,
+    seal_bot_artifact,
+)
 from official_execution_profile import execution_profile_identity, load_execution_profile
 from official_platform_harness import OfficialPlatformConfig, check_environment
 
@@ -46,7 +54,7 @@ def test_sealed_bot_contains_only_content_bound_artifact(tmp_path):
     assert (sealed.root / "national_bot.py").stat().st_mode & 0o222 == 0
 
 
-def test_sandbox_command_exposes_only_bot_and_single_log(tmp_path):
+def test_formal_sandbox_launch_uses_central_executor_and_single_log(tmp_path):
     source = _bot(tmp_path / "national_v1")
     sealed = seal_bot_artifact(
         source,
@@ -55,34 +63,32 @@ def test_sandbox_command_exposes_only_bot_and_single_log(tmp_path):
     )
     log_path = tmp_path / "evidence" / "botA.log"
 
-    peer, inherited = socket.socketpair()
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = int(listener.getsockname()[1])
     try:
-        command, environment = build_sandboxed_bot_command(
-            sealed,
-            host="127.0.0.1",
-            port=10001,
-            name="candidate",
-            seat="upper",
-            log_path=log_path,
-            supports_log=True,
-            preconnected_fd=inherited.fileno(),
-        )
+        with EndpointLease.connect("127.0.0.1", port, timeout=2.0) as endpoint:
+            accepted, _peer = listener.accept()
+            managed = launch_sandboxed_bot(
+                sealed,
+                endpoint,
+                name="candidate",
+                seat="upper",
+                log_path=log_path,
+                supports_log=True,
+            )
+        stdout, stderr = managed.process.communicate(timeout=10)
+        accepted.close()
     finally:
-        peer.close()
-        inherited.close()
+        listener.close()
 
-    joined = "\0".join(command)
-    assert "--unshare-all" in command
-    assert "--share-net" not in command
-    assert "POK_PRECONNECTED_SOCKET_FD" in command
-    assert "--clearenv" in command
-    assert "-I" in command and "-B" in command
-    assert str(sealed.root) in command
-    assert str(log_path) in command
-    assert str(source) not in joined
-    assert str(Path.home()) not in joined
-    assert "PYTHONPATH" not in joined
-    assert set(environment) <= {"PATH", "POK_OFFICIAL_JOB_PROCESS_GROUP"}
+    assert managed.process.returncode == 0, (stdout, stderr)
+    assert managed.isolation.network == "isolated-netns-inherited-exact-peer-only"
+    assert managed.isolation.nested_userns == "disabled-and-asserted"
+    assert managed.isolation.capabilities == "drop-all"
+    assert managed.isolation.bpf_size > 0
+    assert log_path.is_file()
 
 
 def test_execution_profile_is_tracked_and_requires_sandbox():
@@ -93,7 +99,11 @@ def test_execution_profile_is_tracked_and_requires_sandbox():
         "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
     )
     assert profile["sandbox"]["required"] is True
-    assert profile["sandbox"]["network"] == "isolated-netns-preconnected-socket-fd"
+    assert profile["sandbox"]["network"] == (
+        "isolated-netns-loopback-exact-peer-inherited-stream-only"
+    )
+    assert profile["sandbox"]["authority"] == "web/core/managed_bot_executor.py"
+    assert profile["managed_executor"]["contract"]["host_root_mounted"] is False
     assert profile["sandbox"]["python_flags"] == ["-I", "-B"]
     assert len(identity["profile_sha256"]) == 64
     assert len(identity["profile_digest"]) == 64
@@ -122,3 +132,64 @@ def test_formal_environment_fails_closed_when_sandbox_probe_fails(tmp_path, monk
 
     assert report["ok"] is False
     assert "official_sandbox_probe_failed" in report["issues"]
+
+
+def test_direct_official_launch_rejects_v142_raw_entry():
+    repository_root = Path(__file__).resolve().parents[2]
+    v142 = repository_root / "bots" / "national_v142"
+    artifact_hash = hash_path(v142)
+    artifact = SealedBotArtifact(
+        source=v142,
+        root=v142,
+        entry_relative="national_bot.py",
+        artifact_hash=artifact_hash,
+        manifest_digest="a" * 64,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="protocol_quarantined_native_entry_forbidden",
+    ):
+        launch_sandboxed_bot(
+            artifact,
+            object(),
+            name="v142",
+            seat="lower",
+            log_path=None,
+            supports_log=False,
+        )
+
+
+def test_direct_v141_launch_rejects_forged_bearer_authorization():
+    repository_root = Path(__file__).resolve().parents[2]
+    v141 = repository_root / "bots" / "national_v141"
+    artifact_hash = hash_path(v141)
+    artifact = SealedBotArtifact(
+        source=v141,
+        root=v141,
+        entry_relative="national_bot.py",
+        artifact_hash=artifact_hash,
+        manifest_digest="a" * 64,
+    )
+    forged_selection = {}
+    authorization = OfficialBootstrapLaunchAuthorization(
+        root_id="national-v141-official-full-v5-signed-ledger-root",
+        artifact_hash=artifact_hash,
+        selection_digest=canonical_digest(forged_selection),
+        selection_json="{}",
+        candidate_path=str(v141),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="protocol_quarantined_native_entry_forbidden",
+    ):
+        launch_sandboxed_bot(
+            artifact,
+            object(),
+            name="v141",
+            seat="lower",
+            log_path=None,
+            supports_log=False,
+            quarantine_authorization=authorization,
+        )

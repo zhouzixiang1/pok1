@@ -17,7 +17,6 @@ import ipaddress
 import os
 from pathlib import Path
 import signal
-import socket
 import subprocess
 import time
 import uuid
@@ -36,12 +35,12 @@ from national_arena.sandbox import (
     ArenaSandboxError,
     ArenaSandboxUnavailable,
     SandboxCapability,
-    build_sandboxed_bot_launch,
+    launch_sandboxed_bot,
     remove_sealed_artifacts,
     require_managed_sandbox,
     seal_bot_artifact,
 )
-from managed_bot_socket import connect_managed_endpoint
+from managed_bot_executor import EndpointLease
 from national_game_runtime import NationalTCPGameEngine
 from national_native import check_native_contract, resolve_bot
 from national_transport import NationalProtocolError, NationalTCPClient
@@ -1351,48 +1350,34 @@ class NationalArenaManager:
             )
             session.artifacts[f"{seat}_stdout"] = stdout_path.name
             session.artifacts[f"{seat}_stderr"] = stderr_path.name
-            preconnected: socket.socket | None = None
-            try:
-                preconnected = connect_managed_endpoint(
-                    endpoint_host,
-                    endpoint_port,
-                    timeout=5.0,
-                )
-                launch = build_sandboxed_bot_launch(
-                    sealed,
-                    capability,
-                    host=endpoint_host,
-                    port=endpoint_port,
-                    name=label,
-                    seat="upper" if seat == "top" else "lower",
-                    session_id=session.session_id,
-                    action_delay=session.official_action_delay,
-                    hard_deadline=hard_deadline,
-                    refinement_budget=max(0.04, hard_deadline - 0.10),
-                    baseline_target=min(0.25, hard_deadline * 0.25),
-                    preconnected_fd=preconnected.fileno(),
-                )
-            except Exception as exc:
-                if preconnected is not None:
-                    preconnected.close()
-                raise ArenaInfrastructureError(
-                    "managed endpoint preconnection failed: "
-                    f"{type(exc).__name__}: {exc}"
-                ) from exc
-            session.sandbox_profile = launch.security_profile
             stdout_handle = stdout_path.open("w", encoding="utf-8", buffering=1)
             stderr_handle = stderr_path.open("w", encoding="utf-8", buffering=1)
             try:
-                process = subprocess.Popen(
-                    list(launch.command),
-                    cwd=str(launch.cwd),
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout_handle,
-                    stderr=stderr_handle,
-                    text=True,
-                    env=launch.environment,
-                    start_new_session=True,
-                    pass_fds=launch.pass_fds,
+                with EndpointLease.connect(
+                    endpoint_host,
+                    endpoint_port,
+                    timeout=5.0,
+                ) as endpoint_lease:
+                    managed = launch_sandboxed_bot(
+                        sealed,
+                        capability,
+                        endpoint_lease,
+                        name=label,
+                        seat="upper" if seat == "top" else "lower",
+                        session_id=session.session_id,
+                        action_delay=session.official_action_delay,
+                        hard_deadline=hard_deadline,
+                        refinement_budget=max(0.04, hard_deadline - 0.10),
+                        baseline_target=min(0.25, hard_deadline * 0.25),
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout_handle,
+                        stderr=stderr_handle,
+                        start_new_session=True,
+                    )
+                process = managed.process
+                session.sandbox_profile = (
+                    "central-managed-executor:"
+                    f"{managed.isolation.policy_sha256[:16]}"
                 )
             except Exception as exc:
                 stdout_handle.close()
@@ -1400,9 +1385,6 @@ class NationalArenaManager:
                 raise ArenaInfrastructureError(
                     f"managed sandbox process launch failed: {type(exc).__name__}: {exc}"
                 ) from exc
-            finally:
-                if preconnected is not None:
-                    preconnected.close()
             try:
                 pgid = os.getpgid(process.pid)
             except ProcessLookupError:
@@ -1424,7 +1406,7 @@ class NationalArenaManager:
                 "session_marker": session.session_id,
                 "started_at": utc_now(),
                 "artifact_hash": expected_identity.get("artifact_hash"),
-                "sandbox_profile": launch.security_profile,
+                "sandbox_profile": session.sandbox_profile,
             }
             session.managed_processes.append(process_record)
             await self._emit(session, "bot_process_started", {
@@ -1438,7 +1420,7 @@ class NationalArenaManager:
                 "launch_index": index,
                 "endpoint": copy.deepcopy(endpoint),
                 "seat_authority": "listener_endpoint",
-                "sandbox_profile": launch.security_profile,
+                "sandbox_profile": session.sandbox_profile,
                 "repository_mounted": False,
                 "writable_host_binds": [],
                 "process_identity": process_record,
@@ -1859,8 +1841,11 @@ class NationalArenaManager:
             entries = Path(f"/proc/{int(pid)}/environ").read_bytes().split(b"\0")
         except OSError:
             return False
-        expected = f"POK_ARENA_SESSION_ID={marker}".encode("utf-8")
-        return expected in entries
+        expected = {
+            f"POK_MANAGED_PROCESS_OWNER={marker}".encode("utf-8"),
+            f"POK_ARENA_SESSION_ID={marker}".encode("utf-8"),
+        }
+        return any(item in entries for item in expected)
 
     async def _reap_persisted_processes(
         self,

@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "profile_id": "official-exe-2021-wine9-bwrap-v2",
+  "schema_version": 3,
+  "profile_id": "official-exe-2021-wine9-managed-executor-v5",
   "official_exe": {
     "repository_path": "sever/国赛平台/德州扑克对弈平台限时一分钟2021版/德州扑克对弈平台限时一分钟2021版.exe",
     "sha256": "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
@@ -30,14 +30,88 @@
       "command_path": "/usr/bin/python3.12",
       "resolved_path": "/usr/bin/python3.12",
       "sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118"
+    },
+    "prlimit": {
+      "command_path": "/usr/bin/prlimit",
+      "resolved_path": "/usr/bin/prlimit",
+      "sha256": "f27cfd8c1512a4cc6541b59b80cb4cdfd6ef28c34aa21db4299b48264cd0d128"
     }
   },
   "sandbox": {
     "required": true,
-    "network": "isolated-netns-preconnected-socket-fd",
-    "filesystem": "sealed-bot-readonly-plus-single-log",
-    "pid_namespace": true,
-    "user_namespace": true,
-    "python_flags": ["-I", "-B"]
+    "authority": "web/core/managed_bot_executor.py",
+    "network": "isolated-netns-loopback-exact-peer-inherited-stream-only",
+    "filesystem": "minimal-runtime-sealed-bot-readonly-named-fd-outputs",
+    "namespaces": ["user", "ipc", "pid", "net", "uts", "cgroup"],
+    "nested_userns": "disabled-and-asserted",
+    "capabilities": "drop-all",
+    "seccomp": "argument-aware-libseccomp-bpf-v2",
+    "python_flags": ["-I", "-B"],
+    "bot_timing": {
+      "action_delay_sec": 0.3,
+      "hard_deadline_sec": 55.0,
+      "refinement_budget_sec": 54.0,
+      "baseline_target_sec": 0.25
+    }
+  },
+  "managed_executor": {
+    "contract": {
+      "capabilities": "drop-all",
+      "environment": "clear-and-allowlist",
+      "explicit_namespace_flags": [
+        "--unshare-user",
+        "--unshare-ipc",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-uts",
+        "--unshare-cgroup"
+      ],
+      "host_process_environment": "optional-owner-marker-only",
+      "host_root_mounted": false,
+      "max_output_files": 4,
+      "namespaces": ["user", "ipc", "pid", "net", "uts", "cgroup"],
+      "nested_userns": "disabled-and-asserted",
+      "network": "loopback-exact-peer-inherited-stream-only",
+      "readonly_inputs": "named-ro-bind-only",
+      "resource_limits": {
+        "RLIMIT_AS": 4294967296,
+        "RLIMIT_CORE": 0,
+        "RLIMIT_FSIZE": 16777216,
+        "RLIMIT_NOFILE": 64,
+        "RLIMIT_NPROC": 64
+      },
+      "runtime_mounts": ["/usr", "/lib", "/lib64"],
+      "tmpfs_bytes": 67108864,
+      "writable_outputs": "named-new-file-bind-fd-only"
+    },
+    "sandbox_bootstrap_sha256": "e16fd65d9dc90888972b97afe3db7e5124330fee3484318e5fc88a6c3e17a33a",
+    "schema": "pok-managed-executor-identity-v1",
+    "seccomp": {
+      "bpf_sha256": "868cffd79ca7486a876c3f67b8ebf1f36893f8f0f95b77253be058b5498ffecc",
+      "bpf_size": 672,
+      "library": {
+        "path": "/usr/lib/x86_64-linux-gnu/libseccomp.so.2.5.5",
+        "sha256": "b4d9140a7797ccf3ac14f5d9d579b64f157111662940cb8330c632b11a8cea8e"
+      },
+      "policy_sha256": "a6822783714c338bc648aa3f6121e8ef8d6758b43dead1b40d481a5641607fb8"
+    },
+    "source": {
+      "path": "web/core/managed_bot_executor.py",
+      "sha256": "1f18dbe8375ae4fb4523aeca3d8a6906ff730d63339b7b36d1f7b97629715859"
+    },
+    "tools": {
+      "bwrap": {
+        "path": "/usr/bin/bwrap",
+        "sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
+      },
+      "prlimit": {
+        "path": "/usr/bin/prlimit",
+        "sha256": "f27cfd8c1512a4cc6541b59b80cb4cdfd6ef28c34aa21db4299b48264cd0d128"
+      },
+      "python": {
+        "path": "/usr/bin/python3.12",
+        "sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118"
+      }
+    }
   }
 }

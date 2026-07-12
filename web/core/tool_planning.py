@@ -45,6 +45,10 @@ from tool_helpers import (
 from system_log import log_system_event
 from pipeline_state import route_policy
 from output_schema import (
+    LEGACY_CONSUMER_MIGRATION_CHECKS,
+    LEGACY_CONSUMER_MIGRATION_FORBIDDEN_EXTRA_CHECKS,
+    LEGACY_CONSUMER_MIGRATION_FILES,
+    LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
     MASTER_PLAN_MAX_TASKS,
     PRECOMPUTE_KEY_SHAPE_PATTERN,
     PRECOMPUTE_MAX_BUILD_MS,
@@ -58,6 +62,78 @@ from output_schema import (
     runtime_contract_required_sections,
     runtime_contract_worker_prompt_terms,
 )
+
+
+_PROTOCOL_BOOTSTRAP_NO_STRENGTH = (
+    "PROTOCOL BOOTSTRAP NO-STRENGTH: historical match, rating, replay, "
+    "experience-pool, exploitability, and critic strength evidence was not loaded."
+)
+
+
+def _protocol_bootstrap_direction_audit(
+    checkpoint: dict,
+    *,
+    source_v: int,
+    next_v: int,
+) -> dict | None:
+    """Build the deterministic no-strength Direction receipt for bootstrap.
+
+    The ordinary Direction auditor is explicitly a historical-performance
+    consumer.  A protocol-bootstrap generation has no admissible strength
+    history, so invoking that auditor (even if its output were later ignored)
+    would violate the quarantine boundary.
+    """
+    audit_context = checkpoint.get("audit_context") or {}
+    receipt = audit_context.get("protocol_bootstrap")
+    if not isinstance(receipt, dict):
+        return None
+    prepared = audit_context.get("prepared_artifact_contract") or {}
+    prepare_receipt = audit_context.get("protocol_bootstrap_prepare") or {}
+    payload = {
+        "repetition_detected": False,
+        "exhausted_directions": [],
+        "mandatory_constraints": None,
+        "suggested_direction": None,
+        "confidence": "not_applicable",
+        "resolved": False,
+        "llm_failed": False,
+        "protocol_bootstrap_no_strength": True,
+        "evidence_policy": _PROTOCOL_BOOTSTRAP_NO_STRENGTH,
+        "source_v": int(source_v),
+        "next_v": int(next_v),
+        "protocol_bootstrap_receipt_digest": str(
+            receipt.get("receipt_digest") or ""
+        ),
+        "protocol_bootstrap_prepare_receipt_digest": str(
+            prepare_receipt.get("receipt_digest") or ""
+        ),
+        "prepared_artifact_hash": str(prepared.get("artifact_hash") or ""),
+    }
+    from bot_artifact import canonical_digest
+
+    payload["receipt_digest"] = canonical_digest(payload)
+    return payload
+
+
+def _protocol_bootstrap_master_audit(plan: dict) -> dict:
+    """Return the no-history post-plan receipt for a bootstrap Master run."""
+    from bot_artifact import canonical_digest
+
+    payload = {
+        "plan_coherent": True,
+        "contradiction_found": False,
+        "contradictions": [],
+        "experience_alignment": "not_applicable",
+        "direction_novelty": "not_applicable",
+        "overall_pass": True,
+        "feedback": "",
+        "retry_recommended": False,
+        "protocol_bootstrap_no_strength": True,
+        "evidence_policy": _PROTOCOL_BOOTSTRAP_NO_STRENGTH,
+        "plan_digest": canonical_digest(plan),
+    }
+    payload["receipt_digest"] = canonical_digest(payload)
+    return payload
 
 
 def _literature_probe_cache_path(next_v: int | str) -> Path:
@@ -447,7 +523,18 @@ async def run_direction_audit(args):
     _set_pipeline_status(f"Auditing directions for v{next_v}")
 
     ui = _get_ui()
-    result = await _run_direction_audit(source_v, ui)
+    neutral_bootstrap_audit = _protocol_bootstrap_direction_audit(
+        _existing,
+        source_v=int(source_v),
+        next_v=int(next_v),
+    )
+    # Never call the historical-performance LLM auditor during protocol
+    # bootstrap.  The deterministic receipt is the complete Direction result.
+    result = (
+        neutral_bootstrap_audit
+        if neutral_bootstrap_audit is not None
+        else await _run_direction_audit(source_v, ui)
+    )
 
     repetition = result.get("repetition_detected", False)
     exhausted = result.get("exhausted_directions", [])
@@ -456,17 +543,21 @@ async def run_direction_audit(args):
     confidence = result.get("confidence", "low")
     llm_failed = result.get("llm_failed", False)
 
-    direction_audit_payload = {
-        "repetition_detected": repetition,
-        "exhausted_directions": exhausted,
-        "mandatory_constraints": constraints,
-        "suggested_direction": suggested,
-        "confidence": confidence,
-        "resolved": False,
-        # Propagate the infra marker so run_master can skip injecting the
-        # (untrustworthy, empty) audit mandatory_constraints block.
-        "llm_failed": llm_failed,
-    }
+    direction_audit_payload = (
+        dict(neutral_bootstrap_audit)
+        if neutral_bootstrap_audit is not None
+        else {
+            "repetition_detected": repetition,
+            "exhausted_directions": exhausted,
+            "mandatory_constraints": constraints,
+            "suggested_direction": suggested,
+            "confidence": confidence,
+            "resolved": False,
+            # Propagate the infra marker so run_master can skip injecting the
+            # (untrustworthy, empty) audit mandatory_constraints block.
+            "llm_failed": llm_failed,
+        }
+    )
 
     # Re-check after the LLM call.  A late response must never refresh audit
     # data after another controller advanced the generation.
@@ -484,14 +575,34 @@ async def run_direction_audit(args):
                 "Its result was discarded and no checkpoint was overwritten."
             ),
         })
-    write_pipeline_checkpoint(
+    recorded = write_pipeline_checkpoint(
         next_v, source_v, "direction_audited",
         direction_audit=direction_audit_payload,
         master_plan=_ckpt.get("master_plan"),
         worker_failure_count=_ckpt.get("worker_failure_count", 0),
+        expected_checkpoint_revision=_existing.get("checkpoint_revision"),
+        expected_checkpoint_stage="prepared",
+        expected_workflow_run_id=_existing.get("workflow_run_id"),
     )
+    if not recorded:
+        return _json_tool_result({
+            "error": "DIRECTION_AUDIT_CHECKPOINT_WRITE_REJECTED",
+            "next_v": next_v,
+            "source_v": source_v,
+            "directive": (
+                "The prepared checkpoint changed before the Direction receipt "
+                "could be committed. The result was discarded; follow the "
+                "current checkpoint-owned route."
+            ),
+        })
 
-    if llm_failed:
+    if neutral_bootstrap_audit is not None:
+        event_type = "pipeline.direction_audit_protocol_bootstrap_neutral"
+        severity = "success"
+        msg = (
+            f"Direction audit: deterministic no-strength bootstrap receipt for v{next_v}"
+        )
+    elif llm_failed:
         # Infra failure is neither "warning" (repetition) nor "passed" (clean).
         # Log it as a distinct event so the orchestrator can see the audit was
         # untrustworthy; run_master also emits its own pipeline.direction_audit_infra.
@@ -509,6 +620,8 @@ async def run_direction_audit(args):
         "repetition_detected": repetition,
         "exhausted_directions": exhausted,
         "llm_failed": llm_failed,
+        "protocol_bootstrap_no_strength": neutral_bootstrap_audit is not None,
+        "receipt_digest": direction_audit_payload.get("receipt_digest"),
     })
 
     return _json_tool_result({
@@ -1414,6 +1527,51 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
             if reference_errors:
                 return [f"Task {index}: {error}" for error in reference_errors]
 
+    migration = validated.legacy_consumer_migration
+    if migration is not None:
+        if focus_id != LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+            return [
+                f"Task {index}: legacy_consumer_migration belongs only to "
+                f"{LEGACY_CONSUMER_MIGRATION_FOCUS_ID!r}."
+            ]
+        missing_checks = sorted(
+            set(LEGACY_CONSUMER_MIGRATION_CHECKS).difference(
+                str(item) for item in task.get("checks_required") or []
+            )
+        )
+        if missing_checks:
+            return [
+                f"Task {index}: universal legacy consumer migration omitted "
+                f"checks {missing_checks}."
+            ]
+        missing_files = sorted(
+            set(LEGACY_CONSUMER_MIGRATION_FILES).difference(writable_scope)
+        )
+        if missing_files:
+            return [
+                f"Task {index}: universal legacy consumer migration omitted "
+                f"writable files {missing_files}."
+            ]
+        unexpected_files = sorted(
+            writable_scope.difference(LEGACY_CONSUMER_MIGRATION_FILES)
+        )
+        if unexpected_files:
+            return [
+                f"Task {index}: universal legacy consumer migration has "
+                f"unexpected writable files {unexpected_files}."
+            ]
+        forbidden_extra_checks = sorted(
+            set(str(item) for item in task.get("checks_required") or []).intersection(
+                LEGACY_CONSUMER_MIGRATION_FORBIDDEN_EXTRA_CHECKS
+            )
+        )
+        if forbidden_extra_checks:
+            return [
+                f"Task {index}: universal legacy consumer migration carries "
+                "ordinary innovation or aggregate checks "
+                f"{forbidden_extra_checks}."
+            ]
+
     prompt = str(task.get("worker_prompt", task.get("instruction", ""))).lower()
     contract_terms = runtime_contract_worker_prompt_terms(validated)
     missing_terms = [term for term in contract_terms if term not in prompt]
@@ -1500,6 +1658,63 @@ def _master_snapshot_binding_errors(checkpoint, next_v):
         return ["master_checkpoint_missing"]
     audit_context = checkpoint.get("audit_context") or {}
     selection = audit_context.get("selection") or {}
+    if selection.get("bootstrap_without_strength_evidence") is True:
+        errors = []
+        receipt = audit_context.get("protocol_bootstrap")
+        try:
+            from evolution_infra import get_active_bots
+            from national_protocol_quarantine import validate_protocol_bootstrap_receipt
+
+            errors.extend(
+                validate_protocol_bootstrap_receipt(
+                    receipt,
+                    active_bots=get_active_bots(),
+                )
+            )
+        except Exception as exc:
+            errors.append(
+                f"protocol_bootstrap_validation_error:{type(exc).__name__}:"
+                f"{str(exc)[:160]}"
+            )
+        prepare = audit_context.get("protocol_bootstrap_prepare")
+        if not isinstance(prepare, dict):
+            errors.append("protocol_bootstrap_prepare_receipt_missing")
+            return errors
+        if not isinstance(receipt, dict) or prepare.get("receipt_digest") != receipt.get(
+            "receipt_digest"
+        ):
+            errors.append("protocol_bootstrap_prepare_receipt_digest_mismatch")
+        candidate_dir = get_bot_dir(next_v)
+        entry = candidate_dir / "national_bot.py"
+        try:
+            actual_entry_hash = hashlib.sha256(entry.read_bytes()).hexdigest()
+        except OSError as exc:
+            errors.append(f"protocol_bootstrap_runtime_unreadable:{type(exc).__name__}")
+        else:
+            if prepare.get("national_bot_sha256") != actual_entry_hash:
+                errors.append("protocol_bootstrap_runtime_hash_mismatch")
+        if (
+            isinstance(receipt, dict)
+            and receipt.get("mode") == "legacy_strategy_migration"
+            and prepare.get("system_runtime_replaced") is not True
+        ):
+            errors.append("protocol_bootstrap_system_runtime_not_replaced")
+        try:
+            from national_native import check_native_contract
+
+            errors.extend(
+                "protocol_bootstrap_candidate_contract:" + item
+                for item in check_native_contract(
+                    candidate_dir,
+                    require_current_stream_decoder=True,
+                    require_current_decision_runtime=True,
+                )
+            )
+        except Exception as exc:
+            errors.append(
+                f"protocol_bootstrap_candidate_contract_error:{type(exc).__name__}"
+            )
+        return errors
     formal_binding = bool(
         audit_context.get("master_context") is not None
         or selection.get("evaluation_evidence") is not None
@@ -1593,6 +1808,12 @@ async def run_master(args):
     except Exception:
         pass
     _master_entry_ckpt = _matching_checkpoint(next_v, source_v)
+    protocol_bootstrap_receipt = (
+        (_master_entry_ckpt.get("audit_context") or {}).get("protocol_bootstrap")
+        if isinstance(_master_entry_ckpt, dict)
+        else None
+    )
+    protocol_bootstrap_no_strength = isinstance(protocol_bootstrap_receipt, dict)
     _master_infra, _master_infra_error = _owned_infrastructure_failure(
         _master_entry_ckpt,
         "run_master",
@@ -1864,6 +2085,15 @@ async def run_master(args):
                 )
             research_proposals = ""
 
+    if protocol_bootstrap_no_strength:
+        # Existing literature receipts were designed around an H2H weakness.
+        # Until a separately typed non-result literature receipt exists, omit
+        # them rather than laundering match conclusions through research prose.
+        stagnation_info = _PROTOCOL_BOOTSTRAP_NO_STRENGTH
+        match_analysis = _PROTOCOL_BOOTSTRAP_NO_STRENGTH
+        performance_verification = _PROTOCOL_BOOTSTRAP_NO_STRENGTH
+        research_proposals = ""
+
     # The probe stage is a deterministic control-plane requirement, not a
     # prompt suggestion.  A successful result, governed skip, timeout, or
     # provider failure all persist an identity-bound receipt; absence of that
@@ -1976,7 +2206,33 @@ async def run_master(args):
             "capability_snapshot"
         )
 
-    if prepared_capability_snapshot is None:
+    architecture_source_dir = get_bot_dir(source_v)
+    if protocol_bootstrap_no_strength:
+        try:
+            from runtime_architecture_policy import (
+                build_prepared_capability_snapshot,
+            )
+
+            prepared_capability_snapshot = build_prepared_capability_snapshot(
+                architecture_source_dir,
+                get_bot_dir(next_v),
+            )
+            architecture_assessment = _build_generation_architecture_policy(
+                source_v,
+                prepared_capability_snapshot=prepared_capability_snapshot,
+            )
+        except Exception as exc:
+            architecture_assessment = {
+                "outcome": "infrastructure_failure",
+                "policy": None,
+                "capabilities": None,
+                "infrastructure_failures": [{
+                    "component": "protocol_bootstrap_capability_snapshot",
+                    "failure_class": "internal_infrastructure",
+                    "issues": [f"{type(exc).__name__}: {str(exc)[:300]}"],
+                }],
+            }
+    elif prepared_capability_snapshot is None:
         # Preserve the legacy/single-parent call shape for test and plugin
         # adapters that replace this helper with a one-argument provider.
         architecture_assessment = _build_generation_architecture_policy(source_v)
@@ -1989,7 +2245,7 @@ async def run_master(args):
         from national_runtime_probe import RUNTIME_PROBE_IDENTITY_DIGEST
         from pipeline_infrastructure import infrastructure_attempt_key
 
-        source_dir = get_bot_dir(source_v)
+        source_dir = architecture_source_dir
         source_fingerprint = _complete_artifact_fingerprint(source_dir)
         failures = architecture_assessment.get("infrastructure_failures") or []
         infra_component = str(
@@ -2195,7 +2451,11 @@ async def run_master(args):
     # The mechanical cross-gen backstop (_build_cross_gen_constraint_block below)
     # still runs and provides exhausted-direction protection independent of this
     # LLM gate, so a crashed auditor does not leave the Master unconstrained.
-    if direction_audit and direction_audit.get("llm_failed"):
+    if protocol_bootstrap_no_strength:
+        # Direction Audit remains a durable stage receipt, but its historical
+        # match/critic conclusions are not evidence for the first strict plan.
+        direction_audit = None
+    elif direction_audit and direction_audit.get("llm_failed"):
         _log.warning(
             "Direction audit for v%s reported LLM infrastructure failure — "
             "skipping audit mandatory_constraints injection (untrustworthy). "
@@ -2230,47 +2490,53 @@ async def run_master(args):
     # EXHAUSTED). No-op when there is no prior critic local-optima rejection and
     # no EXHAUSTED direction (first-ever gen / clean crossover unaffected).
     # Idempotent: guarded by CROSS_GEN_MARKER so run_master retries don't stack it.
-    _cross_gen_block = _build_cross_gen_constraint_block(next_v)
+    _cross_gen_block = (
+        ""
+        if protocol_bootstrap_no_strength
+        else _build_cross_gen_constraint_block(next_v)
+    )
     if _cross_gen_block and CROSS_GEN_MARKER not in (performance_verification or ""):
         performance_verification = (performance_verification or "") + _cross_gen_block
 
     ui = _get_ui()
 
     # --- Extract replay_spotlight for Master prompt ---
-    replay_spotlight = ""
-    try:
-        from generation_scheduler import GenerationContext
-        # replay_spotlight is computed in prepare_generation() and stored in
-        # GenerationContext, but the MCP tool layer doesn't have direct access
-        # to the gen_ctx object. Re-compute from the replay files instead.
-        from replay_spotlight import find_critical_hands
-        from evolution_infra import RESULTS_DIR
-        from evidence_snapshot import load_generation_evaluation_snapshot
+    replay_spotlight = _PROTOCOL_BOOTSTRAP_NO_STRENGTH
+    if not protocol_bootstrap_no_strength:
+        replay_spotlight = ""
+        try:
+            from generation_scheduler import GenerationContext
+            # replay_spotlight is computed in prepare_generation() and stored in
+            # GenerationContext, but the MCP tool layer doesn't have direct access
+            # to the gen_ctx object. Re-compute from the replay files instead.
+            from replay_spotlight import find_critical_hands
+            from evolution_infra import RESULTS_DIR
+            from evidence_snapshot import load_generation_evaluation_snapshot
 
-        _replay_evidence = load_generation_evaluation_snapshot(next_v)
-        if not _replay_evidence.get("available"):
-            raise RuntimeError("generation replay evidence unavailable")
-        replays_dir = str(RESULTS_DIR / "match_replay")
-        replay_spotlight = find_critical_hands(
-            bot_name=bot_name(source_v),
-            replays_dir=replays_dir,
-            max_hands=10,
-            recent_n_files=20,
-            allowed_replay_ids=(
-                (_replay_evidence.get("match_history_index") or {}).get(
-                    "replay_ids"
-                )
-                or []
-            ),
-        )
-    except Exception:
-        pass
+            _replay_evidence = load_generation_evaluation_snapshot(next_v)
+            if not _replay_evidence.get("available"):
+                raise RuntimeError("generation replay evidence unavailable")
+            replays_dir = str(RESULTS_DIR / "match_replay")
+            replay_spotlight = find_critical_hands(
+                bot_name=bot_name(source_v),
+                replays_dir=replays_dir,
+                max_hands=10,
+                recent_n_files=20,
+                allowed_replay_ids=(
+                    (_replay_evidence.get("match_history_index") or {}).get(
+                        "replay_ids"
+                    )
+                    or []
+                ),
+            )
+        except Exception:
+            pass
 
     # The Replay Spotlight below is authoritative for current-generation hand
     # IDs. Side contexts can carry historical GxHy references from old audits,
     # research proposals, or match summaries; redact those before Master sees
     # them so the hard fabricated-evidence gate can remain strict.
-    _anchor_map = _load_replay_anchor_map()
+    _anchor_map = None if protocol_bootstrap_no_strength else _load_replay_anchor_map()
     _citation_sanitized = {}
     for _name, _value in (
         ("stagnation_info", stagnation_info),
@@ -2306,15 +2572,20 @@ async def run_master(args):
 
     # --- Read frozen action diagnostics for Master prompt ---
     _master_evaluation = {}
-    try:
-        from evidence_snapshot import load_generation_evaluation_snapshot
+    if not protocol_bootstrap_no_strength:
+        try:
+            from evidence_snapshot import load_generation_evaluation_snapshot
 
-        _master_evaluation = load_generation_evaluation_snapshot(next_v)
-        if not _master_evaluation.get("available"):
+            _master_evaluation = load_generation_evaluation_snapshot(next_v)
+            if not _master_evaluation.get("available"):
+                _master_evaluation = {}
+        except Exception:
             _master_evaluation = {}
-    except Exception:
-        _master_evaluation = {}
-    bot_action_stats = ""
+    bot_action_stats = (
+        _PROTOCOL_BOOTSTRAP_NO_STRENGTH
+        if protocol_bootstrap_no_strength
+        else ""
+    )
     try:
         _all_stats = _master_evaluation.get("action_stats") or {}
         if _all_stats:
@@ -2373,7 +2644,11 @@ async def run_master(args):
     # surface its most lopsided matchups (by h2h win_rate) with a compact
     # aggression / fold-to-bet / cbet / barrel line each, so the Master can
     # plan opponent-specific adaptations. Advisory: read failure -> "".
-    opponent_profiles = ""
+    opponent_profiles = (
+        _PROTOCOL_BOOTSTRAP_NO_STRENGTH
+        if protocol_bootstrap_no_strength
+        else ""
+    )
     try:
         _per_opp_all = _master_evaluation.get("action_stats_per_opp") or {}
         if _per_opp_all:
@@ -2574,22 +2849,31 @@ async def run_master(args):
         pass
 
     # --- Read battle experience for Master prompt ---
-    battle_experience = ""
-    try:
-        from battle_experience import get_battle_experience
-        battle_experience = get_battle_experience(source_bot=bot_name(source_v))
-    except Exception:
-        pass
+    battle_experience = (
+        _PROTOCOL_BOOTSTRAP_NO_STRENGTH
+        if protocol_bootstrap_no_strength
+        else ""
+    )
+    if not protocol_bootstrap_no_strength:
+        try:
+            from battle_experience import get_battle_experience
+            battle_experience = get_battle_experience(source_bot=bot_name(source_v))
+        except Exception:
+            pass
 
     # --- Read exploitability probe results for Master prompt ---
     # exploitability.json is written by exploitability_prober.run_exploitability_probes()
     # (called from generation_scheduler.post_generation_cleanup against the
     # PREVIOUS generation's bot). It is write-only until consumed here.
-    exploitability_weaknesses = ""
+    exploitability_weaknesses = (
+        _PROTOCOL_BOOTSTRAP_NO_STRENGTH
+        if protocol_bootstrap_no_strength
+        else ""
+    )
     try:
         from evolution_infra import RESULTS_DIR as _RES
         _exploit_file = _RES / "exploitability.json"
-        if _exploit_file.exists():
+        if not protocol_bootstrap_no_strength and _exploit_file.exists():
             with open(_exploit_file, "r") as _f:
                 _exploit = json.load(_f)
             _overall = _exploit.get("overall_score")
@@ -2662,6 +2946,11 @@ async def run_master(args):
             research_proposals=research_proposals,
             architecture_policy=architecture_policy,
             prepared_baseline=prepared_baseline,
+            **(
+                {"protocol_bootstrap": protocol_bootstrap_receipt}
+                if isinstance(protocol_bootstrap_receipt, dict)
+                else {}
+            ),
         )
     except Exception as exc:
         from agent_master import MasterInfrastructureError
@@ -2714,7 +3003,11 @@ async def run_master(args):
                 {"next_v": next_v, "source_v": source_v, "phase": phase, "error": str(_compile_exc)[:500]},
             )
 
-        _exhausted_kw = _extract_exhausted_keywords()
+        _exhausted_kw = (
+            []
+            if protocol_bootstrap_no_strength
+            else _extract_exhausted_keywords()
+        )
         plan_errors, plan_warnings = _validate_master_plan(
             plan, next_v=next_v, precomputed_exhausted_keywords=_exhausted_kw
         )
@@ -2841,7 +3134,6 @@ async def run_master(args):
     # persisted in the checkpoint so a crash-resume does not re-burn the budget.
     master_audit_ctx = None
     try:
-        from audit_agents import _run_master_plan_audit
         from evolution_infra import read_pipeline_checkpoint
         _ckpt0 = read_pipeline_checkpoint() or {}
         # `or 0` defends against a stored null: prepare_next_gen writes the
@@ -2859,21 +3151,26 @@ async def run_master(args):
                 phase="master_plan_audit_start",
                 audit_attempt=_audit_attempt,
             )
-            try:
-                from evidence_snapshot import (
-                    h2h_citation_repair_guidance,
-                    validate_h2h_citations_against_snapshot,
-                )
-                _h2h_citation_errors = validate_h2h_citations_against_snapshot(data, next_v)
-                _h2h_repair_guidance = h2h_citation_repair_guidance(
-                    next_v,
-                    _h2h_citation_errors,
-                    source_v=source_v,
-                )
-            except Exception:
+            if protocol_bootstrap_no_strength:
                 _h2h_citation_errors = []
                 _h2h_repair_guidance = ""
-            if _h2h_citation_errors:
+                audit_result = _protocol_bootstrap_master_audit(data)
+            else:
+                try:
+                    from evidence_snapshot import (
+                        h2h_citation_repair_guidance,
+                        validate_h2h_citations_against_snapshot,
+                    )
+                    _h2h_citation_errors = validate_h2h_citations_against_snapshot(data, next_v)
+                    _h2h_repair_guidance = h2h_citation_repair_guidance(
+                        next_v,
+                        _h2h_citation_errors,
+                        source_v=source_v,
+                    )
+                except Exception:
+                    _h2h_citation_errors = []
+                    _h2h_repair_guidance = ""
+            if not protocol_bootstrap_no_strength and _h2h_citation_errors:
                 audit_result = {
                     "plan_coherent": False,
                     "contradiction_found": True,
@@ -2895,7 +3192,9 @@ async def run_master(args):
                     "deterministic_h2h_snapshot_check": True,
                     "repair_guidance": _h2h_repair_guidance,
                 }
-            else:
+            elif not protocol_bootstrap_no_strength:
+                from audit_agents import _run_master_plan_audit
+
                 try:
                     audit_result = await _run_master_plan_audit(data, source_v, ui, next_v=next_v)
                 except TypeError as _audit_te:
@@ -3001,6 +3300,11 @@ async def run_master(args):
                     research_proposals=research_proposals,
                     architecture_policy=architecture_policy,
                     prepared_baseline=prepared_baseline,
+                    **(
+                        {"protocol_bootstrap": protocol_bootstrap_receipt}
+                        if isinstance(protocol_bootstrap_receipt, dict)
+                        else {}
+                    ),
                 )
             except Exception as exc:
                 from agent_master import MasterInfrastructureError
@@ -6291,6 +6595,7 @@ def _official_smoke_contracts(quality, failures):
 
 
 _ARCHITECTURE_FOCUS_LAYERS = {
+    LEGACY_CONSUMER_MIGRATION_FOCUS_ID: "runtime_architecture",
     "national_runtime_v3_migration": "runtime_architecture",
     "national_runtime_v4_state_learning": "runtime_architecture",
     "incremental_match_model": "opponent_model",
@@ -6319,6 +6624,8 @@ _ARCHITECTURE_CHECK_FILES = {
     "incremental_opponent_model": ["strategy.py", "opponent.py", "state.py"],
     "terminal_response_adaptation": ["strategy.py", "opponent.py"],
     "showdown_range_adaptation": ["strategy.py", "opponent.py", "simulation.py"],
+    "donk_line_reachability": ["strategy.py", "donk_probe.py"],
+    "delayed_probe_line_reachability": ["strategy.py", "donk_probe.py"],
     "semantic_line_reachability": ["strategy.py", "donk_probe.py"],
 }
 
@@ -6456,7 +6763,11 @@ def _default_state_learning_contract(
         "opponent_model",
     }:
         profile_dimensions = ["action_profile"]
-    elif "semantic_line_reachability" in required or skill_layer == "line_template":
+    elif "donk_line_reachability" in required:
+        line_controls = ["donk"]
+    elif "delayed_probe_line_reachability" in required:
+        line_controls = ["delayed_probe"]
+    elif skill_layer == "line_template":
         line_controls = ["donk"]
     else:
         work_primitive = "sample_counted_candidate_batch"
@@ -6476,6 +6787,12 @@ def _architecture_default_runtime_contract(
     candidate_capabilities=None,
 ):
     """Return a strict fallback contract for deterministic/crossover repair plans."""
+    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+        from runtime_architecture_policy import (
+            legacy_consumer_migration_runtime_contract,
+        )
+
+        return legacy_consumer_migration_runtime_contract()
     required_checks = {str(item) for item in required_checks or []}
     contract = {
         "decision": None,
@@ -6517,6 +6834,8 @@ def _architecture_default_runtime_contract(
             "incremental_opponent_model",
             "terminal_response_adaptation",
             "showdown_range_adaptation",
+            "donk_line_reachability",
+            "delayed_probe_line_reachability",
             "semantic_line_reachability",
             "decision_path_no_full_history_scan",
         })
@@ -6593,12 +6912,21 @@ def _merge_runtime_contract_floor(inherited, floor_contract):
     result = deepcopy(floor_contract)
     if not isinstance(inherited, dict):
         return result
+    if result.get("legacy_consumer_migration") is not None:
+        # The migration bundle is system-owned and all-or-nothing. Inheriting a
+        # prior one-primary state_learning choice is the exact repair loop this
+        # focus exists to prevent.
+        return result
     if inherited.get("decision") is not None:
         result["decision"] = deepcopy(inherited["decision"])
     if inherited.get("match_memory") is not None:
         result["match_memory"] = deepcopy(inherited["match_memory"])
     if inherited.get("state_learning") is not None:
         result["state_learning"] = deepcopy(inherited["state_learning"])
+    if inherited.get("legacy_consumer_migration") is not None:
+        result["legacy_consumer_migration"] = deepcopy(
+            inherited["legacy_consumer_migration"]
+        )
     if inherited.get("reference_pack_id"):
         result["reference_pack_id"] = str(inherited["reference_pack_id"])
     state_learning = result.get("state_learning") or {}
@@ -6682,6 +7010,12 @@ def _architecture_transition_repair_files(transition, candidate_dir=None):
             return
         files.append(rel)
 
+    if str(focus.get("focus_id") or "") == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+        for rel in LEGACY_CONSUMER_MIGRATION_FILES:
+            if rel not in files:
+                files.append(rel)
+        return files
+
     for check_id in _architecture_transition_failure_ids(transition):
         check = checks_by_id.get(check_id) or {}
         locations = [str(item) for item in (check.get("evidence") or {}).get("locations") or []]
@@ -6752,7 +7086,14 @@ def _architecture_contracts(quality, ckpt):
         target_files = ["strategy.py"]
     if not target_files:
         return []
-    target_files = target_files[:3]
+    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+        target_files = [
+            item
+            for item in LEGACY_CONSUMER_MIGRATION_FILES
+            if item in target_files
+        ]
+    else:
+        target_files = target_files[:WORKER_TASK_MAX_TARGET_FILES]
     primary = target_files[0]
     if primary != "national_bot.py":
         # national_bot.py is refreshed by the system template. Provider failures
@@ -6781,7 +7122,19 @@ def _architecture_contracts(quality, ckpt):
         if validated_runtime_contract.state_learning is not None
         else []
     )
-    task_required_checks = list(dict.fromkeys([*failing_ids, *primary_checks]))
+    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+        # Repair keeps the same generation-owned authority as initial planning:
+        # system floor plus the exact four migration checks. Candidate/aggregate
+        # failure labels are evidence, not permission to add another objective.
+        task_required_checks = list(dict.fromkeys([
+            *(policy.get("plan_required_floor_checks") or []),
+            *LEGACY_CONSUMER_MIGRATION_CHECKS,
+        ]))
+    else:
+        task_required_checks = list(dict.fromkeys([
+            *failing_ids,
+            *primary_checks,
+        ]))
     return [{
         "blocker": "runtime_architecture",
         "file": primary,
@@ -7230,8 +7583,15 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "repair_contract": contract,
         }
     if blocker == "runtime_architecture":
-        targets = [Path(str(item)).name for item in contract.get("files") or [filename]]
-        targets = list(dict.fromkeys(item for item in targets if item.endswith(".py")))[:3]
+        all_targets = [
+            Path(str(item)).name
+            for item in contract.get("files") or [filename]
+        ]
+        all_targets = list(dict.fromkeys(
+            item for item in all_targets if item.endswith(".py")
+        ))
+        targets = all_targets[:WORKER_TASK_MAX_TARGET_FILES]
+        extra_writable_targets = all_targets[WORKER_TASK_MAX_TARGET_FILES:]
         must_change = [
             Path(str(item)).name
             for item in contract.get("must_change_files") or [filename]
@@ -7264,11 +7624,14 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             for owner in owner_files
             if owner == "national_bot.py" and owner not in target_set
         ))
-        files_allowed = list(dict.fromkeys(
+        files_allowed = list(dict.fromkeys([
+            *extra_writable_targets,
+            *(
             owner
             for owner in owner_files
             if owner not in target_set and owner not in read_only_dependencies
-        ))
+            ),
+        ]))
         try:
             selected_state = RuntimeContract.model_validate(runtime_contract).state_learning
             primary_innovation = (
@@ -7314,10 +7677,31 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
                 "one-predicate positive/control transcript changes a sanitized action and telemetry.\n"
             ),
         }.get(primary_innovation, "")
+        migration_active = (
+            focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
+            or bool(runtime_contract.get("legacy_consumer_migration"))
+        )
+        migration_guidance = (
+            "- Universal migration bundle: all terminal_response_adaptation, "
+            "showdown_range_adaptation, donk_line_reachability, and "
+            "delayed_probe_line_reachability checks are final-blocking. Consume "
+            "terminal_response and showdown_range from opponent_runtime, and "
+            "can_donk/can_delayed_probe from hand_runtime, with separate final "
+            "sanitized wire action counterfactuals. Do not implement an ordinary "
+            "state_learning innovation in this repair.\n"
+            if migration_active
+            else ""
+        )
         if skill_layer in {"match_memory", "opponent_model"}:
             role = "Opponent Modeler"
         else:
             role = "Algorithmic Runtime Architect"
+        primary_scope_line = (
+            "- Typed primary innovation: `none`; this system-owned migration "
+            "bundle is universal and may not defer one consumer as shadow/advisory.\n"
+            if migration_active
+            else f"- Typed primary innovation: `{primary_innovation or 'none'}`. Other strategy dimensions are shadow/advisory unless listed in parent preservation checks.\n"
+        )
         prompt = (
             f"{preservation.format(next_v=next_v)}\n\n"
             "Repair contract: runtime_architecture\n"
@@ -7325,16 +7709,17 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             f"- Focus rationale: {focus.get('rationale') or 'Restore evidence-backed runtime behavior.'}\n"
             f"- Required AST checks: {', '.join(required_checks)}\n"
             f"- Parent checks that must not regress: {', '.join(preserve_checks)}\n"
-            f"- Target files: {', '.join(f'`{item}`' for item in targets)}\n"
+            f"- Writable migration files: {', '.join(f'`{item}`' for item in [*targets, *files_allowed])}\n"
             f"- Files that must change: {', '.join(f'`{item}`' for item in must_change)}\n"
             f"- Read-only system dependencies: {', '.join(f'`{item}`' for item in read_only_dependencies) or 'none'}; never edit these files.\n"
-            f"- Typed primary innovation: `{primary_innovation or 'none'}`. Other strategy dimensions are shadow/advisory unless listed in parent preservation checks.\n"
+            f"{primary_scope_line}"
             f"- Detector evidence:\n{contract.get('evidence') or 'transition hard gate failed'}\n\n"
             "Executable RuntimeContract (implement it; do not merely copy its names):\n"
             f"```json\n{json.dumps(runtime_contract, ensure_ascii=False, indent=2)}\n```\n\n"
             "Required method:\n"
             "- Read every target plus the source-parent counterpart before editing. Preserve the legal fast baseline.\n"
             "- Implement the provider-to-consumer behavior in the real get_action call graph. A class, cache, label, comment, or telemetry field that the decision path does not consume is failure.\n"
+            f"{migration_guidance}"
             f"{primary_guidance}"
             "- Treat wrapper-provided `hand_runtime`/`opponent_runtime` as bounded authoritative inputs; do not rescan full-match requests/responses/showdowns.\n"
             "- Do not weaken native TCP, official wire, card mapping, or any parent capability to make the selected check pass.\n"

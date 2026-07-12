@@ -89,6 +89,43 @@ class GenerationContext:
     battle_experience: str = ""
 
 
+def _bind_prepare_generation_cost_scope(next_v: int, ui=None) -> str:
+    """Bind cost accounting before any prepare-stage LLM can run."""
+
+    from orchestrator_cost_policy import (
+        activate_generation_cost_scope,
+        assert_operator_cost_limit_available,
+        claim_generation_cost_notice,
+        generation_cost_status,
+        generation_workflow_id,
+        runtime_cost_policy,
+    )
+
+    workflow_run_id = generation_workflow_id(next_v)
+    scope = activate_generation_cost_scope(workflow_run_id, runtime_cost_policy())
+    status = generation_cost_status(scope)
+    receipt = scope.receipt(
+        spent_before_usd=float(status.get("spent_usd") or 0.0),
+        ledger_errors=tuple(status.get("accounting_errors") or ()),
+    )
+    begin_cost = getattr(ui, "begin_generation_cost", None) if ui else None
+    if callable(begin_cost):
+        begin_cost(workflow_run_id, status.get("spent_usd", 0.0), receipt)
+    if claim_generation_cost_notice(scope, "prepare_scope_bound"):
+        log_system_event(
+            "pipeline.generation_prepare_cost_scope_bound",
+            "info" if status.get("accounting_ok") else "warn",
+            f"Prepare cost scope bound for {workflow_run_id}",
+            {
+                **receipt,
+                "spent_usd": status.get("spent_usd"),
+                "accounting_ok": status.get("accounting_ok"),
+            },
+        )
+    assert_operator_cost_limit_available(scope)
+    return workflow_run_id
+
+
 @dataclass(frozen=True)
 class EvaluationEvidence:
     """One coherent, post-wait rating/stat cutoff used for source selection."""
@@ -471,6 +508,129 @@ def _ensure_priority_eval_signal(bot: str, min_games: int) -> None:
         )
 
 
+def _prepare_protocol_bootstrap_generation(
+    *,
+    active_bots: list[str],
+    current_v: int,
+    next_v: int,
+    max_committed_v: int,
+    abandoned_floor: int,
+    workflow_run_id: str,
+    ui=None,
+) -> GenerationContext | None:
+    """Select a zero/one-strict-bot generation without fabricated ratings."""
+
+    from evolution_infra import write_pipeline_checkpoint
+    from master_context_contract import build_master_context
+    from national_protocol_quarantine import select_protocol_bootstrap_source
+
+    selection = select_protocol_bootstrap_source(active_bots, force_refresh=True)
+    if not selection.get("available"):
+        log_system_event(
+            "pipeline.protocol_bootstrap_unavailable",
+            "error",
+            "Protocol bootstrap source unavailable; prepare fails closed",
+            {
+                "next_v": next_v,
+                "active_bots": list(active_bots),
+                "reason": selection.get("reason"),
+                "issues": (selection.get("issues") or [])[:10],
+                "strict_published_bots": selection.get("strict_published_bots"),
+            },
+        )
+        if ui:
+            ui.log_history(
+                f"协议迁移启动被拒绝: {selection.get('reason', 'unknown')}",
+                "error",
+            )
+        return None
+
+    source_v = int(selection["source_v"])
+    receipt = dict(selection["receipt"])
+    mode = str(receipt["mode"])
+    strategy = (
+        "protocol_migration_bootstrap"
+        if mode == "legacy_strategy_migration"
+        else "singleton_strict_bootstrap"
+    )
+    evidence_note = (
+        "No executable strict bot is published yet. Use the content-bound v142 "
+        "artifact only as historical strategy/policy input. prepare_next_gen must "
+        "replace national_bot.py with the current system-owned runtime before the "
+        "prepared artifact snapshot. Do not infer strength from legacy ratings."
+        if mode == "legacy_strategy_migration"
+        else
+        "Exactly one executable strict bot is published, so peer rating evidence "
+        "cannot exist. Build a distinct second strict candidate from that source; "
+        "do not schedule or compare against quarantined historical artifacts."
+    )
+    master_context = build_master_context(
+        next_v=next_v,
+        source_v=source_v,
+        stagnation_info=evidence_note,
+        match_analysis="No two-bot strict pool exists; match analysis intentionally absent.",
+        performance_verification=(
+            "Bootstrap authority is protocol publication identity, not Glicko/H2H. "
+            f"receipt={receipt['receipt_digest']}"
+        ),
+    )
+    ok = write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "selected",
+        audit_context={
+            "protocol_bootstrap": receipt,
+            "selection": {
+                "strategy": strategy,
+                "current_v": current_v,
+                "max_committed_v": max_committed_v,
+                "abandoned_floor": abandoned_floor,
+                "parent_a": source_v,
+                "parent_b": None,
+                "bootstrap_without_strength_evidence": True,
+                "protocol_bootstrap_receipt_digest": receipt["receipt_digest"],
+                "evaluation_evidence": {
+                    "bot": None,
+                    "games": 0,
+                    "rd": None,
+                    "readiness_reason": mode,
+                    "cutoffs": {},
+                },
+            },
+            "master_context": master_context,
+        },
+        workflow_run_id=workflow_run_id,
+    )
+    if not ok:
+        raise RuntimeError(f"protocol bootstrap checkpoint refused for v{next_v}")
+    log_system_event(
+        "pipeline.protocol_bootstrap_selected",
+        "warn",
+        f"Selected {strategy} v{next_v} from v{source_v}",
+        {
+            "next_v": next_v,
+            "source_v": source_v,
+            "mode": mode,
+            "active_bots": list(active_bots),
+            "receipt_digest": receipt["receipt_digest"],
+            "rating_wait_bypassed": True,
+        },
+    )
+    return GenerationContext(
+        current_v=current_v,
+        next_v=next_v,
+        strategy=strategy,
+        source_v=source_v,
+        crossover_parents=(),
+        stagnation_info=evidence_note,
+        match_analysis="No two-bot strict pool exists; match analysis intentionally absent.",
+        performance_verification=master_context["performance_verification"],
+        replay_spotlight="",
+        gen_count=current_v,
+        battle_experience="",
+    )
+
+
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
     from evolution_infra import (
@@ -603,6 +763,14 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         max_committed_v=max_committed_v,
         abandoned_floor=_abandoned_floor,
     )
+    # Allocate the final workflow identity before Combined/Match/degeneration
+    # analysis.  The selected checkpoint below adopts this exact id, so prepare
+    # retries, SDK session replacement, and process restart cannot split or
+    # leak one generation's bill into another.
+    _prepare_workflow_run_id = _bind_prepare_generation_cost_scope(
+        _planned_next_v,
+        ui,
+    )
     _bind_prepare_log_context(current_v, _planned_next_v - 1)
     try:
         from repo_state import log_git_worktree_snapshot
@@ -618,6 +786,19 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         pass
     active_v = find_latest_active_v()  # 活跃 bot（排除 graveyard），用于 eval/分析
     active_bots = get_active_bots()
+    if len(active_bots) <= 1:
+        _cleanup_incomplete()
+        if shutdown_mgr and shutdown_mgr.is_shutting_down:
+            return None
+        return _prepare_protocol_bootstrap_generation(
+            active_bots=list(active_bots),
+            current_v=current_v,
+            next_v=_planned_next_v,
+            max_committed_v=max_committed_v,
+            abandoned_floor=_abandoned_floor,
+            workflow_run_id=_prepare_workflow_run_id,
+            ui=ui,
+        )
     if active_v <= 0 or not active_bots:
         log_system_event(
             "pipeline.prepare_no_active_source",
@@ -814,6 +995,17 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         return_exceptions=True,
     )
 
+    from orchestrator_cost_policy import (
+        OperatorGenerationCostLimitExceeded,
+        assert_operator_cost_limit_available,
+    )
+    for prepare_result in (combined_result, match_result):
+        if isinstance(prepare_result, OperatorGenerationCostLimitExceeded):
+            raise prepare_result
+    # A role may have translated an operator stop into a structured failure.
+    # Re-read the system-owned ledger before any checkpoint is selected.
+    assert_operator_cost_limit_available()
+
     if isinstance(combined_result, asyncio.CancelledError) or isinstance(match_result, asyncio.CancelledError):
         log_system_event(
             "pipeline.prepare_llm_cancelled",
@@ -943,6 +1135,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 log_system_event("pipeline.degeneration_detected", "warn",
                                  f"Degeneration detected for v{active_v}: {diag.get('recommendation', '')}",
                                  {"source_v": active_v, "diagnosis": diag})
+        except OperatorGenerationCostLimitExceeded:
+            raise
         except Exception as e:
             log.warning("Degeneration diagnosis error (skipping): %s", e)
 
@@ -1119,6 +1313,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             _final_next_v,
             source_v,
             "selected",
+            workflow_run_id=_prepare_workflow_run_id,
             parent2_v=parent2_v,
             audit_context={
                 "selection": {

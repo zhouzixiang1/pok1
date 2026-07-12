@@ -3,14 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
 import stat
-from typing import Any, Mapping
+import subprocess
+from typing import Any, IO
 
 from bot_artifact import artifact_manifest, canonical_digest, hash_path
-from managed_bot_socket import SANDBOX_BOOTSTRAP, endpoint_environment
+from managed_bot_executor import (
+    BotTiming,
+    EndpointLease,
+    ExecutorRuntime,
+    ManagedProcess,
+    launch_managed_bot,
+)
+from national_protocol_quarantine import (
+    ProtocolQuarantineError,
+    quarantined_native_entry_sources,
+)
 from official_execution_profile import load_execution_profile
 
 
@@ -21,6 +34,53 @@ class SealedBotArtifact:
     entry_relative: str
     artifact_hash: str
     manifest_digest: str
+
+
+@dataclass(frozen=True)
+class OfficialBootstrapLaunchAuthorization:
+    root_id: str
+    artifact_hash: str
+    selection_digest: str
+    selection_json: str
+    candidate_path: str
+
+
+def _copy_verified_file(
+    source: Path,
+    target: Path,
+    manifest_row: dict[str, Any],
+) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(source, flags)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"official_seal_source_not_regular:{source}")
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with os.fdopen(descriptor, "rb", closefd=False) as input_handle:
+            with target.open("xb") as output_handle:
+                while True:
+                    chunk = input_handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    size += len(chunk)
+                    output_handle.write(chunk)
+                output_handle.flush()
+                os.fsync(output_handle.fileno())
+    finally:
+        os.close(descriptor)
+    if size != int(manifest_row.get("size", -1)) or digest.hexdigest() != str(
+        manifest_row.get("sha256") or ""
+    ):
+        raise RuntimeError(f"official_seal_source_changed_while_copying:{source}")
+    target.chmod(0o444)
 
 
 def _copy_manifest(source: Path, destination: Path, manifest: dict[str, Any]) -> str:
@@ -36,17 +96,17 @@ def _copy_manifest(source: Path, destination: Path, manifest: dict[str, Any]) ->
             if item.get("type") == "directory":
                 target.mkdir(parents=True, exist_ok=True, mode=0o700)
             elif item.get("type") == "file":
-                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                shutil.copyfile(source / relative, target, follow_symlinks=False)
-                target.chmod(0o444)
+                _copy_verified_file(source / relative, target, item)
         entry_relative = "national_bot.py"
         if not (destination / entry_relative).is_file():
             raise FileNotFoundError("formal native bot is missing national_bot.py")
     elif artifact_type == "file":
         destination.mkdir(parents=True, mode=0o700)
         target = destination / source.name
-        shutil.copyfile(source, target, follow_symlinks=False)
-        target.chmod(0o444)
+        entries = manifest.get("entries") or []
+        if len(entries) != 1 or not isinstance(entries[0], dict):
+            raise ValueError("formal file artifact manifest is invalid")
+        _copy_verified_file(source, target, entries[0])
         entry_relative = source.name
     else:
         raise ValueError("unsupported formal bot artifact type")
@@ -66,7 +126,7 @@ def seal_bot_artifact(
     *,
     expected_hash: str,
 ) -> SealedBotArtifact:
-    source_path = Path(source).expanduser().resolve()
+    source_path = Path(os.path.abspath(os.fspath(Path(source).expanduser())))
     destination_path = Path(destination).expanduser().resolve()
     source_manifest = artifact_manifest(source_path)
     source_hash = canonical_digest(source_manifest)
@@ -77,7 +137,12 @@ def seal_bot_artifact(
     temporary = destination_path.with_name(destination_path.name + ".tmp")
     if temporary.exists():
         shutil.rmtree(temporary)
-    entry_relative = _copy_manifest(source_path, temporary, source_manifest)
+    try:
+        entry_relative = _copy_manifest(source_path, temporary, source_manifest)
+    except BaseException:
+        if temporary.exists() and not temporary.is_symlink():
+            shutil.rmtree(temporary)
+        raise
     sealed_subject = temporary if source_path.is_dir() else temporary / source_path.name
     sealed_hash = hash_path(sealed_subject)
     if sealed_hash != expected_hash:
@@ -96,75 +161,114 @@ def seal_bot_artifact(
     )
 
 
-def build_sandboxed_bot_command(
+def launch_sandboxed_bot(
     artifact: SealedBotArtifact,
+    endpoint: EndpointLease,
     *,
-    host: str,
-    port: int,
     name: str,
     seat: str | None,
     log_path: Path | None,
     supports_log: bool,
-    preconnected_fd: int,
     extra_args: tuple[str, ...] = (),
-) -> tuple[list[str], dict[str, str]]:
+    quarantine_authorization: OfficialBootstrapLaunchAuthorization | None = None,
+    stdin: int | IO[bytes] | None = subprocess.DEVNULL,
+    stdout: int | IO[bytes] | None = subprocess.PIPE,
+    stderr: int | IO[bytes] | None = subprocess.PIPE,
+    start_new_session: bool = False,
+) -> ManagedProcess:
+    """Launch a sealed formal bot through the one central isolation policy."""
+
+    if hash_path(artifact.root) != artifact.artifact_hash:
+        raise RuntimeError("official_sealed_artifact_changed_before_launch")
+    try:
+        quarantine_matches = quarantined_native_entry_sources(artifact.root)
+    except ProtocolQuarantineError as exc:
+        raise RuntimeError(
+            "protocol_quarantine_authority_unavailable:official:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
+        ) from exc
+    if quarantine_matches:
+        expected_root = "national-v141-official-full-v5-signed-ledger-root"
+        expected_v141_hash = (
+            "67cd6059e17afdb333137a37a051764ccef405d03072addb92ebaa5a39631796"
+        )
+        selection: dict[str, Any] | None = None
+        try:
+            decoded = json.loads(
+                quarantine_authorization.selection_json
+                if quarantine_authorization is not None
+                else "null"
+            )
+            selection = decoded if isinstance(decoded, dict) else None
+        except Exception:
+            selection = None
+        valid_authorization = (
+            quarantine_authorization is not None
+            and quarantine_authorization.root_id == expected_root
+            and quarantine_authorization.artifact_hash == expected_v141_hash
+            and artifact.artifact_hash == expected_v141_hash
+            and selection is not None
+            and canonical_digest(selection)
+            == quarantine_authorization.selection_digest
+            and bool(quarantine_authorization.candidate_path)
+        )
+        if valid_authorization:
+            try:
+                from official_bootstrap import (
+                    validate_signed_v5_ledger_bootstrap_selection,
+                )
+
+                validation = validate_signed_v5_ledger_bootstrap_selection(
+                    selection,
+                    expected_root,
+                    quarantine_authorization.candidate_path,
+                    allow_consumed=False,
+                )
+                valid_authorization = validation.get("valid") is True
+            except Exception:
+                valid_authorization = False
+        if not valid_authorization:
+            raise RuntimeError(
+                "protocol_quarantined_native_entry_forbidden:official:"
+                f"matches={','.join(quarantine_matches)}"
+            )
     profile = load_execution_profile()
     tools = profile["tools"]
-    bwrap = str(tools["bwrap"]["command_path"])
-    python = str(tools["python"]["command_path"])
-    command = [
-        bwrap,
-        "--die-with-parent",
-        "--new-session",
-        "--unshare-all",
-        "--cap-drop", "ALL",
-        "--clearenv",
-        "--setenv", "PATH", "/usr/bin:/bin",
-        "--setenv", "LANG", "C.UTF-8",
-        "--setenv", "LC_ALL", "C.UTF-8",
-        "--setenv", "PYTHONIOENCODING", "utf-8",
-        "--setenv", "POK_OFFICIAL_ACTION_DELAY", "0.30",
-        "--ro-bind", "/usr", "/usr",
-        "--ro-bind", "/lib", "/lib",
-        "--ro-bind", "/lib64", "/lib64",
-        "--proc", "/proc",
-        "--dev", "/dev",
-        "--tmpfs", "/tmp",
-        "--ro-bind", str(artifact.root), "/bot",
-        "--dir", "/evidence",
-    ]
-    for key, value in endpoint_environment(
-        preconnected_fd,
-        host,
-        port,
-    ).items():
-        command.extend(["--setenv", key, value])
-    if log_path is not None and supports_log:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.touch(exist_ok=True)
-        log_path.chmod(0o600)
-        command.extend(["--bind", str(log_path), "/evidence/decision.log"])
-    command.extend([
-        "--chdir", "/bot",
-        python,
-        "-I",
-        "-B",
-        "-c",
-        SANDBOX_BOOTSTRAP,
-        f"/bot/{artifact.entry_relative}",
-        "--host", host,
-        "--port", str(int(port)),
-        "--name", name,
-    ])
-    if seat is not None:
-        command.extend(["--seat", seat])
-    if log_path is not None and supports_log:
-        command.extend(["--log", "/evidence/decision.log"])
-    command.extend(extra_args)
-    environment = {
-        "PATH": "/usr/bin:/bin",
-        "POK_OFFICIAL_JOB_PROCESS_GROUP": os.environ.get(
-            "POK_OFFICIAL_JOB_PROCESS_GROUP", ""
+    runtime = ExecutorRuntime.discover(
+        bwrap=str(tools["bwrap"]["command_path"]),
+        python=str(tools["python"]["command_path"]),
+        prlimit=str(
+            (tools.get("prlimit") or {}).get("command_path")
+            or "/usr/bin/prlimit"
         ),
-    }
-    return command, environment
+    )
+    sandbox = profile.get("sandbox") or {}
+    timing = sandbox.get("bot_timing") or {}
+    return launch_managed_bot(
+        artifact.root,
+        endpoint,
+        entry_relative=artifact.entry_relative,
+        name=name,
+        seat=seat,
+        decision_log=log_path if supports_log else None,
+        timing=BotTiming(
+            action_delay=float(timing.get("action_delay_sec", 0.30)),
+            hard_deadline=float(timing.get("hard_deadline_sec", 55.0)),
+            refinement_budget=float(timing.get("refinement_budget_sec", 54.0)),
+            baseline_target=float(timing.get("baseline_target_sec", 0.25)),
+        ),
+        extra_args=extra_args,
+        runtime=runtime,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=start_new_session,
+    )
+
+
+__all__ = [
+    "OfficialBootstrapLaunchAuthorization",
+    "SealedBotArtifact",
+    "launch_sandboxed_bot",
+    "seal_bot_artifact",
+]

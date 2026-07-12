@@ -168,6 +168,7 @@ configure_evolution_publish_env() {
     : "${POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS:=1}"
     : "${POK_OFFICIAL_PRECOMMIT_TARGET_HANDS:=10}"
     : "${POK_OFFICIAL_JOB_RECONCILER:=1}"
+    : "${POK_OFFICIAL_SIGNING_KEY:=$HOME/.config/pok/official_certifier_ed25519_epoch2}"
     # An explicit value is only a preference. Python validates it against the
     # content-bound official-opponent policy and otherwise selects an eligible
     # active bot; the launcher must never inject a legacy path as a bypass.
@@ -178,7 +179,7 @@ configure_evolution_publish_env() {
         POK_OFFICIAL_REQUIRED POK_OFFICIAL_SMOKE_GATE POK_OFFICIAL_PRECOMMIT_GATE \
         POK_OFFICIAL_PRECOMMIT_SELF_ROUNDS \
         POK_OFFICIAL_PRECOMMIT_OPPONENT_ROUNDS POK_OFFICIAL_PRECOMMIT_TARGET_HANDS \
-        POK_OFFICIAL_JOB_RECONCILER POK_OFFICIAL_OPPONENT \
+        POK_OFFICIAL_JOB_RECONCILER POK_OFFICIAL_SIGNING_KEY POK_OFFICIAL_OPPONENT \
         POK_ACTIVE_NATIVE_CONTRACT_FILTER
 }
 

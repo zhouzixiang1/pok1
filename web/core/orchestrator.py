@@ -46,12 +46,29 @@ from system_log import log_system_event, set_ui as set_system_log_ui
 from failure_classification import INFRA_BLOCKER_REASONS
 from evaluation_contract import evaluate_head_drift
 from blocking_runtime import run_blocking_isolated
+from orchestrator_cost_policy import (
+    CostPolicyConfigurationError,
+    GenerationCostPolicy,
+    OperatorGenerationCostLimitExceeded,
+    activate_generation_cost_scope,
+    assert_operator_cost_limit_available,
+    claim_generation_cost_notice,
+    configure_runtime_cost_policy,
+    current_generation_cost_scope,
+    deactivate_generation_cost_scope,
+    generation_cost_status,
+    generation_identity,
+    load_operator_generation_cost_policy,
+    record_generation_cost,
+    sdk_result_event_id,
+)
 import logging
 
 log = logging.getLogger("pok.orchestrator")
 os.environ.setdefault("POK_WORKFLOW_PROFILE", "national_native")
 SHUTDOWN_CANCEL_COST = -99998.0
 ORCH_ACTIONABLE_HANDOFF_COST = -99997.0
+ORCH_OPERATOR_COST_LIMIT_COST = -99996.0
 
 # Infra-only blocker reasons used by the timed_out handler to distinguish
 # scheduler/daemon failures from real bot regressions.
@@ -86,19 +103,6 @@ class _OrchSignatureRetryable(Exception):
     cycle (-0.5 backoff + session clear). Confirmed NOT caused by adaptive
     thinking (disabled mode had 427 errors vs adaptive 70); this is an SDK
     stream bug, so a bounded retry is the correct mitigation until an SDK fix.
-    """
-
-
-class _CostCapTripped(Exception):
-    """Internal signal: cycle spend exceeded MAX_GEN_COST. Hard-stop the LLM
-    stream immediately instead of burning 26-32min until CYCLE_TIMEOUT.
-
-    root-cause-audit 2026-06-21: _check_cost_cap() previously only logged the
-    overrun and relied on CYCLE_TIMEOUT to bound the cycle — verified v139/v143
-    ran 26-32min of pure waste after cap-tripped. Raising propagates out of the
-    `async for message in gen` loop into _run_one_cycle's except handler, which
-    classifies it as infra (−0.5 short backoff) and clears the session so resume
-    can't keep burning budget on the same runaway cycle.
     """
 
 
@@ -201,6 +205,153 @@ from orchestrator_session import (  # noqa: E402
 )
 from evolution_infra import find_current_v  # noqa: E402
 from llm_query import extract_result_error  # noqa: E402
+
+
+def _bind_generation_cost_runtime(
+    checkpoint,
+    *,
+    gen_ctx=None,
+    ui=None,
+    policy: GenerationCostPolicy | None = None,
+):
+    """Bind durable cost accounting to the system-owned workflow identity."""
+
+    selected_policy = policy or load_operator_generation_cost_policy()
+    configure_runtime_cost_policy(selected_policy)
+    scope = activate_generation_cost_scope(
+        generation_identity(checkpoint, gen_ctx),
+        selected_policy,
+    )
+    status = generation_cost_status(scope)
+    receipt = scope.receipt(
+        spent_before_usd=float(status.get("spent_usd") or 0.0),
+        ledger_errors=tuple(status.get("accounting_errors") or ()),
+    )
+    begin_cost = getattr(ui, "begin_generation_cost", None) if ui else None
+    if callable(begin_cost):
+        begin_cost(scope.generation_id, status.get("spent_usd", 0.0), receipt)
+    if claim_generation_cost_notice(scope, "policy_bound"):
+        severity = "info" if status.get("accounting_ok") else "warn"
+        log_system_event(
+            "pipeline.generation_cost_policy_bound",
+            severity,
+            (
+                f"Generation cost policy bound for {scope.generation_id}: "
+                f"{selected_policy.enforcement_mode}"
+            ),
+            {
+                **receipt,
+                "accounting_ok": status.get("accounting_ok"),
+                "spent_usd": status.get("spent_usd"),
+            },
+        )
+    return scope
+
+
+def _check_generation_cost_policy(ui=None):
+    """Warn in default mode; stop only for the explicit operator hard limit."""
+
+    scope = current_generation_cost_scope()
+    if scope is None:
+        return {"active": False}
+    status = generation_cost_status(scope)
+    if status.get("warning_reached") and claim_generation_cost_notice(scope, "warning"):
+        spent = float(status.get("spent_usd") or 0.0)
+        warning = float(status.get("warning_usd") or 0.0)
+        msg = (
+            f"Generation {scope.generation_id} LLM spend reached ${spent:.2f} "
+            f"(monitoring threshold ${warning:.2f}); evolution continues."
+        )
+        log.warning(msg)
+        if ui:
+            ui.log_history(f"[Orchestrator] {msg}", "warn")
+        log_system_event(
+            "pipeline.generation_cost_warning",
+            "warn",
+            msg,
+            {
+                **status,
+                "directive": "Telemetry only; no generation stop was requested by the operator.",
+            },
+        )
+    if (
+        not status.get("accounting_ok")
+        and scope.policy.hard_limit_usd is None
+        and claim_generation_cost_notice(scope, "accounting_warning")
+    ):
+        errors = [str(item) for item in status.get("accounting_errors") or ()]
+        msg = (
+            f"Generation {scope.generation_id} cost accounting is incomplete/unknown; "
+            "monitor-only evolution continues."
+        )
+        log.warning("%s errors=%s", msg, errors[:5])
+        if ui:
+            ui.log_history(f"[Orchestrator] {msg}", "warn")
+        binding = scope.receipt(
+            spent_before_usd=float(status.get("spent_usd") or 0.0),
+            ledger_errors=tuple(errors),
+        )
+        log_system_event(
+            "pipeline.generation_cost_accounting_warning",
+            "warn",
+            msg,
+            {
+                **status,
+                "policy_binding": binding,
+                "directive": (
+                    "Telemetry is incomplete; monitor-only mode continues. "
+                    "Inspect ledger_errors before interpreting the displayed USD total."
+                ),
+            },
+        )
+        # update_cost($0) cannot communicate an unknown USD amount.  Push the
+        # bound receipt so SSE/state consumers see ledger_errors immediately.
+        _project_generation_cost_runtime(ui)
+    try:
+        return assert_operator_cost_limit_available(scope)
+    except OperatorGenerationCostLimitExceeded as exc:
+        status = dict(exc.status or status)
+        if claim_generation_cost_notice(scope, "operator_hard_limit_tripped"):
+            msg = f"Operator generation cost limit stopped {scope.generation_id}: {exc}"
+            log.error(msg)
+            if ui:
+                ui.log_history(f"[Orchestrator] {msg}", "error")
+            log_system_event(
+                "pipeline.operator_generation_cost_limit_tripped",
+                "error",
+                msg,
+                {
+                    **status,
+                    "policy_binding": scope.receipt(
+                        spent_before_usd=float(status.get("spent_usd") or 0.0),
+                        ledger_errors=tuple(status.get("accounting_errors") or ()),
+                    ),
+                    "operator_action_required": True,
+                    "directive": (
+                        "Change or disable the parent-process operator limit, then explicitly restart. "
+                        "The checkpoint is preserved."
+                    ),
+                },
+            )
+        raise
+
+
+def _project_generation_cost_runtime(ui=None) -> dict:
+    """Refresh dashboard state from the durable ledger without rebinding."""
+
+    scope = current_generation_cost_scope()
+    status = generation_cost_status(scope)
+    begin_cost = getattr(ui, "begin_generation_cost", None) if ui else None
+    if scope is not None and callable(begin_cost):
+        begin_cost(
+            scope.generation_id,
+            status.get("spent_usd", 0.0),
+            scope.receipt(
+                spent_before_usd=float(status.get("spent_usd") or 0.0),
+                ledger_errors=tuple(status.get("accounting_errors") or ()),
+            ),
+        )
+    return status
 
 
 _CORRECTIVE_RETRY_STAGES_BY_TOOL = {
@@ -757,7 +908,16 @@ async def _await_next_stream_message(stream_iter, last_message_at=None, *, strea
             pending.cancel()
         raise
 
-async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None, gen_ctx=None, shutdown_mgr=None):
+async def _run_one_cycle(
+    ui,
+    log_file,
+    one_gen=False,
+    dry_run=False,
+    max_turns=None,
+    gen_ctx=None,
+    shutdown_mgr=None,
+    _cost_policy: GenerationCostPolicy | None = None,
+):
     """Run one Orchestrator cycle (one LLM agent session). Returns total cost."""
     set_cycle_start_time(time.time())
     context = _build_context(one_gen=one_gen, dry_run=dry_run, gen_ctx=gen_ctx)
@@ -772,6 +932,19 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     # the process was killed mid-gen.  No need to gate this on pipeline_state.json.
     from evolution_core import read_pipeline_checkpoint
     checkpoint = read_pipeline_checkpoint()
+    _bind_generation_cost_runtime(
+        checkpoint,
+        gen_ctx=gen_ctx,
+        ui=ui,
+        policy=_cost_policy,
+    )
+    try:
+        _check_generation_cost_policy(ui)
+    except OperatorGenerationCostLimitExceeded:
+        _clear_orchestrator_session(reason="operator_generation_cost_limit")
+        if ui:
+            ui.set_status("Stopped: operator generation cost limit", is_working=False)
+        return ORCH_OPERATOR_COST_LIMIT_COST
     saved_session_id = _load_orchestrator_session()
 
     resume_kwargs = {"resume": saved_session_id} if saved_session_id else {}
@@ -807,10 +980,11 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     cycle_failed = False  # P1: generic-exception path must not return partial cost (fake success)
     infra_error = False  # P2: SDK signature/timeout/connection — distinct from real auth (-0.5 vs -1.0)
     shutdown_cancelled = False
+    stream_invocation_count = 0
     # Snapshot sub-agent costs at start to compute delta on return.
     # ui.gen_cost_total tracks ALL sub-agent costs (Master, Workers, etc.)
-    # via ui.update_cost() called from llm_query.py. The orchestrator's own
-    # session cost (total_cost from ResultMessage) is added below.
+    # via llm_query.py. The orchestrator's own ResultMessage is projected at the
+    # same durable-record boundary, before a hard-limit exception can unwind.
     _cost_at_start = ui.gen_cost_total if ui else 0.0
 
     with open(log_file, "a") as lf:
@@ -819,54 +993,15 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
 
         async def _stream_response(opts, max_retries=3):
             """Run a single streaming query. Returns (full_text, cost, cycle_ok, gen, auth_error)."""
+            nonlocal stream_invocation_count
+            stream_invocation_count += 1
+            stream_invocation_id = stream_invocation_count
             texts = []
             cost = 0.0
             ok = False
             gen = None
             auth_err = False
             _tool_call_counts = {}
-            _cost_cap_logged = False
-
-            def _check_cost_cap():
-                """Surface runaway sub-agent spend.
-
-                Checked after every AssistantMessage turn and at ResultMessage — NOT
-                only in ToolResultBlock (which the claude_agent_sdk never surfaces in
-                the orchestrator's message stream: tool_result logs appear 0×, making
-                the old single check-point dead code). root-cause-audit 2026-06-17
-                found cost_cap_tripped fired 0× despite cycles hitting $6.09 against a
-                $5.0 cap. Sub-agent (Master/Workers/Critic) costs settle into
-                ui.gen_cost_total via ui.update_cost before the next AssistantMessage,
-                so checking on each turn catches runaway retries as they happen.
-                """
-                nonlocal _cost_cap_logged
-                if _cost_cap_logged or not ui:
-                    return
-                try:
-                    from evolution_infra import MAX_GEN_COST
-                    _spent = ui.gen_cost_total - _cost_at_start
-                except Exception as _e:
-                    log.debug("cost-cap check error: %s", _e)
-                    return
-                if _spent > MAX_GEN_COST:
-                    _cost_cap_logged = True
-                    log.warning("Cycle cost cap tripped: $%.2f > $%.2f", _spent, MAX_GEN_COST)
-                    if ui:
-                        ui.log_history(
-                            f"[Orchestrator] Cost cap tripped (${_spent:.2f} > ${MAX_GEN_COST:.2f}) — "
-                            f"hard-stopping stream (was: runaway retry burned 26-32min until CYCLE_TIMEOUT).",
-                            "error",
-                        )
-                    try:
-                        log_system_event("pipeline.cost_cap_tripped", "error",
-                            f"Cycle spend ${_spent:.2f} exceeded cap ${MAX_GEN_COST}",
-                            {"spent": round(_spent, 2), "cap": MAX_GEN_COST})
-                    except Exception:
-                        pass
-                    # 硬熔断：raise 在 try/except 之外（不被上方 cost-cap-check 的 except 吞），
-                    # 传播到 _run_one_cycle 的 except Exception 归为 infra(-0.5 短退避) + 清 session。
-                    raise _CostCapTripped(f"spend ${_spent:.2f} > cap ${MAX_GEN_COST}")
-
             try:
                 gen = claude_query(prompt=prompt, options=opts)
                 _gen_ref[0] = gen  # Track for asyncio.wait_for timeout cleanup
@@ -993,10 +1128,10 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     lf.write(f"\n[tool_result] {content[:500]}\n")
                                     if ui:
                                         ui.log_io(content[:3000], "tool_result", "Orchestrator")
-                        # Check cost cap after each orchestrator turn. By now every
-                        # sub-agent (Master/Workers/Critic) cost from tools executed
-                        # during this turn has settled in ui.gen_cost_total.
-                        _check_cost_cap()
+                        # Sub-agent costs have settled in the durable generation
+                        # ledger by this point.  Default mode only emits telemetry;
+                        # an explicit operator hard limit stops the stream.
+                        _check_generation_cost_policy(ui)
                         handoff = _detect_actionable_stage_handoff()
                         if handoff:
                             next_v = handoff.get("next_v")
@@ -1025,9 +1160,34 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 pass
                             raise _OrchActionableStageHandoff(msg)
                     elif isinstance(message, ResultMessage):
-                        if message.total_cost_usd:
-                            cost += message.total_cost_usd
-                        _check_cost_cap()
+                        billing_status = record_generation_cost(
+                            "Orchestrator",
+                            message.total_cost_usd,
+                            getattr(message, "usage", None),
+                            source="orchestrator_result",
+                            event_id=sdk_result_event_id(
+                                message,
+                                source="orchestrator_result",
+                                attempt=stream_invocation_id,
+                            ),
+                        )
+                        # A resumed SDK stream may replay the same Result.
+                        # Count/UI-project only the first durable occurrence.
+                        billing_new = (
+                            not billing_status.get("active")
+                            or billing_status.get("recorded")
+                            or billing_status.get("pending_only")
+                        )
+                        if billing_new:
+                            if message.total_cost_usd is not None:
+                                cost += message.total_cost_usd
+                            if ui:
+                                ui.update_cost(
+                                    "Orchestrator",
+                                    float(message.total_cost_usd or 0.0),
+                                    getattr(message, "usage", None),
+                                )
+                        _check_generation_cost_policy(ui)
                         if not message.is_error:
                             ok = True
                             if message.session_id:
@@ -1250,8 +1410,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 )
                             except Exception:
                                 pass  # Non-fatal: watchdog may trigger, but checkpoint is preserved
-                            if ui and total_cost > 0:
-                                ui.update_cost("Orchestrator", total_cost, None)
                             # Sentinel _TIMEOUT_EXTENSION_SENTINEL = "timeout extension granted,
                             # cycle NOT complete". The main loop treats it distinctly: NO
                             # post_generation_cleanup, NO 'gen complete' log, NO backoff — just
@@ -1409,9 +1567,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 except Exception:
                     pass
                 if ui:
-                    # Add any partial Orchestrator session cost to UI tracking
-                    if total_cost > 0:
-                        ui.update_cost("Orchestrator", total_cost, None)
                     return ui.gen_cost_total - _cost_at_start
                 return total_cost
 
@@ -1480,12 +1635,9 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                         "[Orchestrator] 429 配额耗尽。Session 保留，等待恢复后继续。",
                         "warn",
                     )
-                if ui and total_cost > 0:
-                    ui.update_cost("Orchestrator", total_cost, None)
                 return (ui.gen_cost_total - _cost_at_start) if ui else total_cost
 
             if ui:
-                ui.update_cost("Orchestrator", total_cost, None)
                 total_cost = ui.gen_cost_total - _cost_at_start
             lf.write(f"\n[CYCLE DONE] cost=${total_cost:.4f}\n")
 
@@ -1540,10 +1692,27 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             lf.write(f"\n[ACTIONABLE_HANDOFF] {e}\n")
             return ORCH_ACTIONABLE_HANDOFF_COST
 
+        except OperatorGenerationCostLimitExceeded as e:
+            # This is an operator-requested stop, not an API/SDK infrastructure
+            # failure.  Preserve the generation checkpoint, discard the
+            # disposable Claude session, and park the outer loop instead of
+            # retrying every 15 seconds and spending past the same limit.
+            for _g in (query_gen, _gen_ref[0]):
+                if _g is not None:
+                    try:
+                        await _g.aclose()
+                    except Exception as _ge:
+                        log.debug("gen.aclose failed during operator cost stop: %s", _ge)
+            _clear_orchestrator_session(reason="operator_generation_cost_limit")
+            if ui:
+                ui.set_status("Stopped: operator generation cost limit", is_working=False)
+                _project_generation_cost_runtime(ui)
+            lf.write(f"\n[OPERATOR_COST_LIMIT] {e}\n")
+            return ORCH_OPERATOR_COST_LIMIT_COST
+
         except Exception as e:
-            # aclose 真实 gen：query_gen 在元组解包成功时赋值，但异常路径（含 _CostCapTripped
-            # 在 AssistantMessage 循环内 raise）可能在解包前抛出 → query_gen 为 None，真实 gen
-            # 在 _gen_ref[0]。两者都尝试关（root-cause-audit bug-check：cost cap 路径泄漏 CLI subprocess）。
+            # aclose 真实 gen：异常路径可能在元组解包前抛出 → query_gen 为 None，真实 gen
+            # 在 _gen_ref[0]。两者都尝试关，防止泄漏 CLI subprocess。
             for _g in (query_gen, _gen_ref[0]):
                 if _g is not None:
                     try:
@@ -1564,7 +1733,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             is_infra = (
                 not is_shutdown_cancel
                 and (
-                    isinstance(e, (_CostCapTripped, _OrchFirstActivityTimeout, _OrchActionableStageTimeout, _OrchStreamStallTimeout))
+                    isinstance(e, (_OrchFirstActivityTimeout, _OrchActionableStageTimeout, _OrchStreamStallTimeout))
                     or _is_cycle_infra_error(e)
                 )
             )
@@ -1650,16 +1819,12 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     # -max(abs(cost), 1.0) (auth clamp ≥1.0). Session already cleared above for
     # infra errors; for other exceptions the loop's cost==-1.0 branch clears it.
     if cycle_failed:
-        if ui and total_cost > 0:
-            ui.update_cost("Orchestrator", total_cost, None)
         return -0.5 if infra_error else -1.0
 
     # On non-happy paths (KeyboardInterrupt — explicit user interrupt), total_cost
     # may only be the Orchestrator's partial session cost. Return the full tracked
     # cost delta when UI is available.
     if ui and not cycle_completed:
-        if total_cost > 0:
-            ui.update_cost("Orchestrator", total_cost, None)
         return ui.gen_cost_total - _cost_at_start
 
     return total_cost
@@ -1824,11 +1989,24 @@ def _is_crossover_llm_exhausted_result(data):
     return str(data.get("error") or "") == "CROSSOVER_LLM_EXHAUSTED"
 
 
-async def _try_deterministic_checkpoint_route(recovery, ui=None, *, log_level: str = "warn", label: str = "[Recovery]"):
+async def _try_deterministic_checkpoint_route(
+    recovery,
+    ui=None,
+    *,
+    log_level: str = "warn",
+    label: str = "[Recovery]",
+    cost_policy: GenerationCostPolicy | None = None,
+):
     """Execute safe checkpoint routes without asking the Orchestrator LLM again."""
     if not recovery or recovery.get("action") != "resume":
         return False
     checkpoint = recovery.get("checkpoint") or {}
+    _bind_generation_cost_runtime(
+        checkpoint,
+        ui=ui,
+        policy=cost_policy,
+    )
+    _check_generation_cost_policy(ui)
     route = _resolve_recovery_route(checkpoint)
     if not route:
         return False
@@ -1901,6 +2079,7 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None, *, log_level: s
         pass
 
     result = await handler(args)
+    _check_generation_cost_policy(ui)
     data = _extract_tool_result_json(result)
     error = data.get("error")
     success = data.get("success")
@@ -2105,6 +2284,11 @@ async def _run_post_generation_cleanup_with_timeout(shutdown_mgr, ui, gen_ctx, g
             },
         )
         return False
+    except OperatorGenerationCostLimitExceeded:
+        # Archivist/consolidation calls are part of the same generation.  Do not
+        # translate an operator stop into best-effort cleanup and then start a
+        # fresh generation with a reset scope.
+        raise
     except Exception as e:
         elapsed = time.time() - started
         msg = f"Post-generation cleanup failed for v{version}: {str(e)[:180]}"
@@ -2523,6 +2707,27 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     except Exception:
         pass
 
+    # Parse once at the operator-facing process boundary.  The selected policy
+    # is then passed internally; prompts, MCP calls, checkpoints, and candidate
+    # artifacts have no field that can alter it.
+    try:
+        operator_cost_policy = configure_runtime_cost_policy(
+            load_operator_generation_cost_policy()
+        )
+    except CostPolicyConfigurationError as exc:
+        msg = f"Invalid operator generation cost policy: {exc}"
+        if ui:
+            ui.log_history(msg, "error")
+            ui.set_status("Stopped: invalid operator cost policy", is_working=False)
+        log.error(msg)
+        log_system_event(
+            "orchestrator.cost_policy_invalid",
+            "error",
+            msg,
+            {"operator_action_required": True},
+        )
+        return
+
     os.makedirs(LOGS_DIR, exist_ok=True)
     _rotate_orchestrator_logs(LOGS_DIR)
 
@@ -2531,7 +2736,10 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         ui.set_header("🔥 LLM Orchestrator Evolution 🔥")
 
     log_system_event("orchestrator.started", "success", "Orchestrator started",
-                     {"daemon_enabled": not no_daemon})
+                     {
+                         "daemon_enabled": not no_daemon,
+                         "generation_cost_policy": operator_cost_policy.receipt(),
+                     })
     log.info("Orchestrator loop started (daemon=%s)", not no_daemon)
     try:
         from evolution_infra import EVOLUTION_BRANCH
@@ -2671,14 +2879,17 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
             # If recovering, skip Phase 1 (context already known from checkpoint)
             if recovery and recovery.get("action") == "resume":
                 route_log_kwargs = _recovery_route_log_kwargs(recovery)
-                if await _try_deterministic_checkpoint_route(recovery, ui, **route_log_kwargs):
+                if await _try_deterministic_checkpoint_route(
+                    recovery,
+                    ui,
+                    cost_policy=operator_cost_policy,
+                    **route_log_kwargs,
+                ):
                     recovery = _checkpoint_recovery_context(
                         "deterministic_route",
                         ui,
                         **route_log_kwargs,
                     )
-                    if ui:
-                        ui.reset_gen_cost()
                     await asyncio.sleep(1)
                     continue
                 from generation_scheduler import GenerationContext
@@ -2742,6 +2953,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                         ui,
                         log_level="info",
                         label="[Pipeline]",
+                        cost_policy=operator_cost_policy,
                     ):
                         recovery = _checkpoint_recovery_context(
                             "deterministic_route",
@@ -2749,8 +2961,6 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                             log_level="info",
                             label="[Pipeline]",
                         )
-                        if ui:
-                            ui.reset_gen_cost()
                         await asyncio.sleep(1)
                         continue
 
@@ -2763,7 +2973,20 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 max_turns=None,
                 gen_ctx=gen_ctx,
                 shutdown_mgr=shutdown_mgr,
+                _cost_policy=operator_cost_policy,
             )
+
+            if cost == ORCH_OPERATOR_COST_LIMIT_COST:
+                msg = (
+                    "Orchestrator stopped at the explicit operator generation cost limit. "
+                    "The checkpoint is preserved; change/disable the parent-process limit "
+                    "and explicitly restart to continue."
+                )
+                if ui:
+                    ui.log_history(msg, "error")
+                    ui.set_status("Stopped: operator generation cost limit", is_working=False)
+                log.error(msg)
+                break
 
             # Timeout-extension sentinel: a cycle timed out but commit was imminent
             # (stage=verified) so ONE extension was granted mid-cycle. The cycle is NOT
@@ -2778,14 +3001,13 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     log_level="info",
                     label="[Pipeline]",
                 )
-                if ui:
-                    ui.reset_gen_cost()
                 if recovery:
                     if await _try_deterministic_checkpoint_route(
                         recovery,
                         ui,
                         log_level="info",
                         label="[Pipeline]",
+                        cost_policy=operator_cost_policy,
                     ):
                         recovery = _checkpoint_recovery_context(
                             "deterministic_route",
@@ -2793,8 +3015,6 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                             log_level="info",
                             label="[Pipeline]",
                         )
-                        if ui:
-                            ui.reset_gen_cost()
                         await asyncio.sleep(1)
                     else:
                         await asyncio.sleep(0)
@@ -2814,9 +3034,6 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                         "resuming from checkpoint next cycle (no commit yet).",
                         "warn",
                     )
-                # Reset per-generation cost tracker for the continued cycle
-                if ui:
-                    ui.reset_gen_cost()
                 continue
 
             if cost == SHUTDOWN_CANCEL_COST:
@@ -2854,8 +3071,6 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                         )
                     except Exception:
                         pass
-                    if ui:
-                        ui.reset_gen_cost()
                     await asyncio.sleep(5)
                     continue
                 # Reset the generic-failure backoff counter — the cycle succeeded.
@@ -2871,6 +3086,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 # Reset per-generation cost tracker for next cycle
                 if ui:
                     ui.reset_gen_cost()
+                deactivate_generation_cost_scope()
 
             # Auth error fast-fail (also catches 429 via negative cost from _stream_response)
             if cost < 0:
@@ -2952,6 +3168,16 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
 
             await asyncio.sleep(5)
 
+    except OperatorGenerationCostLimitExceeded as exc:
+        # Deterministic checkpoint routes can execute LLM roles without opening
+        # an Orchestrator SDK stream.  Park those paths at the same operator
+        # boundary instead of reporting a generic orchestrator crash.
+        _clear_orchestrator_session(reason="operator_generation_cost_limit")
+        if ui:
+            ui.set_status("Stopped: operator generation cost limit", is_working=False)
+            ui.log_history(str(exc), "error")
+            _project_generation_cost_runtime(ui)
+        log.error("Operator generation cost limit stopped evolution: %s", exc)
     except asyncio.CancelledError:
         if ui:
             ui.set_status("Stopped", is_working=False)
@@ -3026,6 +3252,10 @@ async def _prepare_or_fail(shutdown_mgr, ui, min_games=None):
         return await prepare_generation(shutdown_mgr, ui, min_games=min_games)
     except asyncio.CancelledError:
         raise
+    except OperatorGenerationCostLimitExceeded:
+        # Operator policy is a terminal outer-loop control signal, not a
+        # disposable prepare failure eligible for exponential retry.
+        raise
     except Exception as e:
         if ui:
             ui.log_history(f"prepare_generation failed: {e}", "error")
@@ -3055,6 +3285,20 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
         pass
 
     try:
+        operator_cost_policy = configure_runtime_cost_policy(
+            load_operator_generation_cost_policy()
+        )
+    except CostPolicyConfigurationError as exc:
+        log.error("Invalid operator generation cost policy: %s", exc)
+        log_system_event(
+            "orchestrator.cost_policy_invalid",
+            "error",
+            f"Invalid operator generation cost policy: {exc}",
+            {"operator_action_required": True},
+        )
+        return
+
+    try:
         if args.one_gen or args.dry_run:
             if args.dry_run:
                 cost = await _run_one_cycle(
@@ -3063,6 +3307,7 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
                     one_gen=args.one_gen,
                     dry_run=args.dry_run,
                     max_turns=args.max_turns,
+                    _cost_policy=operator_cost_policy,
                 )
             else:
                 # one-gen mode: use three phases
@@ -3079,6 +3324,7 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
                     one_gen=True, dry_run=False,
                     max_turns=args.max_turns,
                     gen_ctx=gen_ctx,
+                    _cost_policy=operator_cost_policy,
                 )
                 if cost >= 0:
                     await _run_post_generation_cleanup_with_timeout(
@@ -3092,6 +3338,7 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
                 no_daemon=args.no_daemon,
             )
     finally:
+        deactivate_generation_cost_scope()
         try:
             from evolution_infra import stop_daemon
             stop_daemon()

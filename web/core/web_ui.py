@@ -121,6 +121,8 @@ class WebUI(BaseUI):
         self._broadcaster = broadcaster
         self.grand_cost_total = self._load_grand_cost()
         self.gen_cost_total = 0.0
+        self.generation_cost_identity = None
+        self.generation_cost_policy = None
         self.costs = []
         self._messages = []
         self._output_since_clear = []
@@ -277,6 +279,21 @@ class WebUI(BaseUI):
                 "grand_total": round(self.grand_cost_total, 4),
             })
 
+    def begin_generation_cost(self, generation_id, spent_usd, policy_receipt=None):
+        """Project the durable generation ledger into dashboard state.
+
+        Unlike the old per-session counter, this is restored by workflow_run_id
+        after a checkpoint hand-off or process restart.
+        """
+        self.generation_cost_identity = str(generation_id or "") or None
+        self.gen_cost_total = max(0.0, float(spent_usd or 0.0))
+        self.generation_cost_policy = dict(policy_receipt or {}) or None
+        self._emit("generation_cost_policy", {
+            "generation_id": self.generation_cost_identity,
+            "spent_usd": round(self.gen_cost_total, 4),
+            "policy": self.generation_cost_policy,
+        })
+
     def update_metrics(self, metrics):
         self._state["metrics"] = metrics
         m = metrics
@@ -293,6 +310,13 @@ class WebUI(BaseUI):
 
     def reset_gen_cost(self):
         self.gen_cost_total = 0.0
+        self.generation_cost_identity = None
+        self.generation_cost_policy = None
+        self._emit("generation_cost_policy", {
+            "generation_id": None,
+            "spent_usd": 0.0,
+            "policy": None,
+        })
 
     def get_state(self) -> dict:
         pipeline_stage = None
@@ -307,6 +331,8 @@ class WebUI(BaseUI):
             **self._state,
             "grand_cost_total": round(self.grand_cost_total, 4),
             "gen_cost_total": round(self.gen_cost_total, 4),
+            "generation_cost_identity": self.generation_cost_identity,
+            "generation_cost_policy": self.generation_cost_policy,
             "pipeline_stage": pipeline_stage,
         }
 

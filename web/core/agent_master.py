@@ -38,6 +38,14 @@ LLM_INFRA_SENTINEL_MSG = (
 )
 
 
+PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER = (
+    "PROTOCOL BOOTSTRAP NO-STRENGTH: intentionally unavailable. Historical "
+    "ratings, H2H, match replays, action/opponent profiles, battle experience, "
+    "exploitability results, and critic strength conclusions are quarantined "
+    "and were not loaded for this plan."
+)
+
+
 class MasterInfrastructureError(RuntimeError):
     """The Master role produced no plan because its LLM transport failed."""
 
@@ -679,6 +687,7 @@ async def _run_master_proposal_ensemble(
     log_dir: Path,
     allowed_evidence_snapshot_dir: str,
     baseline_v: int | None = None,
+    protocol_bootstrap_prepared_only: bool = False,
 ) -> str:
     """Three proposals, two anonymous criterion critics, deterministic ordering.
 
@@ -721,12 +730,19 @@ async def _run_master_proposal_ensemble(
             "Do not invent a symbol or snapshot file. Do not emit tasks, a worker plan, "
             "source choice, proposal_id, Markdown, or commentary."
         )
+        code_scope = (
+            f"Read only the prepared target code at {bot_relpath(next_v)}/ and "
+            "typed references. The historical lineage source code is quarantined "
+            "and is not an admissible planning input.\n\n"
+            if protocol_bootstrap_prepared_only
+            else "Read only the allowed frozen snapshot and source/target code.\n\n"
+        )
         prompt = (
             "You are an independent poker-bot mechanism proposal scout. "
             f"The system-owned source is fixed at v{source_v} and target at v{next_v}; "
             "never rerank, branch, change evidence, or change gates.\n"
             f"Distinct lens: {directive}\n"
-            "Read only the allowed frozen snapshot and source/target code.\n\n"
+            + code_scope
             + planning_context
             + "\n\n"
             + source_symbol_index
@@ -1038,55 +1054,96 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                                battle_experience="", exploitability_weaknesses="",
                                opponent_profiles="", research_proposals="",
                                architecture_policy=None,
-                               prepared_baseline=None):
+                               prepared_baseline=None,
+                               protocol_bootstrap=None):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
+    protocol_bootstrap_active = isinstance(protocol_bootstrap, dict)
     # Apply section budgets to avoid experience_pool crowding out match_analysis.
     # C-class: render the sentinel (returned when the analyst LLM crashed on an
     # infrastructure error) into an explicit warning BEFORE trimming, so the
     # Master sees "LLM crashed" rather than "no data" (which would be read as a
     # negative business signal). Non-sentinel text passes through unchanged.
-    match_analysis_rendered = _render_analysis_section(
-        match_analysis, "",
+    match_analysis_rendered = (
+        PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
+        if protocol_bootstrap_active
+        else _render_analysis_section(match_analysis, "")
     )
-    perf_rendered = _render_analysis_section(
-        performance_verification, "No performance verification data available.",
+    perf_rendered = (
+        PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
+        if protocol_bootstrap_active
+        else _render_analysis_section(
+            performance_verification, "No performance verification data available.",
+        )
     )
+    if protocol_bootstrap_active:
+        stagnation_info = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
     match_analysis_trimmed = _trim_to_budget(match_analysis_rendered, 10_000, tail=True)
     perf_trimmed = _trim_to_budget(perf_rendered, 4_000)
 
-    battle_experience_trimmed = _trim_to_budget(
-        battle_experience or "No battle experience data available yet.",
-        12_000,
-        tail=True,
-    )
-    bot_action_stats_trimmed = _trim_to_budget(
-        bot_action_stats or "No bot action statistics available.", 12_000)
-    opponent_profiles_trimmed = _trim_to_budget(
-        opponent_profiles or "No per-opponent behavior profiles available.", 8_000)
-    replay_spotlight_trimmed = _trim_to_budget(
-        replay_spotlight or "No replay spotlight data available.", 8_000)
-    exploitability_trimmed = _trim_to_budget(
-        exploitability_weaknesses or "No exploitability probe data available yet.", 6_000)
+    if protocol_bootstrap_active:
+        battle_experience_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
+        bot_action_stats_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
+        opponent_profiles_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
+        replay_spotlight_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
+        exploitability_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
+    else:
+        battle_experience_trimmed = _trim_to_budget(
+            battle_experience or "No battle experience data available yet.",
+            12_000,
+            tail=True,
+        )
+        bot_action_stats_trimmed = _trim_to_budget(
+            bot_action_stats or "No bot action statistics available.", 12_000)
+        opponent_profiles_trimmed = _trim_to_budget(
+            opponent_profiles or "No per-opponent behavior profiles available.", 8_000)
+        replay_spotlight_trimmed = _trim_to_budget(
+            replay_spotlight or "No replay spotlight data available.", 8_000)
+        exploitability_trimmed = _trim_to_budget(
+            exploitability_weaknesses or "No exploitability probe data available yet.", 6_000)
     research_trimmed = _trim_to_budget(
-        research_proposals or "No web-derived research proposals this generation (run_literature_probe not triggered or returned none).", 4_000)
+        (
+            "No admissible non-match literature receipt was supplied for this "
+            "protocol-bootstrap plan. Historical matchup-derived research was not loaded."
+            if protocol_bootstrap_active
+            else research_proposals
+            or "No web-derived research proposals this generation (run_literature_probe not triggered or returned none)."
+        ),
+        4_000,
+    )
     # MAP-Elites fitness is updated asynchronously from live H2H.  Reopening it
     # here would bypass the generation evidence cutoff and could change a retry's
     # plan. Source/crossover diversity already uses the frozen SelectionView;
     # Master receives no second live strength ranking.
     frontier_trimmed = (
+        "Frontier/MAP-Elites strength ranking is unavailable during protocol "
+        "bootstrap; no two-bot strict strength population exists."
+        if protocol_bootstrap_active
+        else
         "Frontier/MAP-Elites strength ranking omitted here; system-owned source "
         "selection already consumed the frozen diversity view."
     )
-    try:
-        from official_certification import official_feedback_summary
-        official_feedback = _trim_to_budget(official_feedback_summary(), 6_000)
-    except Exception as exc:
-        official_feedback = f"Official EXE compliance feedback unavailable: {type(exc).__name__}: {str(exc)[:200]}"
-    planning_baseline_v = next_v if isinstance(prepared_baseline, dict) else source_v
+    if protocol_bootstrap_active:
+        official_feedback = (
+            "Historical official-certification feedback was not loaded. Use only "
+            "the repository-pinned official oracle and architecture policy."
+        )
+    else:
+        try:
+            from official_certification import official_feedback_summary
+            official_feedback = _trim_to_budget(official_feedback_summary(), 6_000)
+        except Exception as exc:
+            official_feedback = f"Official EXE compliance feedback unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+    planning_baseline_v = (
+        next_v
+        if isinstance(prepared_baseline, dict) or protocol_bootstrap_active
+        else source_v
+    )
     planning_baseline_label = (
         "prepared_crossover_child"
         if isinstance(prepared_baseline, dict)
+        else "prepared_protocol_bootstrap_child"
+        if protocol_bootstrap_active
         else "source_parent"
     )
     try:
@@ -1097,6 +1154,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 source_label=(
                     f"{bot_name(planning_baseline_v)} prepared crossover baseline"
                     if isinstance(prepared_baseline, dict)
+                    else f"{bot_name(planning_baseline_v)} prepared protocol bootstrap baseline"
+                    if protocol_bootstrap_active
                     else bot_name(source_v)
                 ),
             ),
@@ -1146,37 +1205,65 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 "Prepared crossover baseline rendering failed closed before this "
                 f"prompt should run: {type(exc).__name__}: {str(exc)[:240]}"
             )
+    elif protocol_bootstrap_active:
+        prepared_baseline_text = (
+            "Protocol-bootstrap baseline: Workers start from the prepared target "
+            "artifact whose national_bot.py has already been replaced and verified "
+            "by the system-owned current runtime. The historical source launcher is "
+            "not executable evidence."
+        )
     else:
         prepared_baseline_text = (
             "No two-parent prepared baseline: Workers start from the copied source parent."
         )
-    try:
-        from evidence_snapshot import (
-            h2h_snapshot_contract_text,
-            load_generation_snapshot_identity,
+    if protocol_bootstrap_active:
+        h2h_data_file = "UNAVAILABLE_PROTOCOL_BOOTSTRAP"
+        selection_data_file = "UNAVAILABLE_PROTOCOL_BOOTSTRAP"
+        h2h_snapshot_contract = (
+            "PROTOCOL BOOTSTRAP: no two-bot strict executable pool exists, so "
+            "ratings, H2H, rankings, match replays, and strength conclusions are "
+            "intentionally unavailable. Do not read live result files or cite "
+            "historical quarantined ratings. Plan only from source code, typed "
+            "strategy references, and the content-bound bootstrap context. "
+            f"receipt={protocol_bootstrap.get('receipt_digest')}"
         )
-        h2h_snapshot = load_generation_snapshot_identity(next_v)
-        if not h2h_snapshot.get("available"):
-            raise RuntimeError(
-                f"generation evidence snapshot unavailable: {h2h_snapshot.get('reason')}"
+        allowed_evidence_snapshot_dir = str(
+            get_bot_dir(next_v) / ".protocol_bootstrap_no_strength_evidence"
+        )
+    else:
+        try:
+            from evidence_snapshot import (
+                h2h_snapshot_contract_text,
+                load_generation_snapshot_identity,
             )
-        h2h_data_file = h2h_snapshot.get("h2h_relpath", "web/core/results/head_to_head.json")
-        selection_data_file = h2h_snapshot.get(
-            "selection_relpath",
-            f"web/core/results/v{next_v}/evidence_snapshot/selection_snapshot.json",
-        )
-        h2h_snapshot_contract = h2h_snapshot_contract_text(next_v, source_v=source_v)
-    except Exception as exc:
-        ui.log_history(
-            f"Master blocked: stable evaluation snapshot unavailable ({exc})",
-            "error",
-        )
-        return None
+            h2h_snapshot = load_generation_snapshot_identity(next_v)
+            if not h2h_snapshot.get("available"):
+                raise RuntimeError(
+                    f"generation evidence snapshot unavailable: {h2h_snapshot.get('reason')}"
+                )
+            h2h_data_file = h2h_snapshot.get("h2h_relpath", "web/core/results/head_to_head.json")
+            selection_data_file = h2h_snapshot.get(
+                "selection_relpath",
+                f"web/core/results/v{next_v}/evidence_snapshot/selection_snapshot.json",
+            )
+            h2h_snapshot_contract = h2h_snapshot_contract_text(next_v, source_v=source_v)
+            allowed_evidence_snapshot_dir = str(
+                Path(h2h_snapshot["manifest_path"]).parent
+            )
+        except Exception as exc:
+            ui.log_history(
+                f"Master blocked: stable evaluation snapshot unavailable ({exc})",
+                "error",
+            )
+            return None
 
     # eval_rounds.jsonl is a live, independently written strength view.  The
     # same information is represented by the cycle-bound selection rows, so it
     # must not be injected as a second mutable authority.
     eval_round_summary = (
+        "No evaluation rounds exist during protocol bootstrap."
+        if protocol_bootstrap_active
+        else
         "Live eval-round summary intentionally omitted; use the frozen "
         "selection rows and rating-history tail."
     )
@@ -1202,17 +1289,35 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "h2h_snapshot_contract": h2h_snapshot_contract,
         "master_plan_executable_contract": master_plan_executable_contract_text(),
     })
-    master_ctx = (
-        f"Current evolution: v{source_v} → v{next_v}\n"
-        f"Source bot directory (read-only parent): {bot_relpath(source_v)}/\n"
-        f"Target bot directory (workers edit/verify): {bot_relpath(next_v)}/\n"
-        f"Planning baseline: {bot_relpath(planning_baseline_v)}/ ({planning_baseline_label})\n"
+    evidence_context = (
+        "Protocol bootstrap has no strength snapshot. Do not open live ratings, "
+        "H2H, replay, bot_stats, or rating_history files.\n"
+        if protocol_bootstrap_active
+        else
         f"Selection evidence snapshot: {selection_data_file}\n"
         f"Use only that digest-bound snapshot for ratings, RD, games, coverage, trends, and ranking; "
         f"do not reopen live glicko_ratings.json, bot_stats.json, or rating_history.jsonl.\n"
         f"Head-to-Head data snapshot: {h2h_data_file}\n"
         f"Do not read live H2H for matchup counts during planning; use the snapshot above.\n"
-        f"Experience/lesson evidence is frozen as bounded injected prompt excerpts; do not reopen live results files.\n"
+    )
+    experience_context = (
+        PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
+        if protocol_bootstrap_active
+        else "Experience/lesson evidence is frozen as bounded injected prompt excerpts; do not reopen live results files."
+    )
+    source_context = (
+        "Historical lineage source directory: quarantined and intentionally not "
+        "provided; do not open or cite it.\n"
+        if protocol_bootstrap_active
+        else f"Source bot directory (read-only parent): {bot_relpath(source_v)}/\n"
+    )
+    master_ctx = (
+        f"Current evolution: v{source_v} → v{next_v}\n"
+        f"{source_context}"
+        f"Target bot directory (workers edit/verify): {bot_relpath(next_v)}/\n"
+        f"Planning baseline: {bot_relpath(planning_baseline_v)}/ ({planning_baseline_label})\n"
+        f"{evidence_context}"
+        f"{experience_context}\n"
         f"\n{h2h_snapshot_contract}\n"
         f"\n{workflow_profile_text}\n"
         f"\n{frontier_trimmed}\n"
@@ -1231,10 +1336,9 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             next_v=int(next_v),
             ui=ui,
             log_dir=master_log_file.parent,
-            allowed_evidence_snapshot_dir=str(
-                Path(h2h_snapshot["manifest_path"]).parent
-            ),
+            allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
             baseline_v=int(planning_baseline_v),
+            protocol_bootstrap_prepared_only=protocol_bootstrap_active,
         )
     except Exception as exc:
         raise MasterInfrastructureError(
@@ -1291,9 +1395,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 master_prompt + "\n" + master_ctx, [], ui,
                 f"MASTER (Try {attempt+1})", master_log_file,
                 tools=["Read"],
-                allowed_evidence_snapshot_dir=str(
-                    Path(h2h_snapshot["manifest_path"]).parent
-                ),
+                allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
             )
         except Exception as exc:
             _final_mode = f"LLM_EXCEPTION:{type(exc).__name__}"
@@ -1389,8 +1491,27 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             # weaker planner model to reproduce them losslessly in free prose.
             # Invalid contracts are intentionally left untouched and still fail
             # the canonical schema gate below.
-            from plan_compiler import bind_system_owned_worker_contract_terms
+            from plan_compiler import (
+                bind_system_owned_legacy_consumer_migration,
+                bind_system_owned_worker_contract_terms,
+            )
+            data, _migration_binding_meta = (
+                bind_system_owned_legacy_consumer_migration(
+                    data,
+                    policy=(
+                        architecture_policy
+                        if isinstance(architecture_policy, dict)
+                        else None
+                    ),
+                )
+            )
             data, _binding_meta = bind_system_owned_worker_contract_terms(data)
+            if _migration_binding_meta.get("bound"):
+                ui.log_history(
+                    "Master plan compiler restored the system-owned universal "
+                    "legacy-consumer migration bundle.",
+                    "info",
+                )
             if _binding_meta.get("bound"):
                 ui.log_history(
                     "Master plan contract compiler bound missing execution anchors "

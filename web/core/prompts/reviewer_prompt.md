@@ -146,10 +146,14 @@ You check ONLY these five areas:
    exhaustion. Local strength uses 2.0 s/1.8 s within a 420 s match; formal
    runtime retains the 55-second hard return and latest-safe fallback.
 
-   **Attribution check** — For the v4 focus, exactly one state-learning primary
-   may be newly blocking: one work primitive, one opponent-profile dimension, or
-   one line control. Reject kitchen-sink plans/diffs that modify shadow
-   dimensions without a parent-preservation need.
+   **Attribution check** — The universal legacy-consumer migration focus is an
+   explicit exception to one-primary attribution: terminal response, showdown
+   range, donk, and delayed probe are all mandatory, with separate final-wire
+   counterfactuals. It must be the generation's only task; reject any parallel
+   support, tuning, river, or ordinary state-learning work until all four pass.
+   After that focus closes, exactly one state-learning primary may be newly
+   blocking: one work primitive, one opponent-profile dimension, or one line
+   control. Reject unrelated kitchen-sink changes outside the active contract.
 
    **Official oracle alignment** — Formal policy `official-full-v5` and both
    content-pinned oracle documents are authoritative. Exact consecutive 2x is legal; a retained

@@ -2622,21 +2622,57 @@ async def prepare_next_gen(args):
     if not source_dir.exists():
         return _json_tool_result({"error": f"Source bot v{source_v} not found"})
 
-    # Guard: warn if source bot is not completed (may be broken)
-    if not (source_dir / ".completed").exists():
+    source_checkpoint = _matching_checkpoint(next_v, source_v) or {}
+    source_audit = source_checkpoint.get("audit_context") or {}
+    protocol_bootstrap_receipt = source_audit.get("protocol_bootstrap")
+
+    # Normal parents require the runtime sentinel. A bootstrap source is bound
+    # directly to its immutable tag/tree receipt so a fresh clone need not
+    # recreate a sentinel for a deliberately non-active historical artifact.
+    if (
+        not (source_dir / ".completed").exists()
+        and protocol_bootstrap_receipt is None
+    ):
         return _json_tool_result({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})
 
     # Guard: verify git tag exists for source bot (authoritative commit proof)
     from evolution_infra import copy_bot_tree_for_candidate, git_has_tag, git_dir_is_committed
     if not git_has_tag(source_v):
-        return _json_tool_result({"error": f"Source bot v{source_v} has .completed but no git tag '{bot_tag(source_v)}'. Cannot evolve from uncommitted code. Try a different source version."})
+        return _json_tool_result({"error": f"Source bot v{source_v} has no git tag '{bot_tag(source_v)}'. Cannot evolve from uncommitted code. Try a different source version."})
     from evolution_infra import get_active_bots
 
-    if bot_name(source_v) not in set(get_active_bots()):
+    active_bots = list(get_active_bots())
+    if protocol_bootstrap_receipt is not None:
+        from national_protocol_quarantine import validate_protocol_bootstrap_receipt
+
+        bootstrap_errors = validate_protocol_bootstrap_receipt(
+            protocol_bootstrap_receipt,
+            active_bots=active_bots,
+        )
+        receipt_source_v = (
+            (protocol_bootstrap_receipt.get("source") or {}).get("version")
+            if isinstance(protocol_bootstrap_receipt, dict)
+            else None
+        )
+        if receipt_source_v != int(source_v):
+            bootstrap_errors.append("protocol_bootstrap_source_version_mismatch")
+        if bootstrap_errors:
+            return _json_tool_result({
+                "error": "PROTOCOL_BOOTSTRAP_RECEIPT_INVALID",
+                "source_v": source_v,
+                "next_v": next_v,
+                "validation_errors": bootstrap_errors,
+                "directive": (
+                    "The zero/one-bot transition changed after selection. Do not "
+                    "copy or execute the historical source; abandon and reselect."
+                ),
+            })
+    elif bot_name(source_v) not in set(active_bots):
         return _json_tool_result({
             "error": (
                 f"Source bot v{source_v} is not eligible for the active national pool "
-                "(reaped, protocol-invalid, uncertified, or grandfather grant expired)."
+                "(the executable pool requires the current runtime contract) and has "
+                "no valid protocol-bootstrap receipt."
             )
         })
 
@@ -2704,8 +2740,39 @@ async def prepare_next_gen(args):
     hygiene = sanitize_candidate_dir(
         next_dir,
         require_native_tcp=native_tcp,
-        overwrite_native_entry=False,
+        overwrite_native_entry=bool(
+            isinstance(protocol_bootstrap_receipt, dict)
+            and protocol_bootstrap_receipt.get("mode")
+            == "legacy_strategy_migration"
+        ),
     )
+    protocol_bootstrap_prepare = None
+    if native_tcp and isinstance(protocol_bootstrap_receipt, dict):
+        from national_native import check_native_contract
+
+        prepared_runtime_errors = check_native_contract(
+            next_dir,
+            require_current_stream_decoder=True,
+            require_current_decision_runtime=True,
+        )
+        if prepared_runtime_errors:
+            return _json_tool_result({
+                "error": "PROTOCOL_BOOTSTRAP_RUNTIME_REPLACEMENT_FAILED",
+                "next_v": next_v,
+                "source_v": source_v,
+                "validation_errors": prepared_runtime_errors[:20],
+                "directive": (
+                    "The system-owned current national runtime was not established "
+                    "before the prepared snapshot. Do not continue to Master."
+                ),
+            })
+        entry_path = next_dir / "national_bot.py"
+        protocol_bootstrap_prepare = {
+            "receipt_digest": protocol_bootstrap_receipt.get("receipt_digest"),
+            "mode": protocol_bootstrap_receipt.get("mode"),
+            "system_runtime_replaced": bool(hygiene.get("native_entry_refreshed")),
+            "national_bot_sha256": hashlib.sha256(entry_path.read_bytes()).hexdigest(),
+        }
     prepare_scope_files = [
         p for p in _py_files_changed_between(source_dir, next_dir) if 'backup' not in p
     ]
@@ -2754,6 +2821,11 @@ async def prepare_next_gen(args):
         prepare_scope_files=prepare_scope_files,
         audit_context={
             "prepared_artifact_contract": prepared_artifact_contract,
+            **(
+                {"protocol_bootstrap_prepare": protocol_bootstrap_prepare}
+                if protocol_bootstrap_prepare is not None
+                else {}
+            ),
         },
     ):
         return _json_tool_result({

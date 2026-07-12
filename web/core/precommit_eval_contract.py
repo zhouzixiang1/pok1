@@ -16,8 +16,8 @@ from bot_artifact import canonical_digest, hash_path, published_bot_identity
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN_SCHEMA_VERSION = 2
-EVALUATION_CONTRACT_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 3
+EVALUATION_CONTRACT_SCHEMA_VERSION = 2
 DEFAULT_DECK_SEED_BASE = 91_000
 
 SEMANTIC_PATHS = (
@@ -27,9 +27,13 @@ SEMANTIC_PATHS = (
     "sever/engine/validator.py",
     "sever/server/protocol.py",
     "web/core/eval_stats.py",
+    "web/core/managed_bot_executor.py",
+    "web/core/managed_bot_socket.py",
     "web/core/national_bot_launcher.py",
     "web/core/national_game_runtime.py",
     "web/core/national_native.py",
+    "web/core/national_protocol_quarantine.py",
+    "web/core/national_protocol_quarantine.json",
     "web/core/national_transport.py",
     "web/core/precommit_eval_contract.py",
     "web/core/strength_order.py",

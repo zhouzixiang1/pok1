@@ -21,8 +21,8 @@ import uuid
 from bot_artifact import canonical_digest
 
 
-JOB_SCHEMA_VERSION = 3
-JOB_MANAGER_VERSION = "official-job-v3"
+JOB_SCHEMA_VERSION = 4
+JOB_MANAGER_VERSION = "official-job-v4"
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_MAX_WORKER_RESTARTS = 3
 HEARTBEAT_INTERVAL_SEC = 5.0
@@ -39,6 +39,14 @@ _THREAD_LOCKS: dict[str, threading.RLock] = {}
 
 class OfficialJobCancelled(BaseException):
     """Signal-safe cancellation that still executes harness cleanup blocks."""
+
+
+class OfficialBootstrapAuthorizationError(RuntimeError):
+    """A parked bootstrap candidate drifted before manager-side spawn."""
+
+    def __init__(self, issues: list[str]):
+        self.issues = list(issues)
+        super().__init__("; ".join(self.issues[:8]))
 
 
 def job_root() -> Path:
@@ -140,6 +148,41 @@ def _validate_request(payload: dict[str, Any]) -> list[str]:
     if payload.get("job_id") != canonical_digest({"request_digest": payload.get("request_digest")}):
         issues.append("official_job_identity_mismatch")
     return issues
+
+
+def _bootstrap_authorization_issues(request: dict[str, Any]) -> list[str]:
+    """Revalidate the operator-only parked transition before a worker launch."""
+
+    spec = request.get("spec") or {}
+    root_id = spec.get("bootstrap_root_id")
+    if not root_id:
+        return []
+    selection = request.get("opponent_selection")
+    candidate = spec.get("candidate")
+    try:
+        from official_bootstrap import (
+            validate_operator_bootstrap_authorized_selection,
+        )
+
+        validation = validate_operator_bootstrap_authorized_selection(
+            selection,
+            str(root_id),
+            str(candidate or ""),
+        )
+    except Exception as exc:
+        return [
+            "official_bootstrap_authorization_validation_error:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
+        ]
+    if validation.get("valid") is True:
+        return []
+    return [
+        str(item)
+        for item in (
+            validation.get("issues")
+            or [validation.get("reason") or "official_bootstrap_authorization_invalid"]
+        )
+    ]
 
 
 def _boot_id() -> str:
@@ -424,6 +467,12 @@ def _worker_pythonpath(existing: str | None = None) -> str:
 
 
 def _spawn_worker(directory: Path, state: dict[str, Any], *, max_attempts: int, new_suite: bool) -> dict[str, Any]:
+    # This is the manager's last check before Popen.  The worker and harness
+    # repeat it so a queue-to-launch race cannot consume the one-time root.
+    request = _read_json(directory / "request.json") or {}
+    bootstrap_issues = _bootstrap_authorization_issues(request)
+    if bootstrap_issues:
+        raise OfficialBootstrapAuthorizationError(bootstrap_issues)
     attempt = int(state.get("attempt", 0) or 0) + (1 if new_suite else 0)
     attempt = max(1, attempt)
     attempt_nonce = (
@@ -648,6 +697,20 @@ def start_or_poll_job(
                 )
                 _write_json(directory / "state.json", state)
             else:
+                bootstrap_issues = _bootstrap_authorization_issues(request)
+                if bootstrap_issues:
+                    state = _bump_state(
+                        state,
+                        state="failed",
+                        phase="bootstrap_authorization",
+                        failure="; ".join(bootstrap_issues[:8]),
+                    )
+                    _write_json(directory / "state.json", state)
+                    return {
+                        **_public_state(directory, state),
+                        "failure_class": "authorization",
+                        "issues": bootstrap_issues,
+                    }
                 if state.get("state") in TERMINAL_STATES and retry_terminal:
                     if int(state.get("attempt", 0) or 0) >= int(max_attempts):
                         return {
@@ -686,12 +749,26 @@ def start_or_poll_job(
                     _write_json(directory / "state.json", state)
                     return _public_state(directory, state)
                 new_suite = int(state.get("attempt", 0) or 0) == 0 or state.get("phase") == "retry_queued"
-                state = _spawn_worker(
-                    directory,
-                    state,
-                    max_attempts=max_attempts,
-                    new_suite=new_suite,
-                )
+                try:
+                    state = _spawn_worker(
+                        directory,
+                        state,
+                        max_attempts=max_attempts,
+                        new_suite=new_suite,
+                    )
+                except OfficialBootstrapAuthorizationError as exc:
+                    state = _bump_state(
+                        state,
+                        state="failed",
+                        phase="bootstrap_authorization",
+                        failure=str(exc),
+                    )
+                    _write_json(directory / "state.json", state)
+                    return {
+                        **_public_state(directory, state),
+                        "failure_class": "authorization",
+                        "issues": exc.issues,
+                    }
                 _write_json(directory / "state.json", state)
                 return _public_state(directory, state)
 
@@ -730,12 +807,26 @@ def start_or_poll_job(
                     )
                     _write_json(directory / "state.json", state)
                     return {**_public_state(directory, state), "failure_class": "infrastructure"}
-                state = _spawn_worker(
-                    directory,
-                    state,
-                    max_attempts=max_attempts,
-                    new_suite=False,
-                )
+                try:
+                    state = _spawn_worker(
+                        directory,
+                        state,
+                        max_attempts=max_attempts,
+                        new_suite=False,
+                    )
+                except OfficialBootstrapAuthorizationError as exc:
+                    state = _bump_state(
+                        state,
+                        state="failed",
+                        phase="bootstrap_authorization",
+                        failure=str(exc),
+                    )
+                    _write_json(directory / "state.json", state)
+                    return {
+                        **_public_state(directory, state),
+                        "failure_class": "authorization",
+                        "issues": exc.issues,
+                    }
                 _write_json(directory / "state.json", state)
                 return _public_state(directory, state)
     raise RuntimeError("official job reconciliation reached no terminal action")
@@ -920,6 +1011,12 @@ def _worker_main(directory: Path, claim_token: str) -> int:
     issues = _validate_request(request)
     if issues:
         raise RuntimeError("; ".join(issues))
+    bootstrap_issues = _bootstrap_authorization_issues(request)
+    if bootstrap_issues:
+        raise RuntimeError(
+            "official_bootstrap_launch_authorization_failed:"
+            + ";".join(bootstrap_issues[:8])
+        )
     from official_certification import (
         _spec_from_mapping,
         certification_identity,

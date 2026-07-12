@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "kind": "official-certifier-signer-epoch-policy",
+  "policy_id": "official-certifier-signer-epochs-v1",
+  "current_epoch": 2,
+  "current_signer": {
+    "epoch": 2,
+    "state": "active",
+    "key_fingerprint": "SHA256:93sCwWhJf1/y3HGhZOaOdHmiZHfb1VjMgg5jVZ/2urQ",
+    "public_key_sha256": "196ebd37a4a365021c2bce2f3cada30f3e8bf19630a72aa57e03da3f310a9a54"
+  },
+  "historical_signers": [
+    {
+      "epoch": 1,
+      "state": "historical-validation-only",
+      "key_fingerprint": "SHA256:2BvV/UxD+ma972mQLiLVLZbrRS9gk6LH3kpx0xCvlKU",
+      "public_key_sha256": "93442c46cc6feaba8331a75c5354caf965a2695b97ece530c346467088c53b28",
+      "allowed_records": [
+        {
+          "purpose": "certificate",
+          "record_sha256": "609739c84e1475e812f1d104d5190f4f3b5bb4b052abfa0cb0d926bde735e79f",
+          "signature_sha256": "7c3040228992eb84f2ec4c2ae7ead4f41d89bb81d8aca1f0b210dc83c671971d"
+        },
+        {
+          "purpose": "ledger-entry",
+          "record_sha256": "be43cf7bcbd421709ccf0f6839b7ab07ddbb55b03eb65c2a8c01925507f2cc58",
+          "signature_sha256": "3616de4b9359512b3a98f585ec3d7f097bff95ed3a1782940a591d7ef056ef24"
+        },
+        {
+          "purpose": "ledger-head",
+          "record_sha256": "c176ca219a889a3b920b329e5748193cf2dec140aba9044ee6a27e6fae67f0aa",
+          "signature_sha256": "b2459a5923e4578248b4c4248c666ed5ba205f4b077860d13eb5fffa84a994ba"
+        }
+      ],
+      "historical_chain": {
+        "candidate_label": "national_v141",
+        "candidate_hash": "67cd6059e17afdb333137a37a051764ccef405d03072addb92ebaa5a39631796",
+        "certificate_digest": "3eb5e5d150fe5276a6f5933f04c547d7f1c4f4adacfdedafc4be63b4917d9808",
+        "evidence_archive_sha256": "764674ea13f4a5f1d78054b6eccfb39350ffdc5bb6b2bca9627a3c205abb1d44",
+        "evidence_archive_manifest_digest": "ef0599fe4d4b1008ffee13ef02f5f440a2c2c7c4eb49fdbe5cbdbdbc6593de4c",
+        "evidence_sha256": "e8e1037009898b33aed10f1a9d8106d59f3c2d094ca20b62e5d3b3af4a69c51b",
+        "ledger_sequence": 1,
+        "ledger_entry_digest": "410a5e2202bddb1fddb6bc62ff397b239ec176e2f9c7e53dab4bdd91d532ed5a",
+        "ledger_head_size_bytes": 1233,
+        "bootstrap_root_id": "national-v141-official-full-v5-signed-ledger-root",
+        "bootstrap_manifest_file_sha256": "512277e663b1433648619e48e668f6b4fcb8d54535264b2c307d7cbf09b415a0",
+        "bootstrap_manifest_canonical_sha256": "23ee2d44b0f546e0127511d5f9e38808c327feae174700883b8ca7e99f369075"
+      }
+    }
+  ],
+  "policy_digest": "5c4fbf0f1418a66162e2ca85a02833992328fe70d401b66c49d4c251d85faf15"
+}

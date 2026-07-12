@@ -15,13 +15,22 @@ from typing import Any
 
 from national_capability_contract import (
     NATIONAL_CAPABILITY_DETECTOR_VERSION,
+    _migration_dynamic_influence,
+    _migration_source_consumption,
     evaluate_national_capabilities,
+)
+from output_schema import (
+    LEGACY_CONSUMER_MIGRATION_BUNDLE_ID,
+    LEGACY_CONSUMER_MIGRATION_CHECKS,
+    LEGACY_CONSUMER_MIGRATION_FILES,
+    LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
+    STATE_LEARNING_ORACLE_REFS,
 )
 
 
-RUNTIME_ARCHITECTURE_POLICY_VERSION = "3.4.0"
-RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 9
-RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION = 1
+RUNTIME_ARCHITECTURE_POLICY_VERSION = "3.7.0"
+RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 12
+RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION = 2
 PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION = 1
 ARCHITECTURE_TRANSITION_PHASE_FINAL = "final"
 ARCHITECTURE_TRANSITION_PHASE_PREPLAN = "preplan"
@@ -49,19 +58,20 @@ RUNTIME_CORRECTNESS_FLOOR_CHECKS: tuple[str, ...] = (
     "showdown_range_posterior",
     "authoritative_hand_context",
 )
-# Backward-compatible exported name. Its semantics are now deliberately narrow:
-# only system-provider/correctness guarantees are universal hard floors. Strategy
-# consumption mechanisms are selected one at a time by RuntimeContract.state_learning.
-RUNTIME_FLOOR_CHECKS = RUNTIME_CORRECTNESS_FLOOR_CHECKS
+# Wrapper state is not a completed migration until the live strategy consumes it.
+# These user-observed legacy defects therefore form one universal floor rather
+# than four selectable innovations. Once closed, baseline preservation keeps them
+# blocking while ordinary state-learning returns to one primary per generation.
+RUNTIME_FLOOR_CHECKS = (
+    *RUNTIME_CORRECTNESS_FLOOR_CHECKS,
+    *LEGACY_CONSUMER_MIGRATION_CHECKS,
+)
 STATE_LEARNING_INNOVATION_CHECKS: tuple[str, ...] = (
     "incremental_refinement_protocol",
     "budget_scaled_refinement",
     "precompute_lookup_path",
     "precompute_runtime_influence",
     "incremental_opponent_model",
-    "terminal_response_adaptation",
-    "showdown_range_adaptation",
-    "semantic_line_reachability",
 )
 NATIVE_TEMPLATE_PROVIDED_CHECKS: tuple[str, ...] = (
     "decision_time_budget_visible",
@@ -98,6 +108,31 @@ def _strategy_reference_pack_digest() -> str:
 
 _FOCUS_SPECS: tuple[dict[str, Any], ...] = (
     {
+        "focus_id": LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
+        "title": "Universal legacy state-consumer migration",
+        "selection_checks": list(LEGACY_CONSUMER_MIGRATION_CHECKS),
+        "required_checks": [
+            *RUNTIME_CORRECTNESS_FLOOR_CHECKS,
+            *LEGACY_CONSUMER_MIGRATION_CHECKS,
+        ],
+        "migration_checks": list(LEGACY_CONSUMER_MIGRATION_CHECKS),
+        "accepted_skill_layers": ["runtime_architecture"],
+        "suggested_files": list(LEGACY_CONSUMER_MIGRATION_FILES),
+        "required_terms": [
+            "terminal_response",
+            "showdown_range",
+            "can_donk",
+            "can_delayed_probe",
+            "sanitized wire action",
+        ],
+        "rationale": (
+            "Treat wrapper-owned terminal responses, showdown posterior, and "
+            "authoritative donk/delayed-probe flags as one ABI migration. All four "
+            "consumers are final-blocking and system-owned; the planner may design "
+            "their implementation but may not omit, defer, or relabel one as advisory."
+        ),
+    },
+    {
         "focus_id": "national_runtime_v4_state_learning",
         "title": "Complete event-state and anytime-learning migration",
         "selection_checks": [
@@ -114,9 +149,6 @@ _FOCUS_SPECS: tuple[dict[str, Any], ...] = (
             "showdown_range_posterior",
             "authoritative_hand_context",
             "incremental_opponent_model",
-            "terminal_response_adaptation",
-            "showdown_range_adaptation",
-            "semantic_line_reachability",
         ],
         "required_checks": list(RUNTIME_CORRECTNESS_FLOOR_CHECKS),
         "innovation_checks": list(STATE_LEARNING_INNOVATION_CHECKS),
@@ -212,6 +244,75 @@ def _canonical_json_digest(payload: Any) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def legacy_consumer_migration_bundle() -> dict[str, Any]:
+    """Return the immutable migration obligations injected into Master plans."""
+    payload = {
+        "bundle_id": LEGACY_CONSUMER_MIGRATION_BUNDLE_ID,
+        "required_checks": list(LEGACY_CONSUMER_MIGRATION_CHECKS),
+        "consumer_files": list(LEGACY_CONSUMER_MIGRATION_FILES),
+        "oracle_refs": list(STATE_LEARNING_ORACLE_REFS),
+    }
+    payload["bundle_digest"] = _canonical_json_digest(payload)
+    return payload
+
+
+def legacy_consumer_migration_runtime_contract() -> dict[str, Any]:
+    """Return the exact executable contract used by Master and repair paths."""
+    bundle = legacy_consumer_migration_bundle()
+    return {
+        "decision": {
+            "clock": "time.monotonic",
+            "hard_deadline_ms": 55_000,
+            "baseline_target_ms": 250,
+            "refinement_budget_ms": 54_000,
+            "baseline_path": (
+                "compute a legal deterministic action from bounded current-hand "
+                "and wrapper-owned runtime state before optional refinement"
+            ),
+            "fallback_action": "check when legal, otherwise call or fold",
+            "refinement_bound": (
+                "stop on the monotonic deadline and an explicit finite sample cap"
+            ),
+            "max_samples": 4_096,
+        },
+        "precompute_artifacts": [],
+        "match_memory": {
+            "tracker_class": "OpponentTracker",
+            "owner_file": "national_bot.py",
+            "reset_boundary": "tcp_connection",
+            "update_events": [
+                "hand_start",
+                "street_start",
+                "opponent_action",
+                "settlement",
+                "showdown",
+            ],
+            "snapshot_field": "opponent_runtime",
+            "max_recent_hands": 8,
+            "prior_rule": "beta_prior_weight_8",
+            "confidence_rule": (
+                "global_actions_over_actions_plus_24_and_context_samples_over_"
+                "samples_plus_8"
+            ),
+            "adaptation_cap": 0.65,
+            "consumer": "strategy.get_baseline_action",
+        },
+        "state_learning": None,
+        "legacy_consumer_migration": {
+            key: value
+            for key, value in bundle.items()
+            if key != "bundle_digest"
+        },
+        "reference_pack_id": "",
+        "official_feedback_refs": [],
+        "forbidden_runtime_work": [
+            "full-match requests/responses/showdowns scan inside the decision path",
+            "file, network, or subprocess I/O inside the decision path",
+            "unbounded combinatorial construction per decision",
+        ],
+    }
 
 
 def _runtime_contract_entry(task: dict[str, Any], index: int) -> dict[str, Any] | None:
@@ -736,6 +837,15 @@ def _policy_contract_payload(policy: dict[str, Any]) -> dict[str, Any]:
         "effective_baseline_checks": policy.get("effective_baseline_checks") or {},
         "baseline_passed_checks": policy.get("baseline_passed_checks") or [],
         "runtime_floor_checks": policy.get("runtime_floor_checks") or [],
+        "legacy_consumer_migration_checks": policy.get(
+            "legacy_consumer_migration_checks"
+        ) or [],
+        "legacy_consumer_migration_failures": policy.get(
+            "legacy_consumer_migration_failures"
+        ) or [],
+        "legacy_consumer_migration_bundle": policy.get(
+            "legacy_consumer_migration_bundle"
+        ),
         "strategy_innovation_checks": policy.get("strategy_innovation_checks") or [],
         "source_floor_failures": policy.get("source_floor_failures") or [],
         "baseline_floor_failures": policy.get("baseline_floor_failures") or [],
@@ -833,6 +943,11 @@ def build_architecture_policy(
         for check_id in RUNTIME_FLOOR_CHECKS
         if not effective_state.get(check_id, False)
     ]
+    legacy_consumer_migration_failures = [
+        check_id
+        for check_id in LEGACY_CONSUMER_MIGRATION_CHECKS
+        if not effective_state.get(check_id, False)
+    ]
     policy = {
         "schema_version": RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION,
         "policy_version": RUNTIME_ARCHITECTURE_POLICY_VERSION,
@@ -854,6 +969,17 @@ def build_architecture_policy(
             check_id for check_id, passed in effective_state.items() if passed
         ),
         "runtime_floor_checks": list(RUNTIME_FLOOR_CHECKS),
+        "legacy_consumer_migration_checks": list(
+            LEGACY_CONSUMER_MIGRATION_CHECKS
+        ),
+        "legacy_consumer_migration_failures": (
+            legacy_consumer_migration_failures
+        ),
+        "legacy_consumer_migration_bundle": (
+            legacy_consumer_migration_bundle()
+            if legacy_consumer_migration_failures
+            else None
+        ),
         "strategy_innovation_checks": list(STATE_LEARNING_INNOVATION_CHECKS),
         "source_floor_failures": source_floor_failures,
         "baseline_floor_failures": baseline_floor_failures,
@@ -957,6 +1083,10 @@ def evaluate_architecture_transition(
             "regressions": [],
             "system_provided_deltas": [],
             "runtime_floor_checks": list(RUNTIME_FLOOR_CHECKS),
+            "legacy_consumer_migration_checks": list(
+                LEGACY_CONSUMER_MIGRATION_CHECKS
+            ),
+            "legacy_consumer_migration_failures": [],
             "runtime_floor_failures": [],
             "deferred_runtime_floor_checks": [],
             "deferred_runtime_floor_failures": [],
@@ -1103,6 +1233,11 @@ def evaluate_architecture_transition(
         {"check_id": check_id, "passed": bool(candidate_state.get(check_id, False))}
         for check_id in STATE_LEARNING_INNOVATION_CHECKS
     ]
+    legacy_consumer_migration_failures = [
+        check_id
+        for check_id in LEGACY_CONSUMER_MIGRATION_CHECKS
+        if not candidate_state.get(check_id, False)
+    ]
     return {
         "schema_version": 1,
         "policy_version": RUNTIME_ARCHITECTURE_POLICY_VERSION,
@@ -1140,6 +1275,12 @@ def evaluate_architecture_transition(
         "regressions": regressions,
         "system_provided_deltas": system_provided_deltas,
         "runtime_floor_checks": list(RUNTIME_FLOOR_CHECKS),
+        "legacy_consumer_migration_checks": list(
+            LEGACY_CONSUMER_MIGRATION_CHECKS
+        ),
+        "legacy_consumer_migration_failures": (
+            legacy_consumer_migration_failures
+        ),
         "runtime_floor_failures": floor_failures,
         "deferred_runtime_floor_checks": deferred_floor_checks,
         "deferred_runtime_floor_failures": deferred_floor_failures,
@@ -1177,17 +1318,27 @@ def validate_plan_architecture_focus(
         )
 
     state_learning_tasks = []
+    migration_tasks = []
     for task in tasks:
         raw_contract = task.get("runtime_contract")
-        if not isinstance(raw_contract, dict) or raw_contract.get("state_learning") is None:
+        if not isinstance(raw_contract, dict):
             continue
-        state_learning_tasks.append(task)
-        if str(task.get("architecture_focus_id") or "") != "national_runtime_v4_state_learning":
-            errors.append(
-                "runtime_contract.state_learning may appear only on the single "
-                "national_runtime_v4_state_learning primary task "
-                f"(worker_id={task.get('worker_id')!r})."
-            )
+        if raw_contract.get("state_learning") is not None:
+            state_learning_tasks.append(task)
+            if str(task.get("architecture_focus_id") or "") != "national_runtime_v4_state_learning":
+                errors.append(
+                    "runtime_contract.state_learning may appear only on the single "
+                    "national_runtime_v4_state_learning primary task "
+                    f"(worker_id={task.get('worker_id')!r})."
+                )
+        if raw_contract.get("legacy_consumer_migration") is not None:
+            migration_tasks.append(task)
+            if str(task.get("architecture_focus_id") or "") != LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+                errors.append(
+                    "runtime_contract.legacy_consumer_migration may appear only on "
+                    "the system-owned migration focus task "
+                    f"(worker_id={task.get('worker_id')!r})."
+                )
 
     required_floor = [str(item) for item in policy.get("plan_required_floor_checks") or []]
     for check_id in required_floor:
@@ -1203,6 +1354,11 @@ def validate_plan_architecture_focus(
     if not focus:
         return errors
     focus_id = str(focus.get("focus_id") or "")
+    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID and len(tasks) != 1:
+        errors.append(
+            "Universal legacy consumer migration is generation-isolated and "
+            f"requires exactly one total worker task; found {len(tasks)}."
+        )
     matching = [task for task in tasks if str(task.get("architecture_focus_id") or "") == focus_id]
     if not matching:
         errors.append(
@@ -1221,6 +1377,18 @@ def validate_plan_architecture_focus(
             "exactly one state_learning primary across the entire generation; "
             f"found {len(state_learning_tasks)}."
         )
+    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+        if len(migration_tasks) != 1:
+            errors.append(
+                "Universal legacy consumer migration requires exactly one complete "
+                "system-owned migration contract; "
+                f"found {len(migration_tasks)}."
+            )
+        if state_learning_tasks:
+            errors.append(
+                "state_learning is forbidden while universal legacy consumer "
+                "migration remains active."
+            )
 
     accepted_layers = set(focus.get("accepted_skill_layers") or [])
     suggested_files = {Path(str(path)).name for path in focus.get("suggested_files") or []}
@@ -1236,7 +1404,23 @@ def validate_plan_architecture_focus(
             Path(str(path)).name
             for path in [*(task.get("target_files") or []), *(task.get("files_allowed") or [])]
         }
-        if suggested_files and not targets.intersection(suggested_files):
+        if (
+            focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
+            and not set(LEGACY_CONSUMER_MIGRATION_FILES).issubset(targets)
+        ):
+            errors.append(
+                "Universal legacy consumer migration task must have writable scope "
+                f"for all {list(LEGACY_CONSUMER_MIGRATION_FILES)}; got {sorted(targets)}."
+            )
+        elif (
+            focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
+            and targets != set(LEGACY_CONSUMER_MIGRATION_FILES)
+        ):
+            errors.append(
+                "Universal legacy consumer migration writable scope is exact; "
+                f"unexpected files {sorted(targets.difference(LEGACY_CONSUMER_MIGRATION_FILES))}."
+            )
+        elif suggested_files and not targets.intersection(suggested_files):
             errors.append(
                 f"Architecture focus {focus_id!r} task targets {sorted(targets)} but none of "
                 f"the relevant files {sorted(suggested_files)}."
@@ -1247,7 +1431,54 @@ def validate_plan_architecture_focus(
             errors.append(
                 f"Architecture focus {focus_id!r} task prompt is missing execution terms {missing_terms}."
             )
-        if focus_id == "national_runtime_v4_state_learning":
+        if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+            try:
+                from output_schema import RuntimeContract
+
+                contract = RuntimeContract.model_validate(
+                    task.get("runtime_contract") or {}
+                )
+            except Exception as exc:
+                errors.append(
+                    f"Architecture focus {focus_id!r} has invalid runtime_contract: "
+                    f"{type(exc).__name__}: {str(exc)[:180]}"
+                )
+                continue
+            if contract.legacy_consumer_migration is None:
+                errors.append(
+                    "Universal legacy consumer migration focus requires the exact "
+                    "legacy_consumer_migration bundle."
+                )
+            declared_checks = {
+                str(item) for item in task.get("checks_required") or []
+            }
+            missing_migration = sorted(
+                set(LEGACY_CONSUMER_MIGRATION_CHECKS).difference(
+                    declared_checks
+                )
+            )
+            if missing_migration:
+                errors.append(
+                    "Universal legacy consumer migration task may not omit checks "
+                    f"{missing_migration}."
+                )
+            allowed_migration_checks = {
+                *(
+                    str(item)
+                    for item in policy.get("plan_required_floor_checks") or []
+                ),
+                *LEGACY_CONSUMER_MIGRATION_CHECKS,
+            }
+            unexpected_migration_checks = sorted(
+                declared_checks.difference(allowed_migration_checks)
+            )
+            if unexpected_migration_checks:
+                errors.append(
+                    "Universal legacy consumer migration checks_required is "
+                    "system-owned; unexpected ordinary/aggregate checks "
+                    f"{unexpected_migration_checks}."
+                )
+        elif focus_id == "national_runtime_v4_state_learning":
             try:
                 from output_schema import RuntimeContract
 
@@ -1632,6 +1863,15 @@ def validate_runtime_contract_implementation(
                         f"{prefix}: match-memory contract lacks proven {check_id}"
                     )
 
+        migration = contract.legacy_consumer_migration
+        if migration is not None:
+            for check_id in LEGACY_CONSUMER_MIGRATION_CHECKS:
+                if not checks.get(check_id):
+                    errors.append(
+                        f"{prefix}: universal legacy consumer migration lacks "
+                        f"proven {check_id}"
+                    )
+
         if state_learning is None:
             continue
         if primary_innovation == "sample_counted_candidate_batch":
@@ -1695,50 +1935,34 @@ def validate_runtime_contract_implementation(
                     f"lacks proven {check_id}"
                 )
         elif primary_innovation in {"donk", "delayed_probe"}:
-            decision_fields = incremental.get("decision_field_locations") or {}
-            required_field = (
-                "can_donk" if primary_innovation == "donk" else "can_delayed_probe"
-            )
-            if not decision_fields.get("hand_runtime") or not decision_fields.get(required_field):
+            source_consumption = _migration_source_consumption(incremental).get(
+                primary_innovation
+            ) or {}
+            if not source_consumption.get("ok"):
                 errors.append(
                     f"{prefix}: selected line control {primary_innovation!r} is not "
-                    f"statically consumed from hand_runtime.{required_field}"
+                    "consumed through its exact source-rooted hand_runtime field "
+                    "on a live action path"
                 )
             dynamic_probe = candidate_capabilities.get("dynamic_runtime_probe") or {}
-            strategy_influence = dynamic_probe.get("strategy_influence") or {}
-            dimensions = strategy_influence.get("dimensions") or {}
-            rows = (dimensions.get("semantic_lines") or {}).get("rows") or []
-            matching_rows = [
-                row for row in rows
-                if isinstance(row, dict) and row.get("dimension") == primary_innovation
-            ]
-            dynamic_ok = False
-            for row in matching_rows:
-                tiers = row.get("tiers") or {}
-                if isinstance(tiers, dict) and any(
-                    isinstance(tier, dict) and tier.get("changed") is True
-                    for tier in tiers.values()
-                ):
-                    dynamic_ok = True
-                    break
-                # Backward compatibility for a persisted v4 probe payload from
-                # before baseline/short/long tier evidence was introduced.
-                positive = row.get("positive")
-                negative = row.get("negative")
-                if (
-                    not tiers
-                    and isinstance(positive, dict)
-                    and isinstance(negative, dict)
-                    and "error" not in positive
-                    and "error" not in negative
-                    and positive.get("wire") != negative.get("wire")
-                ):
-                    dynamic_ok = True
-                    break
-            if not dynamic_ok:
+            dynamic_evidence = _migration_dynamic_influence(
+                dynamic_probe,
+                primary_innovation,
+            )
+            if not dynamic_evidence.get("ok"):
                 errors.append(
                     f"{prefix}: selected line control {primary_innovation!r} has no "
-                    "positive/control sanitized-action difference"
+                    "repeatable specific positive/control final sanitized-wire difference"
+                )
+            split_check_id = (
+                "donk_line_reachability"
+                if primary_innovation == "donk"
+                else "delayed_probe_line_reachability"
+            )
+            if not checks.get(split_check_id):
+                errors.append(
+                    f"{prefix}: selected line control {primary_innovation!r} lacks "
+                    f"proven {split_check_id}"
                 )
     return errors
 
@@ -1762,7 +1986,6 @@ def architecture_policy_prompt(policy: dict[str, Any]) -> str:
         f"{policy.get('prepared_capability_snapshot_digest') or 'none'}",
         "- preserve every check listed in baseline_passed_checks; candidate regressions are blocking",
         "- every check in plan_required_floor_checks must appear in at least one task checks_required and be closed in this generation",
-        "- state_learning declares exactly one primary strategy innovation; only its mapped consumer check is newly blocking, while other strategy dimensions stay shadow/advisory",
         f"- native_template_provided_checks={', '.join(policy.get('native_template_provided_checks') or []) or 'none'}",
         f"- plan_required_floor_checks={', '.join(policy.get('plan_required_floor_checks') or []) or 'none'}",
     ]
@@ -1772,15 +1995,33 @@ def architecture_policy_prompt(policy: dict[str, Any]) -> str:
     lines.extend([
         f"- selected_focus={focus.get('focus_id')}: {focus.get('title')}",
         f"- required_checks={', '.join(focus.get('required_checks') or [])}",
-        f"- innovation_shadow_checks={', '.join(focus.get('innovation_checks') or [])}",
         f"- accepted_skill_layers={', '.join(focus.get('accepted_skill_layers') or [])}",
         f"- suggested_files={', '.join(focus.get('suggested_files') or [])}",
         f"- required_worker_prompt_terms={', '.join(focus.get('required_terms') or [])}",
         f"- rationale={focus.get('rationale')}",
-        "- exactly one task MUST set architecture_focus_id exactly to selected_focus and declare one typed state_learning primary innovation",
         "- the matching task worker_prompt MUST literally contain every required_worker_prompt_terms value",
-        "- a label is not proof: quality gates re-run AST/dynamic evidence for correctness floors, parent regressions, and the one selected primary innovation",
     ])
+    if focus.get("focus_id") == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+        bundle = policy.get("legacy_consumer_migration_bundle") or {}
+        lines.extend([
+            "- this is a system-owned universal migration bundle, not a selectable state_learning innovation",
+            f"- migration_bundle_id={bundle.get('bundle_id')}",
+            f"- migration_bundle_digest={bundle.get('bundle_digest')}",
+            "- migration_required_checks="
+            + ", ".join(bundle.get("required_checks") or []),
+            "- migration_consumer_files="
+            + ", ".join(bundle.get("consumer_files") or []),
+            "- exactly one total task MUST exist and carry the complete legacy_consumer_migration contract; state_learning and parallel support/strategy tasks are forbidden in this generation",
+            "- the system plan compiler discards other tasks and rebuilds the sole task's prompt plus exact bundle/check/file scope",
+            "- quality gates re-run every migration counterfactual; all four must pass before ordinary one-primary innovation resumes",
+        ])
+    else:
+        lines.extend([
+            f"- innovation_shadow_checks={', '.join(focus.get('innovation_checks') or [])}",
+            "- state_learning declares exactly one primary strategy innovation; only its mapped consumer check is newly blocking, while other ordinary strategy dimensions stay shadow/advisory",
+            "- exactly one task MUST set architecture_focus_id exactly to selected_focus and declare one typed state_learning primary innovation",
+            "- a label is not proof: quality gates re-run AST/dynamic evidence for correctness floors, parent regressions, and the one selected primary innovation",
+        ])
     return "\n".join(lines)
 
 

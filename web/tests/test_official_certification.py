@@ -1,4 +1,5 @@
 import fcntl
+from copy import deepcopy
 import hashlib
 import inspect
 import json
@@ -51,30 +52,46 @@ from official_job_envelope import build_job_envelope
 
 @pytest.fixture(scope="session")
 def _official_test_signing_material(tmp_path_factory):
+    import official_certificate_signing
+
     root = tmp_path_factory.mktemp("official-signing")
     key = root / "key"
     subprocess.run(
         ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
         check=True,
     )
-    allowed = root / "allowed_signers"
-    allowed.write_text(
-        "pok-official-certifier namespaces=\"pok-official-cert-v4\" "
-        + Path(str(key) + ".pub").read_text(encoding="utf-8"),
-        encoding="utf-8",
+    pending = deepcopy(official_certificate_signing.load_signer_trust_policy())
+    pending["current_signer"] = {
+        "epoch": pending["current_epoch"],
+        "state": "rotation-required",
+        "key_fingerprint": None,
+        "public_key_sha256": None,
+    }
+    pending["policy_digest"] = official_certificate_signing._policy_digest(pending)
+    pending_path = root / "pending_signer_policy.json"
+    pending_path.write_text(json.dumps(pending, indent=2) + "\n", encoding="utf-8")
+    policy_payload, allowed_payload = (
+        official_certificate_signing.build_signer_rotation_material(
+            Path(str(key) + ".pub"), trust_policy=pending_path
+        )
     )
-    return key, allowed
+    allowed = root / "allowed_signers"
+    allowed.write_text(allowed_payload, encoding="utf-8")
+    policy = root / "signer_policy.json"
+    policy.write_text(json.dumps(policy_payload, indent=2) + "\n", encoding="utf-8")
+    return key, allowed, policy
 
 
 @pytest.fixture(autouse=True)
 def _disable_live_official_llm(monkeypatch, tmp_path, _official_test_signing_material):
     import official_certificate_signing
 
-    key, allowed = _official_test_signing_material
+    key, allowed, policy = _official_test_signing_material
     monkeypatch.setenv("POK_OFFICIAL_LLM_ANALYSIS", "0")
     monkeypatch.setenv("POK_OFFICIAL_EVIDENCE_STORE", str(tmp_path / "evidence-store"))
     monkeypatch.setenv("POK_OFFICIAL_SIGNING_KEY", str(key))
     monkeypatch.setattr(official_certificate_signing, "DEFAULT_ALLOWED_SIGNERS", allowed)
+    monkeypatch.setattr(official_certificate_signing, "DEFAULT_TRUST_POLICY", policy)
 
 
 class FakeResult:
@@ -238,7 +255,13 @@ def _full_report(
     issues=None,
     thp_hands: int = 70,
 ):
-    from official_execution_profile import execution_profile_identity
+    from dataclasses import asdict
+
+    from managed_bot_executor import IsolationIdentity
+    from official_execution_profile import (
+        execution_profile_identity,
+        load_execution_profile,
+    )
 
     suite = tmp_path / "full-suite"
     execution_profile = {
@@ -247,6 +270,30 @@ def _full_report(
         "issues": [],
         "observed_tools": {},
     }
+    profile = load_execution_profile()
+    managed_identity = profile["managed_executor"]
+    seccomp = managed_identity["seccomp"]
+    isolation = asdict(IsolationIdentity(
+        policy_sha256=seccomp["policy_sha256"],
+        bpf_sha256=seccomp["bpf_sha256"],
+        bpf_size=seccomp["bpf_size"],
+    ))
+    source_sha256 = managed_identity["source"]["sha256"]
+
+    def isolation_row(connection, launch, artifact_hash):
+        return {
+            "connection": connection,
+            "name": launch["name"],
+            "role": launch["role"],
+            "instance_id": launch["instance_id"],
+            "seat": launch["seat"],
+            "path": launch["path"],
+            "artifact_hash": artifact_hash,
+            "endpoint_lease": {"consumed": True, "closed": True},
+            "execution_profile": execution_profile_identity(),
+            "managed_executor_source_sha256": source_sha256,
+            "isolation": isolation,
+        }
     receipts = []
     for kind, count in (("self_play", 5), ("opponent", 3)):
         for round_index in range(1, count + 1):
@@ -297,6 +344,20 @@ def _full_report(
             bot_b_path = candidate if kind == "self_play" else opponent
             bot_a_hash = hash_path(candidate)
             bot_b_hash = hash_path(bot_b_path)
+            bot_a_launch = {
+                "path": str(candidate),
+                "name": "BotA" if kind == "self_play" else "Candidate",
+                "role": "candidate",
+                "instance_id": "candidate_a" if kind == "self_play" else "candidate",
+                "seat": "upper",
+            }
+            bot_b_launch = {
+                "path": str(bot_b_path),
+                "name": "BotB" if kind == "self_play" else "Opponent",
+                "role": "candidate" if kind == "self_play" else "opponent",
+                "instance_id": "candidate_b" if kind == "self_play" else "opponent",
+                "seat": "lower",
+            }
             receipts.append({
                 "round_id": f"{kind}_{round_index:02d}",
                 "round_kind": kind,
@@ -304,14 +365,22 @@ def _full_report(
                 "passed": passed,
                 "issues": issues or [],
                 "target_hands": 70,
-                "bot_a": {"path": str(candidate)},
-                "bot_b": {"path": str(bot_b_path)},
+                "bot_a": bot_a_launch,
+                "bot_b": bot_b_launch,
                 "environment": {"execution_profile": execution_profile},
                 "formal_execution": {
                     "sandboxed": True,
                     **execution_profile_identity(),
                     "bot_a_artifact_hash": bot_a_hash,
                     "bot_b_artifact_hash": bot_b_hash,
+                    "bot_isolation": {
+                        "schema_version": 1,
+                        "authority": "central-managed-executor-process-observation",
+                        "connections": {
+                            "A": isolation_row("A", bot_a_launch, bot_a_hash),
+                            "B": isolation_row("B", bot_b_launch, bot_b_hash),
+                        },
+                    },
                 },
                 "wire_probe": {"enabled": True, "issues": []},
                 "log_summary": {
@@ -345,6 +414,42 @@ def _full_report(
             "formal_execution": execution_profile,
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_issue"),
+    [
+        ("missing_b", "official_formal_bot_isolation_connections_mismatch"),
+        ("policy", "official_formal_bot_isolation_A_policy_mismatch"),
+        ("source", "official_formal_bot_isolation_A_managed_executor_source_sha256_mismatch"),
+        ("lease", "official_formal_bot_isolation_A_endpoint_lease_mismatch"),
+        ("instance", "official_formal_bot_isolation_instance_ids_not_unique"),
+    ],
+)
+def test_formal_execution_validator_binds_both_managed_processes(
+    tmp_path, mutation, expected_issue
+):
+    from official_certification import _formal_execution_issues
+
+    candidate = _bot(tmp_path / "national_v200")
+    opponent = _bot(tmp_path / "national_v199")
+    receipt = _full_report(tmp_path, candidate, opponent)["report"]["rounds"][0]
+    assert _formal_execution_issues(receipt) == []
+
+    tampered = deepcopy(receipt)
+    connections = tampered["formal_execution"]["bot_isolation"]["connections"]
+    if mutation == "missing_b":
+        connections.pop("B")
+    elif mutation == "policy":
+        connections["A"]["isolation"]["bpf_sha256"] = "f" * 64
+    elif mutation == "source":
+        connections["A"]["managed_executor_source_sha256"] = "f" * 64
+    elif mutation == "lease":
+        connections["A"]["endpoint_lease"]["closed"] = False
+    else:
+        connections["B"]["instance_id"] = connections["A"]["instance_id"]
+
+    assert expected_issue in _formal_execution_issues(tampered)
 
 
 def test_queued_smoke_result_cannot_downgrade_newer_full_certificate(
