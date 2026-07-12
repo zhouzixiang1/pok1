@@ -30,6 +30,7 @@ SYSTEMD_PROPERTIES = (
     "WorkingDirectory", "Id",
 )
 QUIESCENT_PROPERTIES = SYSTEMD_PROPERTIES[:7] + ("CollectMode",)
+SETTLE_PROPERTIES = SYSTEMD_PROPERTIES + ("Result",)
 
 
 def _canonical_sha256(payload: dict[str, Any]) -> str:
@@ -506,6 +507,55 @@ def verify_collector_quiescence(
     }
 
 
+def _reset_failed_bound_unit(
+    preflight: dict[str, str], source_dir: Path
+) -> None:
+    """Clear SIGKILL's failed state only for the bound, empty invocation."""
+    current = _systemd_show(preflight["Id"], SETTLE_PROPERTIES)
+    if current["LoadState"] == "not-found":
+        return
+    if current["InvocationID"] != preflight["InvocationID"]:
+        raise RuntimeError("collector invocation changed while settling")
+    if current["ActiveState"] != "failed":
+        return
+    if (
+        any(
+            current[field] != preflight[field]
+            for field in (
+                "LoadState", "Transient", "KillMode", "Restart",
+                "InvocationID", "CollectMode", "WorkingDirectory", "Id",
+            )
+        )
+        or current["MainPID"] != "0"
+        or current["Result"] != "signal"
+        or current["ControlGroup"] not in {"", preflight["ControlGroup"]}
+        or current["ExecStart"].split(" ; stop_time=", 1)[0]
+        != preflight["ExecStart"].split(" ; stop_time=", 1)[0]
+    ):
+        raise RuntimeError("collector invocation changed while settling")
+    _present, pids = _cgroup_processes({preflight["ControlGroup"]})
+    if pids or _proc_matches(source_dir):
+        return
+    second = _systemd_show(preflight["Id"], SETTLE_PROPERTIES)
+    second_present, second_pids = _cgroup_processes(
+        {preflight["ControlGroup"]}
+    )
+    if (
+        second != current
+        or second_present != _present
+        or second_pids != pids
+        or _proc_matches(source_dir)
+    ):
+        raise RuntimeError("collector invocation changed while settling")
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", preflight["Id"]],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("cannot settle the stopped collector unit") from exc
+
+
 def validate_quiescence_receipt(receipt: Any) -> None:
     required = {
         "schema", "collector_unit", "source_dir", "load_state", "transient",
@@ -592,10 +642,6 @@ def stop_bound_collector(
             check=True, capture_output=True, text=True, timeout=10,
         )
         stop_accepted = True
-        subprocess.run(
-            ["systemctl", "--user", "stop", "--no-block", collector_unit],
-            check=False, capture_output=True, text=True, timeout=10,
-        )
     except Exception as exc:
         if frozen and not stop_accepted:
             try:
@@ -614,5 +660,6 @@ def stop_bound_collector(
                 collector_unit, source_dir, running
             )
         except RuntimeError:
+            _reset_failed_bound_unit(preflight, source_dir)
             time.sleep(0.1)
     raise RuntimeError("collector control group did not become quiescent")
