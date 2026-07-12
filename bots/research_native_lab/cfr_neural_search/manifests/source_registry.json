@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "retrieved_at": "2026-07-12T00:00:00+08:00",
+  "implementation_policy": "clean-room; no external source copied",
+  "sources": [
+    {
+      "id": "cfr-2007",
+      "kind": "paper",
+      "version": "NIPS 2007 conference paper",
+      "url": "https://martin.zinkevich.org/publications/regretpoker.pdf",
+      "software_license": "none-granted-by-paper",
+      "use": "mathematical reference"
+    },
+    {
+      "id": "mccfr-2009",
+      "kind": "paper",
+      "version": "NIPS 2009 conference paper",
+      "url": "https://papers.nips.cc/paper_files/paper/2009/hash/00411460f7c92d2124a67ea0f4cb5f85-Abstract.html",
+      "software_license": "none-granted-by-paper",
+      "use": "external-sampling traversal reference"
+    },
+    {
+      "id": "cfr-plus-2015",
+      "kind": "paper",
+      "version": "IJCAI 2015 conference paper",
+      "url": "https://www.ijcai.org/Proceedings/15/Papers/097.pdf",
+      "software_license": "none-granted-by-paper",
+      "use": "regret-matching-plus reference"
+    },
+    {
+      "id": "dcfr-2019",
+      "kind": "paper",
+      "version": "AAAI 2019 33(01); arXiv:1809.04040v3",
+      "url": "https://ojs.aaai.org/index.php/AAAI/article/view/4007",
+      "software_license": "none-granted-by-paper",
+      "use": "discount schedule reference"
+    },
+    {
+      "id": "deepstack-2017",
+      "kind": "paper",
+      "version": "Science 356(6337), 2017 plus supplement",
+      "url": "https://poker.cs.ualberta.ca/publications/17science.pdf",
+      "software_license": "none-granted-by-paper",
+      "use": "future continual-solving and counterfactual-leaf reference"
+    },
+    {
+      "id": "safe-nested-solving-2017",
+      "kind": "paper",
+      "version": "arXiv:1705.02955",
+      "url": "https://arxiv.org/abs/1705.02955",
+      "software_license": "none-granted-by-paper",
+      "use": "future safe/nested solving reference"
+    },
+    {
+      "id": "deep-cfr-2019",
+      "kind": "paper",
+      "version": "PMLR 97, 2019",
+      "url": "https://proceedings.mlr.press/v97/brown19b.html",
+      "software_license": "none-granted-by-paper",
+      "use": "future approximation ablation reference"
+    },
+    {
+      "id": "vr-mccfr-2019",
+      "kind": "paper",
+      "version": "AAAI 2019 33(01)",
+      "url": "https://ojs.aaai.org/index.php/AAAI/article/view/4048",
+      "software_license": "none-granted-by-paper",
+      "use": "future variance-reduction reference"
+    },
+    {
+      "id": "ox-search-2024",
+      "kind": "paper",
+      "version": "PMLR 235, 2024",
+      "url": "https://proceedings.mlr.press/v235/ge24b.html",
+      "software_license": "none-granted-by-paper",
+      "use": "future adaptation-safety reference"
+    },
+    {
+      "id": "bayes-bluff-2005",
+      "kind": "paper",
+      "version": "UAI 2005",
+      "url": "https://webdocs.cs.ualberta.ca/~mbowling/papers/05uai.pdf",
+      "software_license": "none-granted-by-paper",
+      "use": "future opponent-posterior reference"
+    },
+    {
+      "id": "robust-counter-strategies-2007",
+      "kind": "paper",
+      "version": "NIPS 2007",
+      "url": "https://papers.nips.cc/paper_files/paper/2007/file/6e7b33fdea3adc80ebd648fffb665bb8-Paper.pdf",
+      "software_license": "none-granted-by-paper",
+      "use": "future robust exploitation reference"
+    },
+    {
+      "id": "safe-opponent-exploitation-2015",
+      "kind": "paper",
+      "version": "ACM TEAC 3(2), 2015",
+      "url": "https://www.cs.cmu.edu/~sandholm/www/safeExploitation.teac15.pdf",
+      "software_license": "none-granted-by-paper",
+      "use": "future safety gate reference"
+    },
+    {
+      "id": "open-spiel",
+      "kind": "official-repository",
+      "version": "6c8edc829962967730e5ff353340df75847fa184",
+      "url": "https://github.com/google-deepmind/open_spiel/tree/6c8edc829962967730e5ff353340df75847fa184",
+      "software_license": "Apache-2.0",
+      "use": "read-only algorithm and numerical cross-reference"
+    },
+    {
+      "id": "rebel",
+      "kind": "official-repository",
+      "version": "7960a42750f3407ea9eb2c3333d4c2a7961f6df4",
+      "url": "https://github.com/facebookresearch/rebel/tree/7960a42750f3407ea9eb2c3333d4c2a7961f6df4",
+      "software_license": "Apache-2.0",
+      "use": "boundary record only"
+    },
+    {
+      "id": "decisionholdem",
+      "kind": "official-repository",
+      "version": "a9ea9a545c7bb24f4e657bc6d1f75af66aa1bb51",
+      "url": "https://github.com/AI-Decision/DecisionHoldem/tree/a9ea9a545c7bb24f4e657bc6d1f75af66aa1bb51",
+      "software_license": "AGPL-3.0",
+      "use": "do-not-copy; paper-level boundary record only"
+    }
+  ]
+}
