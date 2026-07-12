@@ -61,3 +61,9 @@ STABILITY_REPORT.json
 stability-logs.tar.gz
 stability-records/
 pok-arena-ctl/
+
+# 扩展功能产物
+arena.db
+*.db
+*.db-journal
+logs/
