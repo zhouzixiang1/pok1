@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import socket
 import sys
 import time
@@ -23,9 +24,11 @@ from pathlib import Path
 
 import typer
 
+from .auth import AuthManager
 from .main import WEB_DEFAULT_PORT, run_server
 from .server.match_manager import MatchManager
 from .server.tcp_server import DEFAULT_HOST, DEFAULT_PORT
+from .store import DEFAULT_DB_PATH, Store
 
 app = typer.Typer(
     help="pok-arena: 国赛德州扑克对弈平台 web 复刻",
@@ -291,6 +294,152 @@ def status(
     typer.echo(f"matches_played: {data.get('matches_played')}")
     if data.get("server_addr"):
         typer.echo(f"server_addr:    {data.get('server_addr')}")
+
+
+# ── 扩展命令:天梯/用户/历史/对局/注册/管理员/清理 ──────────
+
+@app.command()
+def leaderboard(
+    top: int = typer.Option(20, "--top", help="前 N 名"),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), "--db-path"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """天梯榜(Glicko-2 rating 排序 + 战绩 + 净筹码)。"""
+    rows = Store(db_path).leaderboard(top)
+    if json_out:
+        typer.echo(json.dumps(rows, ensure_ascii=False, indent=2)); return
+    if not rows:
+        typer.echo("(无评分记录,先 serve 跑几场)"); return
+    typer.echo(f"{'排名':<4} {'bot':<18} {'rating':>8} {'RD':>6} {'W-L-D':>8} {'净筹码':>10}")
+    for i, r in enumerate(rows, 1):
+        typer.echo(f"{i:<4} {r['name']:<18} {r['rating']:>8.1f} {r['rd']:>6.1f} "
+                   f"{r['wins']}-{r['losses']}-{r['draws']:>3} {r['net_chips']:>10}")
+
+
+@app.command()
+def user(
+    name: str = typer.Argument(..., help="bot 名"),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), "--db-path"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """用户战绩(rating + W/L/D + 对各对手 bb/100 + 最近对局)。"""
+    s = Store(db_path)
+    u = s.get_user(name)
+    if u is None:
+        typer.echo(f"用户不存在: {name}", err=True); raise typer.Exit(code=1)
+    r = s.get_rating(name)
+    ps = s.pair_stats_for(name)
+    recent = s.list_matches(user=name, limit=10)
+    if json_out:
+        typer.echo(json.dumps({"user": u, "rating": r, "pair_stats": ps, "recent": recent},
+                              ensure_ascii=False, indent=2)); return
+    typer.echo(f"=== {u['display_name']} ({name}) ===")
+    if u.get("team"):
+        typer.echo(f"队伍: {u['team']}")
+    if r:
+        typer.echo(f"rating: {r['rating']:.1f} (RD {r['rd']:.1f})  战绩 {r['wins']}-{r['losses']}-{r['draws']}  "
+                   f"净筹码 {r['net_chips']}  对局 {r['matches_played']}")
+    for p in ps:
+        opp = p['name_b'] if p['name_a'] == name else p['name_a']
+        typer.echo(f"  vs {opp}: bb/100 {p['bb_per_100_mean']:.2f} "
+                   f"CI=[{p['ci_low']:.2f},{p['ci_high']:.2f}] n={p['samples']}")
+    typer.echo(f"最近 {len(recent)} 场:")
+    for m in recent:
+        opp = m['name_b'] if m['name_a'] == name else m['name_a']
+        me = m['earnings_a'] if m['name_a'] == name else m['earnings_b']
+        typer.echo(f"  {m['match_id']} vs {opp} earnings={me} {m['reason']}")
+
+
+@app.command(name="history")
+def history_cmd(
+    user_name: str = typer.Option(None, "--user", help="按 bot 筛选"),
+    limit: int = typer.Option(20, "--limit"),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), "--db-path"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """历史对局(可按 bot 筛选)。"""
+    rows = Store(db_path).list_matches(user=user_name, limit=limit)
+    if json_out:
+        typer.echo(json.dumps(rows, ensure_ascii=False, indent=2)); return
+    if not rows:
+        typer.echo("(无对局记录)"); return
+    for m in rows:
+        typer.echo(f"{m['match_id'][:32]}  {m['name_a']} vs {m['name_b']}  "
+                   f"{m['earnings_a']}/{m['earnings_b']}  {m['hands_played']}手  {m['reason']}")
+
+
+@app.command(name="match")
+def match_cmd(
+    match_id: str = typer.Argument(...),
+    records_dir: Path = typer.Option(DEFAULT_RECORDS_DIR, "--records-dir"),
+) -> None:
+    """查看一场对局的 THP 棋谱(等同 thp show)。"""
+    text = MatchManager(records_dir=str(records_dir)).read_thp(match_id)
+    if text is None:
+        typer.echo(f"对局不存在: {match_id}", err=True); raise typer.Exit(code=1)
+    sys.stdout.buffer.write(text.encode("gb2312", errors="replace"))
+
+
+@app.command()
+def register(
+    name: str = typer.Argument(..., help="bot 名"),
+    display: str = typer.Option(None, "--display", help="显示名(默认=name)"),
+    team: str = typer.Option("", "--team"),
+    note: str = typer.Option("", "--note"),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), "--db-path"),
+) -> None:
+    """预注册 bot 用户(管理员手动注册,含元数据)。"""
+    s = Store(db_path)
+    created = s.ensure_user(name, display_name=display, team=team, note=note)
+    if display or team or note:
+        s.update_user(name, display_name=display or name, team=team, note=note)
+    typer.echo(f"{'新建' if created else '已存在'} bot 用户: {name}")
+    typer.echo(json.dumps(s.get_user(name), ensure_ascii=False, indent=2))
+
+
+admin_app = typer.Typer(help="管理员", no_args_is_help=True)
+app.add_typer(admin_app, name="admin")
+
+
+@admin_app.command("set-password")
+def admin_set_password(
+    username: str = typer.Option("admin", "--username"),
+    password: str = typer.Option(os.environ.get("POK_ARENA_ADMIN_PASSWORD", ""),
+                                 "--password", help="管理员密码(或 env POK_ARENA_ADMIN_PASSWORD)"),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), "--db-path"),
+) -> None:
+    """设置管理员密码(用于 web /admin 登录)。"""
+    if not password:
+        typer.echo("密码必填(--password 或 env POK_ARENA_ADMIN_PASSWORD)", err=True)
+        raise typer.Exit(code=1)
+    AuthManager(Store(db_path)).set_password(username, password)
+    typer.echo(f"管理员 {username} 密码已设置")
+
+
+@app.command()
+def clean(
+    keep: int = typer.Option(1000, "--keep", help="保留最近 N 场 logs/records"),
+    records_dir: Path = typer.Option(DEFAULT_RECORDS_DIR, "--records-dir"),
+) -> None:
+    """清理旧 logs/ 与 records/(保留最近 N 场,按 mtime)。"""
+    import shutil
+    cleaned = 0
+    for d in [Path("logs"), Path(records_dir)]:
+        if not d.exists():
+            continue
+        items = sorted(
+            [p for p in d.iterdir() if p.is_dir() or p.suffix == ".thp"],
+            key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in items[keep:]:
+            try:
+                if old.is_dir():
+                    shutil.rmtree(old)
+                else:
+                    old.unlink()
+                cleaned += 1
+            except OSError:
+                pass
+    typer.echo(f"清理 {cleaned} 个旧项(保留最近 {keep})")
 
 
 if __name__ == "__main__":
