@@ -1117,8 +1117,13 @@ formal role freeze. The existing v3 model format remains unchanged; encoded v3
 rows carry optional outcome supervision so a separately versioned future model
 can add an outcome head without silently changing old checkpoint semantics.
 
-The role dataset contract is now `opponent_role_dataset_v3` and records
-`national_70_hand_outcome_validated=true`. Policy evaluation uses the versioned
+The formal role dataset contract is now `opponent_role_dataset_v4`. In addition
+to `national_70_hand_outcome_validated=true`, its consumers recompute the exact
+pass-plan prefix, source split mapping, five-way opponent partition, deck/bot
+seed disjointness, candidate/opponent snapshots, frozen pool/registry copies,
+and current freeze-tool hash before accepting the 160/160 boundary. Historical
+v3 smoke manifests remain diagnostics and cannot authorize formal training.
+Policy evaluation uses the versioned
 `single_decision_70_hand_positive_outcome_uplift_clustered_v1` diagnostic. It
 first collapses sampled decision opportunities within each match cluster, then
 bootstraps one point per 70-hand match, both ordinarily and within opponent
@@ -1270,6 +1275,21 @@ both uncertainty weights exactly 1.0, current trainer dependency hashes, and
 the self-hashed full-grid verification proof. Every calibration, report, and
 manifest keeps `deployment_policy_value=false` and
 `strength_evidence=false`.
+
+The formal report and artifact schemas are now v2 and bind the complete
+calibration code closure, including outcome fitting, v3/v4 scaling and
+aggregation semantics, and the file-snapshot/publication helper. Scaling
+summary, role manifest, train/early-stop/model-calibration files, exposure
+events, and every selected member's checkpoint/report/authorization/manifest
+are recorded as one self-hashed input receipt. Each member checkpoint is loaded
+from the same descriptor snapshot whose bytes were hashed, rather than hashing
+one pathname read and loading another. Before publication, the tool holds the
+ledger lock, rechecks every external receipt and the exact 160-pass provenance,
+runs the strict ensemble loader against the staging tree on CPU, fsyncs the
+complete flat tree, and uses `renameat2(RENAME_NOREPLACE)`. A later loader
+requires the original train/early-stop/model-calibration exposure events but
+allows the append-only ledger to gain policy-selection or policy-gate events;
+normal downstream role opening therefore does not invalidate calibration.
 
 `select_opponent_multitask_v4_policy.py` reuses the v3 value/response inference
 preparation but does not reuse the v3 scalar action selector. For every Torch
@@ -1506,6 +1526,46 @@ and validates persisted plans, but the stopped corpus binds the older collector
 code hash. Resuming it consequently requires explicit provenance handling and
 operator authorization; this work does not silently restart, upgrade, or
 discard it.
+
+`recover_legacy_oppmodel_collection.py` is the narrow recovery path for this
+specific schema-4-to-5 interruption. Its default is read-only and it cannot
+launch probes or read the replacement live ratings file. An apply requires an
+external reviewed-expectations document that binds the schema-4 manifest and
+state, every completed plan, the pass-76 plan, all six cumulative JSONL files,
+the opponent registry, both collector code roots, and the archived ratings and
+identity-migration receipt. It scans every row after the atomic state limit,
+requires exact task/split/deck/bot-seed membership and unique row keys, and
+requires a complete 12-value-row tail plus the reviewed behavior count through
+hand 69 for every task. Publication holds the collector lock, first installs a
+poison manifest, journals durable before/after images, and either publishes all
+four metadata targets or rolls back without overwriting unknown concurrent
+bytes. The migration is pinned to collector schema 5 and pass-plan schema 2;
+future schema changes require another review.
+
+The first 75 plans cannot be retroactively given ratings bytes that the
+schema-4 collector never saved. Formal freeze therefore accepts that legacy
+prefix only when the self-hashed recovery receipt binds every original plan,
+the exact reviewed pool/data prefixes, the archived-ratings transition, and
+the recovery/current-collector code roots. It replays every old task's split,
+snapshot, tag, deck block, bot seed, and pool row with the current seed formula.
+The recovered pass and every later pass still require the full current plan and
+frozen-ratings schema. A bare old plan, a re-signed inconsistent receipt, or a
+changed collector/probe/cross-hand code root remains a hard failure.
+
+A real read-only audit of the unchanged absolute corpus found pass 76
+recoverable without reading current ratings or executing a probe. It contains
+72 value rows and 370 behavior rows: train adds 48/256, validation adds 12/73,
+and held-out adds 12/41. The archived ratings SHA-256 is
+`fef82eafd22fb7e5c4900e8b1bdd4ce898f7cf3d40ff6ffabc8034deb2b8a3f6`;
+the legacy and current collector hashes observed by that audit are respectively
+`fea501c6fd5ad893d5c1f82ffdbad8b238ffa0dd5c3fb6aff81dac406e6184ee`
+and `431ddf87dba9f3e7efbc7491d899689102d0e6adb051bc1aea53dee71dc6cc89`.
+The expectations file used for a future mutation must still be independently
+persisted and reviewed. No `--apply` was run, the atomic boundary remains
+75/160, and neither the old nor current collector is authorized to start yet.
+With the exact-boundary replay, calibration input receipts, and recovery tests
+included, the complete neural-lab suite passes 679 tests and all 33 national
+protocol tests pass.
 
 ## Candidate-Only Native V4 Ablation Contract
 
