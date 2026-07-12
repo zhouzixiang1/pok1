@@ -9,12 +9,14 @@ import sys
 from typing import Any
 
 
+ROOT = Path(__file__).resolve().parents[3]
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import freeze_opponent_role_dataset as freeze  # noqa: E402
 import longrun_collect_oppmodel as collector  # noqa: E402
+import migrate_oppmodel_collector_capacity as capacity_migration  # noqa: E402
 import opponent_role_freeze_plan as role_plan  # noqa: E402
 
 
@@ -112,6 +114,34 @@ def add_formal_role_provenance(
     *,
     passes: int = 160,
 ) -> None:
+    outputs = manifest.setdefault("outputs", {})
+    for prefix in freeze.PREFIXES:
+        for role in freeze.EVIDENCE_ROLES:
+            outputs.setdefault(f"{prefix}_{role}.jsonl", {"rows": 0})
+    row_counts = {
+        prefix: sum(
+            int(outputs[f"{prefix}_{role}.jsonl"]["rows"])
+            for role in freeze.EVIDENCE_ROLES
+        )
+        for prefix in freeze.PREFIXES
+    }
+    manifest["row_identity"] = {
+        "schema": capacity_migration.ROW_IDENTITY_SCHEMA,
+        "fields": list(capacity_migration.ROW_IDENTITY_FIELDS),
+        "modalities": {
+            prefix: {
+                "rows": rows,
+                "unique_rows": rows,
+                "identity_sha256": _sha(
+                    f"fixture:{prefix}:{rows}".encode("utf-8")
+                ),
+            }
+            for prefix, rows in row_counts.items()
+        },
+    }
+    manifest.setdefault("invariants", {})[
+        "stable_row_identity_unique"
+    ] = True
     candidate = Path(manifest["candidate_snapshot"]["path"])
     candidate_digest = collector._directory_digest(candidate)
     manifest["candidate_snapshot"]["sha256"] = candidate_digest
@@ -135,14 +165,17 @@ def add_formal_role_provenance(
     deck_seed_guard = 10
     bot_seed_base = 20_000_000
     resume_contract = {
-        "schema_version": collector.COLLECTION_CONTRACT_SCHEMA_VERSION,
+        "schema_version": collector.ACTIVE_COLLECTION_CONTRACT_SCHEMA_VERSION,
         "candidate": str(candidate),
         "candidate_sha256": candidate_digest,
         "candidate_execution_path": str(candidate),
         "candidate_snapshot_sha256": candidate_digest,
         "ratings_path": str(ratings_path.resolve()),
-        "workers": 1,
-        "probe_workers": 4,
+        "workers": collector.MAX_OUTER_WORKERS,
+        "probe_workers": collector.MAX_PROBE_WORKERS,
+        "max_active_native_matches": collector.MAX_CONCURRENT_NATIVE_MATCHES,
+        "capacity_total_slots": collector.CAPACITY_TOTAL_SLOTS,
+        "capacity_first_slot": collector.CAPACITY_FIRST_SLOT,
         "hands": 70,
         "timeout_sec": 55,
         "strongest": len(all_opponents),
@@ -164,6 +197,12 @@ def add_formal_role_provenance(
         ),
         "cross_hand_sequence_sha256": _sha(
             (TOOLS / "cross_hand_sequence.py").read_bytes()
+        ),
+        "runtime_capacity_sha256": _sha(
+            (ROOT / "web" / "core" / "runtime_capacity.py").read_bytes()
+        ),
+        "national_native_sha256": _sha(
+            (ROOT / "web" / "core" / "national_native.py").read_bytes()
         ),
     }
     collection = {
@@ -265,8 +304,11 @@ def add_formal_role_provenance(
                 ]),
             )),
             "hands": 70,
-            "workers": 1,
-            "probe_workers": 4,
+            "workers": collector.MAX_OUTER_WORKERS,
+            "probe_workers": collector.MAX_PROBE_WORKERS,
+            "max_active_native_matches": collector.MAX_CONCURRENT_NATIVE_MATCHES,
+            "capacity_total_slots": collector.CAPACITY_TOTAL_SLOTS,
+            "capacity_first_slot": collector.CAPACITY_FIRST_SLOT,
             "decision_sampling": "uniform",
             "pool": [{
                 "name": task["name"],

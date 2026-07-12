@@ -11,7 +11,10 @@ from national_arena.models import ArenaSession
 from national_arena.storage import ArenaStore
 from national_bot_launcher import native_entry_supports_log_arg
 from runtime_capacity import (
+    CAPACITY_FIRST_SLOT_ENV,
+    CAPACITY_TOTAL_SLOTS_ENV,
     DEFAULT_CAPACITY_ROOT,
+    MAX_MATCH_SLOTS,
     acquire_match_slots_async,
     runtime_capacity_root,
     try_acquire_match_slots,
@@ -45,6 +48,112 @@ def test_runtime_capacity_lease_reserves_slots_across_callers(tmp_path):
     second = try_acquire_match_slots("daemon", 1, root=root, total_slots=2)
     assert second is not None
     second.release()
+
+
+def test_runtime_capacity_default_layout_remains_slots_zero_through_eleven(
+    tmp_path,
+):
+    root = tmp_path / "capacity"
+    lease = try_acquire_match_slots("default", 12, root=root)
+    assert lease is not None and lease.slots == 12
+    assert sorted(path.name for path in root.iterdir()) == [
+        f"match-slot-{index:02d}.lock" for index in range(12)
+    ]
+    lease.release()
+
+
+def test_runtime_capacity_offset_layout_reserves_operator_slots(tmp_path):
+    root = tmp_path / "capacity"
+    collector = try_acquire_match_slots(
+        "collector",
+        24,
+        root=root,
+        first_slot=4,
+        total_slots=MAX_MATCH_SLOTS,
+    )
+    assert collector is not None and collector.slots == 24
+    assert sorted(path.name for path in root.iterdir()) == [
+        f"match-slot-{index:02d}.lock" for index in range(4, 28)
+    ]
+
+    operator = try_acquire_match_slots(
+        "operator",
+        4,
+        root=root,
+        total_slots=4,
+    )
+    assert operator is not None and operator.slots == 4
+    assert sorted(path.name for path in root.iterdir()) == [
+        f"match-slot-{index:02d}.lock" for index in range(28)
+    ]
+
+    operator.release()
+    collector.release()
+
+
+def test_runtime_capacity_default_acquire_uses_strict_environment_layout(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "capacity"
+    monkeypatch.setenv(CAPACITY_FIRST_SLOT_ENV, "4")
+    monkeypatch.setenv(CAPACITY_TOTAL_SLOTS_ENV, "28")
+
+    collector = try_acquire_match_slots("collector", 24, root=root)
+
+    assert collector is not None and collector.slots == 24
+    assert sorted(path.name for path in root.iterdir()) == [
+        f"match-slot-{index:02d}.lock" for index in range(4, 28)
+    ]
+    collector.release()
+
+
+@pytest.mark.parametrize("value", ["", " 4", "04", "+4", "four"])
+def test_runtime_capacity_rejects_noncanonical_layout_environment(
+    tmp_path, monkeypatch, value
+):
+    monkeypatch.setenv(CAPACITY_FIRST_SLOT_ENV, value)
+    monkeypatch.setenv(CAPACITY_TOTAL_SLOTS_ENV, "28")
+
+    with pytest.raises(ValueError, match="environment"):
+        try_acquire_match_slots("collector", 1, root=tmp_path / "capacity")
+
+
+@pytest.mark.parametrize(
+    ("first_slot", "total_slots", "message"),
+    [
+        (-1, 12, "first_slot must be non-negative"),
+        (12, 12, "first_slot must be lower than total_slots"),
+        (13, 12, "first_slot must be lower than total_slots"),
+        (0, 0, "total_slots must be between 1 and 28"),
+        (0, 29, "total_slots must be between 1 and 28"),
+    ],
+)
+def test_runtime_capacity_rejects_invalid_slot_layout(
+    tmp_path, first_slot, total_slots, message
+):
+    root = tmp_path / "capacity"
+    with pytest.raises(ValueError, match=message):
+        try_acquire_match_slots(
+            "invalid",
+            1,
+            root=root,
+            first_slot=first_slot,
+            total_slots=total_slots,
+        )
+    assert not root.exists()
+
+
+def test_runtime_capacity_rejects_request_larger_than_offset_range(tmp_path):
+    root = tmp_path / "capacity"
+    with pytest.raises(ValueError, match=r"exceeds available slot range 4\.\.27"):
+        try_acquire_match_slots(
+            "collector",
+            25,
+            root=root,
+            first_slot=4,
+            total_slots=MAX_MATCH_SLOTS,
+        )
+    assert not root.exists()
 
 
 def test_runtime_capacity_default_is_host_shared_not_checkout_local(monkeypatch):

@@ -14,10 +14,13 @@ from typing import TextIO
 
 
 CAPACITY_ROOT_ENV = "POK_RUNTIME_CAPACITY_ROOT"
+CAPACITY_FIRST_SLOT_ENV = "POK_RUNTIME_CAPACITY_FIRST_SLOT"
+CAPACITY_TOTAL_SLOTS_ENV = "POK_RUNTIME_CAPACITY_TOTAL_SLOTS"
 DEFAULT_CAPACITY_ROOT = (
     Path(tempfile.gettempdir()) / f"pok-runtime-capacity-{os.geteuid()}"
 )
 DEFAULT_MATCH_SLOTS = 12
+MAX_MATCH_SLOTS = 28
 DEFAULT_CAPACITY_WAIT_SECONDS = 300.0
 
 
@@ -62,6 +65,55 @@ def _open_slot(path: Path) -> TextIO:
     return os.fdopen(fd, "r+", encoding="utf-8")
 
 
+def _validated_integer(value: int, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"runtime capacity {name} must be an integer")
+    return value
+
+
+def _environment_integer(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if not raw or raw.strip() != raw:
+        raise ValueError(f"runtime capacity environment {name} must be an integer")
+    try:
+        value = int(raw, 10)
+    except ValueError as exc:
+        raise ValueError(
+            f"runtime capacity environment {name} must be an integer"
+        ) from exc
+    if str(value) != raw:
+        raise ValueError(
+            f"runtime capacity environment {name} must use canonical decimal"
+        )
+    return value
+
+
+def _validated_slot_layout(
+    *, first_slot: int | None, total_slots: int | None
+) -> tuple[int, int]:
+    if first_slot is None:
+        first_slot = _environment_integer(CAPACITY_FIRST_SLOT_ENV, 0)
+    if total_slots is None:
+        total_slots = _environment_integer(
+            CAPACITY_TOTAL_SLOTS_ENV, DEFAULT_MATCH_SLOTS
+        )
+    first = _validated_integer(first_slot, name="first_slot")
+    total = _validated_integer(total_slots, name="total_slots")
+    if first < 0:
+        raise ValueError("runtime capacity first_slot must be non-negative")
+    if total < 1 or total > MAX_MATCH_SLOTS:
+        raise ValueError(
+            f"runtime capacity total_slots must be between 1 and {MAX_MATCH_SLOTS}"
+        )
+    if first >= total:
+        raise ValueError(
+            "runtime capacity first_slot must be lower than total_slots"
+        )
+    return first, total
+
+
 @dataclass
 class RuntimeCapacityLease:
     owner: str
@@ -91,17 +143,25 @@ def try_acquire_match_slots(
     count: int,
     *,
     root: str | Path | None = None,
-    total_slots: int = DEFAULT_MATCH_SLOTS,
+    first_slot: int | None = None,
+    total_slots: int | None = None,
 ) -> RuntimeCapacityLease | None:
-    requested = max(1, int(count))
-    total = max(1, int(total_slots))
-    if requested > total:
+    requested = _validated_integer(count, name="count")
+    if requested < 1:
+        raise ValueError("runtime capacity count must be at least 1")
+    first, total = _validated_slot_layout(
+        first_slot=first_slot,
+        total_slots=total_slots,
+    )
+    available = total - first
+    if requested > available:
         raise ValueError(
-            f"requested runtime capacity {requested} exceeds total slots {total}"
+            f"requested runtime capacity {requested} exceeds available slot range "
+            f"{first}..{total - 1} ({available} slots)"
         )
     directory = _prepare_capacity_root(root)
     handles: list[TextIO] = []
-    for index in range(total):
+    for index in range(first, total):
         try:
             handle = _open_slot(directory / f"match-slot-{index:02d}.lock")
         except Exception:
@@ -128,7 +188,8 @@ def acquire_match_slots(
     count: int = 1,
     *,
     root: str | Path | None = None,
-    total_slots: int = DEFAULT_MATCH_SLOTS,
+    first_slot: int | None = None,
+    total_slots: int | None = None,
     timeout: float | None = None,
     poll_interval: float = 0.1,
 ) -> RuntimeCapacityLease:
@@ -138,6 +199,7 @@ def acquire_match_slots(
             owner,
             count,
             root=root,
+            first_slot=first_slot,
             total_slots=total_slots,
         )
         if lease is not None:
@@ -152,7 +214,8 @@ async def acquire_match_slots_async(
     count: int = 1,
     *,
     root: str | Path | None = None,
-    total_slots: int = DEFAULT_MATCH_SLOTS,
+    first_slot: int | None = None,
+    total_slots: int | None = None,
     timeout: float | None = DEFAULT_CAPACITY_WAIT_SECONDS,
     poll_interval: float = 0.1,
 ) -> RuntimeCapacityLease:
@@ -163,6 +226,7 @@ async def acquire_match_slots_async(
             owner,
             count,
             root=root,
+            first_slot=first_slot,
             total_slots=total_slots,
         )
         if lease is not None:
