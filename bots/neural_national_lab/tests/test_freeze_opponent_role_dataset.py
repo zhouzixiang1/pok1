@@ -453,3 +453,24 @@ def test_freeze_requires_each_role_opponent_in_both_modalities(
 
     with pytest.raises(RuntimeError, match="opponent coverage mismatch"):
         _freeze(source, tmp_path / "out")
+
+
+def test_formal_160_freeze_requires_precommit_plan_before_data_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _collection(tmp_path)
+    manifest_path = source / "collection_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["passes_requested"] = 160
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    state_path = source / "collector_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["completed_passes"] = 160
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(
+        freeze, "_read_jsonl_snapshot",
+        lambda *args, **kwargs: pytest.fail("formal data was read before plan check"),
+    )
+
+    with pytest.raises(RuntimeError, match="requires --role-plan"):
+        _freeze(source, tmp_path / "out")

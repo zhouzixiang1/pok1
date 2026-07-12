@@ -27,6 +27,7 @@ from freeze_oppmodel_dataset import (  # noqa: E402
 )
 import longrun_collect_oppmodel as collector  # noqa: E402
 import migrate_oppmodel_collector_concurrency as concurrency_migration  # noqa: E402
+import opponent_role_freeze_plan as role_plan  # noqa: E402
 from match_outcome_schema import (  # noqa: E402
     derive_match_outcome_supervision,
     match_outcome_metadata,
@@ -311,10 +312,8 @@ def strategy_context_is_absent(row: dict[str, Any]) -> bool:
                 return False
     return True
 
-
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
 
 def _load_json_snapshot(path: Path) -> tuple[dict[str, Any], str]:
     raw = path.read_bytes()
@@ -325,7 +324,6 @@ def _load_json_snapshot(path: Path) -> tuple[dict[str, Any], str]:
     if not isinstance(payload, dict):
         raise RuntimeError(f"JSON object required: {path}")
     return payload, hashlib.sha256(raw).hexdigest()
-
 
 def _integer(value: Any, *, field: str, minimum: int | None = None) -> int:
     if isinstance(value, bool):
@@ -346,10 +344,8 @@ def _integer(value: Any, *, field: str, minimum: int | None = None) -> int:
         raise RuntimeError(f"{field} must be >= {minimum}")
     return number
 
-
 def _opponent(row: dict[str, Any]) -> str:
     return str(row.get("_opponent_label") or row.get("opponent") or "").strip()
-
 
 def _cluster_key(row: dict[str, Any]) -> tuple[str, int, int]:
     opponent = _opponent(row)
@@ -360,7 +356,6 @@ def _cluster_key(row: dict[str, Any]) -> tuple[str, int, int]:
         _integer(row.get("deck_seed_base"), field="deck_seed_base", minimum=0),
         _integer(row.get("bot_seed_base"), field="bot_seed_base", minimum=0),
     )
-
 
 def _collector_boundary(
     source_dir: Path,
@@ -393,12 +388,10 @@ def _collector_boundary(
         raise RuntimeError(f"collector state is missing {exc}") from exc
     return state, digest, completed, limits
 
-
 def _canonical_sha256(payload: Any) -> str:
     return hashlib.sha256(json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")).hexdigest()
-
 
 def _require_digest(value: Any, *, field: str, length: int = 64) -> str:
     text = str(value or "")
@@ -407,11 +400,8 @@ def _require_digest(value: Any, *, field: str, length: int = 64) -> str:
         raise RuntimeError(f"{field} is not a lowercase digest")
     return text
 
-
 def _prefix_sha256(path: Path, rows: int) -> str:
     return str(_prefix_details(path, rows)["sha256"])
-
-
 def _prefix_details(path: Path, rows: int) -> dict[str, int | str]:
     digest = hashlib.sha256()
     count = 0
@@ -425,7 +415,6 @@ def _prefix_details(path: Path, rows: int) -> dict[str, int | str]:
             size += len(line)
             count += 1
     return {"rows": count, "bytes": size, "sha256": digest.hexdigest()}
-
 
 def _legacy_recovery_contract(
     collection_manifest: dict[str, Any],
@@ -1167,6 +1156,10 @@ def validate_frozen_role_provenance(
     }
     if derived_roles != recorded_roles:
         raise ValueError("role dataset opponent partition changed")
+    if expected_passes == role_plan.FORMAL_EXPECTED_PASSES:
+        role_plan.validate_frozen_snapshot(
+            root, manifest, expected_passes=expected_passes
+        )
 
     task_opponents = {str(task["name"]) for task in tasks.values()}
     if set(opponents) != task_opponents:
@@ -1209,6 +1202,7 @@ def freeze_role_dataset(
     role_opponents: dict[str, set[str]],
     min_value_rows: dict[str, int] | None = None,
     min_behavior_rows: dict[str, int] | None = None,
+    role_plan_path: Path | None = None,
 ) -> dict[str, Any]:
     source_dir = source_dir.resolve()
     output_dir = output_dir.resolve()
@@ -1229,6 +1223,8 @@ def freeze_role_dataset(
         field="passes_requested",
         minimum=completed,
     )
+    if completed == requested == role_plan.FORMAL_EXPECTED_PASSES and role_plan_path is None:
+        raise RuntimeError("formal 160-pass role freeze requires --role-plan")
     if (collection.get("resume_contract") or {}).get("deck_seed_scheme") != (
         "disjoint_match_blocks_v1"
     ):
@@ -1248,6 +1244,17 @@ def freeze_role_dataset(
         validate_data_prefix=True,
     )
     roles = _normalize_roles(role_opponents, tasks)
+    minimum_rows = role_plan.normalize_minimum_rows(
+        min_value_rows, min_behavior_rows
+    )
+    plan_snapshot = None
+    if role_plan_path is not None:
+        plan_snapshot = role_plan.validate_for_freeze(
+            role_plan_path,
+            source_dir=source_dir,
+            role_opponents=role_opponents,
+            minimum_rows=minimum_rows,
+        )
 
     data: dict[str, dict[str, list[dict[str, Any]]]] = {}
     input_files = {}
@@ -1315,16 +1322,7 @@ def freeze_role_dataset(
                         f"{prefix}:{role}:{_opponent(row)}"
                     )
 
-    value_minimums = {role: 1 for role in EVIDENCE_ROLES}
-    behavior_minimums = {role: 1 for role in EVIDENCE_ROLES}
-    value_minimums.update(min_value_rows or {})
-    behavior_minimums.update(min_behavior_rows or {})
-    for prefix, minimums in (
-        ("cf", value_minimums), ("opponent_actions", behavior_minimums)
-    ):
-        unknown = set(minimums) - set(EVIDENCE_ROLES)
-        if unknown:
-            raise ValueError(f"unknown minimum roles: {sorted(unknown)}")
+    for prefix, minimums in minimum_rows.items():
         for role in EVIDENCE_ROLES:
             minimum = _integer(
                 minimums[role], field=f"minimum.{prefix}.{role}", minimum=0
@@ -1360,6 +1358,8 @@ def freeze_role_dataset(
             }, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        if plan_snapshot is not None:
+            (temporary / role_plan.PLAN_FILENAME).write_bytes(plan_snapshot["raw"])
 
         if _sha256(source_dir / "collector_state.json") != state_digest:
             raise RuntimeError("collector advanced while role freeze was running")
@@ -1402,6 +1402,10 @@ def freeze_role_dataset(
             "strategy_context_runtime_mode": STRATEGY_CONTEXT_RUNTIME_MODE,
             "roles": {role: sorted(names) for role, names in roles.items()},
             "role_source_contract": EXPECTED_SOURCE_SPLIT,
+            "role_minimum_rows": minimum_rows,
+            "role_precommit_plan": (
+                plan_snapshot["receipt"] if plan_snapshot is not None else None
+            ),
             "input_files": input_files,
             "completed_pool_snapshot": pool_manifest,
             "frozen_pool_snapshot": {
@@ -1458,6 +1462,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--role-plan", type=Path)
     for role in EXPLICIT_ROLES:
         parser.add_argument(
             f"--{role.replace('_', '-')}-opponent",
@@ -1483,6 +1488,7 @@ def main(argv: list[str] | None = None) -> int:
             min_behavior_rows=_role_minimums(
                 args.min_behavior_train, args.min_behavior_eval_role
             ),
+            role_plan_path=args.role_plan,
         )
     except (FileNotFoundError, FileExistsError, RuntimeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc

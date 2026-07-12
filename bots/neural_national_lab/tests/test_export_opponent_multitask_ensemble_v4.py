@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 from pathlib import Path
 import sys
@@ -171,6 +172,47 @@ def _policy() -> dict:
         "min_hand_lcb": 0.0,
         "use_lower": True,
     }
+
+
+def _write_real_checkpoint(path: Path, *, seed: int) -> str:
+    torch.manual_seed(seed)
+    model = models.model_from_scale("small", dropout=0.0).eval()
+    model_source = Path(models.__file__).resolve()
+    torch.save({
+        "schema": member_exporter.CHECKPOINT_SCHEMA,
+        "role_manifest_sha256": "b" * 64,
+        "training_artifact_sha256": {
+            "train": "7" * 64,
+            "early_stop": "8" * 64,
+        },
+        "source_completed_passes": 160,
+        "source_requested_passes": 160,
+        "source_collection_complete": True,
+        "code_artifacts": {
+            "test_model_source": {
+                "bytes": model_source.stat().st_size,
+                "sha256": hashlib.sha256(model_source.read_bytes()).hexdigest(),
+            }
+        },
+        "model_metadata": model.metadata(),
+        "state_dict": model.state_dict(),
+    }, path)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _real_calibrated_checkpoints(
+    tmp_path: Path,
+) -> tuple[dict, list[Path], list[str]]:
+    paths = [tmp_path / f"member-{seed}.pt" for seed in SEEDS]
+    digests = [
+        _write_real_checkpoint(path, seed=seed)
+        for path, seed in zip(paths, SEEDS, strict=True)
+    ]
+    return (
+        _calibrated(checkpoints=digests, checkpoint_paths=paths),
+        paths,
+        digests,
+    )
 
 
 class _CompleteDataset:
@@ -503,6 +545,90 @@ def test_real_checkpoint_preselection_budget_round_trip_binds_final_bundle(
     assert binding["runtime_identity_sha256"] == verified_a[
         "runtime_identity_sha256"
     ]
+
+
+def test_member_export_loads_the_exact_bound_checkpoint_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calibrated, _paths, checkpoint_sha256 = _real_calibrated_checkpoints(
+        tmp_path
+    )
+    loaded_snapshot_sha256 = []
+    original_load_checkpoint = exporter.load_checkpoint
+
+    def load_snapshot(source: object, *, device: str) -> tuple[object, dict]:
+        assert isinstance(source, io.BytesIO)
+        assert source.tell() == 0
+        loaded_snapshot_sha256.append(
+            hashlib.sha256(source.getvalue()).hexdigest()
+        )
+        return original_load_checkpoint(source, device=device)
+
+    monkeypatch.setattr(exporter, "load_checkpoint", load_snapshot)
+
+    payloads = exporter._export_verified_member_payloads(
+        calibrated, formal=True
+    )
+
+    assert loaded_snapshot_sha256 == checkpoint_sha256
+    assert [
+        payload["source"]["checkpoint_sha256"] for payload in payloads
+    ] == checkpoint_sha256
+
+
+def test_transient_checkpoint_replace_and_revert_cannot_change_exported_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calibrated, checkpoint_paths, checkpoint_sha256 = (
+        _real_calibrated_checkpoints(tmp_path)
+    )
+    first_path = checkpoint_paths[0]
+    original_model, original_checkpoint = exporter.load_checkpoint(
+        first_path, device="cpu"
+    )
+    expected_first = member_exporter.build_export_payload(
+        original_model,
+        original_checkpoint,
+        checkpoint_sha256=checkpoint_sha256[0],
+        outcome_calibration=calibrated["members"][0]["outcome_calibration"],
+    )
+    replacement_path = tmp_path / "replacement.pt"
+    replacement_sha256 = _write_real_checkpoint(replacement_path, seed=997)
+    backup_path = tmp_path / "original-backup.pt"
+    original_load_checkpoint = exporter.load_checkpoint
+    race_exercised = False
+
+    def load_during_transient_replace(
+        source: object, *, device: str
+    ) -> tuple[object, dict]:
+        nonlocal race_exercised
+        if not race_exercised:
+            race_exercised = True
+            first_path.replace(backup_path)
+            replacement_path.replace(first_path)
+            try:
+                return original_load_checkpoint(source, device=device)
+            finally:
+                first_path.replace(replacement_path)
+                backup_path.replace(first_path)
+        return original_load_checkpoint(source, device=device)
+
+    monkeypatch.setattr(
+        exporter, "load_checkpoint", load_during_transient_replace
+    )
+
+    payloads = exporter._export_verified_member_payloads(
+        calibrated, formal=True
+    )
+
+    assert race_exercised is True
+    assert hashlib.sha256(first_path.read_bytes()).hexdigest() == (
+        checkpoint_sha256[0]
+    )
+    assert hashlib.sha256(replacement_path.read_bytes()).hexdigest() == (
+        replacement_sha256
+    )
+    assert payloads[0] == expected_first
 
 
 def test_runtime_identity_changes_or_rejects_runtime_relevant_drift(

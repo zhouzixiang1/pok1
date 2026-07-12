@@ -83,6 +83,27 @@ def _scaling_contract(requested: dict) -> dict:
         }
         for role in ("train", "early_stop")
     }
+    intent_run_id = (
+        f"{run_id_prefix}-{scaling.SCALING_CONTRACT_INTENT_SUFFIX}"
+    )
+    intent_events = [
+        {
+            "sequence": index,
+            "timestamp_utc": "2026-07-12T00:00:00+00:00",
+            "event": "open",
+            "role": role,
+            "run_id": intent_run_id,
+            "opponents": roles[role]["opponents"],
+            "candidate_sha256": None,
+            "artifact_sha256": roles[role]["artifact_sha256"],
+        }
+        for index, role in enumerate(("train", "early_stop"), start=1)
+    ]
+    intent_exposure_sha256 = scaling._canonical_sha256({
+        "schema": scaling.TRAINING_EXPOSURE_RECEIPT_SCHEMA,
+        "run_id": intent_run_id,
+        "events": intent_events,
+    })
     unsigned = {
         "schema": scaling.RUN_CONTRACT_SCHEMA,
         "created_at": "2026-07-12T00:00:00+00:00",
@@ -100,7 +121,14 @@ def _scaling_contract(requested: dict) -> dict:
         "trainer_sha256": v4_trainer._code_artifacts()["trainer"]["sha256"],
         "training_code_artifacts": v4_trainer._code_artifacts(),
         "training_roles": {
-            "collection_boundary": {},
+            "collection_boundary": {
+                scaling.SCALING_CONTRACT_INTENT_FIELD: {
+                    "schema": scaling.SCALING_CONTRACT_INTENT_SCHEMA,
+                    "run_id": intent_run_id,
+                    "events": intent_events,
+                    "exposure_sha256": intent_exposure_sha256,
+                },
+            },
             "candidate_snapshot": {"name": "candidate", "sha256": "f" * 64},
             "roles": roles,
         },
@@ -325,7 +353,16 @@ def test_real_incomplete_scaling_resume_reuses_strict_training_artifact(
     assert scaling.main([*command, "--resume", "--training-workers", "2"]) == 0
     assert summary_path.read_bytes() == first_summary
     assert scaling._sha256(checkpoint) == first_checkpoint_sha256
-    assert exposure.status(ledger)["events"] == 2
+    ledger_status = exposure.status(ledger)
+    assert ledger_status["events"] == 4
+    raw_events = json.loads(ledger.read_text(encoding="utf-8"))["events"]
+    assert [event["role"] for event in raw_events] == [
+        "train", "early_stop", "train", "early_stop"
+    ]
+    assert [event["run_id"] for event in raw_events[:2]] == [
+        "real-resume-scaling-contract-intent",
+        "real-resume-scaling-contract-intent",
+    ]
 
     forbidden = output / "small_gru_seed101" / "policy_selection_result.json"
     forbidden.write_text("{}", encoding="utf-8")
@@ -335,7 +372,7 @@ def test_real_incomplete_scaling_resume_reuses_strict_training_artifact(
     assert len(quarantined) == 1
     assert (quarantined[0] / forbidden.name).is_file()
     assert not forbidden.exists()
-    assert exposure.status(ledger)["events"] == 2
+    assert exposure.status(ledger)["events"] == 4
 
     exposure.open_exposure(
         ledger,

@@ -18,7 +18,11 @@ from opponent_multitask_model_v4 import MODEL_FORMAT  # noqa: E402
 from train_opponent_multitask_v4 import REPORT_SCHEMA  # noqa: E402
 
 
-def _fake_contract(args, *, root, scales, encoders, seeds, created_at):
+def _fake_contract(
+    args, *, root, scales, encoders, seeds, created_at,
+    ledger_snapshot=None,
+):
+    del ledger_snapshot
     requested = {
         "scales": list(scales),
         "encoders": list(encoders),
@@ -61,6 +65,27 @@ def _fake_contract(args, *, root, scales, encoders, seeds, created_at):
         }
         for role in ("train", "early_stop")
     }
+    intent_run_id = (
+        f"{args.run_id_prefix}-{scaling.SCALING_CONTRACT_INTENT_SUFFIX}"
+    )
+    intent_events = [
+        {
+            "sequence": index,
+            "timestamp_utc": "2026-07-12T00:00:00+00:00",
+            "event": "open",
+            "role": role,
+            "run_id": intent_run_id,
+            "opponents": role_contracts[role]["opponents"],
+            "candidate_sha256": None,
+            "artifact_sha256": role_contracts[role]["artifact_sha256"],
+        }
+        for index, role in enumerate(("train", "early_stop"), start=1)
+    ]
+    intent_exposure_sha256 = scaling._canonical_sha256({
+        "schema": scaling.TRAINING_EXPOSURE_RECEIPT_SCHEMA,
+        "run_id": intent_run_id,
+        "events": intent_events,
+    })
     training_options = {
         attribute: getattr(args, attribute)
         for _, attribute in scaling.TRAINING_OPTION_SPECS
@@ -84,7 +109,14 @@ def _fake_contract(args, *, root, scales, encoders, seeds, created_at):
             "trainer": {"bytes": 1, "sha256": "b" * 64},
         },
         "training_roles": {
-            "collection_boundary": {},
+            "collection_boundary": {
+                scaling.SCALING_CONTRACT_INTENT_FIELD: {
+                    "schema": scaling.SCALING_CONTRACT_INTENT_SCHEMA,
+                    "run_id": intent_run_id,
+                    "events": intent_events,
+                    "exposure_sha256": intent_exposure_sha256,
+                },
+            },
             "candidate_snapshot": {"name": "candidate", "sha256": "f" * 64},
             "roles": role_contracts,
         },
@@ -174,6 +206,69 @@ def _training_role_contracts() -> dict:
             "artifact_sha256": "2" * 64,
         },
     }
+
+
+def _role_contract_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[SimpleNamespace, SimpleNamespace, set[Path]]:
+    root = tmp_path / "roles"
+    root.mkdir()
+    role_names = {
+        "train": ["national_v1", "national_v2"],
+        "early_stop": ["national_v3"],
+    }
+    artifact_sha256 = {
+        "train": "1" * 64,
+        "early_stop": "2" * 64,
+    }
+    outputs = {}
+    role_paths = set()
+    for role in scaling.MODEL_TRAINING_ROLES:
+        for prefix in ("cf", "opponent_actions"):
+            filename = f"{prefix}_{role}.jsonl"
+            path = root / filename
+            path.write_text(f'{{"role":"{role}"}}\n', encoding="utf-8")
+            role_paths.add(path)
+            outputs[filename] = {
+                "rows": 1,
+                "bytes": path.stat().st_size,
+                "sha256": scaling._sha256(path),
+            }
+    dataset = SimpleNamespace(
+        root=root,
+        manifest={
+            "source_completed_passes": 8,
+            "source_requested_passes": 160,
+            "source_collection_complete": False,
+        },
+        roles=role_names,
+        outputs=outputs,
+        candidate_snapshot={"name": "candidate", "sha256": "f" * 64},
+    )
+    dataset._role_artifact_sha256 = lambda role: artifact_sha256[role]
+    dataset.require_collection_boundary = lambda expected_passes=160: {
+        "source_completed_passes": expected_passes,
+        "source_requested_passes": expected_passes,
+        "source_collection_complete": True,
+    }
+    args = SimpleNamespace(
+        role_manifest=root / "role_manifest.json",
+        ledger=tmp_path / "ledger.json",
+        run_id_prefix="exposure-first",
+        allow_incomplete_smoke=True,
+    )
+
+    def dataset_factory(
+        manifest_path, *, ledger_path, run_id, require_complete
+    ):
+        assert manifest_path == args.role_manifest
+        assert ledger_path == args.ledger
+        assert run_id == scaling._scaling_contract_intent_run_id(args)
+        assert require_complete is False
+        return dataset
+
+    monkeypatch.setattr(scaling, "RoleDatasetAccess", dataset_factory)
+    return args, dataset, role_paths
 
 
 def _row(
@@ -452,6 +547,153 @@ def test_scaling_run_contract_rejects_self_hashed_tampering(
     tampered["requested"]["seeds"] = [307]
     with pytest.raises(ValueError, match="binding changed"):
         scaling.validate_run_contract(tampered)
+
+
+def test_formal_contract_rejects_removed_and_resigned_exposure_intent(
+    tmp_path: Path,
+) -> None:
+    options = {
+        attribute: 0 for _, attribute in scaling.TRAINING_OPTION_SPECS
+    }
+    options.update({"device": "cuda", "cross_transformer_heads": 4})
+    args = SimpleNamespace(
+        **options,
+        role_manifest=tmp_path / "role_manifest.json",
+        ledger=tmp_path / "ledger.json",
+        run_id_prefix="formal-contract-test",
+        allow_incomplete_smoke=False,
+    )
+    contract = _fake_contract(
+        args,
+        root=tmp_path / "sweep",
+        scales=["small"],
+        encoders=["gru"],
+        seeds=[101],
+        created_at="2026-07-12T00:00:00+00:00",
+    )
+    assert scaling.validate_run_contract(contract) == contract
+
+    tampered = copy.deepcopy(contract)
+    del tampered["training_roles"]["collection_boundary"][
+        scaling.SCALING_CONTRACT_INTENT_FIELD
+    ]
+    unsigned = dict(tampered)
+    unsigned.pop("payload_sha256")
+    tampered["payload_sha256"] = scaling._canonical_sha256(unsigned)
+    with pytest.raises(ValueError, match="contract intent is missing"):
+        scaling.validate_run_contract(tampered)
+
+
+def test_training_role_contract_opens_both_roles_before_any_jsonl_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, _dataset, role_paths = _role_contract_fixture(tmp_path, monkeypatch)
+    opened = []
+    real_open = scaling.open_exposure
+    real_stat = Path.stat
+
+    def tracked_open(*call_args, **call_kwargs):
+        result = real_open(*call_args, **call_kwargs)
+        opened.append(call_kwargs["role"])
+        return result
+
+    def guarded_stat(path, *call_args, **call_kwargs):
+        if path in role_paths:
+            assert opened == list(scaling.MODEL_TRAINING_ROLES)
+        return real_stat(path, *call_args, **call_kwargs)
+
+    monkeypatch.setattr(scaling, "open_exposure", tracked_open)
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+
+    contract = scaling._training_role_contract(args)
+
+    assert opened == ["train", "early_stop"]
+    intent = contract["collection_boundary"][
+        scaling.SCALING_CONTRACT_INTENT_FIELD
+    ]
+    assert intent["run_id"] == scaling._scaling_contract_intent_run_id(args)
+    assert [event["role"] for event in intent["events"]] == [
+        "train", "early_stop"
+    ]
+    assert scaling._is_sha256(intent["exposure_sha256"])
+
+
+def test_training_role_contract_failure_keeps_both_intents_and_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, dataset, _role_paths = _role_contract_fixture(tmp_path, monkeypatch)
+    (dataset.root / "cf_train.jsonl").write_text("changed\n", encoding="utf-8")
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="training role artifact changed"):
+            scaling._training_role_contract(args)
+
+    ledger = json.loads(args.ledger.read_text(encoding="utf-8"))
+    assert [event["role"] for event in ledger["events"]] == [
+        "train", "early_stop"
+    ]
+    assert all(
+        event["run_id"] == scaling._scaling_contract_intent_run_id(args)
+        for event in ledger["events"]
+    )
+
+
+def test_second_intent_failure_keeps_first_exposure_without_reading_roles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, _dataset, role_paths = _role_contract_fixture(tmp_path, monkeypatch)
+    real_open = scaling.open_exposure
+    real_stat = Path.stat
+    role_stats = 0
+
+    def fail_second(*call_args, **call_kwargs):
+        if call_kwargs["role"] == "early_stop":
+            raise ValueError("second intent failed")
+        return real_open(*call_args, **call_kwargs)
+
+    def guarded_stat(path, *call_args, **call_kwargs):
+        nonlocal role_stats
+        if path in role_paths:
+            role_stats += 1
+        return real_stat(path, *call_args, **call_kwargs)
+
+    monkeypatch.setattr(scaling, "open_exposure", fail_second)
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+    with pytest.raises(ValueError, match="second intent failed"):
+        scaling._training_role_contract(args)
+
+    ledger = json.loads(args.ledger.read_text(encoding="utf-8"))
+    assert [event["role"] for event in ledger["events"]] == ["train"]
+    assert role_stats == 0
+
+
+def test_training_role_contract_rejects_intent_drift_before_jsonl_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, _dataset, role_paths = _role_contract_fixture(tmp_path, monkeypatch)
+    scaling._training_role_contract(args)
+    scaling.open_exposure(
+        args.ledger,
+        role="model_calibration",
+        opponents=["national_v4"],
+        run_id=scaling._scaling_contract_intent_run_id(args),
+        artifact_sha256="4" * 64,
+    )
+    role_stats = 0
+    real_stat = Path.stat
+
+    def guarded_stat(path, *call_args, **call_kwargs):
+        nonlocal role_stats
+        if path in role_paths:
+            role_stats += 1
+        return real_stat(path, *call_args, **call_kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+    with pytest.raises(
+        scaling.ProtectedExposureError, match="exposure binding changed"
+    ):
+        scaling._training_role_contract(args)
+    assert role_stats == 0
 
 
 def test_resume_reuses_verified_jobs_and_rebuilds_identical_summary(

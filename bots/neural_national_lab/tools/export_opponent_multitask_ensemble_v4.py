@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
 import sys
 from typing import Any
 
+import calibration_input_snapshot as input_snapshot
 from calibrate_opponent_multitask_v4_ensemble import load_calibrated_ensemble
 from export_opponent_multitask_v4 import (
     build_export_payload,
@@ -468,14 +470,21 @@ def _export_verified_member_payloads(
     members = verify_calibrated_members(calibrated, formal=formal)
     member_payloads = []
     for member in members:
-        checkpoint_path = Path(member["checkpoint_path"]).resolve()
+        checkpoint_path = Path(member["checkpoint_path"])
         checkpoint_sha256 = _digest(
             member.get("checkpoint_sha256"), field="member checkpoint"
         )
-        if _sha256(checkpoint_path) != checkpoint_sha256:
-            raise ValueError("v4 member checkpoint file changed before export")
+        checkpoint_raw, checkpoint_receipt = input_snapshot.read_regular_snapshot(
+            checkpoint_path,
+            field=f"v4 member checkpoint seed {member['seed']}",
+        )
+        snapshot_sha256 = hashlib.sha256(checkpoint_raw).hexdigest()
+        if checkpoint_receipt.get("sha256") != snapshot_sha256:
+            raise RuntimeError("v4 member checkpoint snapshot receipt changed")
+        if snapshot_sha256 != checkpoint_sha256:
+            raise ValueError("v4 member checkpoint snapshot changed before export")
         model, checkpoint = load_checkpoint(
-            checkpoint_path, device="cpu"
+            io.BytesIO(checkpoint_raw), device="cpu"
         )
         member_payloads.append(build_export_payload(
             model,
@@ -483,8 +492,6 @@ def _export_verified_member_payloads(
             checkpoint_sha256=member["checkpoint_sha256"],
             outcome_calibration=member["outcome_calibration"],
         ))
-        if _sha256(checkpoint_path) != checkpoint_sha256:
-            raise ValueError("v4 member checkpoint file changed during export")
     return member_payloads
 
 

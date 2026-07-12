@@ -33,6 +33,7 @@ from opponent_exposure_ledger import (
     EXPOSURE_ROLES,
     FINAL_BLIND_ROLE,
     SCHEMA as EXPOSURE_LEDGER_SCHEMA,
+    open_exposure,
 )
 from role_dataset_access import RoleDatasetAccess
 from train_opponent_multitask_v4 import (
@@ -103,6 +104,14 @@ EXPOSURE_EVENT_FIELDS = {
     "candidate_sha256",
     "artifact_sha256",
 }
+SCALING_CONTRACT_INTENT_SCHEMA = (
+    "opponent_multitask_v4_scaling_contract_intent_v1"
+)
+SCALING_CONTRACT_INTENT_FIELD = "scaling_contract_intent"
+SCALING_CONTRACT_INTENT_SUFFIX = "scaling-contract-intent"
+TRAINING_EXPOSURE_RECEIPT_SCHEMA = (
+    "opponent_multitask_v4_training_exposure_receipt_v1"
+)
 TRAINING_OPTION_SPECS = (
     ("--moe-experts", "moe_experts"),
     ("--cross-transformer-heads", "cross_transformer_heads"),
@@ -292,11 +301,20 @@ def _requested_payload(
     }
 
 
-def _training_role_contract(args: argparse.Namespace) -> dict[str, Any]:
+def _scaling_contract_intent_run_id(args: argparse.Namespace) -> str:
+    return f"{args.run_id_prefix}-{SCALING_CONTRACT_INTENT_SUFFIX}"
+
+
+def _training_role_contract(
+    args: argparse.Namespace,
+    *,
+    ledger_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    intent_run_id = _scaling_contract_intent_run_id(args)
     dataset = RoleDatasetAccess(
         args.role_manifest,
         ledger_path=args.ledger,
-        run_id=f"{args.run_id_prefix}-scaling-plan",
+        run_id=intent_run_id,
         require_complete=not args.allow_incomplete_smoke,
     )
     boundary = (
@@ -313,6 +331,47 @@ def _training_role_contract(args: argparse.Namespace) -> dict[str, Any]:
                 "source_collection_complete"
             ),
         }
+    )
+    role_intents = {
+        role: {
+            "opponents": list(dataset.roles[role]),
+            "artifact_sha256": dataset._role_artifact_sha256(role),
+        }
+        for role in MODEL_TRAINING_ROLES
+    }
+    intent_events = []
+    # The composite artifact digest and opponent list above come only from the
+    # role manifest.  Register both protected roles before touching either
+    # JSONL pathname.  If the second registration or any later read fails, the
+    # first (and, when reached, second) exposure remains conservatively logged.
+    if ledger_snapshot is None:
+        for role in MODEL_TRAINING_ROLES:
+            opened = open_exposure(
+                args.ledger,
+                role=role,
+                opponents=role_intents[role]["opponents"],
+                run_id=intent_run_id,
+                artifact_sha256=role_intents[role]["artifact_sha256"],
+            )
+            event = opened.get("event") if isinstance(opened, dict) else None
+            if not isinstance(event, dict):
+                raise ProtectedExposureError(
+                    "scaling contract intent exposure is invalid"
+                )
+            intent_events.append(dict(event))
+    else:
+        events = ledger_snapshot.get("events")
+        if not isinstance(events, list):
+            raise ProtectedExposureError("training exposure ledger is invalid")
+        intent_events = [
+            dict(event) for event in events
+            if isinstance(event, dict) and event.get("run_id") == intent_run_id
+        ]
+    intent_exposure_sha256 = validate_training_job_exposures(
+        args.ledger,
+        run_id=intent_run_id,
+        role_contracts=role_intents,
+        ledger_snapshot=ledger_snapshot,
     )
     roles = {}
     for role in MODEL_TRAINING_ROLES:
@@ -334,10 +393,18 @@ def _training_role_contract(args: argparse.Namespace) -> dict[str, Any]:
                 "sha256": expected["sha256"],
             }
         roles[role] = {
-            "opponents": list(dataset.roles[role]),
-            "artifact_sha256": dataset._role_artifact_sha256(role),
+            **role_intents[role],
             "files": files,
         }
+    boundary = {
+        **boundary,
+        SCALING_CONTRACT_INTENT_FIELD: {
+            "schema": SCALING_CONTRACT_INTENT_SCHEMA,
+            "run_id": intent_run_id,
+            "events": intent_events,
+            "exposure_sha256": intent_exposure_sha256,
+        },
+    }
     return {
         "collection_boundary": boundary,
         "candidate_snapshot": dict(dataset.candidate_snapshot),
@@ -415,6 +482,7 @@ def build_run_contract(
     encoders: list[str],
     seeds: list[int],
     created_at: str,
+    ledger_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     jobs = []
     for scale in scales:
@@ -464,7 +532,9 @@ def build_run_contract(
         "trainer": str(TRAINER.resolve()),
         "trainer_sha256": _sha256(TRAINER.resolve()),
         "training_code_artifacts": current_training_code_artifacts(),
-        "training_roles": _training_role_contract(args),
+        "training_roles": _training_role_contract(
+            args, ledger_snapshot=ledger_snapshot
+        ),
         "environment": _environment_contract(str(args.device)),
         "git_commit": _git_commit(),
         "scaling_tool_sha256": _sha256(Path(__file__).resolve()),
@@ -622,6 +692,67 @@ def validate_run_contract(payload: Any) -> dict[str, Any]:
             )
         ):
             raise ValueError("v4 scaling training-role contract changed")
+    boundary = training_roles.get("collection_boundary")
+    intent = (
+        boundary.get(SCALING_CONTRACT_INTENT_FIELD)
+        if isinstance(boundary, dict) else None
+    )
+    # Only pre-existing incomplete diagnostics may lack this newer receipt.
+    # A formal contract with the nested intent removed and its payload re-signed
+    # must not regain authority.
+    if intent is None and contract.get("allow_incomplete_smoke") is not True:
+        raise ValueError("formal v4 scaling contract intent is missing")
+    if intent is not None:
+        expected_run_id = (
+            f"{contract['run_id_prefix']}-{SCALING_CONTRACT_INTENT_SUFFIX}"
+        )
+        events = intent.get("events") if isinstance(intent, dict) else None
+        if (
+            not isinstance(intent, dict)
+            or set(intent) != {
+                "schema", "run_id", "events", "exposure_sha256",
+            }
+            or intent.get("schema") != SCALING_CONTRACT_INTENT_SCHEMA
+            or intent.get("run_id") != expected_run_id
+            or not isinstance(events, list)
+            or len(events) != len(MODEL_TRAINING_ROLES)
+            or not _is_sha256(intent.get("exposure_sha256"))
+        ):
+            raise ValueError("v4 scaling contract intent binding changed")
+        previous_sequence = 0
+        for event, role in zip(events, MODEL_TRAINING_ROLES, strict=True):
+            details = roles[role]
+            try:
+                timestamp = datetime.fromisoformat(str(event["timestamp_utc"]))
+            except (KeyError, TypeError, ValueError):
+                timestamp = None
+            sequence = event.get("sequence") if isinstance(event, dict) else None
+            if (
+                not isinstance(event, dict)
+                or set(event) != EXPOSURE_EVENT_FIELDS
+                or isinstance(sequence, bool)
+                or not isinstance(sequence, int)
+                or sequence <= previous_sequence
+                or timestamp is None
+                or timestamp.tzinfo is None
+                or timestamp.utcoffset() != timezone.utc.utcoffset(timestamp)
+                or event.get("event") != "open"
+                or event.get("role") != role
+                or event.get("run_id") != expected_run_id
+                or event.get("opponents") != details["opponents"]
+                or event.get("candidate_sha256") is not None
+                or event.get("artifact_sha256")
+                != details["artifact_sha256"]
+            ):
+                raise ValueError("v4 scaling contract intent binding changed")
+            previous_sequence = sequence
+        expected_receipt = _canonical_sha256({
+            "schema": TRAINING_EXPOSURE_RECEIPT_SCHEMA,
+            "run_id": expected_run_id,
+            "events": events,
+        })
+        if intent.get("exposure_sha256") != expected_receipt:
+            raise ValueError("v4 scaling contract intent binding changed")
     return payload
 
 
@@ -837,6 +968,7 @@ def final_verified_rows(
         encoders=list(contract["requested"]["encoders"]),
         seeds=[int(seed) for seed in contract["requested"]["seeds"]],
         created_at=str(contract["created_at"]),
+        ledger_snapshot=ledger_snapshot,
     ))
     if current != contract:
         raise ValueError("v4 scaling contract changed before final publication")
@@ -1096,7 +1228,7 @@ def validate_training_job_exposures(
                 "training job ledger exposure binding changed"
             )
     return _canonical_sha256({
-        "schema": "opponent_multitask_v4_training_exposure_receipt_v1",
+        "schema": TRAINING_EXPOSURE_RECEIPT_SCHEMA,
         "run_id": run_id,
         "events": job_events,
     })
