@@ -260,6 +260,11 @@ def test_probe_measures_postflop_consumer_across_scenario_bank_and_caches(tmp_pa
     assert second["ok"] is True
     assert second["cache_hit"] is True
     assert second["cache_key"] == first["cache_key"]
+    multifidelity = first["decision_runtime"]["budget_scaling"]
+    assert multifidelity["probe_kind"] == "sampled_multifidelity_2s_vs_8s"
+    assert multifidelity["short_budget"]["hard_deadline_sec"] == 2.0
+    assert multifidelity["long_budget"]["hard_deadline_sec"] == 8.0
+    assert multifidelity["worker_seed_equal"] is True
 
     artifact = first["artifacts"][0]
     assert artifact["entries"] == 32

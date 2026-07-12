@@ -216,20 +216,19 @@ No LLM field can pass, fail, revoke, certify, rate, or tune a bot.
 The current release intentionally leaves four evidence-driven improvements for
 later rather than pretending they are solved by a larger prompt:
 
-1. Local strength selection runs at roughly 2.0/1.8 seconds while the formal
-   runtime permits 55/54 seconds. Protocol/runtime probes validate long-budget
-   safety, but do not directly measure the marginal poker value after two
-   seconds. Add a sampled multi-fidelity native gate (short control plus a small
-   long-budget stratum) before rewarding expensive refinement across every
-   generation.
+1. The runtime capability probe now includes a reproducible sampled 2-second
+   control versus 8-second treatment on one fixed ambiguous decision and records
+   the final sanitized action plus trusted steps/CPU/elapsed work. Local strength
+   selection still runs at roughly 2.0/1.8 seconds, so add a small paired-game
+   long-budget value stratum before treating extra compute as poker-EV evidence;
+   the current probe proves reachability and bounded scaling, not profitability.
 2. Admit large exact equity/abstraction data only through a system-owned,
    immutable packed loader with packaging and live-consumer proof.
 3. Move compiled Worker briefs out of the candidate tree. They are excluded
    from identity, do not grant scope, and are hard-cleaned today, but an external
    read-only control directory would make the ownership boundary simpler.
-4. Revisit the uncapped `1/(1+children)` parent-diversity penalty with replay/H2H
-   evidence. A capped penalty can preserve exploration without ranking a weak,
-   unused parent above a repeatedly successful source.
+4. Rebuild MAP/QD only from identity-bound, committed native replay evidence;
+   the legacy accumulator remains dashboard-only until then.
 
 ## Non-Goals
 

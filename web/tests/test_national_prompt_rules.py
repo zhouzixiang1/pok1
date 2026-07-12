@@ -112,8 +112,14 @@ def test_prompts_require_structured_battle_memory_citations():
     master_prompt = _prompt("master_prompt.md")
     worker_prompt = _prompt("worker_prompt.md")
 
-    assert "battle_lessons.jsonl" in master_prompt
-    assert "battle_evidence.jsonl" in master_prompt
+    # Battle memory is frozen and injected by the orchestrator.  The planning
+    # model must not reopen independently changing live result files.
+    assert "battle-lesson" in master_prompt
+    assert "already injected below by the orchestrator" in master_prompt
+    assert "mutable `web/core/results/*`" in master_prompt
+    assert "the other checkout" in master_prompt
+    assert "battle_lessons.jsonl" not in master_prompt
+    assert "battle_evidence.jsonl" not in master_prompt
     assert "lesson_id" in master_prompt
     assert "evidence_id" in master_prompt
     assert "Pending Battle Summaries" in master_prompt

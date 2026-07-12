@@ -6,6 +6,7 @@ live in their own modules. This module keeps the core Master and match analysis.
 
 import json
 import time
+from pathlib import Path
 
 from bot_namespace import bot_name, bot_relpath
 from evolution_infra import (
@@ -44,6 +45,234 @@ class MasterInfrastructureError(RuntimeError):
         self.prompt_digest = prompt_digest
         self.issue = str(issue)[:500]
         super().__init__(self.issue)
+
+
+_MASTER_PROPOSAL_DIRECTIONS = (
+    (
+        "mechanism",
+        "Propose one structural mechanism that replaces a reachable parent behavior; "
+        "threshold-only tuning is invalid.",
+    ),
+    (
+        "counterfactual",
+        "Start from one falsifiable counterfactual/control and design the smallest "
+        "reachable mechanism that could make it pass.",
+    ),
+    (
+        "compute_memory",
+        "Explore bounded precomputation, anytime decision work, or persistent match "
+        "memory only when the injected policy/evidence makes that axis eligible.",
+    ),
+)
+
+
+def _validated_master_proposal(output: str, direction: str) -> dict | None:
+    """Normalize one advisory proposal before any critic or Master sees it."""
+    from llm_query import parse_json_output_with_mode
+    import hashlib
+
+    data, _mode = parse_json_output_with_mode(output or "")
+    if not isinstance(data, dict):
+        return None
+    if any(data.get(key) for key in ("branch_from", "source_override", "source_v_override")):
+        return None
+    required = (
+        "targeted_failure",
+        "structural_change",
+        "counterfactual",
+        "measurement",
+        "why_not_threshold_tuning",
+    )
+    normalized = {"direction": direction}
+    for key in required:
+        value = str(data.get(key) or "").strip()
+        if len(value) < 20:
+            return None
+        normalized[key] = value[:3000]
+    raw_files = data.get("target_files") or []
+    if not isinstance(raw_files, list):
+        return None
+    target_files = []
+    for value in raw_files[:3]:
+        name = Path(str(value)).name
+        if not name.endswith(".py") or name in target_files:
+            continue
+        target_files.append(name)
+    if not target_files:
+        return None
+    normalized["target_files"] = target_files
+    normalized["risks"] = str(data.get("risks") or "")[:2000]
+    normalized["proposal_id"] = hashlib.sha256(
+        json.dumps(normalized, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+    return normalized
+
+
+def _validated_proposal_critique(output: str, proposal_ids: set[str]) -> dict | None:
+    from llm_query import parse_json_output_with_mode
+
+    data, _mode = parse_json_output_with_mode(output or "")
+    if not isinstance(data, dict):
+        return None
+    ranking = [
+        str(value) for value in (data.get("ranking") or [])
+        if str(value) in proposal_ids
+    ]
+    ranking = list(dict.fromkeys(ranking))
+    if not ranking:
+        return None
+    rejected = [
+        str(value) for value in (data.get("reject") or [])
+        if str(value) in proposal_ids
+    ]
+    return {
+        "ranking": ranking,
+        "reject": list(dict.fromkeys(rejected)),
+        "reason": str(data.get("reason") or "")[:2500],
+    }
+
+
+async def _run_master_proposal_ensemble(
+    planning_context: str,
+    *,
+    source_v: int,
+    next_v: int,
+    ui,
+    log_dir: Path,
+    allowed_evidence_snapshot_dir: str,
+) -> str:
+    """Three independent proposals, two blind critics, deterministic ordering.
+
+    The ensemble is advisory.  It cannot alter lineage, evidence cutoffs,
+    executable literals, or gates; the final plan still passes the canonical
+    schema/compiler/validator path.
+    """
+    import asyncio
+
+    async def propose(direction: str, directive: str):
+        output_contract = (
+            "Return one JSON object with exactly: targeted_failure, structural_change, "
+            "counterfactual, measurement, why_not_threshold_tuning, target_files "
+            "(1-3 basenames), risks. Do not emit tasks, a worker plan, source choice, "
+            "Markdown, or commentary."
+        )
+        prompt = (
+            "You are an independent poker-bot mechanism proposal scout. "
+            f"The system-owned source is fixed at v{source_v} and target at v{next_v}; "
+            "never rerank, branch, change evidence, or change gates.\n"
+            f"Distinct lens: {directive}\n"
+            "Read only the allowed frozen snapshot and source/target code.\n\n"
+            + planning_context
+            + "\n\nFINAL SCOUT OUTPUT CONTRACT (this overrides the embedded Master output format):\n"
+            + output_contract
+        )
+        return await run_claude_query(
+            prompt,
+            [],
+            ui,
+            f"MASTER PROPOSAL {direction}",
+            log_dir / f"master_proposal_{direction}_io.txt",
+            tools=["Read"],
+            allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+        )
+
+    proposal_results = await asyncio.gather(
+        *(propose(direction, directive) for direction, directive in _MASTER_PROPOSAL_DIRECTIONS),
+        return_exceptions=True,
+    )
+    proposals = []
+    seen_payloads = set()
+    for (direction, _directive), result in zip(_MASTER_PROPOSAL_DIRECTIONS, proposal_results):
+        if isinstance(result, BaseException):
+            continue
+        output = result[0] if isinstance(result, tuple) else ""
+        proposal = _validated_master_proposal(output, direction)
+        if proposal is None:
+            continue
+        dedupe = json.dumps(
+            {key: value for key, value in proposal.items() if key not in {"direction", "proposal_id"}},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        if dedupe in seen_payloads:
+            continue
+        seen_payloads.add(dedupe)
+        proposals.append(proposal)
+    if not proposals:
+        return (
+            "Proposal ensemble unavailable or all proposals failed deterministic validation. "
+            "Design the final plan directly from frozen evidence and hard contracts."
+        )
+
+    proposal_payload = json.dumps(proposals, ensure_ascii=False, indent=2)
+
+    async def critique(name: str, lens: str):
+        prompt = (
+            "You are a blind advisory critic. Source, evidence cutoff, scope literals, and "
+            "quality gates are immutable. Rank only the supplied proposal_id values. "
+            f"Lens: {lens}\n"
+            "Return JSON: {\"ranking\":[ids best-first],\"reject\":[ids with a concrete "
+            "reachability/attribution flaw],\"reason\":\"...\"}.\n\n"
+            + proposal_payload
+            + "\n\nFINAL CRITIC OUTPUT CONTRACT: return only the ranking/reject/reason JSON; "
+            "do not repeat or rewrite a proposal."
+        )
+        return await run_claude_query(
+            prompt,
+            [],
+            ui,
+            f"MASTER PROPOSAL CRITIC {name}",
+            log_dir / f"master_proposal_critic_{name}_io.txt",
+            tools=[],
+        )
+
+    critic_results = await asyncio.gather(
+        critique("falsification", "Counterfactual quality, causal attribution, and evidence support."),
+        critique("scope", "Reachability, bounded implementation scope, and regression risk."),
+        return_exceptions=True,
+    )
+    proposal_ids = {item["proposal_id"] for item in proposals}
+    critiques = []
+    for result in critic_results:
+        if isinstance(result, BaseException):
+            continue
+        output = result[0] if isinstance(result, tuple) else ""
+        critique_row = _validated_proposal_critique(output, proposal_ids)
+        if critique_row is not None:
+            critiques.append(critique_row)
+
+    # Deterministic Borda ordering.  Critic prose cannot create/delete a
+    # candidate, and two independent rejections are needed to demote one.
+    order = {item["proposal_id"]: index for index, item in enumerate(proposals)}
+    scores = {proposal_id: 0 for proposal_id in proposal_ids}
+    rejects = {proposal_id: 0 for proposal_id in proposal_ids}
+    for critique_row in critiques:
+        ranked = critique_row["ranking"]
+        default_rank = len(proposals)
+        for proposal_id in proposal_ids:
+            scores[proposal_id] += (
+                ranked.index(proposal_id) if proposal_id in ranked else default_rank
+            )
+        for proposal_id in critique_row["reject"]:
+            rejects[proposal_id] += 1
+    proposals.sort(
+        key=lambda item: (
+            rejects[item["proposal_id"]] >= 2,
+            scores[item["proposal_id"]],
+            order[item["proposal_id"]],
+        )
+    )
+    packet = {
+        "authority": (
+            "advisory_only; final Master must obey frozen lineage/evidence and canonical "
+            "runtime/schema/gate contracts"
+        ),
+        "proposal_count": len(proposals),
+        "valid_critic_count": len(critiques),
+        "ordered_proposals": proposals,
+        "critic_reviews": critiques,
+    }
+    return _trim_to_budget(json.dumps(packet, ensure_ascii=False, indent=2), 18_000)
 
 
 def _render_analysis_section(text: str, default_msg: str) -> str:
@@ -133,11 +362,14 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         exploitability_weaknesses or "No exploitability probe data available yet.", 6_000)
     research_trimmed = _trim_to_budget(
         research_proposals or "No web-derived research proposals this generation (run_literature_probe not triggered or returned none).", 4_000)
-    try:
-        from frontier import frontier_summary
-        frontier_trimmed = _trim_to_budget(frontier_summary(), 4_000)
-    except Exception:
-        frontier_trimmed = "Frontier/MAP-Elites: unavailable."
+    # MAP-Elites fitness is updated asynchronously from live H2H.  Reopening it
+    # here would bypass the generation evidence cutoff and could change a retry's
+    # plan. Source/crossover diversity already uses the frozen SelectionView;
+    # Master receives no second live strength ranking.
+    frontier_trimmed = (
+        "Frontier/MAP-Elites strength ranking omitted here; system-owned source "
+        "selection already consumed the frozen diversity view."
+    )
     try:
         from official_certification import official_feedback_summary
         official_feedback = _trim_to_budget(official_feedback_summary(), 6_000)
@@ -211,27 +443,35 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             "No two-parent prepared baseline: Workers start from the copied source parent."
         )
     try:
-        from evidence_snapshot import ensure_generation_h2h_snapshot, h2h_snapshot_contract_text
-        h2h_snapshot = ensure_generation_h2h_snapshot(next_v)
-        h2h_data_file = h2h_snapshot.get("h2h_relpath", "web/core/results/head_to_head.json")
-        h2h_snapshot_contract = h2h_snapshot_contract_text(next_v, source_v=source_v)
-    except Exception:
-        h2h_data_file = "web/core/results/head_to_head.json"
-        h2h_snapshot_contract = (
-            "Stable H2H snapshot unavailable. Do not read live H2H or make "
-            "matchup-count claims for this generation."
+        from evidence_snapshot import (
+            h2h_snapshot_contract_text,
+            load_generation_snapshot_identity,
         )
+        h2h_snapshot = load_generation_snapshot_identity(next_v)
+        if not h2h_snapshot.get("available"):
+            raise RuntimeError(
+                f"generation evidence snapshot unavailable: {h2h_snapshot.get('reason')}"
+            )
+        h2h_data_file = h2h_snapshot.get("h2h_relpath", "web/core/results/head_to_head.json")
+        selection_data_file = h2h_snapshot.get(
+            "selection_relpath",
+            f"web/core/results/v{next_v}/evidence_snapshot/selection_snapshot.json",
+        )
+        h2h_snapshot_contract = h2h_snapshot_contract_text(next_v, source_v=source_v)
+    except Exception as exc:
+        ui.log_history(
+            f"Master blocked: stable evaluation snapshot unavailable ({exc})",
+            "error",
+        )
+        return None
 
-    # Build eval round summary BEFORE substitute_template so it's included in one pass
-    eval_round_summary = "No eval round data available yet."
-    try:
-        from eval_rounds import EvalRoundManager
-        _erm = EvalRoundManager()
-        _eval_summary = _erm.get_last_round_summary(bot_name(source_v))
-        if _eval_summary:
-            eval_round_summary = _eval_summary
-    except Exception:
-        pass
+    # eval_rounds.jsonl is a live, independently written strength view.  The
+    # same information is represented by the cycle-bound selection rows, so it
+    # must not be injected as a second mutable authority.
+    eval_round_summary = (
+        "Live eval-round summary intentionally omitted; use the frozen "
+        "selection rows and rating-history tail."
+    )
 
     master_prompt = substitute_template(master_prompt, {
         "stagnation_info": stagnation_info,
@@ -250,6 +490,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "runtime_feedback": runtime_feedback,
         "strategy_reference_packet": strategy_reference_packet,
         "h2h_data_file": h2h_data_file,
+        "selection_data_file": selection_data_file,
         "h2h_snapshot_contract": h2h_snapshot_contract,
         "master_plan_executable_contract": master_plan_executable_contract_text(),
     })
@@ -258,12 +499,12 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"Source bot directory (read-only parent): {bot_relpath(source_v)}/\n"
         f"Target bot directory (workers edit/verify): {bot_relpath(next_v)}/\n"
         f"Planning baseline: {bot_relpath(planning_baseline_v)}/ ({planning_baseline_label})\n"
-        f"Ratings file: web/core/results/glicko_ratings.json\n"
-        f"Rating history: web/core/results/rating_history.jsonl\n"
+        f"Selection evidence snapshot: {selection_data_file}\n"
+        f"Use only that digest-bound snapshot for ratings, RD, games, coverage, trends, and ranking; "
+        f"do not reopen live glicko_ratings.json, bot_stats.json, or rating_history.jsonl.\n"
         f"Head-to-Head data snapshot: {h2h_data_file}\n"
         f"Do not read live H2H for matchup counts during planning; use the snapshot above.\n"
-        f"Bot stats: web/core/results/bot_stats.json\n"
-        f"Experience pool: web/core/experience_pool.md  ← READ THIS, not evolution_workspace/experience_pool.md\n"
+        f"Experience/lesson evidence is frozen as bounded injected prompt excerpts; do not reopen live results files.\n"
         f"\n{h2h_snapshot_contract}\n"
         f"\n{workflow_profile_text}\n"
         f"\n{frontier_trimmed}\n"
@@ -275,13 +516,40 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     )
     master_log_file = get_logs_dir(next_v) / "master_io.txt"
 
+    try:
+        proposal_ensemble = await _run_master_proposal_ensemble(
+            master_prompt + "\n" + master_ctx,
+            source_v=int(source_v),
+            next_v=int(next_v),
+            ui=ui,
+            log_dir=master_log_file.parent,
+            allowed_evidence_snapshot_dir=str(
+                Path(h2h_snapshot["manifest_path"]).parent
+            ),
+        )
+    except Exception as exc:
+        proposal_ensemble = (
+            "Proposal ensemble infrastructure unavailable; it has no authority over "
+            f"the final plan. error={type(exc).__name__}:{str(exc)[:240]}"
+        )
+    master_ctx += (
+        "\n# Weak-model proposal ensemble (advisory, prefiltered)\n"
+        + proposal_ensemble
+        + "\nSelect or synthesize one attributable mechanism. Do not copy multiple "
+        "unrelated proposals into one generation, and do not treat critic votes as "
+        "permission to change source, evidence, scope, or gates.\n"
+    )
+
     for attempt in range(MAX_MASTER_RETRIES):
         ui.clear_io()
         try:
             output, _, _ = await run_claude_query(
                 master_prompt + "\n" + master_ctx, [], ui,
                 f"MASTER (Try {attempt+1})", master_log_file,
-                tools=["Bash", "Read"],
+                tools=["Read"],
+                allowed_evidence_snapshot_dir=str(
+                    Path(h2h_snapshot["manifest_path"]).parent
+                ),
             )
         except Exception as exc:
             _final_mode = f"LLM_EXCEPTION:{type(exc).__name__}"
@@ -481,7 +749,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
 # Match Analysis
 # ──────────────────────────────────────────────
 
-async def _analyze_recent_matches(source_v, ui, max_matches=8):
+async def _analyze_recent_matches(source_v, ui, max_matches=8, *, next_v=None):
     """Use LLM to analyze recent replay data for the current bot.
 
     Collects both recent losses and close wins (margin < 3 games) to give
@@ -492,21 +760,34 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
     """
     source_bot_name = bot_name(source_v)
 
-    if not MATCH_HISTORY_FILE.exists():
-        return ""
-
     recent_losses = []
     close_wins = []
     from rating_snapshot import _admitted_70_hand_history_sample
+    if next_v is not None:
+        from evidence_snapshot import load_generation_evaluation_snapshot
 
-    with locked_file(MATCH_HISTORY_FILE, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
+        frozen = load_generation_evaluation_snapshot(next_v)
+        if not frozen.get("available"):
+            return ""
+        history_index = frozen.get("match_history_index") or {}
+        entries = history_index.get("entries") or []
+    else:
+        if not MATCH_HISTORY_FILE.exists():
+            return ""
+        entries = []
+        with locked_file(MATCH_HISTORY_FILE, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                entries.append(entry)
+
+    for entry in entries:
+            if not isinstance(entry, dict):
                 continue
             if _admitted_70_hand_history_sample(entry) is None:
                 continue
@@ -542,7 +823,14 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
             try:
                 with locked_file(replay_path, "r") as rf:
                     replay_data = json.load(rf)
-                summary = summarize_replay_for_analysis(replay_data, bot_name)
+                if replay_data.get("evaluation_identity_digest") != entry.get(
+                    "evaluation_identity_digest"
+                ):
+                    continue
+                summary = summarize_replay_for_analysis(
+                    replay_data,
+                    source_bot_name,
+                )
                 if summary:
                     result.append(f"[{label}] {summary}")
             except (json.JSONDecodeError, OSError):

@@ -333,8 +333,8 @@ async def get_h2h(args):
         ckpt = read_pipeline_checkpoint() or {}
         next_v = ckpt.get("next_v")
         if next_v is not None:
-            from evidence_snapshot import ensure_generation_h2h_snapshot
-            snapshot = ensure_generation_h2h_snapshot(next_v)
+            from evidence_snapshot import load_generation_snapshot_identity
+            snapshot = load_generation_snapshot_identity(next_v)
             if snapshot.get("available"):
                 h2h_file = Path(snapshot["h2h_path"])
                 h2h_source = "generation_snapshot"

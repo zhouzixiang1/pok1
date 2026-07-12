@@ -465,6 +465,73 @@ class TestP5bReplayPerHand:
         # hand 0 (delta 0) is excluded; full-game 450 is never reported as a swing
         assert "H0" not in out
 
+    def test_native_spotlight_ranks_largest_hand_and_uses_decision_pot(self):
+        from core.replay_spotlight import find_critical_hands
+
+        replay = {
+            "bot0": "national_v_source",
+            "bot1": "national_v_opp",
+            "games": [{
+                "game": 4,
+                "execution_mode": "native_tcp",
+                "hand_records": [
+                    {
+                        "hand": 1,
+                        "starting_pot": 150,
+                        "hole_cards": [["As", "Kd"], ["Qc", "Jh"]],
+                        "board": ["2s", "7d", "Tc"],
+                        "actions": [{
+                            "player_idx": 0,
+                            "stage": "flop",
+                            "action": "raise",
+                            "amount": 600,
+                            "pot_before": 400,
+                            "pot_after": 900,
+                        }],
+                        "settlement": {
+                            "earnings": [750, -750],
+                            "pot": 900,
+                            "is_showdown": False,
+                            "reason": "fold",
+                        },
+                    },
+                    {
+                        "hand": 2,
+                        "starting_pot": 150,
+                        "hole_cards": [["9s", "9d"], ["Ac", "Kh"]],
+                        "board": ["2c", "5h", "Ts", "Jd", "Qc"],
+                        "actions": [{
+                            "player_idx": 0,
+                            "stage": "river",
+                            "action": "call",
+                            "amount": 2400,
+                            "pot_before": 2400,
+                            "pot_after": 5000,
+                        }],
+                        "settlement": {
+                            "earnings": [-2500, 2500],
+                            "pot": 5000,
+                            "is_showdown": True,
+                        },
+                    },
+                ],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "native.json"), "w") as handle:
+                json.dump(replay, handle)
+            out = find_critical_hands(
+                "national_v_source",
+                tmp,
+                max_hands=1,
+            )
+
+        assert "G4H2" in out
+        assert "G4H1" not in out
+        assert "delta=-2500" in out
+        assert "pot=2400->5000" in out
+        assert "pot=150->5000" not in out
+
     def test_find_critical_hands_real_replay(self):
         # Integration test against the real match_replay directory. Skips
         # gracefully when the daemon has rotated all replays away.

@@ -81,6 +81,95 @@ def _make_replay(bot0, bot1, logs_per_game, mirror=False):
     }
 
 
+def _native_tracker_snapshot(
+    *,
+    preflop=None,
+    river=None,
+    facing_raise=None,
+    facing_allin=None,
+    showdown_samples=0,
+    showdown_buckets=None,
+    showdown_classes=None,
+):
+    raw = {
+        "preflop": dict(preflop or {}),
+        "flop": {},
+        "turn": {},
+        "river": dict(river or {}),
+    }
+    terminal = {
+        "facing_raise": dict(facing_raise or {}),
+        "facing_allin": dict(facing_allin or {}),
+        "facing_raise_by_street": {
+            "preflop": {}, "flop": {}, "turn": {}, "river": {},
+        },
+        "facing_allin_by_street": {
+            "preflop": {}, "flop": {}, "turn": {}, "river": {},
+        },
+    }
+    return {
+        "schema_version": 4,
+        "hands_started": 4,
+        "hands_completed": 4,
+        "showdowns": showdown_samples,
+        "raw_street_actions": raw,
+        "semantic_street_actions": raw,
+        "terminal_response": terminal,
+        "showdown_range": {
+            "samples": showdown_samples,
+            "bucket_counts": dict(showdown_buckets or {}),
+            "class_counts": dict(showdown_classes or {}),
+        },
+        "contexts": {},
+    }
+
+
+def _native_tracker_replay():
+    """Each player's log describes the *other* player's observed behavior."""
+    source_observes_villain = _native_tracker_snapshot(
+        preflop={"raise": 4},
+        river={"call": 2},
+        facing_raise={"opportunities": 2, "call": 2},
+        showdown_samples=1,
+        showdown_buckets={"premium_pair": 1},
+        showdown_classes={"AA": 1},
+    )
+    villain_observes_source = _native_tracker_snapshot(
+        preflop={"fold": 3},
+        facing_raise={"opportunities": 3, "fold": 3},
+    )
+    return {
+        "id": "native-source-villain.json",
+        "bot0": "Source",
+        "bot1": "Villain",
+        "games": [{
+            "execution_mode": "native_tcp",
+            "bot_a": "Source",
+            "bot_b": "Villain",
+            "per_player": {
+                "Source": {
+                    "runtime_telemetry": {
+                        "bot_log": {
+                            "opponent_tracker": {
+                                "latest": source_observes_villain,
+                            },
+                        },
+                    },
+                },
+                "Villain": {
+                    "runtime_telemetry": {
+                        "bot_log": {
+                            "opponent_tracker": {
+                                "latest": villain_observes_source,
+                            },
+                        },
+                    },
+                },
+            },
+        }],
+    }
+
+
 def _hand0_fold_to_3bet():
     """bot0 raises, bot1 3-bets (raise), bot0 folds — all preflop."""
     logs = [
@@ -307,6 +396,73 @@ class TestComputeBotActionStats:
         # Phase 0: compute_bot_action_stats flattens via get_global_stats; the
         # per-opponent breakdown is intentionally a different shape than the flat view.
         assert single == get_global_stats(all_stats, "Alice")
+
+    def test_native_tracker_maps_observer_source_to_tracked_opponent(self, tmp_path):
+        """Source's tracker belongs under Villain→Source, never Source→Villain."""
+        replay = _native_tracker_replay()
+        (tmp_path / replay["id"]).write_text(json.dumps(replay))
+
+        all_stats = compute_all_bot_stats(
+            ["Source", "Villain"],
+            str(tmp_path),
+            force_full=True,
+        )
+
+        # Source's bot log observed Villain raising four times.
+        villain_vs_source = all_stats["Villain"]["Source"]
+        assert villain_vs_source["preflop"]["raise"] == 4
+        assert villain_vs_source["river"]["call"] == 2
+        assert villain_vs_source["opponent_tracker"]["showdown_range"] == {
+            "samples": 1,
+            "bucket_counts": {"premium_pair": 1},
+            "bucket_rates": {"premium_pair": 1.0},
+            "class_counts": {"AA": 1},
+        }
+
+        # Villain's bot log separately observed Source folding three times.
+        source_vs_villain = all_stats["Source"]["Villain"]
+        assert source_vs_villain["preflop"]["fold"] == 3
+        terminal = source_vs_villain["opponent_tracker"]["terminal_response"]
+        assert terminal["fold_to_raise"] == 1.0
+        assert terminal["facing_raise"]["opportunities"] == 3
+
+    def test_native_contribution_cache_does_not_reopen_unchanged_replay(
+        self, monkeypatch, tmp_path
+    ):
+        import builtins
+
+        replay = _native_tracker_replay()
+        replay_path = tmp_path / replay["id"]
+        replay_path.write_text(json.dumps(replay), encoding="utf-8")
+        cache_path = tmp_path / ".stats_etag.json"
+        active = ["Source", "Villain"]
+
+        first = compute_all_bot_stats(
+            active,
+            tmp_path,
+            etag_path=cache_path,
+            allowed_replay_ids={replay["id"]},
+        )
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert cache["schema_version"] == 2
+        assert replay["id"] in cache["native_contributions"]
+
+        real_open = builtins.open
+
+        def guarded_open(path, *args, **kwargs):
+            if Path(path).resolve() == replay_path.resolve():
+                raise AssertionError("unchanged native replay was reparsed")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", guarded_open)
+        second = compute_all_bot_stats(
+            active,
+            tmp_path,
+            etag_path=cache_path,
+            allowed_replay_ids={replay["id"]},
+        )
+
+        assert second == first
 
     def test_mirror_half_player_mapping_stable(self, tmp_path):
         """A mirror-half game still maps bot0->player0, bot1->player1."""

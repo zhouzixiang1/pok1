@@ -17,8 +17,12 @@ def test_empty_results_initialize_content_bound_manifest(tmp_path):
     loaded = json.loads((results / identity.MANIFEST_NAME).read_text(encoding="utf-8"))
 
     assert manifest == loaded
+    assert manifest["schema_version"] == identity.IDENTITY_SCHEMA_VERSION == 2
+    assert manifest["base_identity"]["schema_version"] == identity.IDENTITY_SCHEMA_VERSION
+    assert manifest["base_identity"]["profile_id"] == identity.PROFILE_ID
     assert manifest["base_identity"]["authority"] == "rating_daemon_only"
     assert manifest["base_identity"]["official_exe_strength_weight"] == 0
+    assert len(manifest["identity_instance_id"]) == 32
     assert len(manifest["manifest_digest"]) == 64
 
 
@@ -39,6 +43,33 @@ def test_existing_unidentified_daemon_stats_fail_closed(tmp_path):
     )
 
     with pytest.raises(identity.EvaluationDataIdentityError, match="no evaluation identity"):
+        identity.ensure_evaluation_data_identity(results)
+
+
+def test_corrupt_identity_manifest_digest_fails_closed(tmp_path):
+    results = tmp_path / "results"
+    identity.ensure_evaluation_data_identity(results)
+    manifest_path = results / identity.MANIFEST_NAME
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["manifest_digest"] = "0" * 64
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(identity.EvaluationDataIdentityError, match="digest mismatch"):
+        identity.ensure_evaluation_data_identity(results)
+
+
+def test_digest_valid_but_base_mismatched_identity_fails_closed(tmp_path):
+    results = tmp_path / "results"
+    identity.ensure_evaluation_data_identity(results)
+    manifest_path = results / identity.MANIFEST_NAME
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["base_identity"]["profile_id"] = "wrong-rating-authority"
+    payload["manifest_digest"] = identity.canonical_digest({
+        key: value for key, value in payload.items() if key != "manifest_digest"
+    })
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(identity.EvaluationDataIdentityError, match="identity changed"):
         identity.ensure_evaluation_data_identity(results)
 
 
@@ -67,6 +98,9 @@ def test_archive_preserves_old_authoritative_data_before_fresh_manifest(tmp_path
     (results / "daemon_stats.json").write_text(
         '{"total_games": 80}\n', encoding="utf-8"
     )
+    cycle_payload = results / "evaluation_cycles" / "legacy-cycle"
+    cycle_payload.mkdir(parents=True)
+    (cycle_payload / "glicko_ratings.json").write_text("{}\n", encoding="utf-8")
 
     migrated = identity.archive_and_initialize(results, reason="test evaluator migration")
 
@@ -75,6 +109,9 @@ def test_archive_preserves_old_authoritative_data_before_fresh_manifest(tmp_path
     assert (archive / "head_to_head.json").is_file()
     assert (archive / "elo_daemon_stats.json").is_file()
     assert (archive / "daemon_stats.json").is_file()
+    assert (
+        archive / "evaluation_cycles" / "legacy-cycle" / "glicko_ratings.json"
+    ).is_file()
     assert (archive / "migration.json").is_file()
     assert (results / identity.MANIFEST_NAME).is_file()
     assert not (results / "glicko_ratings.json").exists()
@@ -117,6 +154,34 @@ def test_archive_rotates_identity_bound_generation_snapshots(tmp_path, monkeypat
     monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results)
     monkeypatch.setattr(evolution_infra, "H2H_FILE", results / "head_to_head.json")
+    from evaluation_bundle import publish_evaluation_cycle_manifest
+
+    (results / "head_to_head.json").write_text("{}", encoding="utf-8")
+    (results / "bot_stats.json").write_text("{}", encoding="utf-8")
+    (results / "glicko_ratings.json").write_text("{}", encoding="utf-8")
+    (results / "elo_daemon_stats.json").write_text(
+        json.dumps({"total_games": 0, "pairs": {}}), encoding="utf-8"
+    )
+    (results / "selection_snapshot.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "save_num": 1,
+            "daemon_run_id": "test-run",
+            "active_bots": [],
+            "rows": [],
+            "rating_history_tail": [],
+        }),
+        encoding="utf-8",
+    )
+    (results / "match_history.jsonl").write_text("", encoding="utf-8")
+    (results / "rating_history.jsonl").write_text("", encoding="utf-8")
+    publish_evaluation_cycle_manifest(
+        save_num=1,
+        daemon_run_id="test-run",
+        active_bots=[],
+        results_dir=results,
+        _test_only_allow_unleased=True,
+    )
     recreated = evidence_snapshot.ensure_generation_h2h_snapshot(143)
 
     assert recreated["available"] is True

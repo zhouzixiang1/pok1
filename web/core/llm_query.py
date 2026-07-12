@@ -1030,6 +1030,136 @@ def _make_subagent_cost_guard(role_name):
         return None
 
 
+_MASTER_LIVE_EVIDENCE_FILENAMES = (
+    "glicko_ratings.json",
+    "head_to_head.json",
+    "bot_stats.json",
+    "selection_snapshot.json",
+    "rating_history.jsonl",
+    "match_history.jsonl",
+    "eval_rounds.jsonl",
+    "behavior_archive.json",
+    "bot_action_stats.json",
+    "bot_action_stats_per_opp.json",
+)
+
+
+def _master_live_evidence_read_violation(
+    tool_name,
+    tool_input,
+    allowed_evidence_snapshot_dir=None,
+):
+    """Return a forbidden live-evidence path read by a Master role, if any."""
+    if not isinstance(tool_input, dict):
+        return None
+
+    def _path_violation(raw_path):
+        raw_text = str(raw_path or "").strip().strip("'\"")
+        if not raw_text:
+            return None
+        try:
+            candidate_path = Path(_local_path_from_file_uri(raw_text))
+            if not candidate_path.is_absolute():
+                candidate_path = Path(PROJECT_ROOT) / candidate_path
+            resolved = candidate_path.resolve(strict=False)
+            if allowed_evidence_snapshot_dir is not None:
+                allowed = Path(allowed_evidence_snapshot_dir).resolve(strict=False)
+                try:
+                    resolved.relative_to(allowed)
+                    return None
+                except ValueError:
+                    pass
+
+            # Fail closed by evidence identity, not by this checkout's one
+            # results root.  The operator and evolution checkouts coexist, and
+            # a weak planner could otherwise read the other checkout's mutable
+            # aliases.  Likewise, copied/stale results trees are not a valid
+            # substitute for the exact generation snapshot.
+            if resolved.name in _MASTER_LIVE_EVIDENCE_FILENAMES:
+                return str(resolved)
+            if "results" in resolved.parts:
+                return str(resolved)
+            return None
+        except Exception:
+            normalized = raw_text.replace("\\", "/")
+            if (
+                any(name in normalized for name in _MASTER_LIVE_EVIDENCE_FILENAMES)
+                or "/results/" in f"/{normalized.lstrip('/')}"
+            ):
+                return raw_text[:500]
+            return None
+
+    if tool_name == "Read":
+        return _path_violation(tool_input.get("file_path", ""))
+    elif tool_name == "Bash":
+        command = str(tool_input.get("command", ""))
+        try:
+            import shlex
+
+            candidates = shlex.split(command)
+        except Exception:
+            candidates = command.split()
+    else:
+        return None
+    for candidate in candidates:
+        normalized = str(candidate).replace("\\", "/").strip("'\";,()[]{}")
+        if any(filename in normalized for filename in _MASTER_LIVE_EVIDENCE_FILENAMES):
+            violation = _path_violation(normalized)
+            if violation:
+                return violation[:500]
+    return None
+
+
+def _make_master_evidence_read_guard(role_name, allowed_evidence_snapshot_dir=None):
+    """Prevent a weak Master from bypassing its digest-bound snapshot."""
+    async def handler(hook_input, tool_use_id, context):
+        from claude_agent_sdk.types import SyncHookJSONOutput
+
+        try:
+            tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
+            tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+            violation = _master_live_evidence_read_violation(
+                tool_name,
+                tool_input,
+                allowed_evidence_snapshot_dir,
+            )
+            if not violation:
+                return SyncHookJSONOutput()
+            reason = (
+                "Master live evaluation evidence read denied. Use only the "
+                "generation's vN/evidence_snapshot files supplied in the prompt; "
+                f"forbidden target: {violation}"
+            )
+            try:
+                from system_log import log_system_event
+
+                log_system_event(
+                    "pipeline.master_live_evidence_read_blocked",
+                    "error",
+                    f"BLOCKED {role_name} live evaluation read",
+                    {"role": role_name, "tool": tool_name, "target": violation},
+                )
+            except Exception:
+                pass
+            return SyncHookJSONOutput(hookSpecificOutput={
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            })
+        except Exception:
+            return SyncHookJSONOutput()
+
+    try:
+        from claude_agent_sdk.types import HookMatcher
+
+        return {"PreToolUse": [
+            HookMatcher(matcher="Bash", hooks=[handler]),
+            HookMatcher(matcher="Read", hooks=[handler]),
+        ]}
+    except Exception:
+        return None
+
+
 def _merge_hooks(*hook_sets):
     merged = {}
     for hooks in hook_sets:
@@ -2213,7 +2343,17 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
         raise last_sdk_err
 
 
-async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, model="sonnet", tools=None, allowed_write_dir=None):
+async def run_claude_query(
+    prompt,
+    context_files,
+    ui,
+    role_name,
+    log_file_path,
+    model="sonnet",
+    tools=None,
+    allowed_write_dir=None,
+    allowed_evidence_snapshot_dir=None,
+):
     """Run a Claude query via the Agent SDK with cost tracking and typed streaming.
 
     tools: list of built-in tool names (e.g. ["Bash", "Read"]) or a ToolsPreset dict.
@@ -2313,6 +2453,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         _cost_hooks = _make_subagent_cost_guard(role_name)
     _write_hooks = None
     _readonly_hooks = None
+    _master_evidence_hooks = None
     if allowed_write_dir is not None and tools and any(
         t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
     ):
@@ -2321,7 +2462,17 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
     ):
         _readonly_hooks = _make_subagent_readonly_guard(role_name)
-    _sub_hooks = _merge_hooks(_cost_hooks, _write_hooks, _readonly_hooks)
+    if str(role_name).upper().startswith("MASTER"):
+        _master_evidence_hooks = _make_master_evidence_read_guard(
+            role_name,
+            allowed_evidence_snapshot_dir,
+        )
+    _sub_hooks = _merge_hooks(
+        _cost_hooks,
+        _write_hooks,
+        _readonly_hooks,
+        _master_evidence_hooks,
+    )
     options_kwargs = dict(
         model=model,
         permission_mode="bypassPermissions",

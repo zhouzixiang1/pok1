@@ -186,21 +186,27 @@ def test_crossover_compatibility_uses_glicko_r_stable_h2h_and_architecture_conte
     monkeypatch.setattr(
         evolution_infra,
         "load_ratings",
-        lambda: {
-            "national_v7": SimpleNamespace(r=1600.0, rd=55.0),
-            "national_v1": SimpleNamespace(r=1510.0, rd=70.0),
-        },
+        lambda: (_ for _ in ()).throw(
+            AssertionError("compatibility audit must not reopen live ratings")
+        ),
     )
     monkeypatch.setattr(
         evidence_snapshot,
-        "load_generation_h2h_snapshot",
+        "load_generation_evaluation_snapshot",
         lambda _target: {
-            "national_v1 vs national_v7": {
-                "games": 120,
-                "a_wins": 52,
-                "b_wins": 68,
-                "draws": 0,
-            }
+            "available": True,
+            "ratings": {
+                "national_v7": {"r": 1600.0, "rd": 55.0},
+                "national_v1": {"r": 1510.0, "rd": 70.0},
+            },
+            "h2h": {
+                "national_v1 vs national_v7": {
+                    "games": 120,
+                    "a_wins": 52,
+                    "b_wins": 68,
+                    "draws": 0,
+                }
+            },
         },
     )
     captured = {}
@@ -305,7 +311,7 @@ def test_crossover_parent_selection_prefers_next_gap_pair_over_adjacent_fallback
     assert generation_scheduler._pick_crossover_parents({}, current_v=7) == (6, 3)
 
 
-def test_run_crossover_incompatible_pair_records_and_abandons(tmp_path, monkeypatch):
+def test_run_crossover_llm_incompatibility_is_advisory_only(tmp_path, monkeypatch):
     import audit_agents
     import crossover_compat
     import evolution_core
@@ -342,11 +348,30 @@ def test_run_crossover_incompatible_pair_records_and_abandons(tmp_path, monkeypa
     monkeypatch.setattr(tool_commit, "get_bot_dir", _bot_dir)
     monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
     monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
-    async def _crossover_must_not_run(*_args, **_kwargs):
-        raise AssertionError("crossover synthesis must not run")
+    synthesis = {}
 
-    monkeypatch.setattr(tool_commit, "_run_crossover", _crossover_must_not_run)
+    async def _crossover_runs(_a, _b, _target, _ui, **kwargs):
+        synthesis.update(kwargs)
+        target_dir.mkdir()
+        (target_dir / "main.py").write_text("# child\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(tool_commit, "_run_crossover", _crossover_runs)
     monkeypatch.setattr(audit_agents, "_run_crossover_compatibility_audit", _compat)
+    monkeypatch.setattr(
+        crossover_compat,
+        "record_incompatible_crossover",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("advisory LLM score must not create a permanent denylist")
+        ),
+    )
+    import national_position_contract
+    monkeypatch.setattr(
+        national_position_contract,
+        "detect_position_semantics_errors",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(tool_commit, "write_pipeline_checkpoint", lambda *_a, **_k: True)
 
     tool_bot_management._LAST_ABANDON_TS[0] = 0.0
     tool_bot_management._LAST_ABANDON_TS[1] = ""
@@ -367,12 +392,10 @@ def test_run_crossover_incompatible_pair_records_and_abandons(tmp_path, monkeypa
     }))
     data = _tool_json(result)
 
-    assert data["error"] == "CROSSOVER_INCOMPATIBLE"
-    assert data["success"] is False
-    assert data["abandoned"] is True
-    assert data["abandon_result"]["abandoned_v"] == 25
-    assert cleared == [True]
-    assert crossover_compat.is_crossover_pair_blocked(7, 1) is True
+    assert data["success"] is True
+    assert synthesis["compatibility"]["compatible"] is False
+    assert synthesis["compatibility"]["compatibility_score"] == 3
+    assert cleared == []
 
 
 def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
@@ -733,8 +756,12 @@ def test_run_crossover_infrastructure_resume_reuses_preserved_child_without_llm(
     )
     monkeypatch.setattr(
         evidence_snapshot,
-        "ensure_generation_h2h_snapshot",
-        lambda _v: {"available": True, "manifest_digest": "m" * 64},
+        "load_generation_snapshot_identity",
+        lambda _v: {
+            "available": True,
+            "manifest_digest": "m" * 64,
+            "sha256": "h" * 64,
+        },
     )
     monkeypatch.setattr(
         audit_agents,

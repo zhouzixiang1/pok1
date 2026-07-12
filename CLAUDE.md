@@ -170,7 +170,7 @@ The Orchestrator LLM calls these MCP tools in order:
 1. **Prepare/Crossover**: Use `prepare_next_gen` first for normal Master/Worker generations so the target bot dir and `prepared` checkpoint exist. For crossover generations, use `run_crossover` as the alternative setup path; it creates only a recombination baseline and also finishes at `prepared`, so it never skips steps 2–5.
 2. **Direction Auditor**: Pre-Master LLM gate that checks git history for repetitive evolution directions. Forces structural alternatives if stuck.
 3. **Optional Literature Probe**: When stagnation or repetition is detected, run `run_literature_probe` before Master so web-derived strategy hypotheses are explicit and governed.
-4. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data, and the pre-selected source version. Produces JSON task plan with worker assignments. It must not set `branch_from` or source-override fields; source selection is handled before Master planning.
+4. **Master Architect** (`prompts/master_prompt.md`): Analyzes the generation-scoped frozen selection/H2H bundle, experience pool, match diagnostics, and the pre-selected source version. Produces JSON task plan with worker assignments. It must not reopen live strength files, set `branch_from`, or set source-override fields; source selection is handled before Master planning.
 5. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
 6. **Quality Gates** (automated, no LLM): `py_compile`, runtime import contract, smoke test, decision tests (≥70% pass), national TCP protocol regression tests matching the active execution mode (`national_native` uses the adapter-free platform shard; adapter workflows use the legacy adapter shard), declared-scope/protected-contract checks, mandatory fix verification, telemetry/reachability checks, file size ≤2000 lines (core strategy files) / ≤1500 lines (helpers), adaptive limit based on source bot size + 15% growth budget, hard cap 2500.
 7. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
@@ -456,6 +456,7 @@ After `allin` is called, the server runs out remaining public cards, records the
 - Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed gates, committed the bot, and created the annotated `national-bot-v{N}` tag.
 - Pool capped at 30 active; weakest culled by conservative Glicko score (`r - 2*rd`) to `bots/graveyard/`, with sample-starved bots protected until the hard overflow rules apply. H2H average win rate is reported as context, not the primary reap key.
 - Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only for active, completion-backed bots (`.completed` plus `national-bot-v{N}` tag); rejected suggestions emit `pipeline.source_selection_rejected`.
+- The rating daemon publishes H2H, bot stats, ratings, and derived selection rows as one lock-protected, digest-manifested save cycle. Each generation freezes that full bundle; Combined analysis, deterministic source/leader/oscillation logic, crossover parents, and Master must consume the frozen identity rather than live rating files.
 - Reap logs and tool results include `selection_key=conservative_glicko`, `conservative_rating`, `leaderboard_score`, and `h2h_avg_wr` so the actual cull key is distinguishable from contextual H2H/leaderboard evidence.
 - Botzone game ID: `63dcfaddee1bce5e6c8f4b53`.
 
@@ -519,66 +520,67 @@ It is sorted by current line count and excludes `__init__.py`,
 
 | File | Lines | Role |
 |---|---|---|
-| `tool_planning.py` | 9550 | Pipeline tools: direction audit, system-owned Master context, canonical repair authority, literature, transactional Workers |
-| `national_native.py` | 4164 | Native national TCP execution backend for evolved bots |
+| `tool_planning.py` | 9787 | Pipeline tools: direction audit, system-owned Master context, canonical repair authority, literature, transactional Workers |
+| `national_native.py` | 4270 | Native national TCP execution backend for evolved bots |
 | `official_certification.py` | 3947 | Official EXE policy, identity, evidence validation, signed certificates and explicit one-time bootstrap binding |
 | `tool_gates.py` | 3450 | Complete-artifact quality gates, code prep, review, and advisory Critic execution |
 | `orchestrator.py` | 3125 | LLM-driven Orchestrator: pipeline loop and recovery routing |
-| `tool_commit.py` | 2809 | Commit, signed official full gate, staged/tree-bound publication, archivist, and crossover routing |
+| `generation_scheduler.py` | 3062 | Three-phase generation scheduler, frozen source/parent governance, and digest-bound Master evidence handoff |
+| `elo_daemon.py` | 2885 | Single-writer rating daemon: staged native admission, immutable evaluation cycles, Glicko-2, H2H and telemetry |
+| `tool_commit.py` | 2766 | Commit, signed official full gate, staged/tree-bound publication, archivist, and crossover routing |
 | `tool_eval.py` | 2727 | Frozen-contract precommit and diagnostic inline evaluation |
 | `evolution_infra.py` | 2663 | Shared infra: constants, Git/blob publication, checkpoints, ratings and repair receipts |
-| `llm_query.py` | 2605 | `run_claude_query()` primitive, output parsing, prompt budgets, sandboxing |
+| `llm_query.py` | 2756 | `run_claude_query()` primitive, output parsing, prompt budgets, sandboxing and exact-snapshot Master read guard |
 | `official_platform_harness.py` | 2443 | Wine/Xvfb driver for official EXE evidence |
-| `generation_scheduler.py` | 2327 | Three-phase generation scheduler, source selection, and digest-bound Master evidence handoff |
-| `elo_daemon.py` | 2093 | Background rating daemon: native matches, Glicko-2, H2H and chip telemetry |
 | `national_capability_contract.py` | 2006 | Static/runtime data-flow and external-I/O capability evidence for native bots |
 | `national_arena/manager.py` | 1946 | Local diagnostic/presentation Arena session lifecycle |
 | `runtime_architecture_policy.py` | 1823 | Parent/prepared-child capability preservation plus preplan/final runtime contracts |
-| `national_runtime_probe_worker.py` | 1689 | Resource-limited dynamic native capability probe with separated safety/baseline evidence |
+| `national_runtime_probe_worker.py` | 1726 | Resource-limited dynamic native capability probe with separated safety/baseline and sampled 2s/8s evidence |
 | `agent_workers.py` | 1569 | Binary-safe Worker execution with retries and runtime-contract isolation |
 | `decision_tester.py` | 1318 | Decision scenarios and dynamic regression generation |
 | `battle_experience.py` | 1311 | Incremental match analysis via background LLM thread |
 | `crossover_provenance.py` | 1091 | Complete-artifact and single-use Parent-B-symbol provenance gate for pure crossover |
 | `official_llm_analysis.py` | 1073 | Advisory-only EXE evidence explanation and repair guidance |
 | `official_certification_job.py` | 1036 | Durable process-owned official EXE job state machine |
-| `tool_helpers.py` | 1036 | Shared MCP tool helpers, strength snapshots, gates and repair contracts |
+| `tool_helpers.py` | 1054 | Shared MCP tool helpers, strength snapshots, gates and repair contracts |
 | `code_verification.py` | 1029 | Resource-limited compile/import, size, smoke, decisions, reachability and runtime evidence |
 | `agent_review.py` | 1024 | Reviewer, advisory Critic, performance and provenance-gated crossover agents |
 | `orchestrator_context.py` | 933 | Orchestrator context building and PreCompact hook |
 | `pipeline_state.py` | 933 | Authoritative 20-label stage machine, context-bound mandatory research routing, and cumulative gate policy |
 | `engine/battle.py` | 899 | Local legacy battle runner used only by legacy paths |
-| `audit_agents.py` | 882 | Schema-gated, binary-aware pipeline audit agents |
+| `audit_agents.py` | 888 | Schema-gated, binary-aware pipeline audit agents |
 | `tool_runtime_guard.py` | 839 | Exact-contract Git/worktree and dynamic pipeline-route guard |
 | `national_epoch_registry.py` | 834 | Active epoch completion/reaping registry |
 | `official_wire_probe.py` | 831 | Raw EXE TCP capture and deterministic protocol replay |
 | `bot_artifact.py` | 807 | Bounded complete-artifact, staged-index and immutable-tree identity |
 | `official_evidence.py` | 675 | Standardized EXE evidence bundle assembly |
-| `bot_action_stats.py` | 666 | Bot action statistics extraction from replay files |
+| `bot_action_stats.py` | 956 | Committed native opponent-tracker aggregation with per-replay contribution cache |
 | `worker_boundary.py` | 656 | Bounded byte snapshots, complete rollback, and Worker editable-scope checks |
 | `candidate_store.py` | 654 | Candidate ledger plus SQLite query store |
 | `official_bootstrap.py` | 642 | Fail-closed pinned v5 signed-ledger bootstrap root selector and receipt validator |
 | `replay_analysis.py` | 639 | Replay statistics and behavior fingerprints |
 | `evaluation_contract.py` | 618 | Active exact-file evaluation contract and HEAD drift policy |
-| `evidence_snapshot.py` | 604 | Immutable per-generation evidence snapshots |
-| `agent_master.py` | 593 | Master Architect plans against frozen prepared baselines, typed reference cards, and runtime contracts |
+| `evidence_snapshot.py` | 862 | Immutable per-generation evidence snapshots with bounded diagnostic staleness |
+| `agent_master.py` | 881 | Master Architect with 3-proposal/2-critic advisory ensemble over exact frozen evidence |
 | `engine/judge.py` | 592 | Poker hand judge: suits, hand types, game engine rules |
 | `national_acceptance.py` | 566 | In-process national-platform acceptance runner (gate API) |
-| `national_runtime_probe.py` | 551 | Trusted launcher, complete-artifact cache identity, and result contract for runtime probes |
+| `national_runtime_probe.py` | 558 | Trusted launcher, complete-artifact cache identity, and result contract for runtime probes |
+| `evaluation_bundle.py` | 661 | Content-addressed, crash-recoverable daemon evaluation cycles with cross-file semantic validation and recovery |
 | `daemon_management.py` | 525 | Daemon subprocess lifecycle: start/stop/monitor/orphan detect |
-| `tool_status.py` | 522 | Non-pipeline MCP tools: status, daemon control, analysis |
+| `tool_status.py` | 535 | Non-pipeline MCP tools: status, daemon control, analysis |
 | `event_bus.py` | 497 | Unified event bus with correlation schema |
 | `engine/aivat.py` | 488 | AIVAT all-in variance reduction for heads-up mirror battles |
 | `map_elites.py` | 479 | MAP-Elites 5x5 behavior archive (advisory diversity signal) |
 | `exploitability_prober.py` | 474 | Exploitability probe scoring across strategic axes |
-| `replay_spotlight.py` | 463 | Replay spotlight: identify critical chip-swing hands |
+| `replay_spotlight.py` | 540 | Replay spotlight with native hand records and true decision-pot critical swings |
 | `battle_scheduler.py` | 454 | File-based (fcntl-locked JSONL) battle job queue for daemon |
 | `pipeline_recovery.py` | 450 | Shared recovery diagnostics for active checkpoints |
-| `rating_snapshot.py` | 448 | Unified sign-first strength snapshot with chip tie-break telemetry |
-| `output_schema.py` | 448 | Pydantic models for structured LLM output |
-| `combined_analyst.py` | 447 | Combined stagnation and performance analyst |
+| `rating_snapshot.py` | 505 | Unified sign-first strength snapshot with active-only H2H and chip tie-break telemetry |
+| `output_schema.py` | 947 | Pydantic models and executable contracts for structured LLM output |
+| `combined_analyst.py` | 512 | Typed Combined stagnation/performance analyst with evidence-coverage states |
 | `behavior_diversity.py` | 440 | Behavior diversity metrics via fingerprints and Vendi Score |
 | `qd_async_eval.py` | 436 | Async QD background fitness evaluation |
-| `evolution_scope.py` | 434 | Runtime change classification and protected scopes |
+| `evolution_scope.py` | 435 | Runtime change classification and protected scopes |
 | `prepared_baseline_contract.py` | 433 | Common prepared artifact plus rich crossover Parent-A/Parent-B/child capability receipt |
 | `tool_bot_management.py` | 431 | Reaping, cleanup, abandonment and experience management |
 | `official_evidence_archive.py` | 428 | Immutable official evidence archive |

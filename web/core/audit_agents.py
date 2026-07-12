@@ -665,21 +665,27 @@ async def _run_crossover_compatibility_audit(
             if fb.exists():
                 parent_b_code[fname] = fb.read_text()[:4000]
 
-        # Get ratings (load_ratings returns {name: Glicko2Player} objects)
-        from evolution_infra import load_ratings
-        ratings = load_ratings() or {}
-        ra = ratings.get(bot_name(parent_a_v))
-        rb = ratings.get(bot_name(parent_b_v))
-        rating_a = f"{ra.r:.1f} ± {ra.rd:.1f}" if ra and hasattr(ra, "r") else "unknown"
-        rating_b = f"{rb.r:.1f} ± {rb.rd:.1f}" if rb and hasattr(rb, "r") else "unknown"
-
+        rating_a = "unknown"
+        rating_b = "unknown"
         h2h_context = "Stable H2H snapshot unavailable. Treat matchup strength as unknown."
         if target_v is not None:
             try:
-                from evidence_snapshot import load_generation_h2h_snapshot
+                from evidence_snapshot import load_generation_evaluation_snapshot
                 from evolution_infra import pair_key
 
-                h2h = load_generation_h2h_snapshot(target_v)
+                frozen = load_generation_evaluation_snapshot(target_v)
+                if not frozen.get("available"):
+                    raise RuntimeError(
+                        f"generation snapshot unavailable: {frozen.get('reason')}"
+                    )
+                ratings = frozen.get("ratings") or {}
+                ra = ratings.get(bot_name(parent_a_v)) or {}
+                rb = ratings.get(bot_name(parent_b_v)) or {}
+                if isinstance(ra, dict) and ra:
+                    rating_a = f"{float(ra.get('r', 1500)):.1f} ± {float(ra.get('rd', 350)):.1f}"
+                if isinstance(rb, dict) and rb:
+                    rating_b = f"{float(rb.get('r', 1500)):.1f} ± {float(rb.get('rd', 350)):.1f}"
+                h2h = frozen.get("h2h") or {}
                 key = pair_key(bot_name(parent_a_v), bot_name(parent_b_v))
                 row = h2h.get(key) if isinstance(h2h, dict) else None
                 if isinstance(row, dict):

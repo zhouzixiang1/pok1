@@ -382,6 +382,9 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
     short = scaling.get("short") or {}
     long = scaling.get("long") or {}
     decision_runtime["budget_scaling"] = {
+        "probe_kind": str(scaling.get("probe_kind") or ""),
+        "short_budget": scaling.get("short_budget") or {},
+        "long_budget": scaling.get("long_budget") or {},
         "short_has_work": int(short.get("trusted_steps") or 0) > 0,
         "long_has_real_work": int(long.get("trusted_steps") or 0) >= 8,
         "long_scales_or_completes": (
@@ -395,6 +398,10 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
         "long_changed_action": bool(long.get("action_changes")),
         "short_wire": short.get("wire"),
         "long_wire": long.get("wire"),
+        "worker_seed_equal": (
+            short.get("worker_seed") is not None
+            and short.get("worker_seed") == long.get("worker_seed")
+        ),
     }
     for action in (decision_runtime.get("timeout_recovery") or {}).values():
         if not isinstance(action, dict):

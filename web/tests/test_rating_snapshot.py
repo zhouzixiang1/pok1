@@ -75,6 +75,53 @@ def test_strength_rows_sort_by_rebuilt_active_pool_not_sparse_stored_h2h(tmp_pat
     assert rows[0]["rank_basis"] == "active_h2h_plus_conservative"
 
 
+def test_inactive_h2h_rows_cannot_change_active_selection_scores(tmp_path):
+    from rating_snapshot import build_strength_rows, choose_h2h_source
+
+    active = ["national_v1", "national_v2"]
+    ratings = {
+        name: {"r": 1500, "rd": 80, "sigma": 0.06} for name in active
+    }
+    stats = {name: {"games": 100, "win_rate": 0.5} for name in active}
+    active_h2h = {
+        "national_v1 vs national_v2": {
+            "games": 100,
+            "a_wins": 50,
+            "b_wins": 50,
+            "draws": 0,
+        }
+    }
+    polluted = {
+        **active_h2h,
+        "national_v1 vs national_v999": {
+            "games": 1000,
+            "a_wins": 1000,
+            "b_wins": 0,
+            "draws": 0,
+        },
+    }
+    history = tmp_path / "match_history.jsonl"
+    history.write_text("", encoding="utf-8")
+
+    clean_rows = {
+        row["name"]: row
+        for row in build_strength_rows(
+            ratings, stats, active_h2h, active_bots=active, match_history_path=history
+        )
+    }
+    polluted_rows = {
+        row["name"]: row
+        for row in build_strength_rows(
+            ratings, stats, polluted, active_bots=active, match_history_path=history
+        )
+    }
+    selected = choose_h2h_source(active, polluted, history)
+
+    assert polluted_rows["national_v1"]["selection_score"] == clean_rows["national_v1"]["selection_score"]
+    assert polluted_rows["national_v1"]["h2h_games"] == 100
+    assert "national_v1 vs national_v999" not in selected["h2h"]
+
+
 def test_h2h_winrate_counts_draws_as_half():
     from rating_snapshot import h2h_winrate_for_bot
 

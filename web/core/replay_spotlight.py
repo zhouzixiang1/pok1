@@ -322,7 +322,69 @@ def _extract_hand_swing(game, bot_idx, opp_idx):
     return _summarize_hand(best, game_num)
 
 
-def find_critical_hands(bot_name, replays_dir, max_hands=10, recent_n_files=20):
+def _summarize_native_hand(record, bot_idx, opp_idx, game_num, replay_file):
+    settlement = record.get("settlement") or {}
+    earnings = settlement.get("earnings") or [0, 0]
+    try:
+        chip_delta = float(earnings[bot_idx])
+    except (IndexError, TypeError, ValueError):
+        chip_delta = 0.0
+    actions = record.get("actions") or []
+    bot_actions = [row for row in actions if row.get("player_idx") == bot_idx]
+    opp_actions = [row for row in actions if row.get("player_idx") == opp_idx]
+
+    def render_action(row):
+        if not row:
+            return "?"
+        action = str(row.get("action") or "?")
+        amount = row.get("amount")
+        return f"{action} {amount}" if amount is not None else action
+
+    last = bot_actions[-1] if bot_actions else None
+    last_opp = opp_actions[-1] if opp_actions else None
+    terminal_action = actions[-1] if actions else None
+    stage = str((terminal_action or last or last_opp or {}).get("stage") or "showdown")
+    hole_cards = record.get("hole_cards") or [[], []]
+    try:
+        bot_cards = " ".join(str(card) for card in hole_cards[bot_idx])
+    except (IndexError, TypeError):
+        bot_cards = ""
+    assessment = (
+        "showdown" if settlement.get("is_showdown") else str(settlement.get("reason") or "terminal")
+    )
+    return {
+        "game_num": game_num,
+        "hand_num": int(record.get("hand", 0) or 0),
+        "stage": stage,
+        "board": " ".join(str(card) for card in (record.get("board") or [])),
+        "bot_cards": bot_cards,
+        "bot_action": render_action(last),
+        "opp_action": render_action(last_opp),
+        # Native compact records bind every action to the immediately preceding
+        # engine action_requested event.  Use the final real decision state,
+        # never the hand's blind-only starting pot, for a multi-street summary.
+        "pot_before": int(
+            (terminal_action or {}).get("pot_before")
+            if (terminal_action or {}).get("pot_before") is not None
+            else record.get("starting_pot", 0)
+            or 0
+        ),
+        "pot_after": int(settlement.get("pot", 0) or 0),
+        "chip_delta": chip_delta,
+        "swing": abs(chip_delta),
+        "assessment": assessment,
+        "_replay_file": replay_file,
+    }
+
+
+def find_critical_hands(
+    bot_name,
+    replays_dir,
+    max_hands=10,
+    recent_n_files=20,
+    *,
+    allowed_replay_ids=None,
+):
     """Find the hands with largest chip swings for a given bot.
 
     Ranks by the TRUE single-hand swing (each ``games[i]`` is a 70-hand mirror
@@ -344,6 +406,9 @@ def find_critical_hands(bot_name, replays_dir, max_hands=10, recent_n_files=20):
     # Find recent replay files
     pattern = os.path.join(replays_dir, "*.json")
     files = glob(pattern)
+    if allowed_replay_ids is not None:
+        allowed = {str(value) for value in allowed_replay_ids}
+        files = [path for path in files if os.path.basename(path) in allowed]
     if not files:
         return "No replay files found."
 
@@ -372,7 +437,19 @@ def find_critical_hands(bot_name, replays_dir, max_hands=10, recent_n_files=20):
 
         games = replay.get("games", [])
         for game in games:
-            game_num = game.get("game", "?")
+            game_num = game.get("game", game.get("repeat", "?"))
+            if game.get("execution_mode") == "native_tcp":
+                for record in game.get("hand_records") or []:
+                    summary = _summarize_native_hand(
+                        record,
+                        bot_idx,
+                        opp_idx,
+                        game_num,
+                        path,
+                    )
+                    if summary["swing"] > 0:
+                        all_swings.append(summary)
+                continue
             for hand in _iter_hands(game, bot_idx, opp_idx):
                 if hand["swing"] > 0:
                     all_swings.append(_summarize_hand(hand, game_num, replay_file=path))

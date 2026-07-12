@@ -745,31 +745,49 @@ def _batch_compute_opponent_coverage(h2h_data, active_bots):
     return opponent_counts
 
 
+def strength_row_to_analysis_view(row):
+    """Normalize a canonical strength row for analyst-facing consumers.
+
+    ``rating_snapshot.build_strength_rows`` owns the canonical ``h2h_*``
+    field names.  Older analyst code expects the more descriptive
+    ``opponent_*`` aliases.  Keep that translation in one place so a frozen
+    generation snapshot and the live dashboard path cannot silently disagree
+    about coverage.
+    """
+    return {
+        "h2h_avg_wr": (
+            row.get("h2h_avg_wr")
+            if row.get("h2h_avg_wr") is not None
+            else 0.5
+        ),
+        "leaderboard_score": row.get("leaderboard_score", 0.5),
+        "selection_score": row.get(
+            "selection_score", row.get("leaderboard_score", 0.5)
+        ),
+        "selection_penalty": row.get("selection_penalty", 0.0),
+        "primary_70_hand_match_score": row.get("primary_70_hand_match_score"),
+        "secondary_net_chips_total": row.get("secondary_net_chips_total"),
+        "secondary_net_chips_mean": row.get("secondary_net_chips_mean"),
+        "strength_sample_count": row.get("strength_sample_count", 0),
+        "strength_order_contract": row.get("strength_order_contract", []),
+        "rank_basis": row.get("rank_basis", ""),
+        "strength_confidence": row.get("strength_confidence", "low"),
+        "strength_note": row.get("strength_note", ""),
+        "h2h_source": row.get("h2h_source", "head_to_head"),
+        "opponent_coverage": row.get("h2h_coverage", 0.0),
+        "opponents_evaluated": row.get("h2h_opponents", 0),
+        "opponents_total": row.get("h2h_opponents_total", 0),
+        "h2h_games": row.get("h2h_games", 0),
+    }
+
+
 def load_h2h_avg_winrates_with_coverage():
     """Like load_h2h_avg_winrates but returns coverage metadata per bot."""
     rows = _rating_rows_for_active()
     result = {}
     for row in rows:
         bot_name = row["name"]
-        result[bot_name] = {
-            "h2h_avg_wr": row.get("h2h_avg_wr", 0.5),
-            "leaderboard_score": row.get("leaderboard_score", 0.5),
-            "selection_score": row.get("selection_score", row.get("leaderboard_score", 0.5)),
-            "selection_penalty": row.get("selection_penalty", 0.0),
-            "primary_70_hand_match_score": row.get("primary_70_hand_match_score"),
-            "secondary_net_chips_total": row.get("secondary_net_chips_total"),
-            "secondary_net_chips_mean": row.get("secondary_net_chips_mean"),
-            "strength_sample_count": row.get("strength_sample_count", 0),
-            "strength_order_contract": row.get("strength_order_contract", []),
-            "rank_basis": row.get("rank_basis", ""),
-            "strength_confidence": row.get("strength_confidence", "low"),
-            "strength_note": row.get("strength_note", ""),
-            "h2h_source": row.get("h2h_source", "head_to_head"),
-            "opponent_coverage": row.get("h2h_coverage", 0.0),
-            "opponents_evaluated": row.get("h2h_opponents", 0),
-            "opponents_total": row.get("h2h_opponents_total", 0),
-            "h2h_games": row.get("h2h_games", 0),
-        }
+        result[bot_name] = strength_row_to_analysis_view(row)
     return result
 
 

@@ -1016,6 +1016,37 @@ def test_showdown_and_settlement_are_hand_keyed_in_either_order(
     assert snapshot["recent_hands"][-1]["showdown"] is True
 
 
+def test_oppo_hands_emits_a_post_showdown_tracker_snapshot(monkeypatch, tmp_path):
+    """Official ordering is earnChips then oppo_hands; keep the reveal in evidence."""
+    from national_runtime_telemetry import parse_native_bot_log
+
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    ensure_native_entry(bot_dir)
+    module = _load_native_entry_module(bot_dir, monkeypatch)
+    emitted = []
+    monkeypatch.setattr(module, "_log", emitted.append)
+    bot = module.NativeNationalBot("Probe")
+    bot._hand_num = 70
+    bot._my_cards = [0, 5]
+    bot._public_cards = [8, 12, 16, 20, 24]
+    bot._opponent_tracker.begin_hand(70, opponent_is_sb=True)
+
+    bot.handle("earnChips -300", None)
+    bot.handle("oppo_hands|<0,12><1,12>", None)
+
+    tracker_lines = [line for line in emitted if line.startswith("OPPONENT_TRACKER ")]
+    assert len(tracker_lines) == 2
+    first = json.loads(tracker_lines[0].split(" ", 1)[1])
+    final = json.loads(tracker_lines[-1].split(" ", 1)[1])
+    assert first["showdown_range"]["samples"] == 0
+    assert final["showdown_range"]["samples"] == 1
+    assert final["showdown_range"]["class_counts"] == {"AA": 1}
+
+    parsed = parse_native_bot_log("\n".join(tracker_lines))
+    assert parsed["opponent_tracker"]["latest"] == final
+
+
 def test_opponent_tracker_state_is_bounded_and_injected_into_request(monkeypatch, tmp_path):
     bot_dir = tmp_path / "BotA"
     _write_minimal_strategy_bot(bot_dir)
@@ -2785,6 +2816,43 @@ def test_native_tcp_pair_applies_per_bot_environment_overrides(monkeypatch, tmp_
     assert result["per_player"]["BotB"]["native"]["decision_trace"] == []
     assert any(event.get("type") == "action" for event in result["events"])
     assert result["passed_compliance"] is True
+
+
+def test_compact_native_hand_records_bind_multistreet_action_request_pots():
+    events = [
+        {"type": "hand_start", "hand": 1, "sb_idx": 0, "bb_idx": 1, "pot": 150},
+        {"type": "cards_dealt", "hand": 1, "hole_cards": [["As", "Kd"], ["Qc", "Jh"]]},
+        {"type": "action_requested", "hand": 1, "player_idx": 0, "stage": "preflop", "pot": 150},
+        {"type": "action", "hand": 1, "player_idx": 0, "stage": "preflop", "action": "call", "amount": 50, "pot": 200},
+        {"type": "stage", "hand": 1, "stage": "flop", "cards": ["2s", "7d", "Tc"]},
+        {"type": "action_requested", "hand": 1, "player_idx": 1, "stage": "flop", "pot": 200},
+        # A check event has no post-action pot in the real server event schema.
+        {"type": "action", "hand": 1, "player_idx": 1, "stage": "flop", "action": "check"},
+        {"type": "action_requested", "hand": 1, "player_idx": 0, "stage": "flop", "pot": 200},
+        {"type": "action", "hand": 1, "player_idx": 0, "stage": "flop", "action": "call", "amount": 0, "pot": 200},
+        {"type": "stage", "hand": 1, "stage": "turn", "cards": ["Ah"]},
+        {"type": "action_requested", "hand": 1, "player_idx": 1, "stage": "turn", "pot": 200},
+        {"type": "action", "hand": 1, "player_idx": 1, "stage": "turn", "action": "raise", "amount": 600, "pot": 800},
+        {"type": "settle", "hand": 1, "earnings": [800, -800], "pot": 800, "is_showdown": False, "winner_idx": 0, "reason": "fold"},
+    ]
+
+    records = national_native._compact_native_hand_records(events)
+
+    assert len(records) == 1
+    actions = records[0]["actions"]
+    assert [(row["stage"], row["player_idx"]) for row in actions] == [
+        ("preflop", 0),
+        ("flop", 1),
+        ("flop", 0),
+        ("turn", 1),
+    ]
+    assert [(row["pot_before"], row["pot_after"]) for row in actions] == [
+        (150, 200),
+        (200, 200),
+        (200, 200),
+        (200, 800),
+    ]
+    assert records[0]["board"] == ["2s", "7d", "Tc", "Ah"]
 
 
 def test_native_bot_log_parser_summarizes_decision_runtime():
