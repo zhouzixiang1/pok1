@@ -125,6 +125,31 @@ def _running_unit(
     }
 
 
+def _settle_preflight(source: Path) -> dict[str, str]:
+    running = _running_unit(source)
+    return {
+        "LoadState": "loaded", "Transient": "yes",
+        "KillMode": "control-group", "Restart": "no", "MainPID": "123",
+        "ActiveState": "active", "ControlGroup": "/fixture/collector.service",
+        "InvocationID": "a" * 32, "ExecStart": running["exec_start"],
+        "CollectMode": "inactive", "WorkingDirectory": str(TOOLS.resolve()),
+        "Id": UNIT,
+    }
+
+
+def _failed_bound_unit(
+    preflight: dict[str, str], **changes: str
+) -> dict[str, str]:
+    return {
+        **preflight,
+        "MainPID": "0",
+        "ActiveState": "failed",
+        "ControlGroup": "",
+        "Result": "signal",
+        **changes,
+    }
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -892,7 +917,7 @@ def test_freeze_waits_until_every_cgroup_process_is_stopped(
     assert len(calls) >= 4
 
 
-def test_bound_stop_freezes_before_intent_and_kills_before_gc_prone_stop(
+def test_bound_stop_freezes_before_intent_and_kills_without_name_only_stop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     running = _running_unit(tmp_path)
@@ -945,11 +970,247 @@ def test_bound_stop_freezes_before_intent_and_kills_before_gc_prone_stop(
     )
 
     assert "--signal=SIGSTOP" in intent_seen_after[0]
-    stop_index = next(index for index, cmd in enumerate(commands) if "stop" in cmd)
     kill_index = next(
         index for index, cmd in enumerate(commands) if "--signal=SIGKILL" in cmd
     )
-    assert kill_index < stop_index
+    assert kill_index > 0
+    assert not any("stop" in command for command in commands)
+
+
+def test_bound_stop_resets_bound_failure_before_quiescence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = _running_unit(tmp_path)
+    snapshot = dict(running)
+    snapshot.pop("receipt_sha256")
+    snapshot.pop("stop_requested_by_tool")
+    preflight = _settle_preflight(tmp_path)
+    events = []
+    monkeypatch.setattr(
+        systemd_quiescence, "_systemd_show",
+        lambda _unit, _properties: preflight,
+    )
+    monkeypatch.setattr(
+        systemd_quiescence, "_capture_running_unit_snapshot",
+        lambda _unit, _source, _intent: snapshot,
+    )
+    monkeypatch.setattr(
+        systemd_quiescence, "_wait_control_group_stopped", lambda _preflight: None
+    )
+    monkeypatch.setattr(
+        systemd_quiescence,
+        "write_running_unit_receipt",
+        lambda _path, _receipt: events.append("receipt"),
+    )
+    monkeypatch.setattr(
+        systemd_quiescence.subprocess,
+        "run",
+        lambda command, **_kwargs: events.append(command[-2])
+        or type("Result", (), {"returncode": 0})(),
+    )
+    monkeypatch.setattr(
+        systemd_quiescence,
+        "_reset_failed_bound_unit",
+        lambda _preflight, _source: events.append("bound-reset"),
+    )
+    verification = iter((RuntimeError("failed unit"), _quiescence(
+        tmp_path, running_unit=running
+    )))
+
+    def verify(_unit, _source, _running):
+        result = next(verification)
+        if isinstance(result, Exception):
+            raise result
+        events.append("quiescent")
+        return result
+
+    monkeypatch.setattr(
+        systemd_quiescence, "verify_collector_quiescence", verify
+    )
+    monkeypatch.setattr(systemd_quiescence.time, "sleep", lambda _delay: None)
+
+    systemd_quiescence.stop_bound_collector(
+        UNIT, tmp_path, lambda: running["migration_intent"],
+        tmp_path / "receipt.json",
+    )
+
+    assert events == [
+        "--signal=SIGSTOP", "receipt", "--signal=SIGKILL",
+        "bound-reset", "quiescent",
+    ]
+
+
+def test_failed_bound_unit_is_reset_only_after_processes_are_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preflight = _settle_preflight(tmp_path)
+    failed = _failed_bound_unit(preflight)
+    commands = []
+    monkeypatch.setattr(
+        systemd_quiescence, "_systemd_show",
+        lambda _unit, _properties: failed,
+    )
+    monkeypatch.setattr(
+        systemd_quiescence, "_cgroup_processes", lambda _groups: (False, set())
+    )
+    monkeypatch.setattr(systemd_quiescence, "_proc_matches", lambda _source: [])
+    monkeypatch.setattr(
+        systemd_quiescence.subprocess, "run",
+        lambda command, **_kwargs: commands.append(command)
+        or type("Result", (), {"returncode": 0})(),
+    )
+
+    systemd_quiescence._reset_failed_bound_unit(preflight, tmp_path)
+
+    assert commands == [["systemctl", "--user", "reset-failed", UNIT]]
+
+
+def test_failed_bound_unit_never_resets_replacement_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preflight = _settle_preflight(tmp_path)
+    replacement = _failed_bound_unit(preflight, InvocationID="b" * 32)
+    commands = []
+    monkeypatch.setattr(
+        systemd_quiescence, "_systemd_show",
+        lambda _unit, _properties: replacement,
+    )
+    monkeypatch.setattr(
+        systemd_quiescence.subprocess, "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    with pytest.raises(RuntimeError, match="invocation changed while settling"):
+        systemd_quiescence._reset_failed_bound_unit(preflight, tmp_path)
+
+    assert commands == []
+
+
+def test_failed_bound_unit_rechecks_identity_before_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preflight = _settle_preflight(tmp_path)
+    failed = _failed_bound_unit(preflight)
+    replacement = _failed_bound_unit(preflight, InvocationID="b" * 32)
+    snapshots = iter((failed, replacement))
+    commands = []
+    monkeypatch.setattr(
+        systemd_quiescence, "_systemd_show",
+        lambda _unit, _properties: next(snapshots),
+    )
+    monkeypatch.setattr(
+        systemd_quiescence, "_cgroup_processes", lambda _groups: (False, set())
+    )
+    monkeypatch.setattr(systemd_quiescence, "_proc_matches", lambda _source: [])
+    monkeypatch.setattr(
+        systemd_quiescence.subprocess, "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    with pytest.raises(RuntimeError, match="invocation changed while settling"):
+        systemd_quiescence._reset_failed_bound_unit(preflight, tmp_path)
+
+    assert commands == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("Result", "exit-code"),
+        ("MainPID", "456"),
+        ("ControlGroup", "/replacement.service"),
+        ("WorkingDirectory", "/replacement"),
+        ("ExecStart", "{ path=/replacement ; argv[]=/replacement ; }"),
+    ],
+)
+def test_failed_bound_unit_rejects_non_signal_or_identity_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    field: str, value: str,
+) -> None:
+    preflight = _settle_preflight(tmp_path)
+    failed = _failed_bound_unit(preflight, **{field: value})
+    monkeypatch.setattr(
+        systemd_quiescence, "_systemd_show",
+        lambda _unit, _properties: failed,
+    )
+
+    with pytest.raises(RuntimeError, match="invocation changed while settling"):
+        systemd_quiescence._reset_failed_bound_unit(preflight, tmp_path)
+
+
+def test_failed_bound_unit_waits_while_bound_processes_remain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preflight = _settle_preflight(tmp_path)
+    failed = _failed_bound_unit(preflight)
+    commands = []
+    monkeypatch.setattr(
+        systemd_quiescence, "_systemd_show",
+        lambda _unit, _properties: failed,
+    )
+    monkeypatch.setattr(
+        systemd_quiescence, "_cgroup_processes", lambda _groups: (True, {124})
+    )
+    monkeypatch.setattr(systemd_quiescence, "_proc_matches", lambda _source: [])
+    monkeypatch.setattr(
+        systemd_quiescence.subprocess, "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    systemd_quiescence._reset_failed_bound_unit(preflight, tmp_path)
+
+    assert commands == []
+
+
+def test_failed_bound_unit_rejects_process_reappearance_before_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preflight = _settle_preflight(tmp_path)
+    failed = _failed_bound_unit(preflight)
+    cgroups = iter(((False, set()), (True, {124})))
+    commands = []
+    monkeypatch.setattr(
+        systemd_quiescence, "_systemd_show",
+        lambda _unit, _properties: failed,
+    )
+    monkeypatch.setattr(
+        systemd_quiescence, "_cgroup_processes", lambda _groups: next(cgroups)
+    )
+    monkeypatch.setattr(systemd_quiescence, "_proc_matches", lambda _source: [])
+    monkeypatch.setattr(
+        systemd_quiescence.subprocess, "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    with pytest.raises(RuntimeError, match="invocation changed while settling"):
+        systemd_quiescence._reset_failed_bound_unit(preflight, tmp_path)
+
+    assert commands == []
+
+
+def test_failed_bound_unit_reset_failure_is_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preflight = _settle_preflight(tmp_path)
+    failed = _failed_bound_unit(preflight)
+    monkeypatch.setattr(
+        systemd_quiescence, "_systemd_show",
+        lambda _unit, _properties: failed,
+    )
+    monkeypatch.setattr(
+        systemd_quiescence, "_cgroup_processes", lambda _groups: (False, set())
+    )
+    monkeypatch.setattr(systemd_quiescence, "_proc_matches", lambda _source: [])
+    monkeypatch.setattr(
+        systemd_quiescence.subprocess,
+        "run",
+        lambda command, **_kwargs: (_ for _ in ()).throw(
+            systemd_quiescence.subprocess.CalledProcessError(1, command)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="cannot settle"):
+        systemd_quiescence._reset_failed_bound_unit(preflight, tmp_path)
 
 
 def test_bound_stop_resumes_group_when_frozen_preflight_fails(
