@@ -6,6 +6,8 @@ import importlib.util
 import json
 import os
 import shutil
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,9 @@ TOOL_PATH = (
     / "tools"
     / "recover_legacy_oppmodel_collection.py"
 )
+TOOLS = TOOL_PATH.parent
+if str(TOOLS) not in sys.path:
+    sys.path.insert(0, str(TOOLS))
 
 
 def _load_tool():
@@ -119,6 +124,13 @@ def _row(
 
 def _fixture(tmp_path: Path):
     tool = _load_tool()
+    # Replay the immutable historical schema-4 -> schema-5 tool contract even
+    # though the active collector has advanced to schema 6.  Use an isolated
+    # attribute proxy so historical tests cannot mutate a shared module.
+    tool.collector = types.SimpleNamespace(**vars(tool.collector))
+    tool.collector.COLLECTION_CONTRACT_SCHEMA_VERSION = (
+        tool.TARGET_COLLECTION_SCHEMA_VERSION
+    )
     source = tmp_path / "collection"
     source.mkdir()
     (source / ".collector.lock").write_text("stale", encoding="utf-8")

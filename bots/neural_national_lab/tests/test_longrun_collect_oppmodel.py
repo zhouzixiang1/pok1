@@ -5,7 +5,9 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -94,6 +96,19 @@ def _install_minimal_pool(tool, monkeypatch, tmp_path: Path):
     return opponents
 
 
+def _run_probe_one(tool, tmp_path: Path) -> tuple[Path, Path]:
+    candidate = _minimal_bot(tmp_path / "candidate")
+    opponent = _minimal_bot(tmp_path / "national_v1")
+    out_dir = tmp_path / "data"
+    out_dir.mkdir()
+    tool.probe_one(
+        str(candidate), str(opponent), "train", "national_v1",
+        1, 100, 200, str(out_dir), 1, 1, 1, 1,
+        str(tmp_path / "ratings.json"), 2, "uniform",
+    )
+    return out_dir, candidate
+
+
 def _valid_pass_plan(tool, tmp_path: Path) -> tuple[Path, dict]:
     ratings_path = tmp_path / "plan_ratings.json"
     ratings_path.write_bytes(_ratings_bytes())
@@ -160,6 +175,111 @@ def test_deck_seed_blocks_do_not_overlap_across_tasks_or_passes() -> None:
         for left_index, left in enumerate(blocks)
         for right in blocks[left_index + 1:]
     )
+
+
+def test_probe_nonzero_exit_is_not_published(tmp_path: Path, monkeypatch) -> None:
+    tool = _load_tool()
+    monkeypatch.setattr(
+        tool.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[], returncode=9, stdout="", stderr="fatal probe marker"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="rc=9.*fatal probe marker"):
+        _run_probe_one(tool, tmp_path)
+
+    assert not list((tmp_path / "data").glob("cf_*.jsonl"))
+
+
+def test_probe_timeout_is_not_published(tmp_path: Path, monkeypatch) -> None:
+    tool = _load_tool()
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired([], 1, stderr="timeout probe marker")
+
+    monkeypatch.setattr(tool.subprocess, "run", timeout)
+    with pytest.raises(RuntimeError, match="timed out.*timeout probe marker"):
+        _run_probe_one(tool, tmp_path)
+    assert not list((tmp_path / "data").glob("cf_*.jsonl"))
+
+
+def test_probe_missing_outputs_are_not_published(tmp_path: Path, monkeypatch) -> None:
+    tool = _load_tool()
+    monkeypatch.setattr(
+        tool.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="omitted outputs"):
+        _run_probe_one(tool, tmp_path)
+    assert not list((tmp_path / "data").glob("cf_*.jsonl"))
+
+
+def test_probe_noncompliant_summary_is_not_published(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tool = _load_tool()
+    monkeypatch.setenv("PYTHONPATH", "/fixture/existing-pythonpath")
+
+    def noncompliant(cmd, **_kwargs):
+        assert _kwargs["env"]["PYTHONPATH"].split(os.pathsep)[:2] == [
+            str(ROOT), "/fixture/existing-pythonpath",
+        ]
+        def argument(flag: str) -> str:
+            return cmd[cmd.index(flag) + 1]
+
+        summary = {
+            "execution_mode": "native_tcp_counterfactual",
+            "candidate_path": str(Path(argument("--candidate")).resolve()),
+            "opponent_path": str(Path(argument("--opponent")).resolve()),
+            "hands": int(argument("--hands")),
+            "deck_seed_base": int(argument("--seed-base")),
+            "bot_seed_base": int(argument("--bot-seed-base")),
+            "baseline_passed_compliance": False,
+        }
+        Path(argument("--output")).write_text(json.dumps(summary), encoding="utf-8")
+        Path(argument("--jsonl-output")).write_text("\n", encoding="utf-8")
+        Path(argument("--behavior-jsonl-output")).write_text("\n", encoding="utf-8")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(tool.subprocess, "run", noncompliant)
+    with pytest.raises(RuntimeError, match="summary contract failed"):
+        _run_probe_one(tool, tmp_path)
+    assert not list((tmp_path / "data").glob("cf_*.jsonl"))
+
+
+def test_probe_invalid_jsonl_is_not_published(tmp_path: Path, monkeypatch) -> None:
+    tool = _load_tool()
+
+    def invalid_jsonl(cmd, **_kwargs):
+        def argument(flag: str) -> str:
+            return cmd[cmd.index(flag) + 1]
+
+        summary = {
+            "execution_mode": "native_tcp_counterfactual",
+            "candidate_path": str(Path(argument("--candidate")).resolve()),
+            "opponent_path": str(Path(argument("--opponent")).resolve()),
+            "hands": int(argument("--hands")),
+            "deck_seed_base": int(argument("--seed-base")),
+            "bot_seed_base": int(argument("--bot-seed-base")),
+            "baseline_passed_compliance": True,
+            "rows": [],
+            "behavior_rows": [],
+        }
+        Path(argument("--output")).write_text(json.dumps(summary), encoding="utf-8")
+        Path(argument("--jsonl-output")).write_text("{broken\n", encoding="utf-8")
+        Path(argument("--behavior-jsonl-output")).write_text("\n", encoding="utf-8")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(tool.subprocess, "run", invalid_jsonl)
+    with pytest.raises(RuntimeError, match="invalid probe JSONL row"):
+        _run_probe_one(tool, tmp_path)
+    assert not list((tmp_path / "data").glob("cf_*.jsonl"))
 
 
 def test_deck_and_bot_seed_plans_are_resume_deterministic() -> None:
@@ -445,6 +565,39 @@ def test_each_fresh_pass_captures_ratings_exactly_once(
     assert manifest_path.read_bytes() == manifest_bytes
 
 
+def test_concurrency_migrated_collection_has_fixed_requested_passes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tool = _load_tool()
+    candidate = _minimal_bot(tmp_path / "candidate")
+    ratings_path = tmp_path / "glicko_ratings.json"
+    ratings_path.write_bytes(_ratings_bytes())
+    out_dir = tmp_path / "collection"
+    _install_minimal_pool(tool, monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        tool,
+        "probe_one",
+        lambda _candidate, _opponent, _split, name, *_args: (0, 0, name),
+    )
+    first = _minimal_collection_args(
+        candidate=candidate, out_dir=out_dir, ratings=ratings_path, passes=1
+    )
+    assert tool.main(first) == 0
+    manifest_path = out_dir / "collection_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["concurrency_migration"] = {"fixture": True}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = manifest_path.read_bytes()
+    extended = _minimal_collection_args(
+        candidate=candidate, out_dir=out_dir, ratings=ratings_path, passes=2
+    )
+
+    with pytest.raises(SystemExit, match="reviewed target is fixed"):
+        tool.main(extended)
+
+    assert manifest_path.read_bytes() == before
+
+
 def test_persisted_pass_resumes_without_live_ratings(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -637,4 +790,49 @@ def test_durable_collection_rejects_fallback_pool() -> None:
             "--candidate", "unused",
             "--out-dir", "unused",
             "--allow-fallback-pool",
+        ])
+
+
+def test_schema6_accepts_reviewed_six_by_two_runtime_topology(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tool = _load_tool()
+    candidate = _minimal_bot(tmp_path / "candidate")
+    ratings_path = tmp_path / "glicko_ratings.json"
+    ratings_path.write_bytes(_ratings_bytes())
+    out_dir = tmp_path / "collection"
+    _install_minimal_pool(tool, monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        tool,
+        "probe_one",
+        lambda _candidate, _opponent, _split, name, *_args: (0, 0, name),
+    )
+    args = _minimal_collection_args(
+        candidate=candidate, out_dir=out_dir, ratings=ratings_path, passes=1
+    )
+    args[args.index("--workers") + 1] = "6"
+    args[args.index("--probe-workers") + 1] = "2"
+
+    assert tool.main(args) == 0
+
+    manifest = json.loads(
+        (out_dir / "collection_manifest.json").read_text(encoding="utf-8")
+    )
+    snapshot = json.loads(
+        (out_dir / "pool_snapshots.jsonl").read_text(encoding="utf-8")
+    )
+    assert manifest["resume_contract"]["schema_version"] == 6
+    assert (manifest["resume_contract"]["workers"], manifest["resume_contract"]["probe_workers"]) == (6, 2)
+    assert (snapshot["workers"], snapshot["probe_workers"]) == (6, 2)
+
+
+def test_native_match_concurrency_above_host_capacity_is_rejected() -> None:
+    tool = _load_tool()
+
+    with pytest.raises(SystemExit, match="must not exceed 12 native matches"):
+        tool.main([
+            "--candidate", "unused",
+            "--out-dir", "unused",
+            "--workers", "6",
+            "--probe-workers", "3",
         ])

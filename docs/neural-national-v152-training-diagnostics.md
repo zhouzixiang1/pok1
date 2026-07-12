@@ -1507,25 +1507,25 @@ with a maximum of 151,897,359 ns. This is portability-chain smoke, not official
 platform timing, deployment value, or strength evidence. The complete
 neural-lab suite now passes 530 tests and all 33 national protocol tests pass.
 
-At the latest atomic independent-collection boundary, 75 of 160 passes are
-complete: value train/validation/held-out counts are 3,491/870/875 and behavior
-counts are 16,866/4,772/2,383. The handed-off collector PID is no longer
-running, and no restart was performed. Only that 75-pass atomic prefix is
-valid; formal scaling, selection, gate, candidate creation, and any strength
-claim remain prohibited until a complete 160/160 source exists.
+The independent collection originally stopped after its atomic pass-75 state.
+All six pass-76 tasks and their appended row tails were complete, but the pool
+snapshot and self-hashed collector state had not advanced. The failure window
+coincided with replacement of the live ratings file between two reads by the
+old collector. The strongest diagnosis was a transient missing-file read, not
+resource exhaustion. Current collection code instead freezes one ratings byte
+snapshot per pass and validates the persisted plan before execution.
 
-The directory also contains all six valid, duplicate-free pass-76 task files
-and corresponding appended row tails, but neither the pool snapshot nor the
-self-hashed collector state advanced to pass 76. Those files are therefore an
-interrupted, uncommitted transaction rather than part of the atomic completed
-prefix. The observed failure window coincides with another process replacing
-the live ratings file between the old collector's post-probe ratings reads.
-The strongest diagnosis is a transient missing-file read during that replace,
-not resource exhaustion. Main now freezes one ratings snapshot for each pass
-and validates persisted plans, but the stopped corpus binds the older collector
-code hash. Resuming it consequently requires explicit provenance handling and
-operator authorization; this work does not silently restart, upgrade, or
-discard it.
+After explicit operator authorization, the reviewed recovery advanced the exact
+atomic prefix to pass 76 without launching a probe or reading the current
+ratings file. Value train/validation/held-out counts are now 3,539/882/887 and
+behavior counts are 17,122/4,845/2,424. The self-hashed legacy-recovery receipt
+is
+`f33e5cee103baab94bcc12c88afa5ab4b0e1ebbd3f1ae3e0589233755c64c41d`.
+Recovery kept `probe_execution_count=0`, `read_current_ratings=false`,
+`deployment_policy_value=false`, and `strength_evidence=false`. Pass 76 is data
+continuity evidence only; formal model scaling, selection, gate, candidate
+creation, and any strength claim remain prohibited until the source reaches an
+exact 160/160 boundary.
 
 `recover_legacy_oppmodel_collection.py` is the narrow recovery path for this
 specific schema-4-to-5 interruption. Its default is read-only and it cannot
@@ -1539,8 +1539,9 @@ requires a complete 12-value-row tail plus the reviewed behavior count through
 hand 69 for every task. Publication holds the collector lock, first installs a
 poison manifest, journals durable before/after images, and either publishes all
 four metadata targets or rolls back without overwriting unknown concurrent
-bytes. The migration is pinned to collector schema 5 and pass-plan schema 2;
-future schema changes require another review.
+bytes. This recovery is deliberately pinned to collector schema 5 and pass-plan
+schema 2. It cannot issue a schema-6 collection contract; that later scheduling
+change requires its own reviewed migration and receipt.
 
 The first 75 plans cannot be retroactively given ratings bytes that the
 schema-4 collector never saved. Formal freeze therefore accepts that legacy
@@ -1552,20 +1553,62 @@ The recovered pass and every later pass still require the full current plan and
 frozen-ratings schema. A bare old plan, a re-signed inconsistent receipt, or a
 changed collector/probe/cross-hand code root remains a hard failure.
 
-A real read-only audit of the unchanged absolute corpus found pass 76
-recoverable without reading current ratings or executing a probe. It contains
-72 value rows and 370 behavior rows: train adds 48/256, validation adds 12/73,
-and held-out adds 12/41. The archived ratings SHA-256 is
+The recovery audit found exactly 72 value rows and 370 behavior rows in the
+pass-76 tail: train added 48/256, validation added 12/73, and held-out added
+12/41. Its archived-ratings SHA-256 is
 `fef82eafd22fb7e5c4900e8b1bdd4ce898f7cf3d40ff6ffabc8034deb2b8a3f6`;
-the legacy and current collector hashes observed by that audit are respectively
+the legacy and schema-5 collector hashes bound by that historical audit are
+respectively
 `fea501c6fd5ad893d5c1f82ffdbad8b238ffa0dd5c3fb6aff81dac406e6184ee`
 and `431ddf87dba9f3e7efbc7491d899689102d0e6adb051bc1aea53dee71dc6cc89`.
-The expectations file used for a future mutation must still be independently
-persisted and reviewed. No `--apply` was run, the atomic boundary remains
-75/160, and neither the old nor current collector is authorized to start yet.
-With the exact-boundary replay, calibration input receipts, and recovery tests
-included, the complete neural-lab suite passes 679 tests and all 33 national
-protocol tests pass.
+
+`migrate_oppmodel_collector_concurrency.py` is the only authorized schema-5 to
+schema-6 scale transition. It requires the idle collector lock, the exact
+pass-76 boundary, and the reviewed 1x4 source topology. Read-only mode is the
+default. An explicit apply atomically changes only `schema_version`, `workers`,
+`probe_workers`, and `collector_sha256` in the resume contract, and adds a
+top-level `concurrency_migration` receipt with mode
+`atomic_collector_concurrency_schema5_to_schema6_v1`. The receipt embeds and
+hashes the complete previous manifest and collector state; it also binds the
+first 76 pool rows, all pass plans 1 through 76, and the exact row count, byte
+count, and prefix SHA-256 of each of the six cumulative JSONL files. It never
+executes a probe, reads current ratings, or grants deployment or strength
+authority.
+
+The schema-6 collector accepts at most six outer workers, four inner probe
+workers, and 12 concurrent native matches in their product. The reviewed real
+resume topology is 6x2, up from the historical 1x4 topology while retaining the
+inner probe's four-worker ceiling. Formal role freezing replays passes 1 through
+76 against the embedded schema-5 contract and every pass from 77 onward against
+the schema-6 contract. It also reconstructs the complete legacy-recovery to
+concurrency-migration to current-code trust chain; changing the data, plans,
+ratings receipts, topology boundary, or any bound code root fails closed.
+
+The durable launch plan uses `systemd-run --user` to create a transient unit
+named `neural-v4-collector.service`, with `Type=exec`, `Restart=no`, and
+`KillMode=control-group`. It starts the collector from a dedicated pinned
+runtime worktree with `--workers 6 --probe-workers 2`, the existing absolute
+data directory, and the reviewed 70-hand/seed/split arguments. Numeric-library
+thread variables remain fixed at two, no CPU affinity or CPU quota hides any of
+the host's 32 cores, and
+stdout/stderr append to the schema-6 collector log while `progress.log` remains
+the business-progress authority. `Restart=no` makes an integrity failure stop
+for inspection instead of silently replaying work, while the control group
+ensures an operator stop also terminates every probe child. The current user
+manager has linger disabled, so this is durable across shell and Codex process
+lifetimes while a user login remains, but not across a final logout or reboot;
+full unattended reboot durability would separately require administrator
+authorization for `loginctl enable-linger zzx`.
+
+The collector now treats a probe timeout, nonzero exit, missing output,
+noncompliant baseline, malformed JSONL, or any summary/JSONL mismatch as a hard
+pass failure before cumulative rows or completion metadata are published. It
+also prepends the pinned runtime root to the probe subprocess `PYTHONPATH` while
+preserving any inherited entries; a real one-hand native TCP smoke produced one
+value row and two behavior rows from an isolated temporary directory. With the
+schema-6 migration, mixed-topology replay, and probe fail-closed coverage, the
+complete neural-lab suite passes 696 tests and all 33 national protocol tests
+pass.
 
 ## Candidate-Only Native V4 Ablation Contract
 
@@ -1770,29 +1813,39 @@ Learning with Quantile Regression*, 2018:
 
 ## Next Evidence
 
-1. Run the replacement non-overlapping, snapshotted collection in a new output
-   directory; never append it to the exploratory pass-100 corpus.
-2. Let the existing pass-98 scaling control finish, but interpret it only as
-   architecture/representation diagnostics. Repeat the architecture grid on
-   the independently seeded corpus.
-3. Run a controlled legacy-48 versus legacy-48-plus-hand-context feature
-   ablation before selecting the pass-160 architecture.
-4. Compare the existing mean-plus-q20 head with a fixed multi-quantile
-   distribution head and a predeclared lower-tail aggregate.
-5. Add a separately versioned per-action 70-hand positive-outcome/logit head,
-   train it from the new masked targets, and compare it against deriving match
-   sign only from the relative chip head.
-6. Split early stopping, model calibration, policy selection, policy gate, and
-   final blind by opponent. Track every opened opponent in an exposure ledger;
-   do not read or hash the next split after a failed gate.
-7. Use offline clustered policy selection before creating an active TCP bot,
-   then evaluate the selected network as a leaf/response model in bounded
-   depth-limited search under the national 60-second decision budget.
-8. Treat fresh, non-overlapping native paired classic-pool joint-policy EV, not
-   offline single-intervention uplift or supervised metrics, as the eventual
-   strength criterion.
-9. Use the catastrophe head as an ablation and uncertainty signal, not a
-   release gate, until targeted data closes its rare-action false negatives.
-10. Use conditional common-runout replication only for first-divergence
-   diagnosis until an outer opponent-range/deck/bot-seed sampling layer exists;
-   do not treat its fixed-hidden-state labels as causal policy targets.
+1. Apply and replay-validate the reviewed schema-6 concurrency migration at the
+   exact pass-76 boundary, then let `neural-v4-collector.service` complete passes
+   77 through 160 with the 6x2 topology. Monitor the self-hashed atomic state and
+   `progress.log`; never commit the corpus, probe traces, logs, or control
+   receipts to Git.
+2. Only after an exact 160/160 state, freeze the opponent-disjoint role datasets
+   from that atomic prefix. Recheck the legacy-recovery and concurrency-migration
+   chain, every plan and data prefix, and the exposure ledger before opening any
+   protected role.
+3. On GPU, compare multiple architectures and parameter scales with at least
+   three seeds each. Preserve the predeclared early-stop, model-calibration,
+   policy-selection, policy-gate, and final-blind opponent boundaries; a failed
+   role must not cause the next role to be read or hashed.
+4. Build the formal multi-seed ensemble calibration artifact only from the one
+   `model_calibration` role. Every member must bind its checkpoint and role
+   manifest; calibration must not read `policy_selection`, `policy_gate`, or
+   held-out/final-blind data.
+5. Run protected policy selection with the shared `win_first_policy_v4.py`
+   aggregation and scoring implementation. Enforce the predeclared probability,
+   rule-uplift, immediate-hand, and chip-LCB qualifications and their exact
+   outcome-first lexicographic order, using both ordinary match-cluster and
+   opponent-stratified bootstrap.
+6. Open `policy_gate` only after selection passes, and gate the frozen joint
+   policy on real observed 70-hand match clusters with both bootstrap schemes.
+   Keep `deployment_policy_value=false` and `strength_evidence=false` throughout
+   incomplete collection, training, calibration, and failed selection/gate
+   paths.
+7. Only a passing protected chain may feed the bounded exporter, native wrapper,
+   and candidate builder. Runtime load or inference failure must return the
+   already sanitized rule action; no formal Bot exists until the separate native
+   strength and official-platform requirements also pass.
+8. Freeze each later classic-pool evaluation from the then-current ratings and
+   eligible completion tags rather than reusing a static opponent list. Treat
+   fresh non-overlapping paired 70-hand outcomes as primary strength evidence,
+   net-chip magnitude as secondary, and official-platform results as compliance
+   evidence with zero strength weight.

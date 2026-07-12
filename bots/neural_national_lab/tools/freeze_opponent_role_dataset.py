@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -25,6 +26,7 @@ from freeze_oppmodel_dataset import (  # noqa: E402
     _write_jsonl,
 )
 import longrun_collect_oppmodel as collector  # noqa: E402
+import migrate_oppmodel_collector_concurrency as concurrency_migration  # noqa: E402
 from match_outcome_schema import (  # noqa: E402
     derive_match_outcome_supervision,
     match_outcome_metadata,
@@ -57,6 +59,7 @@ EXPECTED_SOURCE_SPLIT = {
 }
 LEGACY_RECOVERY_MODE = "complete_schema4_tail_to_schema5"
 LEGACY_RECOVERY_SCHEMA_VERSION = 1
+LEGACY_RECOVERY_TARGET_SCHEMA_VERSION = 5
 LEGACY_PLAN_FIELDS = {"pass", "seed_scheme", "tasks"}
 PLAN_TASK_FIELDS = {
     "name", "opponent_path", "split", "hands", "deck_seed_base",
@@ -73,6 +76,219 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 BOT_NAME = re.compile(r"^national_v[0-9]+$")
 
+
+def _concurrency_migration_contract(
+    collection_manifest: dict[str, Any], *, completed_passes: int,
+    source_dir: Path, validate_data_prefix: bool,
+) -> tuple[int, dict[str, Any]] | None:
+    """Replay the exact schema-5 -> schema-6 execution-only migration."""
+    receipt = collection_manifest.get("concurrency_migration")
+    if receipt is None:
+        return None
+    required = {
+        "schema_version", "mode", "boundary_pass", "migration_tool_sha256",
+        "previous_manifest", "legacy_recovery_receipt_sha256", "before",
+        "after", "completed_prefix", "probe_execution_count",
+        "read_current_ratings", "strength_evidence", "deployment_policy_value",
+        "receipt_sha256",
+    }
+    if not isinstance(receipt, dict) or set(receipt) != required:
+        raise RuntimeError("concurrency migration receipt fields changed")
+    unsigned = dict(receipt)
+    recorded = _require_digest(
+        unsigned.pop("receipt_sha256"), field="concurrency migration receipt"
+    )
+    if recorded != _canonical_sha256(unsigned):
+        raise RuntimeError("concurrency migration receipt digest mismatch")
+    migration_tool = TOOLS / "migrate_oppmodel_collector_concurrency.py"
+    if (
+        receipt.get("schema_version")
+        != concurrency_migration.MIGRATION_SCHEMA_VERSION
+        or receipt.get("mode") != concurrency_migration.MIGRATION_MODE
+        or receipt.get("migration_tool_sha256") != _sha256(migration_tool)
+        or receipt.get("probe_execution_count") != 0
+        or receipt.get("read_current_ratings") is not False
+        or receipt.get("strength_evidence") is not False
+        or receipt.get("deployment_policy_value") is not False
+    ):
+        raise RuntimeError("concurrency migration receipt is not authoritative")
+    boundary = _integer(receipt.get("boundary_pass"), field="migration boundary", minimum=1)
+    if completed_passes < boundary:
+        raise RuntimeError("concurrency migration boundary exceeds completed prefix")
+    previous_details = receipt.get("previous_manifest")
+    if not isinstance(previous_details, dict) or set(previous_details) != {
+        "bytes", "sha256", "bytes_base64",
+    }:
+        raise RuntimeError("previous collection manifest receipt changed")
+    try:
+        previous_raw = base64.b64decode(previous_details["bytes_base64"], validate=True)
+        previous_manifest = json.loads(previous_raw)
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("previous collection manifest receipt is invalid") from exc
+    if (
+        not isinstance(previous_manifest, dict)
+        or len(previous_raw)
+        != _integer(previous_details.get("bytes"), field="previous manifest bytes")
+        or hashlib.sha256(previous_raw).hexdigest()
+        != _require_digest(
+            previous_details.get("sha256"), field="previous manifest sha256"
+        )
+        or "concurrency_migration" in previous_manifest
+    ):
+        raise RuntimeError("previous collection manifest binding changed")
+    old_contract = previous_manifest.get("resume_contract")
+    current_contract = collection_manifest.get("resume_contract")
+    if not isinstance(old_contract, dict) or not isinstance(current_contract, dict):
+        raise RuntimeError("concurrency migration contracts are missing")
+    changed = {
+        key
+        for key in set(old_contract) | set(current_contract)
+        if old_contract.get(key) != current_contract.get(key)
+    }
+    if changed != concurrency_migration.ALLOWED_CONTRACT_CHANGES:
+        raise RuntimeError("concurrency migration changed semantic collection fields")
+    if (
+        old_contract.get("schema_version")
+        != concurrency_migration.SOURCE_SCHEMA_VERSION
+        or old_contract.get("workers") != concurrency_migration.SOURCE_WORKERS
+        or old_contract.get("probe_workers")
+        != concurrency_migration.SOURCE_PROBE_WORKERS
+        or current_contract.get("schema_version")
+        != concurrency_migration.TARGET_SCHEMA_VERSION
+        or current_contract.get("workers") != concurrency_migration.TARGET_WORKERS
+        or current_contract.get("probe_workers")
+        != concurrency_migration.TARGET_PROBE_WORKERS
+    ):
+        raise RuntimeError("concurrency migration topology changed")
+    before = receipt.get("before")
+    after = receipt.get("after")
+    if not isinstance(before, dict) or set(before) != {
+        "resume_contract_sha256", "schema_version", "workers", "probe_workers",
+        "collector_sha256",
+    }:
+        raise RuntimeError("concurrency migration before binding changed")
+    if not isinstance(after, dict) or set(after) != {
+        "resume_contract_sha256", "schema_version", "workers", "probe_workers",
+        "collector_sha256", "max_concurrent_native_matches",
+    }:
+        raise RuntimeError("concurrency migration after binding changed")
+    expected_before = {
+        "resume_contract_sha256": _canonical_sha256(old_contract),
+        "schema_version": old_contract["schema_version"],
+        "workers": old_contract["workers"],
+        "probe_workers": old_contract["probe_workers"],
+        "collector_sha256": old_contract["collector_sha256"],
+    }
+    expected_after = {
+        "resume_contract_sha256": _canonical_sha256(current_contract),
+        "schema_version": current_contract["schema_version"],
+        "workers": current_contract["workers"],
+        "probe_workers": current_contract["probe_workers"],
+        "collector_sha256": current_contract["collector_sha256"],
+        "max_concurrent_native_matches": (
+            current_contract["workers"] * current_contract["probe_workers"]
+        ),
+    }
+    if before != expected_before or after != expected_after:
+        raise RuntimeError("concurrency migration contract digest changed")
+    legacy = previous_manifest.get("legacy_recovery")
+    if (
+        not isinstance(legacy, dict)
+        or receipt.get("legacy_recovery_receipt_sha256")
+        != legacy.get("receipt_sha256")
+        or (legacy.get("after") or {}).get("collector_sha256")
+        != old_contract.get("collector_sha256")
+        or (legacy.get("after") or {}).get("collector_schema_version")
+        != old_contract.get("schema_version")
+    ):
+        raise RuntimeError("concurrency migration/legacy recovery chain changed")
+    reconstructed = dict(previous_manifest)
+    reconstructed["resume_contract"] = current_contract
+    reconstructed["concurrency_migration"] = receipt
+    if reconstructed != collection_manifest:
+        raise RuntimeError("collection manifest changed outside concurrency migration")
+    prefix = receipt.get("completed_prefix")
+    if not isinstance(prefix, dict) or set(prefix) != {
+        "collector_state", "pool_snapshots", "pass_plan_sha256", "data",
+    }:
+        raise RuntimeError("concurrency migration prefix fields changed")
+    state_details = prefix.get("collector_state")
+    if not isinstance(state_details, dict) or set(state_details) != {
+        "bytes", "sha256", "bytes_base64",
+    }:
+        raise RuntimeError("concurrency migration state receipt changed")
+    try:
+        state_raw = base64.b64decode(state_details["bytes_base64"], validate=True)
+        state = json.loads(state_raw)
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("concurrency migration state receipt is invalid") from exc
+    if (
+        not isinstance(state, dict)
+        or len(state_raw) != _integer(state_details.get("bytes"), field="state bytes")
+        or hashlib.sha256(state_raw).hexdigest()
+        != _require_digest(state_details.get("sha256"), field="state sha256")
+        or state.get("completed_passes") != boundary
+    ):
+        raise RuntimeError("concurrency migration state boundary changed")
+    pool_details = prefix.get("pool_snapshots")
+    if not isinstance(pool_details, dict) or set(pool_details) != {
+        "rows", "bytes", "sha256",
+    }:
+        raise RuntimeError("concurrency migration pool receipt changed")
+    pool_path = source_dir / "pool_snapshots.jsonl"
+    if not pool_path.exists():
+        pool_path = source_dir / "pool_snapshots.completed.jsonl"
+    pool_prefix = _prefix_details(pool_path, boundary)
+    if (
+        _integer(pool_details.get("rows"), field="migration pool rows") != boundary
+        or _integer(pool_details.get("bytes"), field="migration pool bytes")
+        != pool_prefix["bytes"]
+        or pool_prefix["sha256"]
+        != _require_digest(pool_details.get("sha256"), field="migration pool sha256")
+    ):
+        raise RuntimeError("concurrency migration pool prefix changed")
+    plans = prefix.get("pass_plan_sha256")
+    expected_names = {f"pass_{index:04d}.json" for index in range(1, boundary + 1)}
+    if not isinstance(plans, dict) or set(plans) != expected_names:
+        raise RuntimeError("concurrency migration plan prefix changed")
+    for name, digest in plans.items():
+        if _sha256(source_dir / "pass_plans" / name) != _require_digest(
+            digest, field=f"migration plan {name}"
+        ):
+            raise RuntimeError(f"concurrency migration plan changed: {name}")
+    data = prefix.get("data")
+    expected_data = {
+        f"{prefix_name}_{split}.jsonl"
+        for prefix_name in PREFIXES for split in SOURCE_SPLITS
+    }
+    if not isinstance(data, dict) or set(data) != expected_data:
+        raise RuntimeError("concurrency migration data prefix fields changed")
+    state_fields = {"cf": "total_rows", "opponent_actions": "total_behavior_rows"}
+    for prefix_name, state_field in state_fields.items():
+        totals = state.get(state_field)
+        if not isinstance(totals, dict) or set(totals) != set(SOURCE_SPLITS):
+            raise RuntimeError("concurrency migration state totals changed")
+        for split in SOURCE_SPLITS:
+            name = f"{prefix_name}_{split}.jsonl"
+            details = data[name]
+            rows = _integer(totals[split], field=f"{name}.rows")
+            if not isinstance(details, dict) or set(details) != {
+                "rows", "bytes", "sha256",
+            } or details.get("rows") != rows or _integer(
+                details.get("bytes"), field=f"{name}.bytes"
+            ) < 0:
+                raise RuntimeError(f"concurrency migration data receipt changed: {name}")
+            _require_digest(details.get("sha256"), field=f"{name}.sha256")
+            if validate_data_prefix:
+                actual = _prefix_details(source_dir / name, rows)
+                if (
+                    actual["bytes"] != details["bytes"]
+                    or actual["sha256"] != details["sha256"]
+                ):
+                    raise RuntimeError(
+                        f"concurrency migration data prefix changed: {name}"
+                    )
+    return boundary, dict(old_contract)
 
 def strategy_context_is_absent(row: dict[str, Any]) -> bool:
     """Collector rows for this epoch must carry no runtime strategy context."""
@@ -193,16 +409,22 @@ def _require_digest(value: Any, *, field: str, length: int = 64) -> str:
 
 
 def _prefix_sha256(path: Path, rows: int) -> str:
+    return str(_prefix_details(path, rows)["sha256"])
+
+
+def _prefix_details(path: Path, rows: int) -> dict[str, int | str]:
     digest = hashlib.sha256()
     count = 0
+    size = 0
     with path.open("rb") as handle:
         while count < rows:
             line = handle.readline()
             if not line or not line.endswith(b"\n"):
                 raise RuntimeError(f"JSONL prefix is incomplete: {path}")
             digest.update(line)
+            size += len(line)
             count += 1
-    return digest.hexdigest()
+    return {"rows": count, "bytes": size, "sha256": digest.hexdigest()}
 
 
 def _legacy_recovery_contract(
@@ -211,6 +433,7 @@ def _legacy_recovery_contract(
     completed_passes: int,
     source_dir: Path,
     validate_data_prefix: bool,
+    resume_contract: dict[str, Any] | None = None,
 ) -> tuple[int, int, dict[str, str]] | None:
     receipt = collection_manifest.get("legacy_recovery")
     if receipt is None:
@@ -306,10 +529,16 @@ def _legacy_recovery_contract(
         for key, value in section.items():
             if key.endswith("sha256"):
                 _require_digest(value, field=f"{section_name}.{key}")
-    contract = collection_manifest.get("resume_contract") or {}
+    contract = (
+        resume_contract
+        if resume_contract is not None
+        else collection_manifest.get("resume_contract") or {}
+    )
     if (
         after.get("collector_schema_version")
-        != collector.COLLECTION_CONTRACT_SCHEMA_VERSION
+        != LEGACY_RECOVERY_TARGET_SCHEMA_VERSION
+        or contract.get("schema_version")
+        != LEGACY_RECOVERY_TARGET_SCHEMA_VERSION
         or after.get("pass_plan_schema_version") != collector.PASS_PLAN_SCHEMA_VERSION
         or after.get("collector_sha256") != contract.get("collector_sha256")
     ):
@@ -317,8 +546,18 @@ def _legacy_recovery_contract(
     reviewed_pool = _require_digest(
         reviewed.get("pool_snapshots"), field="reviewed_hashes.pool_snapshots"
     )
-    if reviewed_pool != before.get("pool_snapshots_sha256"):
-        raise RuntimeError("legacy recovery pool-prefix review changed")
+    reviewed_links = {
+        "collection_manifest": before.get("collection_manifest_sha256"),
+        "collector_state": before.get("collector_state_sha256"),
+        "pool_snapshots": before.get("pool_snapshots_sha256"),
+        "recovery_plan": before.get("recovery_plan_sha256"),
+        "legacy_collector": before.get("legacy_collector_sha256"),
+        "current_collector": after.get("collector_sha256"),
+        "identity_migration": archived.get("identity_migration_sha256"),
+        "archived_ratings": archived.get("ratings_sha256"),
+    }
+    if any(reviewed.get(name) != expected for name, expected in reviewed_links.items()):
+        raise RuntimeError("legacy recovery reviewed-artifact links changed")
     pool_path = source_dir / "pool_snapshots.jsonl"
     if not pool_path.exists():
         pool_path = source_dir / "pool_snapshots.completed.jsonl"
@@ -344,6 +583,13 @@ def _legacy_recovery_contract(
                 )
                 if _prefix_sha256(source_dir / filename, rows) != expected:
                     raise RuntimeError(f"legacy recovered data prefix changed: {filename}")
+    if validate_data_prefix:
+        registry_path = source_dir / "opponent_snapshots" / "registry.json"
+        if (
+            not registry_path.is_file()
+            or _sha256(registry_path) != reviewed.get("opponent_registry")
+        ):
+            raise RuntimeError("legacy recovered opponent registry changed")
     return prefix, recovered, plan_hashes
 
 
@@ -512,11 +758,20 @@ def _completed_plans(
         raise RuntimeError("role freeze collector code trust root changed")
     if len(pool_rows) != completed_passes:
         raise RuntimeError("completed pool snapshot count changed")
+    migration = _concurrency_migration_contract(
+        collection_manifest,
+        completed_passes=completed_passes,
+        source_dir=source_dir,
+        validate_data_prefix=validate_data_prefix,
+    )
+    migration_boundary = migration[0] if migration else 0
+    historical_contract = migration[1] if migration else resume_contract
     legacy = _legacy_recovery_contract(
         collection_manifest,
         completed_passes=completed_passes,
         source_dir=source_dir,
         validate_data_prefix=validate_data_prefix,
+        resume_contract=historical_contract,
     )
     legacy_prefix = legacy[0] if legacy else 0
     recovered_pass = legacy[1] if legacy else 0
@@ -540,6 +795,11 @@ def _completed_plans(
     intervals = []
     bot_seeds: dict[int, tuple[str, int, int]] = {}
     for pass_index in range(1, completed_passes + 1):
+        pass_contract = (
+            historical_contract
+            if migration is not None and pass_index <= migration_boundary
+            else resume_contract
+        )
         path = source_dir / "pass_plans" / f"pass_{pass_index:04d}.json"
         payload, digest = _load_json_snapshot(path)
         plan_hashes[path.name] = digest
@@ -553,20 +813,26 @@ def _completed_plans(
             if digest != legacy_hashes[path.name]:
                 raise RuntimeError(f"legacy completed pass plan changed: {path.name}")
             rows = _legacy_plan_tasks(
-                payload, pass_index=pass_index, contract=resume_contract
+                payload, pass_index=pass_index, contract=pass_contract
             )
         else:
             try:
                 ratings_snapshot, rating_rows, rows = collector._validate_pass_plan(
                     payload,
                     pass_number=pass_index,
-                    ratings_path=ratings_path,
-                    hands=hands,
-                    deck_seed_base=deck_seed_base,
-                    deck_seed_guard=deck_seed_guard,
-                    bot_seed_base=bot_seed_base,
-                    val_opponents=val_opponents,
-                    held_out_opponents=held_out_opponents,
+                    ratings_path=Path(str(pass_contract["ratings_path"])),
+                    hands=_integer(pass_contract["hands"], field="hands", minimum=1),
+                    deck_seed_base=_integer(
+                        pass_contract["deck_seed_base"], field="deck_seed_base", minimum=0
+                    ),
+                    deck_seed_guard=_integer(
+                        pass_contract["deck_seed_guard"], field="deck_seed_guard", minimum=0
+                    ),
+                    bot_seed_base=_integer(
+                        pass_contract["bot_seed_base"], field="bot_seed_base", minimum=0
+                    ),
+                    val_opponents=set(pass_contract["val_opponents"]),
+                    held_out_opponents=set(pass_contract["held_out_opponents"]),
                 )
             except RuntimeError as exc:
                 raise RuntimeError(f"invalid current pass plan {path}: {exc}") from exc
@@ -578,7 +844,7 @@ def _completed_plans(
                     raise RuntimeError("recovered pass plan changed")
         _validate_pool_row(
             pool_rows[pass_index - 1], pass_index=pass_index, tasks=rows,
-            contract=resume_contract, ratings_snapshot=ratings_snapshot,
+            contract=pass_contract, ratings_snapshot=ratings_snapshot,
             rating_rows=rating_rows,
         )
         for raw in rows:
