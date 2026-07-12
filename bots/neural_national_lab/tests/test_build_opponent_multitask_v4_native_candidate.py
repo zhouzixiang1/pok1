@@ -19,6 +19,7 @@ sys.path.insert(0, str(TOOLS))
 import build_opponent_multitask_v4_native_candidate as builder  # noqa: E402
 import export_opponent_multitask_ensemble_v4 as bundle_exporter  # noqa: E402
 import freeze_opponent_role_dataset as freeze  # noqa: E402
+import opponent_role_freeze_plan as role_plan  # noqa: E402
 import match_outcome_calibration as calibration  # noqa: E402
 from match_outcome_schema import match_outcome_metadata  # noqa: E402
 import opponent_multitask_ensemble_runtime_v4 as runtime  # noqa: E402
@@ -107,7 +108,7 @@ def _artifacts(
             name = f"{prefix}_{role}.jsonl"
             raw = b"x"
             outputs[name] = {
-                "rows": 1,
+                "rows": role_plan.FORMAL_MINIMUM_ROWS[prefix][role],
                 "bytes": len(raw),
                 "sha256": hashlib.sha256(raw).hexdigest(),
                 "opponents": opponents,
