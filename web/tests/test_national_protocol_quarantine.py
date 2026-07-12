@@ -490,6 +490,20 @@ def test_bootstrap_direction_audit_is_deterministic_and_never_calls_history_llm(
     monkeypatch,
 ):
     import tool_planning
+    from bot_artifact import canonical_digest
+
+    prepared_payload = {
+        "schema_version": 1,
+        "source_v": 142,
+        "next_v": 150,
+        "prepared_bot": "national_v150",
+        "prepared_artifact_hash": "b" * 64,
+        "prepared_artifact_manifest": {"entries": []},
+    }
+    prepared_contract = {
+        **prepared_payload,
+        "contract_digest": canonical_digest(prepared_payload),
+    }
 
     checkpoint = {
         "next_v": 150,
@@ -498,7 +512,7 @@ def test_bootstrap_direction_audit_is_deterministic_and_never_calls_history_llm(
         "audit_context": {
             "protocol_bootstrap": {"receipt_digest": "a" * 64},
             "protocol_bootstrap_prepare": {"receipt_digest": "a" * 64},
-            "prepared_artifact_contract": {"artifact_hash": "b" * 64},
+            "prepared_artifact_contract": prepared_contract,
         },
     }
     writes = []
@@ -541,6 +555,31 @@ def test_bootstrap_direction_audit_is_deterministic_and_never_calls_history_llm(
     assert audit["confidence"] == "not_applicable"
     assert audit["exhausted_directions"] == []
     assert audit["prepared_artifact_hash"] == "b" * 64
+    assert audit["prepared_artifact_contract_digest"] == prepared_contract[
+        "contract_digest"
+    ]
     assert len(audit["receipt_digest"]) == 64
     assert writes[0][0][:3] == (150, 142, "direction_audited")
     assert events[0][0][0] == "pipeline.direction_audit_protocol_bootstrap_neutral"
+
+
+def test_bootstrap_direction_audit_rejects_legacy_or_unbound_artifact_field():
+    import pytest
+    import tool_planning
+
+    checkpoint = {
+        "audit_context": {
+            "protocol_bootstrap": {"receipt_digest": "a" * 64},
+            "protocol_bootstrap_prepare": {"receipt_digest": "a" * 64},
+            # This is the typo that escaped the synthetic test and produced an
+            # empty hash in the first live v151 Direction receipt.
+            "prepared_artifact_contract": {"artifact_hash": "b" * 64},
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="exact prepared artifact contract"):
+        tool_planning._protocol_bootstrap_direction_audit(
+            checkpoint,
+            source_v=142,
+            next_v=150,
+        )

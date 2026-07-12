@@ -89,6 +89,22 @@ def _protocol_bootstrap_direction_audit(
         return None
     prepared = audit_context.get("prepared_artifact_contract") or {}
     prepare_receipt = audit_context.get("protocol_bootstrap_prepare") or {}
+    from prepared_baseline_contract import validate_prepared_artifact_contract
+
+    prepared_errors = validate_prepared_artifact_contract(
+        prepared,
+        source_v=int(source_v),
+        next_v=int(next_v),
+        verify_live_content=False,
+    )
+    prepared_hash = str(prepared.get("prepared_artifact_hash") or "")
+    prepared_contract_digest = str(prepared.get("contract_digest") or "")
+    if prepared_errors or not re.fullmatch(r"[0-9a-f]{64}", prepared_hash):
+        detail = ",".join(prepared_errors[:8]) or "prepared_artifact_hash_invalid"
+        raise RuntimeError(
+            "protocol bootstrap Direction requires the exact prepared artifact "
+            f"contract: {detail}"
+        )
     payload = {
         "repetition_detected": False,
         "exhausted_directions": [],
@@ -107,7 +123,8 @@ def _protocol_bootstrap_direction_audit(
         "protocol_bootstrap_prepare_receipt_digest": str(
             prepare_receipt.get("receipt_digest") or ""
         ),
-        "prepared_artifact_hash": str(prepared.get("artifact_hash") or ""),
+        "prepared_artifact_hash": prepared_hash,
+        "prepared_artifact_contract_digest": prepared_contract_digest,
     }
     from bot_artifact import canonical_digest
 
