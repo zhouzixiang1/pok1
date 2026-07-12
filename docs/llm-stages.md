@@ -106,8 +106,8 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 
 - **触发者**: `prepare_generation()` 代码层
 - **有无 LLM**: 无
-- **做什么**: 调用 `find_current_v()`（从 git tags 读取最新 bot 版本）+ `load_ratings()`（读取 `glicko_ratings.json`）+ `get_active_bots()`（扫描 `bots/` 目录）。若活跃 bot 数 > `MAX_ACTIVE_BOTS`(30)，**先自动淘汰**最弱 bot（`_do_reap_weakest`，最多 10 轮）。
-- **输出**: `current_v`、`active_bots`、`ratings` 字典（中间变量，仅 `current_v` 存入 GenerationContext）
+- **做什么**: 调用 `find_current_v()`（从 git tags 读取最新 bot 版本）+ `get_active_bots()`（扫描 `bots/` 目录）。若活跃 bot 数 > `MAX_ACTIVE_BOTS`(30)，**先自动淘汰**最弱 bot（`_do_reap_weakest`，最多 10 轮），然后重新绑定实际活跃池和等待目标。ratings 不在等待前缓存。
+- **输出**: `current_v`、等待目标和刷新后的 `active_bots`（仅 `current_v` 存入 GenerationContext）
 
 > **旧对比**: 原 Step 1 `get_status()` 由 Orchestrator LLM 触发，返回 13 个字段的 JSON 快照。现在这些数据直接在代码层获取，不再经过 LLM。
 
@@ -117,8 +117,16 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 
 - **触发者**: `prepare_generation()` 代码层
 - **有无 LLM**: 无
-- **做什么**: 异步轮询 `bot_stats.json`，等待守护进程为当前 bot 积累足够对局。双退出条件：**默认 ≥ 100 局** 或 **rd < 60 且 ≥ 20 局**（基于置信度的早退机制）。超时 600s。连续准备失败 ≥ 3 次时降级为 ≥ 30 局（`degraded_min_games`）。
-- **输出**: `eval_ok` 布尔值。不足 → 返回 `None`（本轮跳过，10 秒后重试）
+- **做什么**: 异步轮询 `bot_stats.json` 和 ratings，等待守护进程为当前 bot 积累足够对局。当前 `national_native` profile 的双退出条件是 **≥ 24 个完整 70-hand 样本**，或 **rd < 110 且 ≥ 12 个样本**；超时 600s。
+- **输出**: 初步 `eval_ok`。放行后代码仍会从稳定文件重新读取并复验，不把该布尔值当成可直接交给 LLM 的证据。
+
+**等待后证据契约**:
+
+1. 重新确认活跃池和来源版本在等待期间没有变化。
+2. daemon 在独占 cycle lock 内依次写 H2H、bot stats、ratings、daemon stats、derived selection rows，并把 match/rating JSONL 的精确字节截止点复制进不可变 cycle 目录；最后才原子推进 `evaluation_cycle_manifest.json`。中途崩溃不会推进 pointer。
+3. generation 校验 content-addressed cycle、五份 JSON payload 和两份 append-log 副本，再原子固化到 `vN/evidence_snapshot/`；缺文件、hash 不符、active pool 不符或 identity 变化都 fail closed。
+4. 用冻结 bundle 中的 games/RD 再次验证 24-sample 或 RD 提前退出条件；任一不一致都返回 `None`，由下一轮重新准备。
+5. H2H、ratings、bot stats、rating-history tail 和包含筹码次级指标的 selection rows 被编译为不可变 `SelectionView`。Combined、leader/source/oscillation/crossover parent 选择及其审计日志共用这一 identity，不再回读 live strength 文件。
 
 > **旧对比**: 原 Step 3 `wait_for_eval()` 由 Orchestrator LLM 触发。现在代码层自动等待，无需 LLM 决策。
 
@@ -135,7 +143,7 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 
 ---
 
-#### Phase 1.4：合并分析（停滞+性能）📎 `_run_combined_analysis(source_v, active_bots, ratings, ui)`
+#### Phase 1.4：合并分析（停滞+性能）📎 `_run_combined_analysis(..., frozen_h2h, frozen_bot_stats)`
 
 | 项目 | 内容 |
 |---|---|
@@ -151,9 +159,9 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 3. RD > 150 时统计检查不可靠，回退到 LLM
 
 **输入构建** (函数 `_run_combined_analysis` 内):
-1. 读取 `rating_history.jsonl` 最近 10 个周期，提取 top H2H 胜率
-2. 读取 `head_to_head.json` → `load_h2h_avg_winrates_with_coverage()` — H2H 胜率 + 对手覆盖率
-3. 读取 `bot_stats.json` 获取总体胜率和场次
+1. 使用 daemon cycle 中冻结的最近 10 个 rating-history 周期，提取 top H2H 胜率
+2. 使用 `web/core/results/vN/evidence_snapshot/head_to_head.json` — 本代冻结的 H2H 胜率和对手覆盖率
+3. 使用同一 generation bundle 的 frozen bot stats、ratings 和 selection rows 获取总体胜率、RD、场次及排序
 4. 计算 Top 5 活跃 bot 列表（含 RD 警告）
 5. 从 git tags 提取最近 8 代进化趋势（vN: h2h_avg_wr + coverage）
 6. 从 git history 提取 lineage（vN ← parent: vM）
@@ -162,14 +170,13 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 9. 拼装 prompt：`combined_analyst.md` 模板 + 全部数据
 
 **输入数据来源**:
-- `web/core/results/rating_history.jsonl` — Rating 历史快照
-- `web/core/results/head_to_head.json` → `load_h2h_avg_winrates()` — H2H 胜率
-- `web/core/results/glicko_ratings.json` — 当前 ratings
-- `web/core/results/bot_stats.json` — 总体统计
+- `web/core/results/vN/evidence_snapshot/selection_snapshot.json` — 同周期 selection rows + rating-history tail
+- `web/core/results/vN/evidence_snapshot/head_to_head.json` — 本代冻结 H2H
+- `web/core/results/vN/evidence_snapshot/glicko_ratings.json` + `bot_stats.json` — 本代分析和选源共用
 - `web/core/results/archive/vN.json` — 上代 Critic 洞察
 - `web/core/results/worker_failures.jsonl` — Worker 失败记录
 
-**对手覆盖率检查**: 若覆盖率 < 80%，直接返回 safe_default（跳过 LLM），等待更多 daemon 评估。
+**对手覆盖率检查**: canonical `h2h_coverage/h2h_opponents/h2h_opponents_total` 统一映射到 analyst schema；若覆盖率 < 80%，直接返回 safe_default（跳过 LLM），不能用缺省字段把 `2/10` 误判成 `0/0=100%`。
 
 **LLM 输出**: JSON（经 `output_schema.py` 验证）
 ```json
@@ -331,25 +338,26 @@ else:
 | 项目 | 内容 |
 |---|---|
 | **触发者** | Orchestrator LLM 调用 MCP 工具 `run_master` |
-| **调用链** | `tool_planning.py:run_master()` → `agent_master.py:_run_master_analysis()` → `run_claude_query()` |
+| **调用链** | `tool_planning.py:run_master()` → `agent_master.py:_run_master_analysis()` → 3 proposal scouts → 2 blind critics → final `run_claude_query()` |
 | **LLM 角色** | MASTER |
 | **模型** | Sonnet |
-| **工具** | Bash, Read |
+| **工具** | Read only；所有 results 路径只允许本代 exact `evidence_snapshot/` |
 | **Prompt 模板** | `prompts/master_prompt.md` |
 | **重试** | 最多 3 次 (`MAX_MASTER_RETRIES`)，每次需返回含 `tasks` 的 JSON |
 
 **输入构建** (函数 `_run_master_analysis` 内):
 1. 读取 `prompts/master_prompt.md` 模板
 2. 替换占位符：`{stagnation_info}`、`{match_analysis}`（裁剪至 10K 字符）、`{performance_verification}`（裁剪至 4K 字符）、`{source_v}`
-3. **附加上下文文件路径列表**（在 prompt 文本中提供路径，由 LLM 用 Bash/Read 自行读取）：代际冻结且带 digest 的 `evidence_snapshot/head_to_head.json`、评分/统计上下文、`experience_pool.md`。H2H 计数禁止回读持续变化的 live 文件。
-4. `run_claude_query()` 的 `context_files` 参数为 **空列表 `[]`** — Master 通过工具自行读取文件，而非通过 context_files 注入
+3. prompt 仅提供代际冻结且带 digest 的 `evidence_snapshot/head_to_head.json`、selection 等精确路径。replay/lesson/experience 是 prepare 阶段裁剪后直接注入的 bounded excerpts，不再要求 Master 打开 live results。
+4. `run_claude_query()` 的 `context_files` 参数为 **空列表 `[]`**；Read guard 对 operator/runtime 双 checkout、复制的 results 树和路径穿越都 fail closed，只有 exact snapshot 目录放行。
 5. 系统编译并校验 prepared artifact、能力债务、运行时合同和
    `strategy_reference_pack.py` 的 typed card。LLM 可以消耗更多 token 做分析，
    但不能用自由文本改写这些权限或凭据。
+6. 最终 Master 前并行采样 3 个独立结构化机制提案（mechanism、counterfactual、compute/memory 视角），先做确定性 schema/源覆盖/重复过滤，再由 2 个 blind critic 分别按可证伪性和可达性排序。代码层用 Borda 顺序编译为 advisory packet；critic 不能修改 source、evidence、scope 或 gate。最终 Master 仍只选/合成一个可归因机制，并通过原有 Pydantic/plan compiler/validator。
 
-> ⚠️ **注意**: 早期版本文档错误描述为 `context_files` 传入文件路径列表。实际上 Master 的 `context_files=[]`，LLM 通过 Bash/Read 工具按需读取。
+> ⚠️ **注意**: 早期版本文档错误描述为 `context_files` 传入文件路径列表或允许 Bash。当前 Master 的 `context_files=[]` 且只有 Read；live evidence 不在精确 snapshot 下就会被 hook 拒绝。
 
-**LLM 能做的事**: 用 Bash/Read 读取上述文件，分析 rating 趋势、经验池、H2H 数据
+**LLM 能做的事**: 用 Read 检查 source/target 代码、reference bots 和 exact frozen snapshot，并结合已注入的 rating/replay/经验摘要提出可证伪机制。
 
 **LLM 输出**: JSON（必须包含 `tasks` 数组）
 ```json

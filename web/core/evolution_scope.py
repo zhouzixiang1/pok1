@@ -62,6 +62,7 @@ CRITICAL_EVALUATION_GATE_EXACT = frozenset({
     "web/core/decision_tester.py",
     "web/core/elo_daemon.py",
     "web/core/eval_stats.py",
+    "web/core/evaluation_bundle.py",
     "web/core/evaluation_data_identity.py",
     "web/core/fix_verification.py",
     "web/core/gate_execution.py",

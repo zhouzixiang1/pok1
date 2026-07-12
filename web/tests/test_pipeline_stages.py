@@ -516,7 +516,7 @@ class TestStagnationConfidenceStrategy:
             "_detect_source_oscillation",
             lambda n=8, max_unique=3: {206, 235},
         )
-        monkeypatch.setattr(generation_scheduler, "_get_unified_leader_v", lambda ratings: 237)
+        monkeypatch.setattr(generation_scheduler, "_get_unified_leader_v", lambda ratings, *_args: 237)
         monkeypatch.setattr(generation_scheduler, "_log_source_selection_decision", lambda *a, **k: None)
         monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates_with_coverage", lambda: {
@@ -611,7 +611,11 @@ class TestStagnationConfidenceStrategy:
     def test_diversity_needed_triggers_crossover(self, monkeypatch):
         """combined with diversity_needed=True → crossover."""
         from generation_scheduler import _decide_strategy
-        combined = {"diversity_needed": True, "trend": "stagnant"}
+        combined = {
+            "diversity_needed": True,
+            "trend": "stagnant",
+            "confidence": "high",
+        }
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
             lambda ratings, cv, **kw: (30, 20),

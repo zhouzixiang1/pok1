@@ -355,6 +355,29 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
     monkeypatch.setattr(agent_master, "get_bot_dir", bot_dir)
     monkeypatch.setattr(agent_master, "get_logs_dir", lambda _v: tmp_path)
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+    import evidence_snapshot
+    snapshot_dir = tmp_path / "evidence_snapshot"
+    snapshot_dir.mkdir()
+    manifest_path = snapshot_dir / "manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        evidence_snapshot,
+        "load_generation_snapshot_identity",
+        lambda next_v: {
+            "available": True,
+            "h2h_relpath": f"web/core/results/v{next_v}/evidence_snapshot/head_to_head.json",
+            "selection_relpath": f"web/core/results/v{next_v}/evidence_snapshot/selection_snapshot.json",
+            "manifest_path": str(manifest_path),
+            "manifest_digest": "m" * 64,
+            "sha256": "h" * 64,
+            "cycle": {"manifest_digest": "c" * 64, "save_num": 1},
+        },
+    )
+    monkeypatch.setattr(
+        evidence_snapshot,
+        "h2h_snapshot_contract_text",
+        lambda *_args, **_kwargs: "Stable test evaluation snapshot contract.",
+    )
 
     result = await agent_master._run_master_analysis(
         source_v=1,

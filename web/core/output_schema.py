@@ -781,11 +781,16 @@ class PerformanceResult(BaseModel):
 
 class CombinedAnalystResult(BaseModel):
     is_stagnant: bool = False
-    confidence: str = "medium"
-    trend: str = Field(default="stagnant", description="improving, stagnant, or declining")
+    confidence: Literal["low", "medium", "high"] = "low"
+    trend: Literal["improving", "stagnant", "declining", "unknown"] = Field(
+        default="stagnant",
+        description="improving, stagnant, declining, or unknown",
+    )
     diversity_needed: bool = False
     diversity_reason: Optional[str] = None
-    recommendation: str = "continue"
+    recommendation: Literal[
+        "continue", "crossover", "branch", "branch_from", "force_exploration"
+    ] = "continue"
     branch_from: Optional[str] = None
     verified_improvements: list[str] = []
     persistent_weaknesses: list[str] = []

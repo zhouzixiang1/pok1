@@ -62,6 +62,41 @@ class _MockUI:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _stable_generation_evidence(monkeypatch, tmp_path):
+    import agent_master
+    import evidence_snapshot
+
+    snapshot_dir = tmp_path / "evidence_snapshot"
+    snapshot_dir.mkdir()
+    manifest_path = snapshot_dir / "manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+    identity = {
+        "available": True,
+        "h2h_relpath": "web/core/results/v127/evidence_snapshot/head_to_head.json",
+        "selection_relpath": "web/core/results/v127/evidence_snapshot/selection_snapshot.json",
+        "manifest_path": str(manifest_path),
+        "manifest_relpath": "web/core/results/v127/evidence_snapshot/manifest.json",
+        "manifest_digest": "a" * 64,
+        "sha256": "b" * 64,
+        "cycle": {"manifest_digest": "c" * 64, "save_num": 1},
+    }
+    monkeypatch.setattr(
+        evidence_snapshot,
+        "load_generation_snapshot_identity",
+        lambda _next_v: dict(identity),
+    )
+    monkeypatch.setattr(
+        evidence_snapshot,
+        "h2h_snapshot_contract_text",
+        lambda *_args, **_kwargs: "Stable test evaluation snapshot contract.",
+    )
+    async def no_ensemble(*_args, **_kwargs):
+        return "Proposal ensemble stubbed for the single-plan unit contract."
+
+    monkeypatch.setattr(agent_master, "_run_master_proposal_ensemble", no_ensemble)
+
+
 @pytest.mark.asyncio
 async def test_master_returns_valid_plan_on_first_try(monkeypatch):
     import agent_master
@@ -69,7 +104,7 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
     call_count = {"n": 0}
     captured_prompts = []
 
-    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None):
+    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None, **_kwargs):
         call_count["n"] += 1
         captured_prompts.append(prompt)
         return _mock_llm_output(), 0.0, {}
@@ -104,6 +139,39 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_master_fails_closed_without_generation_evidence(monkeypatch):
+    import agent_master
+    import evidence_snapshot
+
+    async def must_not_call(*_args, **_kwargs):
+        raise AssertionError("Master must not run without the frozen evidence bundle")
+
+    monkeypatch.setattr(agent_master, "run_claude_query", must_not_call)
+    monkeypatch.setattr(
+        evidence_snapshot,
+        "load_generation_snapshot_identity",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "reason": "cycle_manifest_missing",
+        },
+    )
+    ui = _MockUI()
+
+    result = await agent_master._run_master_analysis(
+        source_v=111,
+        next_v=127,
+        stagnation_info="declining",
+        ui=ui,
+    )
+
+    assert result is None
+    assert any(
+        "stable evaluation snapshot unavailable" in msg
+        for _level, msg in ui.history
+    )
+
+
+@pytest.mark.asyncio
 async def test_master_binds_valid_structured_contract_without_lexical_retry(monkeypatch):
     import agent_master
     from output_schema import RuntimeContract, runtime_contract_worker_prompt_terms
@@ -120,7 +188,7 @@ async def test_master_binds_valid_structured_contract_without_lexical_retry(monk
     )
     call_count = {"n": 0}
 
-    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None):
+    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None, **_kwargs):
         call_count["n"] += 1
         return "```json\n" + json.dumps(structured_plan) + "\n```", 0.0, {}
 
@@ -161,7 +229,7 @@ async def test_master_does_not_bind_invalid_work_primitive(monkeypatch):
     original_worker_prompt = invalid_plan["tasks"][0]["worker_prompt"]
     outputs = []
 
-    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None):
+    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None, **_kwargs):
         outputs.append(prompt)
         return "```json\n" + json.dumps(invalid_plan) + "\n```", 0.0, {}
 
@@ -191,7 +259,7 @@ async def test_master_retries_on_genuinely_malformed_json(monkeypatch):
 
     call_count = {"n": 0}
 
-    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None):
+    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None, **_kwargs):
         call_count["n"] += 1
         # Pure prose, no JSON anywhere.
         return "I cannot produce a plan right now.", 0.0, {}
@@ -216,7 +284,7 @@ async def test_master_fails_closed_after_structured_schema_errors(monkeypatch):
     invalid_plan["tasks"][0].pop("skill_layer")
     call_count = {"n": 0}
 
-    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None):
+    async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None, **_kwargs):
         call_count["n"] += 1
         return "```json\n" + json.dumps(invalid_plan) + "\n```", 0.0, {}
 

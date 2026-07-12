@@ -351,7 +351,7 @@ class TestCrossoverParents:
         assert result is not None
         assert result == (5, 6)
 
-    def test_children_count_penalizes_overused_parent(self, monkeypatch):
+    def test_children_count_cannot_demote_clear_strength_leader(self, monkeypatch):
         from glicko2 import Glicko2Player
 
         active = ["claude_v1", "claude_v2", "claude_v5"]
@@ -370,7 +370,7 @@ class TestCrossoverParents:
         result = gs._pick_crossover_parents(ratings, 5)
 
         assert result is not None
-        assert result[0] == 1
+        assert result[0] == 5
 
     def test_map_elites_niche_guides_parent_b(self, monkeypatch):
         from glicko2 import Glicko2Player

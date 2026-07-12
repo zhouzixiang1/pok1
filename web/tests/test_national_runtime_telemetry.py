@@ -1,3 +1,5 @@
+import json
+
 from national_runtime_telemetry import parse_native_bot_log
 
 
@@ -59,3 +61,30 @@ def test_baseline_only_worker_done_is_not_counted_as_refinement():
     assert refinement["trusted_steps_sum"] == 0
     assert refinement["trusted_cpu"]["count"] == 0
     assert refinement["termination_reasons"] == {}
+
+
+def test_opponent_tracker_uses_last_valid_snapshot_and_ignores_malformed_rows():
+    first = {
+        "schema_version": 4,
+        "hands_completed": 9,
+        "showdown_range": {"samples": 0, "class_counts": {}},
+    }
+    final = {
+        "schema_version": 4,
+        "hands_completed": 10,
+        "showdown_range": {"samples": 1, "class_counts": {"AA": 1}},
+    }
+    report = parse_native_bot_log(
+        "\n".join((
+            "2026-07-12 00:00:00 OPPONENT_TRACKER "
+            + json.dumps(first, separators=(",", ":")),
+            "OPPONENT_TRACKER {not-json}",
+            "[native] OPPONENT_TRACKER "
+            + json.dumps(final, separators=(",", ":")),
+        ))
+    )
+
+    tracker = report["opponent_tracker"]
+    assert tracker["available"] is True
+    assert tracker["snapshot_count"] == 2
+    assert tracker["latest"] == final

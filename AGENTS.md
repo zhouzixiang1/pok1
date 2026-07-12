@@ -368,6 +368,8 @@ chip results have zero strength weight.
 
 - `evolution_infra.py` - constants, git helpers, file locks, checkpoints, ratings.
 - `generation_scheduler.py` - three-phase generation cycle.
+- `evaluation_bundle.py`, `evidence_snapshot.py`, `rating_snapshot.py` - immutable daemon-cycle publication, strict generation cutoffs, and unified strength rows.
+- `bot_action_stats.py`, `replay_spotlight.py` - committed native tracker aggregation and hand-level diagnostic evidence.
 - `master_context_contract.py`, `plan_compiler.py`, `strategy_reference_pack.py` - digest-bound planning evidence, deterministic worker-contract compilation, and typed local strategy cards.
 - `orchestrator.py` - Claude agent loop with MCP tools.
 - `tools.py`, `tool_planning.py`, `tool_gates.py`, `tool_eval.py`, `tool_commit.py`, `tool_status.py`, `tool_bot_management.py` - MCP tools.
@@ -436,6 +438,7 @@ Important current thresholds:
 - `run_precommit_eval` is the final local strength/regression gate. It cannot replace official EXE compliance.
 - `commit_bot` cannot commit/tag a new national bot until a content-bound, signed full official EXE certificate validates.
 - Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only when they point to an active bot backed by normal completion discovery (`.completed` plus `national-bot-v{N}` tag); rejected suggestions are logged as `pipeline.source_selection_rejected`.
+- Daemon strength evidence is published as one immutable, content-addressed cycle transaction: H2H, bot stats, Glicko ratings, daemon stats, append-log cutoffs, and derived selection rows are committed under the evaluation-cycle lock, then exposed by `evaluation_cycle_manifest.json`. Generation planning copies that exact bundle into `web/core/results/v<N>/evidence_snapshot/`; Combined analysis, deterministic source/leader/oscillation logic, crossover parent selection, and Master must use the frozen cutoff rather than reopen live strength files. Native action diagnostics may be at most five same-identity cycles stale and must publish their source save/digest; their per-replay tracker contributions are cached in `.stats_etag.json` so unchanged replays are not reparsed.
 
 The daemon writes live data under `web/core/results/`, including Glicko ratings, H2H matrix, match history, replays, scheduler files, costs, and system events. These files are runtime data and are gitignored.
 

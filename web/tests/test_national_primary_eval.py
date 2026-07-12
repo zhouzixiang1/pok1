@@ -68,8 +68,9 @@ def test_daemon_dispatches_national_rating_backend(monkeypatch):
     monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_primary")
     calls = {}
 
-    def fake_national(a, b, pa, pb, config):
+    def fake_national(a, b, pa, pb, config, **authority):
         calls["national"] = (a, b, pa, pb, config)
+        calls["authority"] = authority
         return (a, b, 1, 0, 0, 1, None, [100])
 
     def fake_local(*_args):
@@ -84,6 +85,10 @@ def test_daemon_dispatches_national_rating_backend(monkeypatch):
     assert calls["national"][4]["protocol"] == "national"
     assert calls["national"][4]["national_hands"] == 70
     assert calls["national"][4]["national_matches"] == 5
+    assert calls["authority"] == {
+        "persist_strength": False,
+        "expected_identity": None,
+    }
 
 
 def test_national_acceptance_runs_candidate_pairs_only(monkeypatch):
@@ -176,7 +181,7 @@ def test_daemon_explicit_national_rating_matches_override_pairs(monkeypatch):
     monkeypatch.setenv("POK_NATIONAL_RATING_MATCHES", "2")
     calls = {}
 
-    def fake_national(a, b, pa, pb, config):
+    def fake_national(a, b, pa, pb, config, **_authority):
         calls["national"] = config
         return (a, b, 1, 0, 0, 1, None, [100])
 
@@ -197,8 +202,9 @@ def test_daemon_defaults_to_native_national_rating_backend(monkeypatch):
     monkeypatch.delenv("POK_RATING_PROTOCOL", raising=False)
     calls = {}
 
-    def fake_national(a, b, pa, pb, config):
+    def fake_national(a, b, pa, pb, config, **authority):
         calls["national"] = (a, b, pa, pb, config)
+        calls["authority"] = authority
         return (a, b, 1, 0, 0, 1, None, [100])
 
     def fake_local(*_args):
@@ -212,6 +218,7 @@ def test_daemon_defaults_to_native_national_rating_backend(monkeypatch):
     assert result == ("A", "B", 1, 0, 0, 1, None, [100])
     assert calls["national"][4]["protocol"] == "national"
     assert calls["national"][4]["national_execution_mode"] == "native_tcp"
+    assert calls["authority"]["persist_strength"] is False
 
 
 def test_native_rating_environment_cannot_shorten_70_hand_samples(monkeypatch):
@@ -249,7 +256,7 @@ def test_daemon_does_not_nest_capacity_around_native_runner(monkeypatch):
     monkeypatch.setattr(
         elo_daemon,
         "_run_national_rating_match",
-        lambda a, b, *_args: (a, b, 1, 0, 0, 1, None, [100]),
+        lambda a, b, *_args, **_kwargs: (a, b, 1, 0, 0, 1, None, [100]),
     )
 
     result = elo_daemon.run_single_match(("A", "B", "/a", "/b", 1))
@@ -280,7 +287,11 @@ def test_daemon_native_rating_requires_existing_native_entries_for_both_players(
         "run_current_runtime_native_strength_pair",
         fake_native_pair,
     )
-    monkeypatch.setattr(elo_daemon, "save_match_replay", lambda *_args: None)
+    monkeypatch.setattr(
+        elo_daemon,
+        "save_match_replay",
+        lambda *_args, **_kwargs: None,
+    )
 
     result = elo_daemon._run_national_rating_match(
         "A",
@@ -295,7 +306,7 @@ def test_daemon_native_rating_requires_existing_native_entries_for_both_players(
         },
     )
 
-    assert result == ("A", "B", 1, 0, 0, 1, None, [100])
+    assert result == ("A", "B", 1, 0, 0, 1, None, [100], None)
     assert len(calls) == 1
     assert calls[0][3]["require_native_a"] is True
     assert calls[0][3]["require_native_b"] is True
@@ -320,7 +331,12 @@ def test_daemon_national_rating_maps_net_chips(monkeypatch):
         lambda token: SimpleNamespace(label=Path(token).parent.name or str(token), path=Path(token)),
     )
     monkeypatch.setattr(national_acceptance, "run_pair", fake_run_pair)
-    monkeypatch.setattr(elo_daemon, "save_match_replay", lambda *args: saved.setdefault("args", args))
+    def fake_save(*args, **kwargs):
+        saved["args"] = args
+        saved["kwargs"] = kwargs
+        return None
+
+    monkeypatch.setattr(elo_daemon, "save_match_replay", fake_save)
 
     result = elo_daemon._run_national_rating_match(
         "A",
@@ -330,8 +346,12 @@ def test_daemon_national_rating_maps_net_chips(monkeypatch):
         {"national_hands": 70, "national_matches": 3, "strict": True},
     )
 
-    assert result == ("A", "B", 1, 1, 1, 3, None, [100, -50, 0])
+    assert result == ("A", "B", 1, 1, 1, 3, None, [100, -50, 0], None)
     assert saved["args"][2:5] == (1, 1, 1)
+    assert saved["kwargs"] == {
+        "expected_evaluation_identity_digest": None,
+        "stage_only": True,
+    }
 
 
 def test_daemon_national_rating_blocks_compliance_failures(monkeypatch):

@@ -73,7 +73,7 @@ def _isolated_recent_snaps(max_n=10):
     return [snap for _rid, snap in recent[-max_n:]]
 
 
-def _statistical_stagnation_check(source_v, ratings):
+def _statistical_stagnation_check(source_v, ratings, history_snaps=None):
     """Pure-code stagnation check using sliding window on rating history.
 
     Returns (is_stagnant, confidence, trend_delta) or None if insufficient data.
@@ -82,13 +82,17 @@ def _statistical_stagnation_check(source_v, ratings):
     - trend_delta in [5, 20]: ambiguous — needs LLM analysis
     """
     history_file = _results_dir() / "rating_history.jsonl"
-    if not history_file.exists():
+    if history_snaps is None and not history_file.exists():
         return None
 
     source_bot_name = bot_name(source_v)
     # E1: use daemon_run_id-isolated snapshots (cross-run period jumps would
     # otherwise corrupt the recent-vs-previous delta).
-    snaps = _isolated_recent_snaps(max_n=10)
+    snaps = (
+        list(history_snaps)[-10:]
+        if history_snaps is not None
+        else _isolated_recent_snaps(max_n=10)
+    )
 
     # Extract bot's rating from last 10 periods
     recent_ratings = []
@@ -132,6 +136,9 @@ async def _run_combined_analysis(
     ui,
     prev_critic_info: str = "",
     h2h_data: dict | None = None,
+    bot_stats_data: dict | None = None,
+    selection_rows_data: list[dict] | None = None,
+    rating_history_data: list[dict] | None = None,
 ):
     """Combined stagnation + performance analysis in a single LLM call.
 
@@ -145,12 +152,13 @@ async def _run_combined_analysis(
         load_h2h_avg_winrates_with_coverage,
         load_selection_order_keys,
         load_selection_scores,
+        strength_row_to_analysis_view,
     )
 
     safe_default = {
         "is_stagnant": False,
         "confidence": "low",
-        "trend": "improving",
+        "trend": "unknown",
         "diversity_needed": False,
         "diversity_reason": None,
         "recommendation": "continue",
@@ -161,6 +169,7 @@ async def _run_combined_analysis(
         "suggestion": None,
         "recommended_source": "",
         "source_rationale": "",
+        "evidence_status": "analysis_unavailable",
         # llm_failed defaults to False: the safe_default only becomes an infra
         # signal when set by the LLM-crash except branch (below). The statistical
         # pre-check / coverage-shortfall paths are real business judgements, not
@@ -180,15 +189,26 @@ async def _run_combined_analysis(
         from rating_snapshot import build_strength_rows
 
         frozen_h2h_data = dict(h2h_data)
-        rows = build_strength_rows(
-            ratings,
-            {},
-            frozen_h2h_data,
-            active_bots,
-            match_history_path=Path("/dev/null"),
+        rows = (
+            [dict(row) for row in selection_rows_data]
+            if selection_rows_data is not None
+            else build_strength_rows(
+                ratings,
+                bot_stats_data or {},
+                frozen_h2h_data,
+                active_bots,
+                match_history_path=Path("/dev/null"),
+            )
         )
         h2h_winrates = {
-            row["name"]: row.get("h2h_avg_wr", 0.5) for row in rows
+            row["name"]: (
+                row.get("h2h_avg_wr")
+                if row.get("h2h_avg_wr") is not None
+                else row.get("win_rate")
+                if row.get("win_rate") is not None
+                else row.get("leaderboard_score", 0.5)
+            )
+            for row in rows
         }
         strength_scores = {
             row["name"]: row.get("selection_score", row.get("leaderboard_score", 0.5))
@@ -196,7 +216,9 @@ async def _run_combined_analysis(
         }
         from strength_order import strength_order_key
         selection_order_keys = {row["name"]: strength_order_key(row) for row in rows}
-        coverage_data = {row["name"]: row for row in rows}
+        coverage_data = {
+            row["name"]: strength_row_to_analysis_view(row) for row in rows
+        }
 
     # ── Data sufficiency check ──
     source_bot_name = bot_name(source_v)
@@ -210,10 +232,15 @@ async def _run_combined_analysis(
             f"Insufficient opponent coverage: {opp_eval}/{opp_total} ({opp_coverage:.0%}). "
             "Need more daemon evaluation games before analysis is reliable."
         )
+        safe_default["evidence_status"] = "insufficient_coverage"
         return safe_default
 
     # ── Statistical pre-check — skip LLM if trend is clear-cut ──
-    stat_result = _statistical_stagnation_check(source_v, ratings)
+    stat_result = _statistical_stagnation_check(
+        source_v,
+        ratings,
+        history_snaps=rating_history_data,
+    )
     if stat_result is not None:
         is_stagnant, confidence, delta = stat_result
         if confidence == "high":
@@ -232,30 +259,35 @@ async def _run_combined_analysis(
                 "suggestion": None,
                 "recommended_source": "",
                 "source_rationale": "Statistical pre-check did not evaluate source recommendation — LLM call was skipped.",
+                "evidence_status": "sufficient_statistical_precheck",
             }
 
     # ── Build context data (merged from both old analysts) ──
 
-    # Generation trend (from git tags)
+    # Generation trend is restricted to the frozen active pool. Historical
+    # tags that were reaped have no row in this cycle and must not be rendered
+    # as fake score=0 regressions.
     gen_trend_lines = []
     try:
-        from evolution_infra import _git, git_get_parent
-        tag_output = _git("tag", "-l", bot_tag_glob(), "--sort=version:refname", check=False)
-        tags = [t.strip() for t in tag_output.splitlines() if t.strip()]
-        recent_tags = tags[-8:] if len(tags) > 8 else tags
-        for tag in recent_tags:
+        active_versions = []
+        for name in active_bots:
             try:
-                v = parse_tag_version(tag)
-                if v is None:
-                    continue
-                v_name = bot_name(v)
-                cov = coverage_data.get(v_name, {})
-                wr = cov.get("h2h_avg_wr", h2h_winrates.get(v_name, 0.0))
-                score = cov.get("leaderboard_score", strength_scores.get(v_name, 0.0))
-                cov_pct = cov.get("opponent_coverage", 0.0)
-                gen_trend_lines.append(f"  v{v}: score={score:.4f}, h2h_avg_wr={wr:.2%} (coverage={cov_pct:.0%})")
-            except (ValueError, KeyError):
+                active_versions.append((int(str(name).rsplit("_v", 1)[1]), str(name)))
+            except (IndexError, TypeError, ValueError):
                 continue
+        for v, v_name in sorted(active_versions)[-8:]:
+            cov = coverage_data.get(v_name)
+            if not isinstance(cov, dict):
+                continue
+            wr = cov.get("h2h_avg_wr", h2h_winrates.get(v_name))
+            score = cov.get("leaderboard_score", strength_scores.get(v_name))
+            if wr is None or score is None:
+                continue
+            cov_pct = cov.get("opponent_coverage", 0.0)
+            gen_trend_lines.append(
+                f"  v{v}: score={score:.4f}, h2h_avg_wr={wr:.2%} "
+                f"(coverage={cov_pct:.0%})"
+            )
     except Exception as e:
         log.debug('Generation trend computation failed: %s', e)
     lineage_lines = []
@@ -269,11 +301,17 @@ async def _run_combined_analysis(
         log.debug('Lineage analysis failed: %s', e)
     history_file = _results_dir() / "rating_history.jsonl"
     history_ctx = ""
-    if history_file.exists():
+    if rating_history_data is not None:
+        recent_history = list(rating_history_data)[-10:]
+    elif history_file.exists():
         # E1: use daemon_run_id-isolated snapshots so the LLM history context
         # only reflects the current continuous run (cross-run period jumps /
         # backwards timestamps would otherwise mislead the analyst).
-        for snap in _isolated_recent_snaps(max_n=10):
+        recent_history = _isolated_recent_snaps(max_n=10)
+    else:
+        recent_history = []
+    if recent_history:
+        for snap in recent_history:
             try:
                 wr_data = snap.get("win_rates", {})
                 wrs = [(k, v["h2h_avg_wr"]) for k, v in wr_data.items() if v.get("h2h_avg_wr") is not None]
@@ -318,7 +356,13 @@ async def _run_combined_analysis(
     # Bot stats
     bot_stats_line = "  No stats available"
     bot_stats_file = _results_dir() / "bot_stats.json"
-    if bot_stats_file.exists():
+    if bot_stats_data is not None:
+        bs = bot_stats_data.get(source_bot_name, {})
+        g = bs.get("games", 0)
+        wr = bs.get("win_rate", 0.0)
+        if g > 0:
+            bot_stats_line = f"  {source_bot_name}: {wr:.0%} overall ({g} games)"
+    elif bot_stats_file.exists():
         try:
             with locked_file(bot_stats_file, "r") as f:
                 bs_data = json.load(f)
@@ -332,6 +376,7 @@ async def _run_combined_analysis(
 
     # H2H per-opponent
     h2h_lines = []
+    active_bot_set = set(active_bots)
     h2h_file = _results_dir() / "head_to_head.json"
     if frozen_h2h_data is not None or h2h_file.exists():
         try:
@@ -348,6 +393,8 @@ async def _run_combined_analysis(
                 if source_bot_name not in (a_name, b_name):
                     continue
                 opponent = b_name if source_bot_name == a_name else a_name
+                if opponent not in active_bot_set:
+                    continue
                 bot_w = v.get("a_wins", 0) if source_bot_name == a_name else v.get("b_wins", 0)
                 opp_w = v.get("b_wins", 0) if source_bot_name == a_name else v.get("a_wins", 0)
                 draws = v.get("draws", 0)
@@ -409,6 +456,7 @@ async def _run_combined_analysis(
                 result, errors = validate_agent_output("combined_analyst", result)
                 if errors:
                     ui.log_history(f"Combined analyst validation issues: {'; '.join(errors[:3])}", "warn")
+                    continue
                 # Ensure all expected fields exist
                 result.setdefault("is_stagnant", False)
                 result.setdefault("confidence", "low")
@@ -423,6 +471,7 @@ async def _run_combined_analysis(
                 result.setdefault("suggestion", None)
                 result.setdefault("recommended_source", "")
                 result.setdefault("source_rationale", "")
+                result["evidence_status"] = "sufficient_llm_analysis"
                 return result
             ui.log_history(f"Combined analyst returned empty (attempt {attempt+1}/3, mode={locals().get('failure_mode', 'UNKNOWN')}), retrying...", "warn")
         except Exception as e:

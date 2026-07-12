@@ -18,6 +18,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version
 from strength_order import match_score
 from system_log import log_system_event, SYSTEM_EVENTS_FILE
@@ -88,6 +89,294 @@ class GenerationContext:
     battle_experience: str = ""
 
 
+@dataclass(frozen=True)
+class EvaluationEvidence:
+    """One coherent, post-wait rating/stat cutoff used for source selection."""
+
+    active_bots: tuple[str, ...]
+    ratings: dict
+    bot_stats: dict
+    h2h: dict
+    selection_rows: tuple[dict, ...]
+    rating_history_tail: tuple[dict, ...]
+    games: int
+    rd: float
+    readiness_reason: str
+    cutoffs: dict
+
+
+@dataclass(frozen=True)
+class SelectionView:
+    """Deeply immutable source/parent selection facts for one generation."""
+
+    active_bots: tuple[str, ...]
+    active_versions: frozenset[int]
+    rows: tuple
+    metrics: MappingProxyType
+    selection_scores: MappingProxyType
+    order_keys: MappingProxyType
+    rating_values: MappingProxyType
+    h2h: MappingProxyType
+    source_history: tuple[int, ...]
+    child_counts: MappingProxyType
+    niches: MappingProxyType
+    elites: MappingProxyType
+    blocked_pairs: frozenset[tuple[int, int]]
+    digest: str
+
+
+def _deep_freeze(value):
+    if isinstance(value, dict):
+        return MappingProxyType({str(key): _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value
+
+
+def _build_selection_view(evidence: EvaluationEvidence) -> SelectionView:
+    """Compile every source/parent decision input from the frozen bundle once."""
+    from bot_artifact import canonical_digest
+    from strength_order import strength_order_key
+    from tool_helpers import strength_row_to_analysis_view
+
+    active_bots = tuple(sorted(evidence.active_bots))
+    active_versions = frozenset(
+        version
+        for version in (parse_bot_version(name) for name in active_bots)
+        if version is not None
+    )
+    rows_by_name = {str(row.get("name")): dict(row) for row in evidence.selection_rows}
+    if set(rows_by_name) != set(active_bots):
+        raise ValueError("selection rows do not exactly match the frozen active pool")
+    rows = tuple(rows_by_name[name] for name in active_bots)
+    metrics_raw = {
+        name: strength_row_to_analysis_view(rows_by_name[name]) for name in active_bots
+    }
+    scores = {
+        name: float(
+            rows_by_name[name].get(
+                "selection_score",
+                rows_by_name[name].get("leaderboard_score", 0.0),
+            )
+        )
+        for name in active_bots
+    }
+    order_keys = {
+        name: tuple(strength_order_key(rows_by_name[name])) for name in active_bots
+    }
+    rating_values = {}
+    for name in active_bots:
+        player = evidence.ratings[name]
+        rating_values[name] = (
+            float(player.r),
+            float(player.rd),
+            float(getattr(player, "sigma", 0.06)),
+            float(player.conservative_rating()),
+        )
+
+    child_counts = {}
+    try:
+        from candidate_store import count_candidate_children
+
+        for name in active_bots:
+            version = parse_bot_version(name)
+            child_counts[name] = max(
+                count_candidate_children(name),
+                count_candidate_children(f"v{version}"),
+                count_candidate_children(str(version)),
+            )
+    except Exception:
+        child_counts = {name: 0 for name in active_bots}
+
+    # The historical MAP archive is built asynchronously from replay files and
+    # live H2H, so it is not part of the committed evaluation cycle. Keep it as
+    # dashboard telemetry only until a cycle-bound native behavior archive is
+    # available; it must not choose formal parents.
+    niches = {}
+    elites = {}
+
+    # Legacy crossover incompatibility rows were authored by a single advisory
+    # LLM score and have no deterministic conflict proof/expiry. They cannot
+    # remain a formal parent-selection denylist.
+    blocked_pairs = set()
+
+    source_history = tuple(_read_source_v_history())
+    digest_payload = {
+        "active_bots": active_bots,
+        "rows": rows,
+        "source_history": source_history,
+        "child_counts": child_counts,
+        "niches": {name: str(value) for name, value in niches.items()},
+        "blocked_pairs": sorted(blocked_pairs),
+        "evaluation_cutoffs": evidence.cutoffs,
+    }
+    return SelectionView(
+        active_bots=active_bots,
+        active_versions=active_versions,
+        rows=tuple(_deep_freeze(row) for row in rows),
+        metrics=MappingProxyType({
+            name: _deep_freeze(metrics_raw[name]) for name in active_bots
+        }),
+        selection_scores=MappingProxyType(scores),
+        order_keys=MappingProxyType(order_keys),
+        rating_values=MappingProxyType(rating_values),
+        h2h=_deep_freeze(evidence.h2h),
+        source_history=source_history,
+        child_counts=MappingProxyType(child_counts),
+        niches=MappingProxyType({name: _deep_freeze(value) for name, value in niches.items()}),
+        elites=MappingProxyType({name: _deep_freeze(value) for name, value in elites.items()}),
+        blocked_pairs=frozenset(blocked_pairs),
+        digest=canonical_digest(digest_payload),
+    )
+
+
+def _load_post_wait_evaluation_evidence(
+    *,
+    active_v: int,
+    active_bot_name: str,
+    min_games: int,
+    rd_threshold: float,
+    rd_min_games: int,
+    expected_active_bots: list[str] | tuple[str, ...],
+    snapshot_bundle: dict,
+) -> EvaluationEvidence | None:
+    """Validate one manifest-bound daemon cycle after the async eval wait."""
+    from evolution_infra import (
+        Glicko2Player,
+        find_latest_active_v,
+        get_active_bots,
+    )
+
+    active_bots_before = tuple(sorted(get_active_bots()))
+    refreshed_active_v = find_latest_active_v()
+    issues = []
+    if refreshed_active_v != active_v:
+        issues.append(
+            f"active_source_changed:v{active_v}->v{refreshed_active_v}"
+        )
+    if active_bot_name not in active_bots_before:
+        issues.append("active_source_missing_from_pool")
+    expected_pool = tuple(sorted(str(name) for name in expected_active_bots))
+    if active_bots_before != expected_pool:
+        issues.append("active_pool_changed_during_eval_wait")
+    if not snapshot_bundle.get("available"):
+        issues.append("generation_evaluation_snapshot_unavailable")
+    manifest = snapshot_bundle.get("manifest") or {}
+    cycle = manifest.get("cycle") or {}
+    cycle_pool = tuple(sorted(str(name) for name in (cycle.get("active_bots") or [])))
+    if cycle_pool != expected_pool:
+        issues.append("cycle_active_pool_mismatch")
+
+    ratings_raw = snapshot_bundle.get("ratings") or {}
+    bot_stats = snapshot_bundle.get("bot_stats") or {}
+    h2h = snapshot_bundle.get("h2h") or {}
+    selection = snapshot_bundle.get("selection") or {}
+    try:
+        ratings = {
+            str(name): Glicko2Player.from_dict(payload)
+            for name, payload in ratings_raw.items()
+            if isinstance(payload, dict)
+        }
+    except Exception:
+        ratings = {}
+        issues.append("snapshot_ratings_invalid")
+    rows = selection.get("rows")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        rows = []
+        issues.append("snapshot_selection_rows_invalid")
+    row_names = tuple(sorted(str(row.get("name")) for row in rows))
+    rating_names = tuple(sorted(ratings))
+    if row_names != expected_pool:
+        issues.append("selection_row_pool_mismatch")
+    if rating_names != expected_pool:
+        issues.append("rating_pool_mismatch")
+    history_tail = selection.get("rating_history_tail") or []
+    if not isinstance(history_tail, list) or not all(
+        isinstance(item, dict) for item in history_tail
+    ):
+        history_tail = []
+        issues.append("snapshot_rating_history_invalid")
+
+    player = ratings.get(active_bot_name) if isinstance(ratings, dict) else None
+    if player is None:
+        issues.append("active_source_rating_missing")
+        rd = 350.0
+    else:
+        try:
+            rd = float(player.rd)
+        except (AttributeError, TypeError, ValueError):
+            issues.append("active_source_rating_invalid")
+            rd = 350.0
+    try:
+        games = int((bot_stats or {}).get(active_bot_name, {}).get("games", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        games = 0
+        issues.append("active_source_games_invalid")
+
+    if games >= int(min_games):
+        readiness_reason = "min_games"
+    elif games >= int(rd_min_games) and rd < float(rd_threshold):
+        readiness_reason = "rd_threshold"
+    else:
+        readiness_reason = "not_ready"
+        issues.append("post_wait_readiness_not_reproducible")
+
+    active_bots_after = tuple(sorted(get_active_bots()))
+    if active_bots_after != active_bots_before:
+        issues.append("active_pool_changed_while_loading_snapshot")
+    cutoffs = {
+        "generation_snapshot_manifest_digest": manifest.get("manifest_digest"),
+        "cycle_manifest_digest": cycle.get("manifest_digest"),
+        "save_num": cycle.get("save_num"),
+        "daemon_run_id": cycle.get("daemon_run_id"),
+    }
+    if issues:
+        log_system_event(
+            "pipeline.eval_evidence_incoherent",
+            "warn",
+            f"Post-wait evidence for {active_bot_name} is not coherent; prepare will retry",
+            {
+                "bot": active_bot_name,
+                "active_v": active_v,
+                "issues": issues,
+                "games": games,
+                "rd": round(rd, 2),
+                "cutoffs": cutoffs,
+            },
+        )
+        return None
+
+    evidence = EvaluationEvidence(
+        active_bots=active_bots_before,
+        ratings=ratings,
+        bot_stats=bot_stats or {},
+        h2h=h2h,
+        selection_rows=tuple(dict(row) for row in rows),
+        rating_history_tail=tuple(dict(item) for item in history_tail),
+        games=games,
+        rd=rd,
+        readiness_reason=readiness_reason,
+        cutoffs=cutoffs,
+    )
+    log_system_event(
+        "pipeline.eval_evidence_frozen",
+        "success",
+        f"Frozen coherent post-wait evidence for {active_bot_name}",
+        {
+            "bot": active_bot_name,
+            "active_v": active_v,
+            "games": games,
+            "rd": round(rd, 2),
+            "reason": readiness_reason,
+            "active_bot_count": len(active_bots_before),
+            "cutoffs": cutoffs,
+        },
+    )
+    return evidence
+
+
 def _bind_prepare_log_context(current_v: int, max_committed_v: int) -> int:
     """Bind structured logs emitted during disposable Phase-1 prepare."""
     planned_next_v = max(current_v, max_committed_v) + 1
@@ -109,6 +398,47 @@ def _bind_prepare_log_context(current_v: int, max_committed_v: int) -> int:
     except Exception:
         pass
     return planned_next_v
+
+
+def _mechanical_urgent_intervention_eligible(
+    source_bot_name: str,
+    rating_history_tail,
+    selection_view,
+) -> bool:
+    """Require frozen numeric evidence before an LLM can request recovery."""
+    points = []
+    run_ids = []
+    for row in rating_history_tail or ():
+        try:
+            value = (row.get("ratings") or {}).get(source_bot_name, {}).get("r")
+            if value is not None:
+                points.append((int(row.get("period")), float(value)))
+                run_ids.append(str(row.get("daemon_run_id") or ""))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    if len(points) < 4:
+        return False
+    recent = points[-4:]
+    if any(recent[index][0] != recent[index - 1][0] + 1 for index in range(1, 4)):
+        return False
+    if len(set(run_ids[-4:])) != 1:
+        return False
+    values = [value for _period, value in recent]
+    recent_deltas = [values[index] - values[index - 1] for index in range(len(values) - 2, len(values))]
+    # Include the third most-recent period delta.
+    recent_deltas.insert(0, values[-3] - values[-4])
+    if not all(delta <= -40.0 for delta in recent_deltas[-3:]):
+        return False
+    if not isinstance(selection_view, SelectionView):
+        return False
+    leader_v = _get_unified_leader_v({}, selection_view)
+    if leader_v is None or bot_name(leader_v) == source_bot_name:
+        return False
+    leader_score = float(
+        selection_view.selection_scores.get(bot_name(leader_v), 0.0)
+    )
+    source_score = float(selection_view.selection_scores.get(source_bot_name, 0.0))
+    return source_score <= leader_score - 0.05
 
 
 def _ensure_priority_eval_signal(bot: str, min_games: int) -> None:
@@ -144,7 +474,7 @@ def _ensure_priority_eval_signal(bot: str, min_games: int) -> None:
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
     from evolution_infra import (
-        MAX_ACTIVE_BOTS, find_current_v, find_latest_active_v, get_active_bots, load_ratings,
+        MAX_ACTIVE_BOTS, find_current_v, find_latest_active_v, get_active_bots,
         find_max_committed_v, git_dir_is_committed, git_has_tag,
         find_abandoned_version_floor, compute_next_generation_v,
         wait_for_daemon_eval, ensure_publish_ready_for_new_generation,
@@ -288,7 +618,6 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         pass
     active_v = find_latest_active_v()  # 活跃 bot（排除 graveyard），用于 eval/分析
     active_bots = get_active_bots()
-    ratings = load_ratings()
     if active_v <= 0 or not active_bots:
         log_system_event(
             "pipeline.prepare_no_active_source",
@@ -319,6 +648,35 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 break
             reap_count += 1
 
+    # Reaping is allowed to change both the pool and its latest active version.
+    # Bind the wait target only after that mutation has finished; the post-wait
+    # evidence loader checks the same identity again before planning.
+    refreshed_active_bots = get_active_bots()
+    refreshed_active_v = find_latest_active_v()
+    if refreshed_active_v <= 0 or not refreshed_active_bots:
+        log_system_event(
+            "pipeline.prepare_no_active_source",
+            "error",
+            "No tagged active bot remains after pre-evaluation reaping",
+            {"planned_next_v": _planned_next_v},
+        )
+        return None
+    if refreshed_active_v != active_v or refreshed_active_bots != active_bots:
+        log_system_event(
+            "pipeline.eval_wait_source_refreshed",
+            "info",
+            f"Evaluation source refreshed after reaping: v{active_v} -> v{refreshed_active_v}",
+            {
+                "before_active_v": active_v,
+                "after_active_v": refreshed_active_v,
+                "before_pool_size": len(active_bots),
+                "after_pool_size": len(refreshed_active_bots),
+            },
+        )
+    active_v = refreshed_active_v
+    active_bots = refreshed_active_bots
+    active_bot_name = bot_name(active_v)
+
     # Wait for sufficient evaluation
     eval_kwargs = {"ui": ui, "shutdown_event": shutdown_mgr}
     try:
@@ -346,17 +704,16 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
-    # Freeze all H2H facts before any planning/analysis role runs. The rating
-    # daemon remains asynchronous, but this generation now has one immutable,
-    # digest-checked cutoff for combined analysis, anomaly detection, Master,
-    # audits, Reviewer, and Critic.
+    # Freeze one daemon-published evaluation cycle before any planning role
+    # runs. H2H, bot stats, ratings, and derived selection rows share the same
+    # save_num and digest manifest.
     try:
         from evidence_snapshot import (
             ensure_generation_h2h_snapshot,
-            load_generation_h2h_snapshot,
+            load_generation_evaluation_snapshot,
         )
 
-        h2h_snapshot = ensure_generation_h2h_snapshot(_planned_next_v)
+        h2h_snapshot = ensure_generation_h2h_snapshot(_planned_next_v, force=True)
         if not h2h_snapshot.get("available"):
             log_system_event(
                 "pipeline.h2h_snapshot_unavailable",
@@ -374,13 +731,46 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     "error",
                 )
             return None
-        frozen_h2h = load_generation_h2h_snapshot(_planned_next_v)
+        frozen_bundle = load_generation_evaluation_snapshot(_planned_next_v)
+        if not frozen_bundle.get("available"):
+            raise RuntimeError(
+                f"generation evaluation snapshot unavailable: {frozen_bundle.get('reason')}"
+            )
     except Exception as exc:
         log_system_event(
             "pipeline.h2h_snapshot_failed",
             "error",
             f"H2H evidence snapshot failed for v{_planned_next_v}",
             {"next_v": _planned_next_v, "error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+        )
+        return None
+
+    evidence = _load_post_wait_evaluation_evidence(
+        active_v=active_v,
+        active_bot_name=active_bot_name,
+        min_games=int(eval_kwargs.get("min_games", MIN_GAMES_FOR_EVAL)),
+        rd_threshold=float(eval_kwargs.get("rd_threshold", 90.0)),
+        rd_min_games=int(eval_kwargs.get("rd_min_games", 30)),
+        expected_active_bots=active_bots,
+        snapshot_bundle=frozen_bundle,
+    )
+    if evidence is None:
+        return None
+    active_bots = list(evidence.active_bots)
+    ratings = evidence.ratings
+    frozen_h2h = evidence.h2h
+    frozen_bot_stats = evidence.bot_stats
+    try:
+        selection_view = _build_selection_view(evidence)
+    except Exception as exc:
+        log_system_event(
+            "pipeline.selection_view_failed",
+            "error",
+            f"Cannot compile frozen selection view for v{_planned_next_v}",
+            {
+                "next_v": _planned_next_v,
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            },
         )
         return None
 
@@ -416,8 +806,11 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             ui,
             prev_critic_info,
             frozen_h2h,
+            frozen_bot_stats,
+            list(evidence.selection_rows),
+            list(evidence.rating_history_tail),
         ),
-        _analyze_recent_matches(active_v, ui),
+        _analyze_recent_matches(active_v, ui, next_v=_planned_next_v),
         return_exceptions=True,
     )
 
@@ -447,10 +840,61 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         log.warning("Match analysis failed: %s", match_result)
 
     # Strategy decision (code-layer, deterministic)
-    strategy, source_v, parents = _decide_strategy(combined, active_v, ratings)
+    strategy, source_v, parents = _decide_strategy(
+        combined,
+        active_v,
+        ratings,
+        selection_view=selection_view,
+    )
 
     # --- P1-1: Continuous Degeneration Diagnosis ---
-    if combined and combined.get("trend") == "declining":
+    mechanical_urgent = _mechanical_urgent_intervention_eligible(
+        bot_name(active_v),
+        evidence.rating_history_tail,
+        selection_view,
+    )
+    # A frozen numeric emergency is system-owned control flow.  Apply it before
+    # asking an advisory model to explain the decline; an LLM timeout must not
+    # suppress a mechanically proven recovery action.
+    if mechanical_urgent:
+        log_system_event(
+            "pipeline.urgent_degeneration",
+            "error",
+            f"Mechanically proven urgent degeneration for v{active_v}",
+            {
+                "source_v": active_v,
+                "trigger": "frozen_three_period_decline_and_leader_gap",
+                "selection_view_digest": selection_view.digest,
+            },
+        )
+        if strategy != "crossover":
+            recovery_parents = _pick_crossover_parents(
+                ratings,
+                active_v,
+                selection_view=selection_view,
+            )
+            if recovery_parents:
+                strategy = "crossover"
+                parents = recovery_parents
+                source_v = recovery_parents[0]
+                log_system_event(
+                    "pipeline.degeneration_strategy_override",
+                    "warn",
+                    "Overriding strategy to crossover due to mechanical degeneration",
+                    {
+                        "parent_a": parents[0],
+                        "parent_b": parents[1],
+                        "selection_view_digest": selection_view.digest,
+                    },
+                )
+            else:
+                log_system_event(
+                    "pipeline.degeneration_override_deferred",
+                    "warn",
+                    "Urgent degeneration found, but no frozen eligible crossover pair exists",
+                    {"selection_view_digest": selection_view.digest},
+                )
+    if mechanical_urgent or (combined and combined.get("trend") == "declining"):
         try:
             from audit_agents import _run_degeneration_diagnosis
             from evolution_infra import _git
@@ -469,28 +913,32 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 pass
 
             # Build rating curve
-            rating_curve_text = ""
-            try:
-                from evolution_infra import RATING_HISTORY_FILE
-                if RATING_HISTORY_FILE.exists():
-                    lines = RATING_HISTORY_FILE.read_text().strip().split('\n')
-                    recent_lines = lines[-10:]
-                    rating_curve_text = "\n".join(recent_lines)[:2000]
-            except Exception:
-                pass
+            rating_curve_text = "\n".join(
+                json.dumps(row, ensure_ascii=False)
+                for row in evidence.rating_history_tail[-10:]
+            )[:2000]
 
             diag = await _run_degeneration_diagnosis(
                 active_v, recent_commits_text, "See commits above", rating_curve_text, ui
             )
-            if diag.get("urgent_intervention"):
-                log_system_event("pipeline.urgent_degeneration", "error",
-                                 f"Urgent degeneration detected for v{active_v}: {diag.get('root_causes', [])}",
-                                 {"source_v": active_v, "diagnosis": diag})
-                # Override strategy to crossover for recovery
-                if strategy != "crossover":
-                    strategy = "crossover"
-                    log_system_event("pipeline.degeneration_strategy_override", "warn",
-                                     f"Overriding strategy to crossover due to degeneration", {})
+            if mechanical_urgent:
+                log_system_event(
+                    "pipeline.degeneration_diagnosis_attached",
+                    "info",
+                    "Advisory diagnosis attached to mechanical degeneration decision",
+                    {"source_v": active_v, "diagnosis": diag},
+                )
+            elif diag.get("urgent_intervention"):
+                log_system_event(
+                    "pipeline.degeneration_override_rejected",
+                    "warn",
+                    "LLM urgent degeneration request lacked frozen mechanical evidence",
+                    {
+                        "source_v": active_v,
+                        "diagnosis": diag,
+                        "selection_view_digest": selection_view.digest,
+                    },
+                )
             elif diag.get("is_degenerating"):
                 log_system_event("pipeline.degeneration_detected", "warn",
                                  f"Degeneration detected for v{active_v}: {diag.get('recommendation', '')}",
@@ -516,6 +964,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             replays_dir=replays_dir,
             max_hands=10,
             recent_n_files=20,
+            allowed_replay_ids=(
+                (frozen_bundle.get("match_history_index") or {}).get(
+                    "replay_ids"
+                )
+                or []
+            ),
         )
     except Exception as e:
         log.warning("Replay spotlight analysis failed: %s", e)
@@ -536,6 +990,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 regressions = []    # active_v LOSING — genuine concern for Master
                 dominations = []    # active_v WINNING — informational only, NOT "attention"
                 v_key = bot_name(active_v)
+                active_bot_set = set(active_bots)
                 for pair_key, pair_data in h2h_data.items():
                     parts = pair_key.split(" vs ")
                     if len(parts) != 2 or v_key not in parts:
@@ -550,6 +1005,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     else:
                         bot_wins = pair_data.get("b_wins", 0)
                         opp = parts[0]
+                    if opp not in active_bot_set:
+                        continue
                     draws = int(pair_data.get("draws", 0) or 0)
                     wr = match_score(bot_wins, draws, games)
                     if wr is None:
@@ -608,30 +1065,9 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     except Exception as e:
         log.warning("Battle experience read failed: %s", e)
 
-    # Phase 4: 10%-elite periodic re-evaluation (QD diversity housekeeping).
-    # Every QD_REEVAL_EVERY generations, mark the top-fitness niche occupants for
-    # daemon single-eval re-evaluation by writing them into the priority eval
-    # queue. This prevents stale-elite lock-in (a niche occupied by a bot whose
-    # fitness was measured long ago). NO fire-and-forget here — the daemon is
-    # already asynchronous and consumes priority_eval.json on its own loop.
-    # Best-effort: any failure is observed and swallowed (idempotent phase).
-    try:
-        from qd_fitness import QD_REEVAL_EVERY, reevaluate_top_elites
-        next_v_planned = max(current_v, max_committed_v) + 1
-        if next_v_planned > 0 and next_v_planned % QD_REEVAL_EVERY == 0:
-            from map_elites import read_behavior_archive
-            archive = read_behavior_archive()
-            elites = reevaluate_top_elites(archive)
-            if elites:
-                log.info("QD elite re-eval: %d elites queued (%s)",
-                         len(elites), elites[:3])
-                log_system_event(
-                    "pipeline.qd_elite_reeval", "info",
-                    f"v{next_v_planned}: {len(elites)} elites queued for re-eval",
-                    {"version": next_v_planned, "elites": elites},
-                )
-    except Exception as e:
-        log.warning("QD elite re-eval trigger failed (non-fatal): %s", e)
+    # MAP-Elites/QD archive is diagnostic-only until its native behavior rows
+    # are committed in the same evaluation-cycle contract. It must not enqueue
+    # rating work or affect source/parent selection from live replay telemetry.
 
     # LOG GAP FIX (2026-06-29): record the final next_v decision with all inputs
     # so the version-number allocation is fully auditable. Previously only the
@@ -694,6 +1130,14 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     "parent_b": parent2_v,
                     "h2h_snapshot_manifest_digest": h2h_snapshot.get("manifest_digest"),
                     "h2h_snapshot_sha256": h2h_snapshot.get("sha256"),
+                    "evaluation_evidence": {
+                        "bot": active_bot_name,
+                        "games": evidence.games,
+                        "rd": round(evidence.rd, 2),
+                        "readiness_reason": evidence.readiness_reason,
+                        "cutoffs": evidence.cutoffs,
+                        "selection_view_digest": selection_view.digest,
+                    },
                 },
                 # System-owned exact handoff.  The outer orchestrator may show
                 # these strings to the user/model, but run_master reloads this
@@ -733,13 +1177,25 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     )
 
 
-def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None, ratings=None):
+def _log_crossover_decision(
+    trigger,
+    source_v,
+    parents,
+    cons_a=None,
+    cons_b=None,
+    ratings=None,
+    selection_view=None,
+):
     """LOG GAP FIX (2026-06-30): record WHY crossover was chosen + which parents,
     so the parent-selection rationale is auditable (previously only the result was
     logged via pipeline.generation_selected's strategy field)."""
     try:
-        parent_a_metrics = _strength_payload(parents[0], ratings=ratings)
-        parent_b_metrics = _strength_payload(parents[1], ratings=ratings)
+        parent_a_metrics = _strength_payload(
+            parents[0], ratings=ratings, selection_view=selection_view
+        )
+        parent_b_metrics = _strength_payload(
+            parents[1], ratings=ratings, selection_view=selection_view
+        )
         log_system_event(
             "pipeline.crossover_decided", "info",
             f"Crossover decided (trigger={trigger}): v{parents[0]}×v{parents[1]} "
@@ -756,9 +1212,30 @@ def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None
         pass
 
 
-def _strength_payload(version, ratings=None):
+def _strength_payload(version, ratings=None, selection_view=None):
     name = bot_name(version)
     payload = {"bot": name}
+    if isinstance(selection_view, SelectionView):
+        rating = selection_view.rating_values.get(name)
+        if rating is not None:
+            payload.update({
+                "glicko_r": round(float(rating[0]), 1),
+                "glicko_rd": round(float(rating[1]), 1),
+                "conservative_rating": round(float(rating[3]), 1),
+            })
+        metrics = selection_view.metrics.get(name)
+        if metrics is not None:
+            h2h = metrics.get("h2h_avg_wr")
+            if h2h is not None:
+                payload["h2h_avg_wr"] = round(float(h2h), 4)
+            payload["h2h_games"] = int(metrics.get("h2h_games", 0) or 0)
+            payload["h2h_opponents"] = int(
+                metrics.get("opponents_evaluated", 0) or 0
+            )
+            payload["selection_score"] = round(
+                float(selection_view.selection_scores.get(name, 0.0)), 4
+            )
+        return payload
     rating = (ratings or {}).get(name) if isinstance(ratings, dict) else None
     if rating is not None:
         try:
@@ -799,7 +1276,14 @@ def _strength_payload(version, ratings=None):
         return payload
 
 
-def _log_source_selection_decision(trigger, selected_v, current_v, combined=None, ratings=None):
+def _log_source_selection_decision(
+    trigger,
+    selected_v,
+    current_v,
+    combined=None,
+    ratings=None,
+    selection_view=None,
+):
     try:
         log_system_event(
             "pipeline.source_selection_decided",
@@ -811,16 +1295,22 @@ def _log_source_selection_decision(trigger, selected_v, current_v, combined=None
                 "current_v": current_v,
                 "llm_recommended_source": (combined or {}).get("recommended_source"),
                 "source_rationale": (combined or {}).get("source_rationale"),
-                "selected_metrics": _strength_payload(selected_v, ratings=ratings),
-                "current_metrics": _strength_payload(current_v, ratings=ratings),
+                "selected_metrics": _strength_payload(
+                    selected_v, ratings=ratings, selection_view=selection_view
+                ),
+                "current_metrics": _strength_payload(
+                    current_v, ratings=ratings, selection_view=selection_view
+                ),
             },
         )
     except Exception:
         pass
 
 
-def _active_source_versions() -> set[int]:
+def _active_source_versions(selection_view=None) -> set[int]:
     """Return active source versions backed by normal completion discovery."""
+    if isinstance(selection_view, SelectionView):
+        return set(selection_view.active_versions)
     try:
         from evolution_infra import get_active_bots
         versions = set()
@@ -853,7 +1343,72 @@ def _log_source_selection_rejected(trigger, requested_v, current_v, reason, comb
         pass
 
 
-def _decide_strategy(combined, current_v, ratings):
+_COMBINED_CONFIDENCE = {"low", "medium", "high"}
+_COMBINED_TRENDS = {"improving", "stagnant", "declining", "unknown"}
+_COMBINED_RECOMMENDATIONS = {
+    "continue", "crossover", "branch", "branch_from", "force_exploration",
+}
+
+
+def _normalize_combined_control(combined):
+    """Fail closed on weak-model values even when a test/caller bypasses Pydantic."""
+    if not isinstance(combined, dict):
+        return None
+    normalized = dict(combined)
+    if normalized.get("confidence") not in _COMBINED_CONFIDENCE:
+        normalized["confidence"] = "low"
+    if normalized.get("trend") not in _COMBINED_TRENDS:
+        normalized["trend"] = "unknown"
+    if normalized.get("recommendation") not in _COMBINED_RECOMMENDATIONS:
+        normalized["recommendation"] = "continue"
+    for field in ("is_stagnant", "diversity_needed", "llm_failed"):
+        if not isinstance(normalized.get(field), bool):
+            normalized[field] = False
+    return normalized
+
+
+def _deterministic_fallback_source(current_v, ratings, selection_view):
+    leader_v = _get_unified_leader_v(ratings, selection_view)
+    return leader_v if leader_v is not None else current_v
+
+
+def _llm_source_eligibility(requested_v, selection_view):
+    """Allow LLM source hints only inside a high-evidence leader envelope."""
+    if not isinstance(selection_view, SelectionView):
+        return False, "frozen_selection_view_missing"
+    name = bot_name(requested_v)
+    if requested_v not in selection_view.active_versions or name not in selection_view.metrics:
+        return False, "source_not_active"
+    leader_v = _get_unified_leader_v({}, selection_view)
+    if leader_v is None:
+        return False, "frozen_leader_missing"
+    leader_name = bot_name(leader_v)
+    candidate_score = float(selection_view.selection_scores.get(name, 0.0))
+    leader_score = float(selection_view.selection_scores.get(leader_name, 0.0))
+    metrics = selection_view.metrics.get(name) or {}
+    try:
+        coverage = float(
+            metrics.get(
+                "opponent_coverage",
+                metrics.get("h2h_coverage", 0.0),
+            )
+            or 0.0
+        )
+    except (TypeError, ValueError):
+        coverage = 0.0
+    confidence = str(metrics.get("strength_confidence") or "low")
+    if requested_v == leader_v:
+        return True, "frozen_leader"
+    if coverage < 0.4:
+        return False, "source_coverage_below_40pct"
+    if confidence == "low":
+        return False, "source_strength_confidence_low"
+    if candidate_score < leader_score - 0.03:
+        return False, "source_outside_leader_score_envelope"
+    return True, "credible_near_leader"
+
+
+def _decide_strategy(combined, current_v, ratings, *, selection_view=None):
     """Deterministic strategy selection based on combined analysis results.
 
     The combined analysis merges stagnation and performance data into one dict:
@@ -861,18 +1416,36 @@ def _decide_strategy(combined, current_v, ratings):
     - diversity_needed → crossover injection
     - recommendation + branch_from → branch from specific ancestor
     """
+    combined = _normalize_combined_control(combined)
     if combined is None:
-        return "master", current_v, ()
+        return (
+            "master",
+            _deterministic_fallback_source(current_v, ratings, selection_view),
+            (),
+        )
+
+    if isinstance(selection_view, SelectionView):
+        source_metrics = selection_view.metrics.get(bot_name(current_v)) or {}
+        if str(source_metrics.get("strength_confidence") or "low") == "low":
+            # LLM certainty cannot exceed the frozen evaluator's evidence.
+            combined["confidence"] = "low"
+            combined["is_stagnant"] = False
+            combined["diversity_needed"] = False
+            if combined.get("recommendation") in {
+                "crossover", "force_exploration",
+            }:
+                combined["recommendation"] = "continue"
 
     # Load MAP-Elites archive for niche-diverse crossover parent selection.
     # Falls back inside _pick_crossover_parents to the older fingerprint archive
     # if the MAP-Elites archive is unavailable.
     _archive = None
-    try:
-        from map_elites import read_behavior_archive
-        _archive = read_behavior_archive()
-    except Exception:
-        pass
+    if not isinstance(selection_view, SelectionView):
+        try:
+            from map_elites import read_behavior_archive
+            _archive = read_behavior_archive()
+        except Exception:
+            pass
 
     # B-class control-flow guard: if the Combined Analyst's LLM call crashed
     # (infrastructure failure, NOT a business judgement), stagnation status is
@@ -899,29 +1472,59 @@ def _decide_strategy(combined, current_v, ratings):
             )
         except Exception:
             pass
-        return "master", current_v, ()
+        return (
+            "master",
+            _deterministic_fallback_source(current_v, ratings, selection_view),
+            (),
+        )
+
+    if combined.get("evidence_status") == "insufficient_coverage":
+        return (
+            "master",
+            _deterministic_fallback_source(current_v, ratings, selection_view),
+            (),
+        )
 
     # Source-v loop detection: if recent generations all branched from the same
     # ancestor (typically because LLM analysis anchors on a "stable" intermediate),
     # force branching from the Glicko-rated leader instead.
-    _source_loop = _detect_source_loop(n=3)
+    _source_loop = (
+        _source_loop_from_history(selection_view.source_history, n=3)
+        if isinstance(selection_view, SelectionView)
+        else _detect_source_loop(n=3)
+    )
     if _source_loop:
-        leader_v = _get_unified_leader_v(ratings)
+        leader_v = _get_unified_leader_v(ratings, selection_view)
         if leader_v is not None and leader_v != _source_loop:
             log.warning(
                 "Source-v loop detected (last 3+ gens from v%d). "
                 "Forcing source_v=%d (unified selection leader) to break the loop.",
                 _source_loop, leader_v,
             )
-            _log_source_selection_decision("source_loop_unified_leader", leader_v, current_v, combined, ratings)
+            _log_source_selection_decision(
+                "source_loop_unified_leader",
+                leader_v,
+                current_v,
+                combined,
+                ratings,
+                selection_view,
+            )
             return "master", leader_v, ()
 
     # Source-v oscillation detection: if recent gens cycle among a small set
     # of ancestors, force crossover between the highest and lowest rated bots
     # from that oscillating set to break out of the cycle.
-    oscillating = _detect_source_oscillation(n=8, max_unique=3)
+    oscillating = (
+        _source_oscillation_from_history(
+            selection_view.source_history,
+            n=8,
+            max_unique=3,
+        )
+        if isinstance(selection_view, SelectionView)
+        else _detect_source_oscillation(n=8, max_unique=3)
+    )
     if oscillating:
-        active_versions = _active_source_versions()
+        active_versions = _active_source_versions(selection_view)
         selectable_oscillating = (
             oscillating & active_versions
             if active_versions and (oscillating & active_versions)
@@ -941,7 +1544,7 @@ def _decide_strategy(combined, current_v, ratings):
         # without progress — forcing crossover here would blow apart a winning
         # lineage (BUG2). Only force crossover when none of the recurring sources
         # is the current leader, i.e. genuine stuckness on weaker ancestors.
-        leader_v = _get_unified_leader_v(ratings)
+        leader_v = _get_unified_leader_v(ratings, selection_view)
         force_oscillation_crossover = True
         if leader_v is not None and leader_v in osc_ratings:
             force_oscillation_crossover = False
@@ -971,7 +1574,11 @@ def _decide_strategy(combined, current_v, ratings):
             except Exception:
                 pass
         else:
-            breakout = _pick_oscillation_breakout_source(oscillating, current_v)
+            breakout = _pick_oscillation_breakout_source(
+                oscillating,
+                current_v,
+                selection_view,
+            )
             if breakout:
                 selected_v = breakout["version"]
                 log.info(
@@ -1004,7 +1611,12 @@ def _decide_strategy(combined, current_v, ratings):
                 except Exception:
                     pass
                 _log_source_selection_decision(
-                    "source_oscillation_breakout", selected_v, current_v, combined, ratings
+                    "source_oscillation_breakout",
+                    selected_v,
+                    current_v,
+                    combined,
+                    ratings,
+                    selection_view,
                 )
                 return "master", selected_v, ()
         if force_oscillation_crossover and len(osc_ratings) >= 2:
@@ -1020,16 +1632,27 @@ def _decide_strategy(combined, current_v, ratings):
                 )
                 _log_crossover_decision("oscillation", highest_v, (highest_v, lowest_v),
                                         osc_ratings.get(highest_v), osc_ratings.get(lowest_v),
-                                        ratings=ratings)
+                                        ratings=ratings, selection_view=selection_view)
                 return "crossover", highest_v, (highest_v, lowest_v)
 
     # Priority 1: Stagnation with high/medium confidence → crossover
     # This is the PRIMARY escape hatch from local optima — must fire before
     # recommended_source so stagnation always triggers diversity injection.
     if combined.get("is_stagnant") and combined.get("confidence") != "low":
-        parents = _pick_crossover_parents(ratings, current_v, archive=_archive)
+        parents = _pick_crossover_parents(
+            ratings,
+            current_v,
+            archive=_archive,
+            selection_view=selection_view,
+        )
         if parents:
-            _log_crossover_decision("stagnation", parents[0], parents, ratings=ratings)
+            _log_crossover_decision(
+                "stagnation",
+                parents[0],
+                parents,
+                ratings=ratings,
+                selection_view=selection_view,
+            )
             return "crossover", parents[0], parents
 
     # Priority 2: LLM-recommended source (only for non-stagnant systems).
@@ -1040,40 +1663,92 @@ def _decide_strategy(combined, current_v, ratings):
         if rec_v is not None and rec_v >= 1:
             # Only accept active bots (not graveyard and not uncommitted
             # directories) as an evolution source.
-            if rec_v in _active_source_versions():
+            eligible, eligibility_reason = _llm_source_eligibility(
+                rec_v,
+                selection_view,
+            )
+            if eligible:
                 if rec_v != current_v:
                     rationale = combined.get("source_rationale", "")
                     log.info("LLM recommended source: v%d (instead of latest v%d). %s",
                              rec_v, current_v, rationale[:200])
-                _log_source_selection_decision("llm_recommended_source", rec_v, current_v, combined, ratings)
+                _log_source_selection_decision(
+                    "llm_recommended_source",
+                    rec_v,
+                    current_v,
+                    combined,
+                    ratings,
+                    selection_view,
+                )
                 return "master", rec_v, ()
             _log_source_selection_rejected(
-                "llm_recommended_source", rec_v, current_v, "source_not_active", combined
+                "llm_recommended_source",
+                rec_v,
+                current_v,
+                eligibility_reason,
+                combined,
             )
 
     # Priority 3: Explicit branch recommendation
     if combined.get("recommendation") == "branch" and combined.get("branch_from"):
         branch_v = _parse_branch_from(combined["branch_from"])
         if branch_v is not None and branch_v >= 1:
-            if branch_v in _active_source_versions():
-                _log_source_selection_decision("branch_recommendation", branch_v, current_v, combined, ratings)
+            eligible, eligibility_reason = _llm_source_eligibility(
+                branch_v,
+                selection_view,
+            )
+            if eligible:
+                _log_source_selection_decision(
+                    "branch_recommendation",
+                    branch_v,
+                    current_v,
+                    combined,
+                    ratings,
+                    selection_view,
+                )
                 return "master", branch_v, ()
             _log_source_selection_rejected(
-                "branch_recommendation", branch_v, current_v, "source_not_active", combined
+                "branch_recommendation",
+                branch_v,
+                current_v,
+                eligibility_reason,
+                combined,
             )
 
     # Priority 4: Diversity injection
-    if combined.get("diversity_needed"):
-        parents = _pick_crossover_parents(ratings, current_v, archive=_archive)
+    if (
+        combined.get("diversity_needed")
+        and combined.get("confidence") in {"medium", "high"}
+    ):
+        parents = _pick_crossover_parents(
+            ratings,
+            current_v,
+            archive=_archive,
+            selection_view=selection_view,
+        )
         if parents:
             log.info("Diversity injection: forcing crossover (%s, %s) to break local optimum",
                      f"v{parents[0]}", f"v{parents[1]}")
-            _log_crossover_decision("diversity", parents[0], parents, ratings=ratings)
+            _log_crossover_decision(
+                "diversity",
+                parents[0],
+                parents,
+                ratings=ratings,
+                selection_view=selection_view,
+            )
             return "crossover", parents[0], parents
 
-    # Fallback: LLM did not recommend a source, use current_v
-    _log_source_selection_decision("latest_fallback", current_v, current_v, combined, ratings)
-    return "master", current_v, ()
+    # Fallback: weak/empty LLM guidance cannot override the frozen leader.
+    fallback_v = _deterministic_fallback_source(current_v, ratings, selection_view)
+    _log_source_selection_decision(
+        "frozen_leader_fallback",
+        fallback_v,
+        current_v,
+        combined,
+        ratings,
+        selection_view,
+    )
+    return "master", fallback_v, ()
 
 
 def _parse_branch_from(branch_str: str) -> int | None:
@@ -1140,12 +1815,21 @@ def _detect_source_loop(n=3):
         sources = _read_source_v_history()
         if not sources:
             return None
-        # Check last n entries
-        recent = sources[-(n + 1):] if len(sources) >= n + 1 else sources[-n:] if len(sources) >= n else []
-        if len(recent) >= n and len(set(recent)) == 1:
-            return recent[0]
+        return _source_loop_from_history(sources, n=n)
     except Exception:
         pass
+    return None
+
+
+def _source_loop_from_history(sources, *, n=3):
+    values = list(sources or [])
+    recent = (
+        values[-(n + 1):]
+        if len(values) >= n + 1
+        else values[-n:] if len(values) >= n else []
+    )
+    if len(recent) >= n and len(set(recent)) == 1:
+        return recent[0]
     return None
 
 
@@ -1162,20 +1846,29 @@ def _detect_source_oscillation(n=8, max_unique=3):
         sources = _read_source_v_history()
         if not sources:
             return None
-        recent = sources[-n:]
-        if len(recent) < max_unique + 1:
-            return None  # Not enough data to detect oscillation
-        unique_sources = set(recent)
-        if len(unique_sources) <= max_unique:
+        unique_sources = _source_oscillation_from_history(
+            sources,
+            n=n,
+            max_unique=max_unique,
+        )
+        if unique_sources:
             log.warning("Source-v oscillation detected: last %d gens used only %d unique sources: %s",
-                        len(recent), len(unique_sources), sorted(unique_sources))
+                        min(len(sources), n), len(unique_sources), sorted(unique_sources))
             return unique_sources
     except Exception:
         pass
     return None
 
 
-def _get_unified_leader_v(ratings):
+def _source_oscillation_from_history(sources, *, n=8, max_unique=3):
+    recent = list(sources or [])[-n:]
+    if len(recent) < max_unique + 1:
+        return None
+    unique_sources = set(recent)
+    return unique_sources if len(unique_sources) <= max_unique else None
+
+
+def _get_unified_leader_v(ratings, selection_view=None):
     """Return the version number of the strongest active bot for source repair.
 
     Prefer the confidence-discounted ``selection_score`` used by the dashboard
@@ -1183,32 +1876,40 @@ def _get_unified_leader_v(ratings):
     (r - 2*rd) if the unified snapshot is unavailable, so source-loop recovery
     still works during partial data or cache failures.
     """
-    if not ratings:
+    if not ratings and not isinstance(selection_view, SelectionView):
         return None
-    active_versions = _active_source_versions()
+    active_versions = _active_source_versions(selection_view)
+    if isinstance(selection_view, SelectionView):
+        eligible_bots = list(selection_view.active_bots)
+        selection_scores = selection_view.selection_scores
+        selection_order_keys = selection_view.order_keys
+    else:
+        eligible_bots = []
+        selection_scores = {}
+        selection_order_keys = {}
     rating_versions = {
         version for version in (_parse_branch_from(name) for name in ratings)
         if version is not None
     }
-    filter_by_active = bool(active_versions and (rating_versions & active_versions))
-    eligible_bots = [
-        name for name in ratings
-        if (_parse_branch_from(name) in active_versions if filter_by_active else True)
-    ]
+    if not isinstance(selection_view, SelectionView):
+        filter_by_active = bool(active_versions and (rating_versions & active_versions))
+        eligible_bots = [
+            name for name in ratings
+            if (_parse_branch_from(name) in active_versions if filter_by_active else True)
+        ]
     if not eligible_bots:
         return None
-    try:
-        from tool_helpers import load_selection_scores
-        selection_scores = load_selection_scores()
-    except Exception:
-        selection_scores = {}
-    try:
-        from tool_helpers import load_selection_order_keys
-        selection_order_keys = load_selection_order_keys()
-    except Exception:
-        # Chip magnitude is a secondary tie-breaker.  A missing/corrupt chip
-        # snapshot must never discard the authoritative match-result score.
-        selection_order_keys = {}
+    if not isinstance(selection_view, SelectionView):
+        try:
+            from tool_helpers import load_selection_scores
+            selection_scores = load_selection_scores()
+        except Exception:
+            selection_scores = {}
+        try:
+            from tool_helpers import load_selection_order_keys
+            selection_order_keys = load_selection_order_keys()
+        except Exception:
+            selection_order_keys = {}
 
     def _score(name):
         raw = selection_scores.get(name)
@@ -1238,7 +1939,11 @@ def _get_unified_leader_v(ratings):
         return None
 
 
-def _pick_oscillation_breakout_source(oscillating: set[int], current_v: int) -> dict | None:
+def _pick_oscillation_breakout_source(
+    oscillating: set[int],
+    current_v: int,
+    selection_view=None,
+) -> dict | None:
     """Pick a credible source outside an oscillating ancestor set.
 
     The oscillation backstop is supposed to break stale source loops, not erase a
@@ -1247,16 +1952,19 @@ def _pick_oscillation_breakout_source(oscillating: set[int], current_v: int) -> 
     are effectively tied for first, prefer the newest version so the system keeps
     moving forward instead of snapping back to an old historical champion.
     """
-    try:
-        from tool_helpers import load_h2h_avg_winrates_with_coverage
+    if isinstance(selection_view, SelectionView):
+        metrics = selection_view.metrics
+    else:
+        try:
+            from tool_helpers import load_h2h_avg_winrates_with_coverage
 
-        metrics = load_h2h_avg_winrates_with_coverage()
-    except Exception:
-        return None
+            metrics = load_h2h_avg_winrates_with_coverage()
+        except Exception:
+            return None
 
     if not metrics:
         return None
-    active_versions = _active_source_versions()
+    active_versions = _active_source_versions(selection_view)
     metric_versions = {
         version for version in (_parse_branch_from(name) for name in metrics)
         if version is not None
@@ -1315,7 +2023,12 @@ def _pick_oscillation_breakout_source(oscillating: set[int], current_v: int) -> 
     return max(near_best, key=lambda c: (c["version"], c["selection_score"]))
 
 
-def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
+def _pick_crossover_parents(
+    ratings,
+    current_v,
+    archive=None,
+    selection_view=None,
+) -> tuple | None:
     """Select two diverse parents for crossover.
 
     Parent A: highest unified strength score.
@@ -1330,54 +2043,72 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
             When provided, parent_b is chosen from a different behavioral niche
             to maximize crossover diversity (fix-6).
     """
-    from evolution_infra import get_active_bots
-    from tool_helpers import load_selection_scores
+    if isinstance(selection_view, SelectionView):
+        active = list(selection_view.active_bots)
+        strength = selection_view.selection_scores
+        strength_order = selection_view.order_keys
+    else:
+        from evolution_infra import get_active_bots
+        from tool_helpers import load_selection_scores
 
-    active = get_active_bots()
+        active = get_active_bots()
+        strength = load_selection_scores()
+        try:
+            from tool_helpers import load_selection_order_keys
+            strength_order = load_selection_order_keys()
+        except Exception:
+            strength_order = {}
     if len(active) < 2:
         return None
-    strength = load_selection_scores()
-    try:
-        from tool_helpers import load_selection_order_keys
-        strength_order = load_selection_order_keys()
-    except Exception:
-        # Preserve primary selection when optional secondary evidence is not
-        # available.  Crossover must not fail because chip telemetry is absent.
-        strength_order = {}
-    try:
-        from candidate_store import count_candidate_children
+    if isinstance(selection_view, SelectionView):
+        def _child_count(name):
+            return int(selection_view.child_counts.get(name, 0) or 0)
+    else:
+        try:
+            from candidate_store import count_candidate_children
 
-        def _child_count(bot_name):
-            try:
-                version = int(bot_name.split("_v")[1])
-            except (ValueError, IndexError):
+            def _child_count(bot_name):
+                try:
+                    version = int(bot_name.split("_v")[1])
+                except (ValueError, IndexError):
+                    return 0
+                return max(
+                    count_candidate_children(bot_name),
+                    count_candidate_children(f"v{version}"),
+                    count_candidate_children(str(version)),
+                )
+        except Exception:
+            def _child_count(bot_name):
                 return 0
-            return max(
-                count_candidate_children(bot_name),
-                count_candidate_children(f"v{version}"),
-                count_candidate_children(str(version)),
-            )
-    except Exception:
-        def _child_count(bot_name):
-            return 0
 
     def _adjusted_strength(bot_name):
+        """Diagnostic parent score with only a bounded diversity nudge.
+
+        Child count used to divide strength by ``1 + children``.  One successful
+        child could therefore demote a 0.65 leader below an unused 0.40 bot.
+        Parent A must remain strength-first; child count only breaks equal
+        rounded scores and is reported here as a tiny, capped diagnostic nudge.
+        """
         base = float(strength.get(bot_name, 0.0))
         children = _child_count(bot_name)
-        return base * (1.0 / (1.0 + children))
+        return base - min(0.005, max(0, children) * 0.0005)
 
-    map_niches = {}
-    map_elites = {}
-    try:
-        from map_elites import bot_elite_index, bot_niche_index
-        map_niches = bot_niche_index(archive)
-        map_elites = bot_elite_index(archive)
-    except Exception:
+    if isinstance(selection_view, SelectionView):
+        map_niches = selection_view.niches
+        map_elites = selection_view.elites
+    else:
         map_niches = {}
         map_elites = {}
+        try:
+            from map_elites import bot_elite_index, bot_niche_index
+            map_niches = bot_niche_index(archive)
+            map_elites = bot_elite_index(archive)
+        except Exception:
+            map_niches = {}
+            map_elites = {}
 
     legacy_niches = {}
-    if archive and not map_niches:
+    if archive and not map_niches and not isinstance(selection_view, SelectionView):
         try:
             from behavior_diversity import get_niche_for_bot
             legacy_niches = {
@@ -1393,8 +2124,8 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
     ranked = sorted(
         active,
         key=lambda b: (
-            _adjusted_strength(b),
             strength.get(b, 0.0),
+            -_child_count(b),
             *(tuple(strength_order.get(b, ()))[1:]),
         ),
         reverse=True,
@@ -1402,11 +2133,15 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
     if len(ranked) < 2:
         return None
 
-    try:
-        from crossover_compat import is_crossover_pair_blocked
-    except Exception:
-        def is_crossover_pair_blocked(_parent_a, _parent_b):
-            return False
+    if isinstance(selection_view, SelectionView):
+        def is_crossover_pair_blocked(parent_a, parent_b):
+            return tuple(sorted((int(parent_a), int(parent_b)))) in selection_view.blocked_pairs
+    else:
+        try:
+            from crossover_compat import is_crossover_pair_blocked
+        except Exception:
+            def is_crossover_pair_blocked(_parent_a, _parent_b):
+                return False
 
     skipped_blocked_pairs = []
     skipped_seen = set()
@@ -1460,7 +2195,7 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
     vb = None
 
     selection_modes = []
-    if archive:
+    if archive or map_niches:
         selection_modes.append({"require_gap": True, "require_niche": True})
     for mode in selection_modes:
         for candidate_a in ranked:

@@ -215,6 +215,25 @@ def h2h_coverage(h2h_data: dict[str, Any], active_bots: list[str] | set[str] | t
     }
 
 
+def filter_h2h_to_active(
+    h2h_data: dict[str, Any] | None,
+    active_bots: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    """Return only valid H2H rows whose two endpoints are currently active."""
+    active = set(active_bots or [])
+    filtered = {}
+    for key, entry in (h2h_data or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        parts = [part.strip() for part in str(key).split(" vs ")]
+        if len(parts) != 2 or parts[0] == parts[1]:
+            continue
+        if parts[0] not in active or parts[1] not in active:
+            continue
+        filtered[str(key)] = entry
+    return filtered
+
+
 def choose_h2h_source(
     active_bots: list[str] | set[str] | tuple[str, ...],
     stored_h2h: dict[str, Any] | None,
@@ -222,7 +241,7 @@ def choose_h2h_source(
 ) -> dict[str, Any]:
     """Choose stored H2H or rebuilt match-history H2H by active-pool coverage."""
     active = list(active_bots or [])
-    stored = stored_h2h or {}
+    stored = filter_h2h_to_active(stored_h2h, active)
     stored_cov = h2h_coverage(stored, active)
     rebuilt = reconstruct_h2h_from_match_history(active, match_history_path)
     rebuilt_cov = h2h_coverage(rebuilt, active)
@@ -351,13 +370,24 @@ def build_strength_rows(
     stored_h2h: dict[str, Any] | None = None,
     active_bots: list[str] | set[str] | tuple[str, ...] | None = None,
     match_history_path: Path | str | None = None,
+    *,
+    h2h_is_authoritative: bool = False,
 ) -> list[dict[str, Any]]:
     """Return dashboard-ready rows sorted by composite leaderboard strength."""
     if not ratings_data:
         return []
     active = list(active_bots or ratings_data.keys())
     active = [name for name in active if name in ratings_data]
-    selected = choose_h2h_source(active, stored_h2h or {}, match_history_path)
+    if h2h_is_authoritative:
+        frozen_h2h = filter_h2h_to_active(stored_h2h or {}, active)
+        frozen_coverage = h2h_coverage(frozen_h2h, active)
+        selected = {
+            "h2h": frozen_h2h,
+            "source": "head_to_head_committed_cycle",
+            "coverage": frozen_coverage,
+        }
+    else:
+        selected = choose_h2h_source(active, stored_h2h or {}, match_history_path)
     h2h = selected["h2h"]
     coverage_meta = selected["coverage"]
     opponents_total = max(0, len(active) - 1)

@@ -2353,64 +2353,21 @@ async def run_crossover(args):
                 },
             )
         if not compat.get("compatible", True):
-            log_system_event("pipeline.crossover_incompatible", "warn",
-                             f"Parents v{parent_a}×v{parent_b} may be incompatible: {compat.get('conflict_areas', [])[:3]}",
-                             {"parent_a": parent_a, "parent_b": parent_b, "compat": compat})
-            if compat.get("compatibility_score", 10) <= 3:
-                try:
-                    from crossover_compat import record_incompatible_crossover
-                    incompat_record = record_incompatible_crossover(
-                        parent_a,
-                        parent_b,
-                        target_v=target_v,
-                        compatibility=compat,
-                    )
-                except Exception as record_exc:
-                    incompat_record = {"record_error": f"{type(record_exc).__name__}: {record_exc}"}
-                    _log.warning("Failed to record incompatible crossover pair: %s", record_exc)
-
-                try:
-                    from tool_bot_management import _do_abandon_generation
-                    abandon_result = await _do_abandon_generation(
-                        reason=f"crossover_incompatible:v{parent_a}xv{parent_b}"
-                    )
-                except Exception as abandon_exc:
-                    abandon_result = {
-                        "abandoned": False,
-                        "reason": f"{type(abandon_exc).__name__}: {abandon_exc}",
-                    }
-                    _log.warning("Failed to abandon incompatible crossover generation: %s", abandon_exc)
-
-                log_system_event(
-                    "pipeline.crossover_incompatible_abandoned",
-                    "warn" if abandon_result.get("abandoned") else "error",
-                    f"Crossover v{parent_a}×v{parent_b} rejected as incompatible for v{target_v}",
-                    {
-                        "target_v": target_v,
-                        "parent_a": parent_a,
-                        "parent_b": parent_b,
-                        "compat": compat,
-                        "incompat_record": incompat_record,
-                        "abandon_result": abandon_result,
-                    },
-                )
-                return _json_tool_result({
-                    "error": "CROSSOVER_INCOMPATIBLE",
-                    "success": False,
-                    "abandoned": bool(abandon_result.get("abandoned")),
-                    "directive": (
-                        f"Parents v{parent_a} and v{parent_b} are fundamentally incompatible "
-                        f"(score={compat.get('compatibility_score')}). This pair has been recorded "
-                        "and the generation was abandoned; let prepare_generation select a fresh "
-                        "generation and avoid this pair."
-                    ),
-                    "message": f"Parents v{parent_a} and v{parent_b} are fundamentally incompatible.",
-                    "conflicts": compat.get("conflict_areas", [])[:8],
-                    "suggestion": compat.get("suggested_merge_approach", "Select different parents."),
-                    "compatibility": compat,
-                    "incompat_record": incompat_record,
-                    "abandon_result": abandon_result,
-                })
+            # Weak-model compatibility judgement is merge advice only. A single
+            # speculative score must never permanently block a parent pair or
+            # abandon a generation; deterministic artifact/capability conflicts
+            # and actual gate failures own those state transitions.
+            log_system_event(
+                "pipeline.crossover_compatibility_advisory",
+                "warn",
+                f"Advisory compatibility concerns for v{parent_a}×v{parent_b}",
+                {
+                    "parent_a": parent_a,
+                    "parent_b": parent_b,
+                    "compat": compat,
+                    "control_effect": "merge_guidance_only",
+                },
+            )
     except Exception as e:
         _log.warning("Crossover compat audit error (skipping): %s", e)
 
@@ -2583,7 +2540,7 @@ async def run_crossover(args):
         prepared_architecture_policy = architecture_policy
         if isinstance(architecture_policy, dict):
             try:
-                from evidence_snapshot import ensure_generation_h2h_snapshot
+                from evidence_snapshot import load_generation_snapshot_identity
                 from prepared_baseline_contract import (
                     build_prepared_baseline_contract,
                 )
@@ -2592,7 +2549,7 @@ async def run_crossover(args):
                     build_prepared_capability_snapshot,
                 )
 
-                h2h_identity = ensure_generation_h2h_snapshot(target_v)
+                h2h_identity = load_generation_snapshot_identity(target_v)
                 if not h2h_identity.get("available"):
                     raise RuntimeError(
                         "generation H2H snapshot unavailable: "

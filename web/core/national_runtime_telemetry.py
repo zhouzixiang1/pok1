@@ -8,12 +8,13 @@ useful without treating the official EXE as a strength evaluator.
 
 from __future__ import annotations
 
+import json
 import re
 import statistics
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DECISION_BUDGET_SEC = 60.0
 
 DECIDE_START_RE = re.compile(
@@ -49,6 +50,7 @@ DEADLINE_TERMINATION_RE = re.compile(
     r"DECIDE (?P<termination>refinement_deadline|hard_deadline) "
     r"decision_id=(?P<decision_id>\d+)"
 )
+OPPONENT_TRACKER_PREFIX = "OPPONENT_TRACKER "
 
 
 def _optional_number(value: str, caster):
@@ -172,6 +174,11 @@ def empty_bot_log_summary() -> dict[str, Any]:
         "refinement": _empty_refinement_summary(),
         "send_count": 0,
         "exception_count": 0,
+        "opponent_tracker": {
+            "available": False,
+            "snapshot_count": 0,
+            "latest": None,
+        },
     }
 
 
@@ -184,7 +191,18 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
     deadline_terminations: list[dict[str, Any]] = []
     pending: dict[str, Any] | None = None
     exceptions = 0
+    opponent_tracker_snapshots: list[dict[str, Any]] = []
     for line in log_text.splitlines():
+        marker_index = line.find(OPPONENT_TRACKER_PREFIX)
+        if marker_index >= 0:
+            raw = line[marker_index + len(OPPONENT_TRACKER_PREFIX):].strip()
+            try:
+                snapshot = json.loads(raw)
+            except Exception:
+                snapshot = None
+            if isinstance(snapshot, dict):
+                opponent_tracker_snapshots.append(snapshot)
+            continue
         refinement = REFINEMENT_RE.search(line)
         if refinement:
             reported_tail = refinement.group("reported_tail") or ""
@@ -371,6 +389,15 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
         },
         "send_count": len(sends),
         "exception_count": exceptions,
+        "opponent_tracker": {
+            "available": bool(opponent_tracker_snapshots),
+            "snapshot_count": len(opponent_tracker_snapshots),
+            "latest": (
+                opponent_tracker_snapshots[-1]
+                if opponent_tracker_snapshots
+                else None
+            ),
+        },
     }
 
 

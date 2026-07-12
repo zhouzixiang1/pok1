@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import uuid
 from typing import Any, Iterator
 
 from bot_artifact import canonical_digest
@@ -20,7 +21,7 @@ from workflow_profiles import get_workflow_profile
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_NAME = "evaluation_data_manifest.json"
-IDENTITY_SCHEMA_VERSION = 1
+IDENTITY_SCHEMA_VERSION = 2
 PROFILE_ID = "national-native-rating-authority-v2-current-runtime-overlay"
 SEMANTIC_PATHS = (
     "sever/engine/deck.py",
@@ -30,6 +31,7 @@ SEMANTIC_PATHS = (
     "sever/server/protocol.py",
     "web/core/glicko2.py",
     "web/core/elo_daemon.py",
+    "web/core/evaluation_bundle.py",
     "web/core/evolution_infra.py",
     "web/core/national_bot_launcher.py",
     "web/core/national_game_runtime.py",
@@ -49,6 +51,11 @@ AUTHORITATIVE_FILES = (
     "daemon_stats.json",
     "match_history.jsonl",
     "rating_history.jsonl",
+    "selection_snapshot.json",
+    "evaluation_cycle_manifest.json",
+)
+AUTHORITATIVE_DIRS = (
+    "evaluation_cycles",
 )
 GENERATION_DIR_RE = re.compile(r"v[0-9]+")
 GENERATION_EVIDENCE_DIR = "evidence_snapshot"
@@ -113,7 +120,42 @@ def _has_authoritative_payload(results_dir: Path) -> bool:
     return any(
         (results_dir / name).is_file() and (results_dir / name).stat().st_size > 0
         for name in AUTHORITATIVE_FILES
+    ) or any(
+        (results_dir / name).is_dir()
+        and any((results_dir / name).iterdir())
+        for name in AUTHORITATIVE_DIRS
     )
+
+
+def _initialize_identity_locked(
+    root: Path,
+    expected: dict[str, Any],
+    *,
+    runtime_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "schema_version": IDENTITY_SCHEMA_VERSION,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "identity_instance_id": uuid.uuid4().hex,
+        "base_identity": expected,
+        "runtime_profile": runtime_profile,
+    }
+    payload["manifest_digest"] = canonical_digest(payload)
+    path = manifest_path(root)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    with temporary.open("rb") as stream:
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+    directory_fd = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return payload
 
 
 def ensure_evaluation_data_identity(
@@ -131,20 +173,11 @@ def ensure_evaluation_data_identity(
                     "authoritative rating data has no evaluation identity; "
                     "archive it with scripts/evaluation_data_identity.py before restart"
                 )
-            payload = {
-                "schema_version": IDENTITY_SCHEMA_VERSION,
-                "created_at": datetime.now().isoformat(timespec="seconds"),
-                "base_identity": expected,
-                "runtime_profile": runtime_profile,
-            }
-            payload["manifest_digest"] = canonical_digest(payload)
-            temporary = path.with_suffix(path.suffix + ".tmp")
-            temporary.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            return _initialize_identity_locked(
+                root,
+                expected,
+                runtime_profile=runtime_profile,
             )
-            temporary.replace(path)
-            return payload
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
@@ -225,14 +258,16 @@ def archive_and_initialize(
     # authoritative payload.  A broken CLI environment must fail while the old
     # ratings are still intact, rather than leaving a complete archive but no
     # replacement manifest.
-    base_evaluation_identity()
+    from evaluation_bundle import evaluation_cycle_lock
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     destination = root / "archive" / "evaluation_identity" / timestamp
-    with _manifest_lock(root):
+    expected_identity = base_evaluation_identity()
+    with evaluation_cycle_lock(root, exclusive=True), _manifest_lock(root):
         generation_snapshots = _generation_evidence_snapshots(root)
         destination.mkdir(parents=True, exist_ok=False)
         moved: list[str] = []
-        for name in (*AUTHORITATIVE_FILES, MANIFEST_NAME):
+        for name in (*AUTHORITATIVE_FILES, *AUTHORITATIVE_DIRS, MANIFEST_NAME):
             source = root / name
             if source.exists():
                 shutil.move(str(source), str(destination / name))
@@ -251,7 +286,7 @@ def archive_and_initialize(
             }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    manifest = ensure_evaluation_data_identity(root)
+        manifest = _initialize_identity_locked(root, expected_identity)
     return {
         "archive_dir": str(destination),
         "moved": moved,

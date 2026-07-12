@@ -249,8 +249,21 @@ class TestRunMasterIdempotent:
 
     @pytest.fixture(autouse=True)
     def _architecture_source_fixture(self, monkeypatch, tmp_path):
+        import evidence_snapshot
         from prepared_baseline_contract import build_prepared_artifact_contract
         import tool_planning
+
+        snapshot_identity = {
+            "available": True,
+            "manifest_digest": "m" * 64,
+            "sha256": "h" * 64,
+            "cycle": {"manifest_digest": "c" * 64, "save_num": 1},
+        }
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_snapshot_identity",
+            lambda _version: dict(snapshot_identity),
+        )
 
         def bind_prepared_artifact(checkpoint):
             source_v = int(checkpoint["source_v"])
@@ -272,13 +285,23 @@ class TestRunMasterIdempotent:
                 "get_bot_dir",
                 lambda version: bot_dirs[int(version)],
             )
-            checkpoint.setdefault("audit_context", {})[
-                "prepared_artifact_contract"
-            ] = build_prepared_artifact_contract(
+            audit_context = checkpoint.setdefault("audit_context", {})
+            audit_context["prepared_artifact_contract"] = build_prepared_artifact_contract(
                 bot_dirs[next_v],
                 source_v=source_v,
                 next_v=next_v,
             )
+            audit_context["selection"] = {
+                "h2h_snapshot_manifest_digest": snapshot_identity["manifest_digest"],
+                "h2h_snapshot_sha256": snapshot_identity["sha256"],
+                "evaluation_evidence": {
+                    "cutoffs": {
+                        "cycle_manifest_digest": snapshot_identity["cycle"][
+                            "manifest_digest"
+                        ],
+                    },
+                },
+            }
             return checkpoint
 
         self._bind_prepared_artifact = bind_prepared_artifact
@@ -339,9 +362,19 @@ class TestRunMasterIdempotent:
         (idempotency guard does NOT block fresh calls)."""
         import tool_planning
 
-        # No matching checkpoint — guard should NOT intercept
-        monkeypatch.setattr(tool_planning, "_matching_checkpoint",
-                            lambda nv, sv: None)
+        fresh_checkpoint = {
+            "next_v": 200,
+            "source_v": 199,
+            "stage": "direction_audited",
+            "master_plan": None,
+            "direction_audit": {"repetition_detected": False},
+        }
+        self._bind_prepared_artifact(fresh_checkpoint)
+        monkeypatch.setattr(
+            tool_planning,
+            "_matching_checkpoint",
+            lambda _nv, _sv: fresh_checkpoint,
+        )
 
         call_log = []
         fresh_plan = {"tasks": [], "analysis": "fresh"}
@@ -485,6 +518,7 @@ class TestRunMasterIdempotent:
         monkeypatch,
     ):
         import audit_agents
+        import evidence_snapshot
         import prepared_baseline_contract
         import tool_planning
 
@@ -531,6 +565,16 @@ class TestRunMasterIdempotent:
             lambda *_a, **_k: [],
         )
         monkeypatch.setattr(audit_agents, "_run_master_plan_audit", fake_audit)
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_snapshot_identity",
+            lambda _v: {
+                "available": True,
+                "manifest_digest": "m" * 64,
+                "sha256": "h" * 64,
+                "cycle": {"manifest_digest": "c" * 64, "save_num": 1},
+            },
+        )
 
         response = client.post(
             "/api/control/tool/run_master",

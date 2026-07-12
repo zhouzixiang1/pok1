@@ -2402,6 +2402,17 @@ class NativeNationalBot:
                 record["opponent_cards"],
                 record["public_cards"],
             )
+            # Official/local ordering is earnChips followed by oppo_hands. The
+            # settlement snapshot above therefore precedes showdown learning;
+            # emit again so the final hand's revealed range is not lost.
+            _log(
+                "OPPONENT_TRACKER "
+                + json.dumps(
+                    self._opponent_tracker.snapshot(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return
 
         action_type, amount = _parse_action(line)
@@ -3065,6 +3076,100 @@ def _parse_decision_trace(stderr_text: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _compact_native_hand_records(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compile native engine events into bounded, replay-safe per-hand facts."""
+    hands: dict[int, dict[str, Any]] = {}
+    pending_requests: dict[tuple[int, int, str], list[dict[str, Any]]] = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        try:
+            hand = int(event.get("hand", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if hand <= 0:
+            continue
+        row = hands.setdefault(hand, {
+            "hand": hand,
+            "sb_idx": None,
+            "bb_idx": None,
+            "hole_cards": [[], []],
+            "board": [],
+            "actions": [],
+            "starting_pot": 150,
+            "settlement": None,
+        })
+        event_type = event.get("type")
+        if event_type == "hand_start":
+            row["sb_idx"] = event.get("sb_idx")
+            row["bb_idx"] = event.get("bb_idx")
+            row["starting_pot"] = int(event.get("pot", 150) or 150)
+        elif event_type == "cards_dealt":
+            cards = event.get("hole_cards")
+            if isinstance(cards, list) and len(cards) == 2:
+                row["hole_cards"] = cards
+        elif event_type == "stage":
+            cards = event.get("cards") or []
+            if isinstance(cards, list):
+                row["board"].extend(str(card) for card in cards)
+        elif event_type == "action_requested":
+            try:
+                player_idx = int(event.get("player_idx"))
+            except (TypeError, ValueError):
+                continue
+            stage = str(event.get("stage") or "unknown")
+            pending_requests.setdefault((hand, player_idx, stage), []).append({
+                "pot_before": event.get("pot"),
+                "player_bets_before": event.get("player_bets"),
+                "timeout_budget_sec": event.get("timeout_budget_sec"),
+            })
+        elif event_type == "action":
+            try:
+                player_idx = int(event.get("player_idx"))
+            except (TypeError, ValueError):
+                player_idx = event.get("player_idx")
+            stage = str(event.get("stage") or "unknown")
+            queue = pending_requests.get((hand, player_idx, stage)) or []
+            request = queue.pop(0) if queue else {}
+            if not queue:
+                pending_requests.pop((hand, player_idx, stage), None)
+            pot_before = request.get("pot_before")
+            pot_after = event.get("pot")
+            # Check/fold/timeout events do not carry an engine-side post-action
+            # pot.  Their legal action commits no chips, so the request pot is
+            # also the truthful post-action pot.
+            if pot_after is None:
+                pot_after = pot_before
+            row["actions"].append({
+                "player_idx": player_idx,
+                "stage": stage,
+                "action": str(event.get("action") or "unknown"),
+                "amount": event.get("amount"),
+                "pot_before": pot_before,
+                "pot_after": pot_after,
+                "player_bets_before": request.get("player_bets_before"),
+                "decision_wait_sec": event.get("decision_wait_sec"),
+                "timeout_budget_sec": request.get(
+                    "timeout_budget_sec", event.get("timeout_budget_sec")
+                ),
+            })
+        elif event_type == "settle":
+            row["settlement"] = {
+                key: event.get(key)
+                for key in (
+                    "earnings", "pot", "is_showdown", "winner_idx", "reason",
+                    "sb_cards", "bb_cards", "community", "sb_hand", "bb_hand",
+                )
+            }
+            if event.get("community"):
+                row["board"] = list(event.get("community") or [])
+    return [
+        hands[hand]
+        for hand in sorted(hands)
+        if isinstance(hands[hand].get("settlement"), dict)
+    ]
+
+
 def _safe_label_fragment(label: str) -> str:
     safe = "".join(
         char if char.isascii() and (char.isalnum() or char in "_.-") else "_"
@@ -3444,6 +3549,7 @@ async def _run_tcp_server_with_processes(
         "deck_seed_base": deck_seed_base,
         "bot_seed_base": bot_seed_base,
         "settlements": settlements,
+        "hand_records": _compact_native_hand_records(events),
         "passed_compliance": not issues,
         "issues": issues,
         "events_tail": events[-20:],

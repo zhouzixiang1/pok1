@@ -141,3 +141,115 @@ def test_wait_for_daemon_eval_uses_custom_rd_gate(monkeypatch, tmp_path):
     assert data["reason"] == "rd_threshold"
     assert data["games"] == 12
     assert data["rd_threshold"] == 110
+
+
+def _evaluation_snapshot_bundle(active, *, games=15, rd=108.12):
+    rows = [{
+        "name": name,
+        "selection_score": 0.5,
+        "leaderboard_score": 0.5,
+        "h2h_avg_wr": 0.5,
+        "h2h_games": games,
+        "h2h_opponents": max(0, len(active) - 1),
+        "h2h_opponents_total": max(0, len(active) - 1),
+        "h2h_coverage": 1.0,
+        "strength_confidence": "medium",
+    } for name in active]
+    return {
+        "available": True,
+        "manifest": {
+            "manifest_digest": "g" * 64,
+            "cycle": {
+                "manifest_digest": "c" * 64,
+                "save_num": 7,
+                "daemon_run_id": "run-1",
+                "active_bots": list(active),
+            },
+        },
+        "h2h": {},
+        "bot_stats": {
+            name: {"games": games, "win_rate": 0.5} for name in active
+        },
+        "ratings": {
+            name: {"r": 1460.0, "rd": rd, "sigma": 0.06} for name in active
+        },
+        "selection": {
+            "rows": rows,
+            "rating_history_tail": [],
+        },
+    }
+
+
+def test_post_wait_evidence_uses_manifest_bound_ratings_and_stats(monkeypatch):
+    active = ["national_v111", "national_v142"]
+    monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: list(active))
+    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 142)
+    events = []
+    monkeypatch.setattr(
+        generation_scheduler,
+        "log_system_event",
+        lambda *args: events.append(args),
+    )
+
+    evidence = generation_scheduler._load_post_wait_evaluation_evidence(
+        active_v=142,
+        active_bot_name="national_v142",
+        min_games=24,
+        rd_threshold=110,
+        rd_min_games=12,
+        expected_active_bots=active,
+        snapshot_bundle=_evaluation_snapshot_bundle(active),
+    )
+
+    assert evidence is not None
+    assert evidence.ratings["national_v142"].rd == 108.12
+    assert evidence.bot_stats["national_v142"]["games"] == 15
+    assert evidence.rd == 108.12
+    assert evidence.readiness_reason == "rd_threshold"
+    assert events[-1][0] == "pipeline.eval_evidence_frozen"
+
+
+def test_post_wait_evidence_rejects_published_cycle_that_is_not_ready(monkeypatch):
+    active = ["national_v142"]
+    monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: ["national_v142"])
+    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 142)
+    events = []
+    monkeypatch.setattr(
+        generation_scheduler,
+        "log_system_event",
+        lambda *args: events.append(args),
+    )
+
+    evidence = generation_scheduler._load_post_wait_evaluation_evidence(
+        active_v=142,
+        active_bot_name="national_v142",
+        min_games=24,
+        rd_threshold=110,
+        rd_min_games=12,
+        expected_active_bots=active,
+        snapshot_bundle=_evaluation_snapshot_bundle(active, games=15, rd=350.0),
+    )
+
+    assert evidence is None
+    assert events[-1][0] == "pipeline.eval_evidence_incoherent"
+    assert "post_wait_readiness_not_reproducible" in events[-1][3]["issues"]
+
+
+def test_post_wait_evidence_rejects_active_pool_change_while_loading(monkeypatch):
+    active = ["national_v142"]
+    pools = iter([active, ["national_v141", "national_v142"]])
+    monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: list(next(pools)))
+    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 142)
+    monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *_args: None)
+
+    evidence = generation_scheduler._load_post_wait_evaluation_evidence(
+        active_v=142,
+        active_bot_name="national_v142",
+        min_games=24,
+        rd_threshold=110,
+        rd_min_games=12,
+        expected_active_bots=active,
+        snapshot_bundle=_evaluation_snapshot_bundle(active),
+    )
+
+    assert evidence is None

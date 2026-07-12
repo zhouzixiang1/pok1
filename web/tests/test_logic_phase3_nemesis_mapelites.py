@@ -629,7 +629,7 @@ class TestOpponentProfileInjection:
 # Async end-to-end D test: monkeypatch the analysis capture and verify kwargs.
 class TestOpponentProfileInjectionAsync:
     @pytest.mark.asyncio
-    async def test_injects_profiles_when_file_present(self, monkeypatch, tmp_path):
+    async def test_injects_transposed_profiles_from_frozen_snapshot(self, monkeypatch, tmp_path):
         captured = _CapturedMaster()
         bots, checkpoint = _prepared_master_fixture(tmp_path, 5, 6)
         monkeypatch.setattr(tool_planning, "_run_master_analysis", captured)
@@ -656,27 +656,102 @@ class TestOpponentProfileInjectionAsync:
             return {"overall_pass": True}
         monkeypatch.setattr(audit_agents, "_run_master_plan_audit", _noop_audit)
 
-        # Write a per_opp file.
+        # A contradictory live alias must not influence generation planning.
         import evolution_infra
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
-        per_opp = {
+        live_per_opp = {
             "national_v5": {
-                "national_v3": {
-                    "preflop": {"total": 100, "fold": 20, "call": 40, "raise": 40, "check": 0, "allin": 0, "fold_to_bet": 15, "cbet": 0, "barrel": 0},
-                    "flop": {"total": 80, "fold": 10, "call": 30, "raise": 40, "check": 0, "allin": 0, "fold_to_bet": 5, "cbet": 20, "barrel": 0},
-                    "turn": {"total": 60, "fold": 5, "call": 20, "raise": 35, "check": 0, "allin": 0, "fold_to_bet": 2, "cbet": 0, "barrel": 15},
-                    "river": {"total": 40, "fold": 4, "call": 20, "raise": 16, "check": 0, "allin": 0, "fold_to_bet": 1, "cbet": 0, "barrel": 8},
-                    "total_hands": 50,
+                "live_only_opponent": {
+                    "preflop": {"total": 999, "fold": 999},
                 }
             }
         }
-        (tmp_path / "bot_action_stats_per_opp.json").write_text(json.dumps(per_opp))
-        # h2h for ranking.
-        h2h = {"national_v5 vs national_v3": {"games": 50, "a_wins": 15, "b_wins": 35}}
-        monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
-        monkeypatch.setattr(tool_helpers, "_h2h_stats",
-                            lambda bot, opp, _h: ({"win_rate": 0.3, "games": 50} if opp == "national_v3" else None))
+        (tmp_path / "bot_action_stats_per_opp.json").write_text(json.dumps(live_per_opp))
+        monkeypatch.setattr(
+            tool_helpers,
+            "_load_h2h_data",
+            lambda: {
+                "national_v5 vs live_only_opponent": {
+                    "games": 999,
+                    "a_wins": 0,
+                    "b_wins": 999,
+                },
+            },
+        )
 
+        # Outer key is the tracked bot.  national_v5's runtime observed the
+        # opponent, so the frozen source→opponent evidence is [v3][v5].
+        tracked_v3 = {
+            "preflop": {"total": 100, "fold": 20, "call": 40, "raise": 40, "check": 0, "allin": 0, "fold_to_bet": 0, "cbet": 0, "barrel": 0},
+            "flop": {"total": 80, "fold": 10, "call": 30, "raise": 40, "check": 0, "allin": 0, "fold_to_bet": 0, "cbet": 0, "barrel": 0},
+            "turn": {"total": 60, "fold": 5, "call": 20, "raise": 35, "check": 0, "allin": 0, "fold_to_bet": 0, "cbet": 0, "barrel": 0},
+            "river": {"total": 40, "fold": 4, "call": 20, "raise": 16, "check": 0, "allin": 0, "fold_to_bet": 0, "cbet": 0, "barrel": 0},
+            "total_hands": 50,
+            "opponent_tracker": {
+                "source": "national_native_opponent_tracker",
+                "semantic_street_actions": {
+                    "preflop": {"fold": 20, "call": 10, "check": 0, "pass": 30, "raise": 40, "allin": 0},
+                    "flop": {"fold": 10, "call": 20, "check": 10, "pass": 0, "raise": 40, "allin": 0},
+                    "turn": {"fold": 5, "call": 15, "check": 5, "pass": 0, "raise": 35, "allin": 0},
+                    "river": {"fold": 4, "call": 12, "check": 4, "pass": 4, "raise": 16, "allin": 0},
+                },
+                "terminal_response": {
+                    "fold_to_raise": 0.25,
+                    "fold_to_jam": 0.5,
+                    "river_overcall": 0.75,
+                    "river_overcall_samples": 8,
+                    "facing_raise": {"opportunities": 20},
+                    "facing_allin": {"opportunities": 4},
+                },
+                "showdown_range": {
+                    "samples": 3,
+                    "bucket_counts": {"premium_pair": 2, "broadway": 1},
+                },
+            },
+        }
+        tracked_v4_sparse = json.loads(json.dumps(tracked_v3))
+        tracked_v4_sparse["preflop"]["total"] = 500
+        tracked_v4_sparse["preflop"]["call"] = 500
+        frozen = {
+            "available": True,
+            "selection": {"active_bots": ["national_v3", "national_v4", "national_v5"]},
+            "h2h": {
+                "national_v3 vs national_v5": {
+                    "games": 50,
+                    "a_wins": 35,
+                    "b_wins": 15,
+                    "draws": 0,
+                },
+                "national_v4 vs national_v5": {
+                    "games": 1,
+                    "a_wins": 1,
+                    "b_wins": 0,
+                    "draws": 0,
+                },
+            },
+            "action_stats": {
+                "national_v5": {
+                    "opponent_trackers": {
+                        "national_v3": {
+                            "semantic_street_actions": {
+                                "preflop": {"fold": 0, "call": 1, "check": 0, "pass": 9, "raise": 0, "allin": 0},
+                            },
+                        },
+                    },
+                },
+            },
+            "action_stats_per_opp": {
+                "national_v3": {"national_v5": tracked_v3},
+                "national_v4": {"national_v5": tracked_v4_sparse},
+            },
+            "match_history_index": {"replay_ids": []},
+        }
+        import evidence_snapshot
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: frozen,
+        )
         ui = MagicMock()
         ui.clear_io = MagicMock()
         ui.get_output = lambda: ""
@@ -686,8 +761,21 @@ class TestOpponentProfileInjectionAsync:
         assert len(captured.calls) == 1
         profiles = captured.calls[0].get("opponent_profiles", "")
         assert "national_v3" in profiles
-        assert "AF=" in profiles
-        assert "ftb=" in profiles
+        assert "match_call=10.0%" in profiles
+        assert "pass=30.0%" in profiles
+        assert "h2h_games=50 wins=15 losses=35 draws=0" in profiles
+        assert "sample_class=confirmed_weakness" in profiles
+        assert "h2h_games=1 wins=0 losses=1 draws=0" in profiles
+        assert "sample_class=sparse_advisory" in profiles
+        assert profiles.index("national_v3") < profiles.index("national_v4")
+        assert "fold_to_raise=25.0% (n=20)" in profiles
+        assert "fold_to_jam=50.0% (n=4)" in profiles
+        assert "river_overcall=75.0% (n=8)" in profiles
+        assert 'buckets={"broadway": 1, "premium_pair": 2}' in profiles
+        assert "live_only_opponent" not in profiles
+        source_actions = captured.calls[0].get("bot_action_stats", "")
+        assert "match_call=10.0%" in source_actions
+        assert "pass=90.0%" in source_actions
 
     @pytest.mark.asyncio
     async def test_profiles_empty_when_file_missing(self, monkeypatch, tmp_path):
@@ -717,7 +805,20 @@ class TestOpponentProfileInjectionAsync:
         monkeypatch.setattr(audit_agents, "_run_master_plan_audit", _noop_audit)
         import evolution_infra
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
-        # No per_opp file written.
+        import evidence_snapshot
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: {"available": False},
+        )
+        # No frozen evidence is available, even if a mutable alias appeared.
+        (tmp_path / "bot_action_stats_per_opp.json").write_text(json.dumps({
+            "national_v3": {
+                "national_v5": {
+                    "preflop": {"total": 100, "raise": 100},
+                },
+            },
+        }))
         ui = MagicMock()
         ui.clear_io = MagicMock()
         ui.get_output = lambda: ""

@@ -754,7 +754,10 @@ def _timed_formal_action(
         raise TimeoutError("formal_decision_probe_timeout")
 
     old_handler = signal.signal(signal.SIGALRM, alarm)
-    signal.setitimer(signal.ITIMER_REAL, 0.9)
+    watchdog_sec = 0.9
+    if hard_deadline_sec is not None:
+        watchdog_sec = max(watchdog_sec, float(hard_deadline_sec) + 1.0)
+    signal.setitimer(signal.ITIMER_REAL, watchdog_sec)
     try:
         if hard_deadline_sec is not None:
             bot._decision_hard_deadline_sec = float(hard_deadline_sec)
@@ -786,6 +789,7 @@ def _timed_formal_action(
             "source": bot._last_decision_source,
             "runtime_metrics": dict(getattr(bot, "_last_decision_metrics", {}) or {}),
             "hand_runtime": hand_runtime,
+            "worker_seed": getattr(bot, "_strategy_worker_seed", None),
         }
     finally:
         try:
@@ -1159,21 +1163,36 @@ def _probe_decision_runtime(
         )
         _native, short_bot = _new_native_bot(imports)
         _native, long_bot = _new_native_bot(imports)
+        fixed_worker_seed = 20260710
+        short_bot._strategy_base_seed = fixed_worker_seed
+        long_bot._strategy_base_seed = fixed_worker_seed
         short_bot._ensure_strategy_worker()
         long_bot._ensure_strategy_worker()
+        # Sample one real multi-fidelity stratum.  The broad probe matrix stays
+        # sub-second, but source/candidate strength matches otherwise run near a
+        # two-second local ceiling and could never reveal useful anytime work
+        # after that cutoff.  A fixed 2s control versus an 8s treatment records
+        # the final sanitized action plus system-observed work/CPU/elapsed facts
+        # without paying a 55s cost on every scenario.
+        short_budget = {
+            "hard_deadline_sec": 2.0,
+            "baseline_target_sec": 0.20,
+            "refinement_budget_sec": 1.8,
+        }
+        long_budget = {
+            "hard_deadline_sec": 8.0,
+            "baseline_target_sec": 0.20,
+            "refinement_budget_sec": 7.5,
+        }
         short_action = _timed_formal_action(
             short_bot,
             scaling_scenario,
-            hard_deadline_sec=0.18,
-            baseline_target_sec=0.05,
-            refinement_budget_sec=0.08,
+            **short_budget,
         )
         long_action = _timed_formal_action(
             long_bot,
             scaling_scenario,
-            hard_deadline_sec=0.68,
-            baseline_target_sec=0.05,
-            refinement_budget_sec=0.55,
+            **long_budget,
         )
 
         def final_progress(action):
@@ -1196,14 +1215,26 @@ def _probe_decision_runtime(
                     metrics.get("refinement_action_changes") or 0
                 ),
                 "wire": action.get("wire"),
+                "worker_seed": action.get("worker_seed"),
             }
 
         short_progress = final_progress(short_action)
         long_progress = final_progress(long_action)
         result["budget_scaling"] = {
+            "probe_kind": "sampled_multifidelity_2s_vs_8s",
+            "short_budget": short_budget,
+            "long_budget": long_budget,
             "short": short_progress,
             "long": long_progress,
+            "worker_seed_equal": (
+                short_progress["worker_seed"] is not None
+                and short_progress["worker_seed"] == long_progress["worker_seed"]
+            ),
         }
+        if short_progress["worker_seed"] != long_progress["worker_seed"]:
+            result["refinement_issues"].append(
+                "multifidelity_worker_seed_mismatch"
+            )
         if long_progress["trusted_steps"] < 8:
             result["refinement_issues"].append("long_budget_refinement_has_no_bounded_work")
         if long_progress["trusted_elapsed_ms"] < 5.0:
@@ -1230,8 +1261,14 @@ def _probe_decision_runtime(
             )
         result["refinement_evidence"].append({
             "scenario_id": scaling_scenario["id"],
+            "probe_kind": "sampled_multifidelity_2s_vs_8s",
+            "short_budget": short_budget,
+            "long_budget": long_budget,
             "short": short_progress,
             "long": long_progress,
+            "final_sanitized_action_changed": (
+                short_progress["wire"] != long_progress["wire"]
+            ),
             "candidate_reported_metadata_is_non_authoritative": True,
         })
     except BaseException as exc:

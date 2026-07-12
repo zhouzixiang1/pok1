@@ -108,16 +108,17 @@ def test_combined_analysis_accepts_frozen_h2h_snapshot(monkeypatch):
             "selection_score": 0.5,
             "leaderboard_score": 0.5,
             "h2h_avg_wr": 0.5,
-            "opponent_coverage": 1.0,
-            "opponents_evaluated": 1,
-            "opponents_total": 1,
+            "h2h_coverage": 1.0,
+            "h2h_opponents": 1,
+            "h2h_opponents_total": 1,
+            "h2h_games": 20,
         }]
 
     monkeypatch.setattr(rating_snapshot, "build_strength_rows", fake_strength_rows)
     monkeypatch.setattr(
         combined_analyst,
         "_statistical_stagnation_check",
-        lambda *_args: (False, "high", 25.0),
+        lambda *_args, **_kwargs: (False, "high", 25.0),
     )
 
     frozen_h2h = {
@@ -141,6 +142,47 @@ def test_combined_analysis_accepts_frozen_h2h_snapshot(monkeypatch):
     assert captured["h2h_data"] == frozen_h2h
     assert captured["active_bots"] == ["national_v142"]
     assert captured["match_history_path"] == Path("/dev/null")
+
+
+def test_combined_analysis_frozen_rows_preserve_real_low_coverage(monkeypatch):
+    """Canonical h2h_* fields must not degrade to the old 0/0=100% default."""
+    import asyncio
+    import combined_analyst
+    from glicko2 import Glicko2Player
+
+    async def must_not_call_llm(*_args, **_kwargs):
+        raise AssertionError("low-coverage frozen evidence must stop before the LLM")
+
+    monkeypatch.setattr(combined_analyst, "run_claude_query", must_not_call_llm)
+    active = ["national_v140", "national_v141", "national_v142"]
+    ratings = {
+        name: Glicko2Player(r=1500.0, rd=90.0, sigma=0.06) for name in active
+    }
+    frozen_h2h = {
+        "national_v140 vs national_v142": {
+            "games": 15,
+            "a_wins": 7,
+            "b_wins": 8,
+            "draws": 0,
+        }
+    }
+    frozen_stats = {
+        "national_v142": {"games": 15, "win_rate": 8 / 15},
+    }
+
+    result = asyncio.run(
+        combined_analyst._run_combined_analysis(
+            source_v=142,
+            active_bots=active,
+            ratings=ratings,
+            ui=None,
+            h2h_data=frozen_h2h,
+            bot_stats_data=frozen_stats,
+        )
+    )
+
+    assert result["confidence"] == "low"
+    assert "Insufficient opponent coverage: 1/2 (50%)" in result["reason"]
 
 
 class _FakeRating:
@@ -175,8 +217,8 @@ def test_E2_oscillation_forces_crossover_when_leader_outside_set(monkeypatch):
 
     monkeypatch.setattr(gs, "_read_source_v_history",
                         lambda: [30, 31, 32, 30, 31, 32, 30, 31])
-    monkeypatch.setattr(gs, "_active_source_versions", lambda: {30, 31, 32, 40})
-    monkeypatch.setattr(gs, "_get_unified_leader_v", lambda _ratings: 40)
+    monkeypatch.setattr(gs, "_active_source_versions", lambda *_args: {30, 31, 32, 40})
+    monkeypatch.setattr(gs, "_get_unified_leader_v", lambda *_args: 40)
     monkeypatch.setattr(gs, "_pick_oscillation_breakout_source", lambda *_args: None)
     ratings = {
         "national_v30": _FakeRating(1300.0),

@@ -1459,6 +1459,53 @@ def _build_generation_architecture_policy(
     return {"outcome": "passed", "policy": policy, "capabilities": capabilities}
 
 
+def _master_snapshot_binding_errors(checkpoint, next_v):
+    """Verify every post-selection Master read uses the selected cutoff."""
+    if not isinstance(checkpoint, dict):
+        return ["master_checkpoint_missing"]
+    audit_context = checkpoint.get("audit_context") or {}
+    selection = audit_context.get("selection") or {}
+    formal_binding = bool(
+        audit_context.get("master_context") is not None
+        or selection.get("evaluation_evidence") is not None
+        or selection.get("h2h_snapshot_manifest_digest")
+    )
+    if not formal_binding:
+        # Legacy fixtures/checkpoints have no selected-evidence contract. The
+        # strict downstream loader still cannot create a replacement cutoff.
+        return []
+    try:
+        from evidence_snapshot import load_generation_snapshot_identity
+
+        snapshot = load_generation_snapshot_identity(next_v)
+    except Exception as exc:
+        return [f"generation_snapshot_read_failed:{type(exc).__name__}"]
+    if not snapshot.get("available"):
+        return [
+            "generation_snapshot_unavailable:"
+            f"{snapshot.get('reason', 'unknown')}"
+        ]
+    errors = []
+    expected_manifest = str(selection.get("h2h_snapshot_manifest_digest") or "")
+    expected_sha = str(selection.get("h2h_snapshot_sha256") or "")
+    evidence_cutoffs = (selection.get("evaluation_evidence") or {}).get("cutoffs") or {}
+    expected_cycle = str(evidence_cutoffs.get("cycle_manifest_digest") or "")
+    if not expected_manifest:
+        errors.append("checkpoint_snapshot_manifest_digest_missing")
+    elif expected_manifest != str(snapshot.get("manifest_digest") or ""):
+        errors.append("checkpoint_snapshot_manifest_digest_mismatch")
+    if not expected_sha:
+        errors.append("checkpoint_snapshot_h2h_sha256_missing")
+    elif expected_sha != str(snapshot.get("sha256") or ""):
+        errors.append("checkpoint_snapshot_h2h_sha256_mismatch")
+    actual_cycle = str((snapshot.get("cycle") or {}).get("manifest_digest") or "")
+    if not expected_cycle:
+        errors.append("checkpoint_cycle_manifest_digest_missing")
+    elif expected_cycle != actual_cycle:
+        errors.append("checkpoint_cycle_manifest_digest_mismatch")
+    return errors
+
+
 @tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str, "direction_audit": str, "research_proposals": str})
 async def run_master(args):
     _t0 = time.time()
@@ -1705,6 +1752,34 @@ async def run_master(args):
                 },
             )
 
+    _snapshot_binding_errors = _master_snapshot_binding_errors(
+        _master_entry_ckpt,
+        next_v,
+    )
+    if _snapshot_binding_errors:
+        log_system_event(
+            "pipeline.master_snapshot_binding_invalid",
+            "error",
+            f"Master v{next_v} blocked by generation evidence drift",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "errors": _snapshot_binding_errors,
+            },
+        )
+        return _json_tool_result({
+            "error": "GENERATION_EVIDENCE_BINDING_INVALID",
+            "next_v": next_v,
+            "source_v": source_v,
+            "validation_errors": _snapshot_binding_errors,
+            "next_tool": "abandon_generation",
+            "directive": (
+                "The selected generation snapshot is missing or no longer matches "
+                "its checkpoint. Do not recreate a cutoff or run Master; abandon "
+                "and re-prepare from a fresh coherent evaluation cycle."
+            ),
+        })
+
     # Literature-probe output is likewise checkpoint-owned.  A caller may pass
     # it for backwards compatibility, but cannot invent or rewrite research in
     # an active checkpoint.
@@ -1811,9 +1886,9 @@ async def run_master(args):
             verify_live_content=True,
         )
         try:
-            from evidence_snapshot import ensure_generation_h2h_snapshot
+            from evidence_snapshot import load_generation_snapshot_identity
 
-            live_h2h_identity = ensure_generation_h2h_snapshot(next_v)
+            live_h2h_identity = load_generation_snapshot_identity(next_v)
             bound_h2h_identity = (
                 prepared_baseline.get("h2h_snapshot_identity")
                 if isinstance(prepared_baseline, dict)
@@ -2135,12 +2210,23 @@ async def run_master(args):
         # to the gen_ctx object. Re-compute from the replay files instead.
         from replay_spotlight import find_critical_hands
         from evolution_infra import RESULTS_DIR
+        from evidence_snapshot import load_generation_evaluation_snapshot
+
+        _replay_evidence = load_generation_evaluation_snapshot(next_v)
+        if not _replay_evidence.get("available"):
+            raise RuntimeError("generation replay evidence unavailable")
         replays_dir = str(RESULTS_DIR / "match_replay")
         replay_spotlight = find_critical_hands(
             bot_name=bot_name(source_v),
             replays_dir=replays_dir,
             max_hands=10,
             recent_n_files=20,
+            allowed_replay_ids=(
+                (_replay_evidence.get("match_history_index") or {}).get(
+                    "replay_ids"
+                )
+                or []
+            ),
         )
     except Exception:
         pass
@@ -2183,20 +2269,52 @@ async def run_master(args):
         except Exception:
             pass
 
-    # --- Read bot_action_stats for Master prompt ---
+    # --- Read frozen action diagnostics for Master prompt ---
+    _master_evaluation = {}
+    try:
+        from evidence_snapshot import load_generation_evaluation_snapshot
+
+        _master_evaluation = load_generation_evaluation_snapshot(next_v)
+        if not _master_evaluation.get("available"):
+            _master_evaluation = {}
+    except Exception:
+        _master_evaluation = {}
     bot_action_stats = ""
     try:
-        from evolution_infra import RESULTS_DIR
-        _stats_file = RESULTS_DIR / "bot_action_stats.json"
-        if _stats_file.exists():
-            with open(_stats_file, "r") as _f:
-                _all_stats = json.load(_f)
+        _all_stats = _master_evaluation.get("action_stats") or {}
+        if _all_stats:
             _source_bot_name = bot_name(source_v)
             _bot_stats = _all_stats.get(_source_bot_name)
             if _bot_stats:
                 # Format as compact text for prompt injection
                 _parts = []
+                _native_trackers = _bot_stats.get("opponent_trackers") or {}
                 for _street in ("preflop", "flop", "turn", "river"):
+                    if _native_trackers:
+                        _semantic = {}
+                        for _tracker in _native_trackers.values():
+                            _counts = (
+                                (_tracker.get("semantic_street_actions") or {}).get(
+                                    _street
+                                )
+                                or {}
+                            )
+                            for _action, _count in _counts.items():
+                                _semantic[_action] = _semantic.get(_action, 0) + int(
+                                    _count or 0
+                                )
+                        _total = sum(_semantic.values())
+                        if _total > 0:
+                            _parts.append(
+                                f"{_street}: fold={_semantic.get('fold', 0)/_total:.1%} "
+                                f"match_call={_semantic.get('call', 0)/_total:.1%} "
+                                f"check={_semantic.get('check', 0)/_total:.1%} "
+                                f"pass={_semantic.get('pass', 0)/_total:.1%} "
+                                f"raise={_semantic.get('raise', 0)/_total:.1%} "
+                                f"allin={_semantic.get('allin', 0)/_total:.1%} "
+                                f"(semantic_n={_total})"
+                            )
+                        continue
                     _st = _bot_stats.get(_street)
                     if _st and _st.get("total", 0) > 0:
                         _total = _st["total"]
@@ -2222,48 +2340,98 @@ async def run_master(args):
     # plan opponent-specific adaptations. Advisory: read failure -> "".
     opponent_profiles = ""
     try:
-        from evolution_infra import RESULTS_DIR
-        _per_opp_file = RESULTS_DIR / "bot_action_stats_per_opp.json"
-        if _per_opp_file.exists():
-            with open(_per_opp_file, "r") as _f:
-                _per_opp_all = json.load(_f)
+        _per_opp_all = _master_evaluation.get("action_stats_per_opp") or {}
+        if _per_opp_all:
             _source_bot = bot_name(source_v)
-            _opp_map = _per_opp_all.get(_source_bot, {}) or {}
+            _opp_map = {}
             # Rank opponents by h2h win_rate (most-beaten and most-beating) to
-            # avoid prompt bloat: keep the K most extreme matchups.
+            # avoid prompt bloat: keep the K most extreme matchups. Strength
+            # ordering comes only from the strict generation snapshot; the live
+            # top-level H2H file may have advanced since source selection.
             _h2h_for_rank = {}
             try:
-                from tool_helpers import _load_h2h_data, _h2h_stats
-                _h2h = _load_h2h_data()
+                from tool_helpers import _h2h_stats
+
+                _evaluation = _master_evaluation
+                if not _evaluation.get("available"):
+                    raise RuntimeError("generation evidence snapshot unavailable")
+                _h2h = _evaluation.get("h2h") or {}
+                _active_opponents = set(
+                    (_evaluation.get("selection") or {}).get("active_bots") or []
+                )
+                _opp_map = {
+                    _opp: ((_per_opp_all.get(_opp) or {}).get(_source_bot) or {})
+                    for _opp in _active_opponents
+                    if _opp != _source_bot
+                    and isinstance((_per_opp_all.get(_opp) or {}).get(_source_bot), dict)
+                }
                 for _opp in _opp_map:
                     _st = _h2h_stats(_source_bot, _opp, _h2h)
                     if _st:
-                        _h2h_for_rank[_opp] = _st["win_rate"]
+                        _h2h_for_rank[_opp] = _st
             except Exception:
-                pass
+                # No frozen active-pool/H2H authority means no profile ranking;
+                # do not silently fall back to live or inactive opponents.
+                _opp_map = {}
             _PROFILES_K = 6
-            if _h2h_for_rank:
-                _ranked = sorted(_h2h_for_rank.items(), key=lambda kv: kv[1])
+            _action_sample = lambda _opp: sum(
+                int(_opp_map[_opp].get(_street, {}).get("total", 0) or 0)
+                for _street in ("preflop", "flop", "turn", "river")
+            )
+            _adequate = {
+                _opp: _stats
+                for _opp, _stats in _h2h_for_rank.items()
+                if int(_stats.get("games", 0) or 0) >= 10
+            }
+            if _adequate:
+                _ranked = sorted(
+                    _adequate.items(), key=lambda kv: kv[1]["win_rate"]
+                )
                 _selected = [o for o, _ in _ranked[:_PROFILES_K // 2]]
                 _selected += [o for o, _ in _ranked[-(_PROFILES_K // 2):]]
                 # Dedup while preserving order.
                 _seen = set()
                 _selected = [o for o in _selected if not (o in _seen or _seen.add(o))]
+                if len(_selected) < _PROFILES_K:
+                    _selected.extend(
+                        _opp
+                        for _opp in sorted(
+                            (_opp for _opp in _opp_map if _opp not in _seen),
+                            key=_action_sample,
+                            reverse=True,
+                        )[:_PROFILES_K - len(_selected)]
+                    )
             else:
-                # No h2h signal: fall back to top-K by total actions observed.
+                # No adequate H2H signal: use observation volume, but every H2H
+                # label below remains explicitly sparse/advisory.
                 _selected = sorted(
                     _opp_map,
-                    key=lambda o: sum(
-                        _opp_map[o].get(s, {}).get("total", 0)
-                        for s in ("preflop", "flop", "turn", "river")
-                    ),
+                    key=_action_sample,
                     reverse=True,
                 )[:_PROFILES_K]
             _lines = []
             for _opp in _selected:
                 _ostats = _opp_map.get(_opp, {})
-                _wr = _h2h_for_rank.get(_opp)
-                _wr_str = f" h2h_wr={_wr:.2f}" if _wr is not None else ""
+                _matchup = _h2h_for_rank.get(_opp)
+                _wr_str = " h2h=unobserved"
+                if _matchup is not None:
+                    _games = int(_matchup.get("games", 0) or 0)
+                    _wr = float(_matchup.get("win_rate", 0.5) or 0.5)
+                    _sample_class = (
+                        "confirmed_weakness"
+                        if _games >= 10 and _wr < 0.40
+                        else "confirmed_strength"
+                        if _games >= 10 and _wr > 0.60
+                        else "adequate_context"
+                        if _games >= 10
+                        else "sparse_advisory"
+                    )
+                    _wr_str = (
+                        f" h2h_games={_games} wins={int(_matchup.get('wins', 0) or 0)} "
+                        f"losses={int(_matchup.get('losses', 0) or 0)} "
+                        f"draws={int(_matchup.get('draws', 0) or 0)} "
+                        f"h2h_wr={_wr:.2f} sample_class={_sample_class}"
+                    )
                 _n = (
                     sum(_ostats.get(s, {}).get("total", 0)
                         for s in ("preflop", "flop", "turn", "river"))
@@ -2271,6 +2439,11 @@ async def run_master(args):
                 if _n == 0:
                     continue
                 _street_bits = []
+                _tracker = _ostats.get("opponent_tracker") or {}
+                _is_native_tracker = (
+                    _tracker.get("source")
+                    == "national_native_opponent_tracker"
+                )
                 for _street in ("preflop", "flop", "turn", "river"):
                     _st = _ostats.get(_street, {})
                     _tot = _st.get("total", 0)
@@ -2284,9 +2457,73 @@ async def run_master(args):
                     _barrel = _st.get("barrel", 0)
                     _af = (_raises / _calls) if _calls > 0 else None
                     _af_str = f"{_af:.1f}" if _af is not None else "n/a"
+                    if _is_native_tracker:
+                        _semantic = (
+                            (_tracker.get("semantic_street_actions") or {}).get(
+                                _street
+                            )
+                            or {}
+                        )
+                        _semantic_total = sum(
+                            int(value or 0) for value in _semantic.values()
+                        )
+                        if _semantic_total <= 0:
+                            continue
+                        _street_bits.append(
+                            f"{_street}: fold={int(_semantic.get('fold', 0) or 0)/_semantic_total:.1%} "
+                            f"match_call={int(_semantic.get('call', 0) or 0)/_semantic_total:.1%} "
+                            f"check={int(_semantic.get('check', 0) or 0)/_semantic_total:.1%} "
+                            f"pass={int(_semantic.get('pass', 0) or 0)/_semantic_total:.1%} "
+                            f"raise={int(_semantic.get('raise', 0) or 0)/_semantic_total:.1%} "
+                            f"allin={int(_semantic.get('allin', 0) or 0)/_semantic_total:.1%} "
+                            f"(semantic_n={_semantic_total})"
+                        )
+                    else:
+                        _street_bits.append(
+                            f"{_street}: AF={_af_str} "
+                            f"ftb={_ftb}/{_folds}f cbet={_cbet} "
+                            f"barrel={_barrel} (n={_tot})"
+                        )
+                _terminal = _tracker.get("terminal_response") or {}
+                if _terminal:
+                    _ftr = _terminal.get("fold_to_raise")
+                    _ftj = _terminal.get("fold_to_jam")
+                    _roc = _terminal.get("river_overcall")
+                    _raise_n = int(
+                        (_terminal.get("facing_raise") or {}).get(
+                            "opportunities", 0
+                        )
+                        or 0
+                    )
+                    _jam_n = int(
+                        (_terminal.get("facing_allin") or {}).get(
+                            "opportunities", 0
+                        )
+                        or 0
+                    )
                     _street_bits.append(
-                        f"{_street}: AF={_af_str} "
-                        f"ftb={_ftb}/{_folds}f cbet={_cbet} barrel={_barrel} (n={_tot})"
+                        "terminal: "
+                        f"fold_to_raise={_ftr:.1%} (n={_raise_n}) "
+                        if isinstance(_ftr, (int, float))
+                        else f"terminal: fold_to_raise=unknown (n={_raise_n}) "
+                    )
+                    _street_bits[-1] += (
+                        f"fold_to_jam={_ftj:.1%} (n={_jam_n}) "
+                        if isinstance(_ftj, (int, float))
+                        else f"fold_to_jam=unknown (n={_jam_n}) "
+                    )
+                    _street_bits[-1] += (
+                        f"river_overcall={_roc:.1%} "
+                        f"(n={int(_terminal.get('river_overcall_samples', 0) or 0)})"
+                        if isinstance(_roc, (int, float))
+                        else "river_overcall=unknown"
+                    )
+                _showdown = _tracker.get("showdown_range") or {}
+                if int(_showdown.get("samples", 0) or 0) > 0:
+                    _street_bits.append(
+                        "showdown_range: "
+                        f"samples={int(_showdown.get('samples', 0) or 0)} "
+                        f"buckets={json.dumps(_showdown.get('bucket_counts') or {}, sort_keys=True)}"
                     )
                 if _street_bits:
                     _lines.append(
@@ -2294,8 +2531,8 @@ async def run_master(args):
                     )
             if _lines:
                 opponent_profiles = (
-                    f"Per-opponent behavior profiles for {_source_bot} "
-                    f"(top extreme matchups by h2h win_rate):\n"
+                    f"Opponent behavior observed against {_source_bot} "
+                    f"(adequate frozen H2H extremes first; sparse rows are advisory):\n"
                     + "\n".join(_lines)
                 )
     except Exception:
