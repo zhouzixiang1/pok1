@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -12,7 +13,7 @@ TOOLS = ROOT / "bots" / "neural_national_lab" / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import freeze_opponent_role_dataset as freeze  # noqa: E402
-from longrun_collect_oppmodel import _directory_digest  # noqa: E402
+import longrun_collect_oppmodel as collector  # noqa: E402
 
 
 OPPONENTS = {
@@ -117,6 +118,13 @@ def _collection(tmp_path: Path) -> Path:
     candidate = source / "candidate_snapshot" / "candidate"
     candidate.mkdir(parents=True)
     (candidate / "national_bot.py").write_text("# candidate\n", encoding="utf-8")
+    candidate_digest = collector._directory_digest(candidate)
+    ratings_path = source / "ratings.json"
+    ratings_path.write_text(json.dumps({
+        name: {"r": 1500.0, "rd": 50.0, "sigma": 0.06, "last_period": "x"}
+        for name in SOURCE_SPLIT
+    }), encoding="utf-8")
+    ratings_snapshot = collector._capture_ratings_snapshot(ratings_path)
 
     registry = {"schema": "opponent_execution_snapshot_v1", "opponents": {}}
     tasks = []
@@ -129,14 +137,25 @@ def _collection(tmp_path: Path) -> Path:
         snapshot = source / "opponent_snapshots" / name
         snapshot.mkdir(parents=True)
         (snapshot / "national_bot.py").write_text(f"# {name}\n", encoding="utf-8")
-        digest = _directory_digest(snapshot)
+        digest = collector._directory_digest(snapshot)
         registry["opponents"][name] = {
             "snapshot_path": str(snapshot),
+            "tag_commit": "1" * 40,
+            "tag_directory_sha256": digest,
+            "execution_matches_generation_tag": True,
+            "source_path": str(snapshot),
+            "source_checkout_commit": "2" * 40,
             "execution_directory_sha256": digest,
         }
         tasks.append({
             "name": name,
             "split": split,
+            "opponent_path": str(snapshot),
+            "source_path": str(snapshot),
+            "tag_commit": "1" * 40,
+            "tag_directory_sha256": digest,
+            "execution_matches_generation_tag": True,
+            "source_checkout_commit": "2" * 40,
             "deck_seed_base": deck,
             "deck_seed_last": deck + 69,
             "bot_seed_base": bot,
@@ -157,9 +176,38 @@ def _collection(tmp_path: Path) -> Path:
     (source / "collection_manifest.json").write_text(json.dumps({
         "passes_requested": 2,
         "resume_contract": {
+            "schema_version": collector.COLLECTION_CONTRACT_SCHEMA_VERSION,
+            "candidate": str(candidate),
+            "candidate_sha256": candidate_digest,
+            "ratings_path": str(ratings_path.resolve()),
+            "workers": 1,
+            "probe_workers": 4,
+            "hands": 70,
+            "timeout_sec": 55,
+            "strongest": 5,
+            "val_opponents": ["national_v3", "national_v4"],
+            "held_out_opponents": ["national_v5"],
+            "opponents_per_pass": 5,
+            "max_decisions": 12,
+            "max_alternatives": 5,
+            "decision_sampling": "uniform",
+            "hand_windows": [0.0],
             "deck_seed_scheme": "disjoint_match_blocks_v1",
+            "deck_seed_base": 5_000_000,
+            "deck_seed_guard": 10,
+            "deck_seed_slots_per_pass": collector.DECK_SEED_SLOTS_PER_PASS,
+            "bot_seed_base": 1_000_000,
+            "collector_sha256": hashlib.sha256(
+                Path(collector.__file__).read_bytes()
+            ).hexdigest(),
+            "probe_sha256": hashlib.sha256(
+                (TOOLS / "native_tcp_counterfactual_probe.py").read_bytes()
+            ).hexdigest(),
+            "cross_hand_sequence_sha256": hashlib.sha256(
+                (TOOLS / "cross_hand_sequence.py").read_bytes()
+            ).hexdigest(),
             "candidate_execution_path": str(candidate),
-            "candidate_snapshot_sha256": _directory_digest(candidate),
+            "candidate_snapshot_sha256": candidate_digest,
         },
     }), encoding="utf-8")
     (source / "collector_state.json").write_text(json.dumps({
@@ -169,10 +217,33 @@ def _collection(tmp_path: Path) -> Path:
             split: len(behaviors[split]) for split in freeze.SOURCE_SPLITS
         },
     }), encoding="utf-8")
-    _write_jsonl(source / "pool_snapshots.jsonl", [{"pass": 1}])
+    _write_jsonl(source / "pool_snapshots.jsonl", [{
+        "pass": 1,
+        "ratings_path": str(ratings_path.resolve()),
+        "ratings_sha256": ratings_snapshot["ratings_sha256"],
+        "ratings_snapshot_sha256": ratings_snapshot["snapshot_sha256"],
+        "min_hand": 1,
+        "hands": 70,
+        "workers": 1,
+        "probe_workers": 4,
+        "decision_sampling": "uniform",
+        "pool": [{
+            "name": task["name"],
+            "split": task["split"],
+            "tag_commit": task["tag_commit"],
+            "execution_directory_sha256": task["execution_directory_sha256"],
+            "source_checkout_commit": task["source_checkout_commit"],
+            "glicko": ratings_snapshot["ratings"].get(task["name"]),
+            "deck_seed_base": task["deck_seed_base"],
+            "deck_seed_last": task["deck_seed_last"],
+            "bot_seed_base": task["bot_seed_base"],
+        } for task in tasks],
+    }])
     (source / "pass_plans" / "pass_0001.json").write_text(json.dumps({
+        "schema_version": collector.PASS_PLAN_SCHEMA_VERSION,
         "pass": 1,
         "seed_scheme": "disjoint_match_blocks_v1",
+        "ratings_snapshot": ratings_snapshot,
         "tasks": tasks,
     }), encoding="utf-8")
     return source
@@ -194,7 +265,11 @@ def test_freeze_creates_five_opponent_disjoint_roles(tmp_path: Path) -> None:
 
     manifest = _freeze(source, output)
 
-    assert manifest["schema"] == "opponent_role_dataset_v3"
+    freeze.validate_frozen_role_provenance(
+        output, manifest, expected_passes=1
+    )
+
+    assert manifest["schema"] == "opponent_role_dataset_v4"
     assert manifest["source_completed_passes"] == 1
     assert manifest["source_requested_passes"] == 2
     assert manifest["source_collection_complete"] is False
@@ -254,7 +329,21 @@ def test_freeze_rejects_overlapping_deck_blocks(tmp_path: Path) -> None:
     plan["tasks"][1]["deck_seed_last"] = plan["tasks"][1]["deck_seed_base"] + 69
     path.write_text(json.dumps(plan), encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="overlapping deck blocks"):
+    with pytest.raises(RuntimeError, match="deck block mismatch|overlapping deck blocks"):
+        _freeze(source, tmp_path / "out")
+
+
+def test_formal_role_freeze_rejects_legacy_plan_without_ratings_evidence(
+    tmp_path: Path,
+) -> None:
+    source = _collection(tmp_path)
+    path = source / "pass_plans" / "pass_0001.json"
+    plan = json.loads(path.read_text())
+    plan.pop("schema_version")
+    plan.pop("ratings_snapshot")
+    path.write_text(json.dumps(plan), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="predates frozen ratings evidence"):
         _freeze(source, tmp_path / "out")
 
 
@@ -283,9 +372,9 @@ def test_freeze_rejects_illegal_response_supervision(tmp_path: Path) -> None:
 
 def test_freeze_uses_only_atomic_completed_prefix(tmp_path: Path) -> None:
     source = _collection(tmp_path)
-    _write_jsonl(
-        source / "pool_snapshots.jsonl", [{"pass": 1}, {"pass": 2}]
-    )
+    pool_path = source / "pool_snapshots.jsonl"
+    first_pool = json.loads(pool_path.read_text(encoding="utf-8").splitlines()[0])
+    _write_jsonl(pool_path, [first_pool, {"pass": 2}])
     extra = _value_row("national_v1", 6_000_000, 2_000_000)
     with (source / "cf_train.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(extra) + "\n")
@@ -307,6 +396,17 @@ def test_freeze_binds_candidate_snapshot_digest(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="candidate snapshot digest mismatch"):
+        _freeze(source, tmp_path / "out")
+
+
+def test_freeze_requires_current_collector_code_trust_root(tmp_path: Path) -> None:
+    source = _collection(tmp_path)
+    manifest_path = source / "collection_manifest.json"
+    payload = json.loads(manifest_path.read_text())
+    payload["resume_contract"]["collector_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="collector code trust root"):
         _freeze(source, tmp_path / "out")
 
 

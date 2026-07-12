@@ -6,7 +6,9 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -22,7 +24,7 @@ from freeze_oppmodel_dataset import (  # noqa: E402
     _verify_input_snapshot,
     _write_jsonl,
 )
-from longrun_collect_oppmodel import _directory_digest  # noqa: E402
+import longrun_collect_oppmodel as collector  # noqa: E402
 from match_outcome_schema import (  # noqa: E402
     derive_match_outcome_supervision,
     match_outcome_metadata,
@@ -35,7 +37,7 @@ from opponent_response_schema import (  # noqa: E402
 from sampling_weights import decision_sampling_weight  # noqa: E402
 
 
-SCHEMA = "opponent_role_dataset_v3"
+SCHEMA = "opponent_role_dataset_v4"
 STRATEGY_CONTEXT_RUNTIME_MODE = "zero_vector_training_aligned_v1"
 SOURCE_SPLITS = ("train", "val", "held_out")
 PREFIXES = ("cf", "opponent_actions")
@@ -53,6 +55,23 @@ EXPECTED_SOURCE_SPLIT = {
     "policy_selection": "val",
     "policy_gate": "held_out",
 }
+LEGACY_RECOVERY_MODE = "complete_schema4_tail_to_schema5"
+LEGACY_RECOVERY_SCHEMA_VERSION = 1
+LEGACY_PLAN_FIELDS = {"pass", "seed_scheme", "tasks"}
+PLAN_TASK_FIELDS = {
+    "name", "opponent_path", "split", "hands", "deck_seed_base",
+    "deck_seed_last", "bot_seed_base", "tag_commit",
+    "tag_directory_sha256", "execution_matches_generation_tag",
+    "source_path", "source_checkout_commit", "execution_directory_sha256",
+}
+POOL_TASK_FIELDS = {
+    "name", "split", "tag_commit", "execution_directory_sha256",
+    "source_checkout_commit", "glicko", "deck_seed_base",
+    "deck_seed_last", "bot_seed_base",
+}
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+BOT_NAME = re.compile(r"^national_v[0-9]+$")
 
 
 def strategy_context_is_absent(row: dict[str, Any]) -> bool:
@@ -159,9 +178,363 @@ def _collector_boundary(
     return state, digest, completed, limits
 
 
+def _canonical_sha256(payload: Any) -> str:
+    return hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+
+
+def _require_digest(value: Any, *, field: str, length: int = 64) -> str:
+    text = str(value or "")
+    pattern = HEX64 if length == 64 else HEX40
+    if not pattern.fullmatch(text):
+        raise RuntimeError(f"{field} is not a lowercase digest")
+    return text
+
+
+def _prefix_sha256(path: Path, rows: int) -> str:
+    digest = hashlib.sha256()
+    count = 0
+    with path.open("rb") as handle:
+        while count < rows:
+            line = handle.readline()
+            if not line or not line.endswith(b"\n"):
+                raise RuntimeError(f"JSONL prefix is incomplete: {path}")
+            digest.update(line)
+            count += 1
+    return digest.hexdigest()
+
+
+def _legacy_recovery_contract(
+    collection_manifest: dict[str, Any],
+    *,
+    completed_passes: int,
+    source_dir: Path,
+    validate_data_prefix: bool,
+) -> tuple[int, int, dict[str, str]] | None:
+    receipt = collection_manifest.get("legacy_recovery")
+    if receipt is None:
+        return None
+    required = {
+        "schema_version", "mode", "completed_prefix_pass", "recovered_pass",
+        "expectations_sha256", "recovery_tool_sha256", "reviewed_hashes",
+        "completed_plan_sha256", "before", "archived_ratings", "tail",
+        "after", "probe_execution_count", "read_current_ratings",
+        "strength_evidence", "deployment_policy_value", "receipt_sha256",
+    }
+    if not isinstance(receipt, dict) or set(receipt) != required:
+        raise RuntimeError("legacy recovery receipt fields changed")
+    unsigned = dict(receipt)
+    recorded = _require_digest(
+        unsigned.pop("receipt_sha256"), field="legacy recovery receipt"
+    )
+    if recorded != _canonical_sha256(unsigned):
+        raise RuntimeError("legacy recovery receipt digest mismatch")
+    recovery_tool = TOOLS / "recover_legacy_oppmodel_collection.py"
+    if (
+        receipt.get("schema_version") != LEGACY_RECOVERY_SCHEMA_VERSION
+        or receipt.get("mode") != LEGACY_RECOVERY_MODE
+        or receipt.get("recovery_tool_sha256") != _sha256(recovery_tool)
+        or receipt.get("probe_execution_count") != 0
+        or receipt.get("read_current_ratings") is not False
+        or receipt.get("strength_evidence") is not False
+        or receipt.get("deployment_policy_value") is not False
+    ):
+        raise RuntimeError("legacy recovery receipt is not authoritative")
+    prefix = _integer(
+        receipt.get("completed_prefix_pass"),
+        field="completed_prefix_pass", minimum=1,
+    )
+    recovered = _integer(
+        receipt.get("recovered_pass"), field="recovered_pass", minimum=2
+    )
+    if recovered != prefix + 1 or completed_passes < recovered:
+        raise RuntimeError("legacy recovery boundary is invalid")
+    plans = receipt.get("completed_plan_sha256")
+    expected_names = {f"pass_{index:04d}.json" for index in range(1, prefix + 1)}
+    if not isinstance(plans, dict) or set(plans) != expected_names:
+        raise RuntimeError("legacy recovery completed-plan prefix changed")
+    plan_hashes = {
+        name: _require_digest(value, field=f"legacy plan {name}")
+        for name, value in plans.items()
+    }
+    reviewed = receipt.get("reviewed_hashes")
+    before = receipt.get("before")
+    after = receipt.get("after")
+    archived = receipt.get("archived_ratings")
+    if not all(isinstance(value, dict) for value in (reviewed, before, after, archived)):
+        raise RuntimeError("legacy recovery receipt sections are invalid")
+    required_reviewed = {
+        "collection_manifest", "collector_state", "pool_snapshots",
+        "recovery_plan", "legacy_collector", "current_collector",
+        "identity_migration", "archived_ratings", "opponent_registry",
+        *(f"{prefix_name}_{split}.jsonl"
+          for prefix_name in ("cf", "opponent_actions")
+          for split in SOURCE_SPLITS),
+    }
+    if (
+        set(reviewed) != required_reviewed
+        or set(before) != {
+            "collection_manifest_sha256", "collector_state_sha256",
+            "pool_snapshots_sha256", "recovery_plan_sha256",
+            "legacy_collector_sha256",
+        }
+        or set(archived) != {
+            "ratings_sha256", "ratings_snapshot_sha256",
+            "identity_migration_sha256",
+        }
+        or set(after) != {
+            "collector_schema_version", "collector_sha256",
+            "pass_plan_schema_version", "recovery_plan_sha256",
+            "pool_snapshots_sha256", "collector_state_sha256",
+            "total_rows", "total_behavior_rows",
+        }
+        or not isinstance(receipt.get("tail"), dict)
+        or not receipt["tail"]
+    ):
+        raise RuntimeError("legacy recovery receipt sections changed")
+    for field in (
+        "expectations_sha256", "recovery_tool_sha256",
+    ):
+        _require_digest(receipt.get(field), field=field)
+    for key, value in reviewed.items():
+        _require_digest(value, field=f"reviewed_hashes.{key}")
+    for section_name, section in (
+        ("before", before),
+        ("after", after), ("archived_ratings", archived),
+    ):
+        for key, value in section.items():
+            if key.endswith("sha256"):
+                _require_digest(value, field=f"{section_name}.{key}")
+    contract = collection_manifest.get("resume_contract") or {}
+    if (
+        after.get("collector_schema_version")
+        != collector.COLLECTION_CONTRACT_SCHEMA_VERSION
+        or after.get("pass_plan_schema_version") != collector.PASS_PLAN_SCHEMA_VERSION
+        or after.get("collector_sha256") != contract.get("collector_sha256")
+    ):
+        raise RuntimeError("legacy recovery current-collector binding changed")
+    reviewed_pool = _require_digest(
+        reviewed.get("pool_snapshots"), field="reviewed_hashes.pool_snapshots"
+    )
+    if reviewed_pool != before.get("pool_snapshots_sha256"):
+        raise RuntimeError("legacy recovery pool-prefix review changed")
+    pool_path = source_dir / "pool_snapshots.jsonl"
+    if not pool_path.exists():
+        pool_path = source_dir / "pool_snapshots.completed.jsonl"
+    if _prefix_sha256(pool_path, prefix) != reviewed_pool:
+        raise RuntimeError("legacy completed pool prefix changed")
+    if _prefix_sha256(pool_path, recovered) != after.get("pool_snapshots_sha256"):
+        raise RuntimeError("legacy recovered pool prefix changed")
+    totals = {
+        "cf": after.get("total_rows"),
+        "opponent_actions": after.get("total_behavior_rows"),
+    }
+    for prefix_name, split_totals in totals.items():
+        if not isinstance(split_totals, dict) or set(split_totals) != set(SOURCE_SPLITS):
+            raise RuntimeError("legacy recovery row totals changed")
+        for split in SOURCE_SPLITS:
+            filename = f"{prefix_name}_{split}.jsonl"
+            rows = _integer(
+                split_totals[split], field=f"{filename}.rows", minimum=0
+            )
+            if validate_data_prefix:
+                expected = _require_digest(
+                    reviewed.get(filename), field=f"reviewed_hashes.{filename}"
+                )
+                if _prefix_sha256(source_dir / filename, rows) != expected:
+                    raise RuntimeError(f"legacy recovered data prefix changed: {filename}")
+    return prefix, recovered, plan_hashes
+
+
+def _legacy_plan_tasks(
+    payload: dict[str, Any], *, pass_index: int, contract: dict[str, Any]
+) -> list[dict[str, Any]]:
+    if set(payload) != LEGACY_PLAN_FIELDS:
+        raise RuntimeError(f"legacy pass plan fields changed at pass {pass_index}")
+    rows = payload.get("tasks")
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError(f"legacy pass plan has no tasks at pass {pass_index}")
+    hands = _integer(contract.get("hands"), field="hands", minimum=1)
+    val = set(contract.get("val_opponents") or [])
+    held = set(contract.get("held_out_opponents") or [])
+    seen_names: set[str] = set()
+    seen_paths: set[str] = set()
+    validated = []
+    for task_index, raw in enumerate(rows):
+        if not isinstance(raw, dict) or set(raw) != PLAN_TASK_FIELDS:
+            raise RuntimeError(f"legacy task fields changed at pass {pass_index}")
+        name = str(raw.get("name") or "")
+        split = raw.get("split")
+        opponent_path = str(raw.get("opponent_path") or "")
+        source_path = str(raw.get("source_path") or "")
+        expected_split = "held_out" if name in held else "val" if name in val else "train"
+        if (
+            not BOT_NAME.fullmatch(name) or name in seen_names
+            or split != expected_split or not Path(opponent_path).is_absolute()
+            or Path(opponent_path).name != name or opponent_path in seen_paths
+            or not Path(source_path).is_absolute()
+            or not isinstance(raw.get("execution_matches_generation_tag"), bool)
+        ):
+            raise RuntimeError(f"legacy task identity changed at pass {pass_index}")
+        seen_names.add(name)
+        seen_paths.add(opponent_path)
+        expected_deck = collector._deck_seed_for_task(
+            root=_integer(contract.get("deck_seed_base"), field="deck_seed_base"),
+            pass_index=pass_index - 1, task_index=task_index, hands=hands,
+            guard=_integer(contract.get("deck_seed_guard"), field="deck_seed_guard"),
+        )
+        expected_bot = collector._bot_seed_for_task(
+            root=_integer(contract.get("bot_seed_base"), field="bot_seed_base"),
+            pass_index=pass_index - 1, task_index=task_index,
+        )
+        if (
+            _integer(raw.get("hands"), field="task.hands") != hands
+            or _integer(raw.get("deck_seed_base"), field="task.deck_seed_base")
+            != expected_deck
+            or _integer(raw.get("deck_seed_last"), field="task.deck_seed_last")
+            != expected_deck + hands - 1
+            or _integer(raw.get("bot_seed_base"), field="task.bot_seed_base")
+            != expected_bot
+        ):
+            raise RuntimeError(f"legacy task seed block changed at pass {pass_index}")
+        _require_digest(raw.get("tag_commit"), field="tag_commit", length=40)
+        _require_digest(
+            raw.get("source_checkout_commit"), field="source_checkout_commit", length=40
+        )
+        _require_digest(raw.get("tag_directory_sha256"), field="tag_directory_sha256")
+        _require_digest(
+            raw.get("execution_directory_sha256"),
+            field="execution_directory_sha256",
+        )
+        validated.append(dict(raw))
+    return validated
+
+
+def _validate_pool_row(
+    row: dict[str, Any], *, pass_index: int, tasks: list[dict[str, Any]],
+    contract: dict[str, Any], ratings_snapshot: dict[str, Any] | None,
+    rating_rows: dict[str, dict[str, float]] | None,
+) -> None:
+    hands = int(contract["hands"])
+    fractions = [float(value) for value in contract["hand_windows"]]
+    min_hand = max(1, min(
+        hands, 1 + int((hands - 1) * fractions[(pass_index - 1) % len(fractions)])
+    ))
+    if (
+        row.get("pass") != pass_index
+        or row.get("ratings_path") != str(Path(str(contract["ratings_path"])).resolve())
+        or not HEX64.fullmatch(str(row.get("ratings_sha256") or ""))
+        or row.get("min_hand") != min_hand or row.get("hands") != hands
+        or row.get("workers") != contract["workers"]
+        or row.get("probe_workers") != contract["probe_workers"]
+        or row.get("decision_sampling") != contract["decision_sampling"]
+    ):
+        raise RuntimeError(f"pool snapshot contract changed at pass {pass_index}")
+    if ratings_snapshot is None:
+        if "ratings_snapshot_sha256" in row:
+            raise RuntimeError("legacy pool snapshot carries unproven ratings evidence")
+    elif (
+        row.get("ratings_sha256") != ratings_snapshot.get("ratings_sha256")
+        or row.get("ratings_snapshot_sha256")
+        != ratings_snapshot.get("snapshot_sha256")
+    ):
+        raise RuntimeError(f"pool ratings binding changed at pass {pass_index}")
+    pool = row.get("pool")
+    if not isinstance(pool, list) or len(pool) != len(tasks):
+        raise RuntimeError(f"pool task count changed at pass {pass_index}")
+    compared = (
+        "name", "split", "tag_commit", "execution_directory_sha256",
+        "source_checkout_commit", "deck_seed_base", "deck_seed_last",
+        "bot_seed_base",
+    )
+    for entry, task in zip(pool, tasks, strict=True):
+        if not isinstance(entry, dict) or set(entry) != POOL_TASK_FIELDS:
+            raise RuntimeError(f"pool task fields changed at pass {pass_index}")
+        if any(entry.get(field) != task.get(field) for field in compared):
+            raise RuntimeError(f"pool/plan task binding changed at pass {pass_index}")
+        if rating_rows is not None and entry.get("glicko") != rating_rows.get(task["name"]):
+            raise RuntimeError(f"pool rating row changed at pass {pass_index}")
+        glicko = entry.get("glicko")
+        if glicko is not None and (
+            not isinstance(glicko, dict)
+            or any(
+                isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(float(value)) for value in glicko.values()
+            )
+        ):
+            raise RuntimeError(f"pool rating is invalid at pass {pass_index}")
+
+
 def _completed_plans(
-    source_dir: Path, completed_passes: int
+    source_dir: Path,
+    completed_passes: int,
+    *,
+    collection_manifest: dict[str, Any],
+    pool_rows: list[dict[str, Any]],
+    registry: dict[str, Any],
+    validate_data_prefix: bool = False,
 ) -> tuple[dict[tuple[str, int, int], dict[str, Any]], dict[str, str]]:
+    resume_contract = collection_manifest.get("resume_contract")
+    if (
+        not isinstance(resume_contract, dict)
+        or resume_contract.get("schema_version")
+        != collector.COLLECTION_CONTRACT_SCHEMA_VERSION
+    ):
+        raise RuntimeError("role freeze requires the current collector contract")
+    try:
+        ratings_path = Path(str(resume_contract["ratings_path"]))
+        hands = _integer(resume_contract["hands"], field="hands", minimum=1)
+        deck_seed_base = _integer(
+            resume_contract["deck_seed_base"], field="deck_seed_base", minimum=0
+        )
+        deck_seed_guard = _integer(
+            resume_contract["deck_seed_guard"], field="deck_seed_guard", minimum=0
+        )
+        bot_seed_base = _integer(
+            resume_contract["bot_seed_base"], field="bot_seed_base", minimum=0
+        )
+        val_opponents = set(resume_contract["val_opponents"])
+        held_out_opponents = set(resume_contract["held_out_opponents"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("role freeze collector contract is incomplete") from exc
+    if not ratings_path.is_absolute() or val_opponents & held_out_opponents:
+        raise RuntimeError("role freeze collector split contract is invalid")
+    current_code = {
+        "collector_sha256": _sha256(Path(collector.__file__).resolve()),
+        "probe_sha256": _sha256(TOOLS / "native_tcp_counterfactual_probe.py"),
+        "cross_hand_sequence_sha256": _sha256(TOOLS / "cross_hand_sequence.py"),
+    }
+    if any(
+        resume_contract.get(field) != digest
+        for field, digest in current_code.items()
+    ):
+        raise RuntimeError("role freeze collector code trust root changed")
+    if len(pool_rows) != completed_passes:
+        raise RuntimeError("completed pool snapshot count changed")
+    legacy = _legacy_recovery_contract(
+        collection_manifest,
+        completed_passes=completed_passes,
+        source_dir=source_dir,
+        validate_data_prefix=validate_data_prefix,
+    )
+    legacy_prefix = legacy[0] if legacy else 0
+    recovered_pass = legacy[1] if legacy else 0
+    legacy_hashes = legacy[2] if legacy else {}
+    opponents = registry.get("opponents")
+    if registry.get("schema") != "opponent_execution_snapshot_v1" or not isinstance(
+        opponents, dict
+    ):
+        raise RuntimeError("opponent snapshot registry is invalid")
+    if legacy is not None:
+        archived_sha = collection_manifest["legacy_recovery"]["archived_ratings"][
+            "ratings_sha256"
+        ]
+        if (
+            pool_rows[legacy_prefix - 1].get("ratings_sha256") != archived_sha
+            or pool_rows[recovered_pass - 1].get("ratings_sha256") != archived_sha
+        ):
+            raise RuntimeError("legacy archived ratings/pool binding changed")
     tasks: dict[tuple[str, int, int], dict[str, Any]] = {}
     plan_hashes = {}
     intervals = []
@@ -174,9 +547,40 @@ def _completed_plans(
             raise RuntimeError(f"unsupported seed scheme in {path}")
         if _integer(payload.get("pass"), field=f"{path.name}.pass") != pass_index:
             raise RuntimeError(f"pass plan index mismatch: {path}")
-        rows = payload.get("tasks")
-        if not isinstance(rows, list) or not rows:
-            raise RuntimeError(f"pass plan has no tasks: {path}")
+        ratings_snapshot = None
+        rating_rows = None
+        if pass_index <= legacy_prefix:
+            if digest != legacy_hashes[path.name]:
+                raise RuntimeError(f"legacy completed pass plan changed: {path.name}")
+            rows = _legacy_plan_tasks(
+                payload, pass_index=pass_index, contract=resume_contract
+            )
+        else:
+            try:
+                ratings_snapshot, rating_rows, rows = collector._validate_pass_plan(
+                    payload,
+                    pass_number=pass_index,
+                    ratings_path=ratings_path,
+                    hands=hands,
+                    deck_seed_base=deck_seed_base,
+                    deck_seed_guard=deck_seed_guard,
+                    bot_seed_base=bot_seed_base,
+                    val_opponents=val_opponents,
+                    held_out_opponents=held_out_opponents,
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(f"invalid current pass plan {path}: {exc}") from exc
+            if pass_index == recovered_pass:
+                expected = (collection_manifest["legacy_recovery"]["after"])[
+                    "recovery_plan_sha256"
+                ]
+                if digest != expected:
+                    raise RuntimeError("recovered pass plan changed")
+        _validate_pool_row(
+            pool_rows[pass_index - 1], pass_index=pass_index, tasks=rows,
+            contract=resume_contract, ratings_snapshot=ratings_snapshot,
+            rating_rows=rating_rows,
+        )
         for raw in rows:
             if not isinstance(raw, dict):
                 raise RuntimeError(f"invalid task in {path}")
@@ -206,6 +610,20 @@ def _completed_plans(
             bot_seeds[bot_seed] = key
             task = dict(raw)
             task["pass"] = pass_index
+            entry = opponents.get(name)
+            if not isinstance(entry, dict) or any(
+                entry.get(registry_field) != raw.get(plan_field)
+                for registry_field, plan_field in (
+                    ("snapshot_path", "opponent_path"),
+                    ("tag_commit", "tag_commit"),
+                    ("tag_directory_sha256", "tag_directory_sha256"),
+                    ("execution_matches_generation_tag", "execution_matches_generation_tag"),
+                    ("source_path", "source_path"),
+                    ("source_checkout_commit", "source_checkout_commit"),
+                    ("execution_directory_sha256", "execution_directory_sha256"),
+                )
+            ):
+                raise RuntimeError(f"opponent registry/plan mismatch: {name}")
             tasks[key] = task
             intervals.append((base, last, key))
     intervals.sort()
@@ -344,7 +762,10 @@ def _verify_snapshots(
     contract = collection_manifest.get("resume_contract") or {}
     candidate_path = Path(str(contract.get("candidate_execution_path") or ""))
     candidate_digest = str(contract.get("candidate_snapshot_sha256") or "")
-    if not candidate_path.is_dir() or _directory_digest(candidate_path) != candidate_digest:
+    if (
+        not candidate_path.is_dir()
+        or collector._directory_digest(candidate_path) != candidate_digest
+    ):
         raise RuntimeError("candidate snapshot digest mismatch")
     opponents = registry.get("opponents")
     if registry.get("schema") != "opponent_execution_snapshot_v1" or not isinstance(
@@ -362,7 +783,10 @@ def _verify_snapshots(
             raise RuntimeError(f"opponent snapshot registry/plan mismatch: {name}")
         if name not in used:
             path = Path(str(entry.get("snapshot_path") or ""))
-            if not path.is_dir() or _directory_digest(path) != expected:
+            if (
+                not path.is_dir()
+                or collector._directory_digest(path) != expected
+            ):
                 raise RuntimeError(f"opponent snapshot digest mismatch: {name}")
             used[name] = dict(entry)
     return {
@@ -373,6 +797,143 @@ def _verify_snapshots(
         },
         "opponents": used,
     }
+
+
+def validate_frozen_role_provenance(
+    root: Path,
+    manifest: dict[str, Any],
+    *,
+    expected_passes: int,
+) -> None:
+    """Replay non-outcome freeze metadata before any formal role is opened."""
+
+    root = root.resolve()
+    if isinstance(expected_passes, bool) or not isinstance(expected_passes, int):
+        raise ValueError("expected collection passes must be an integer")
+    if expected_passes < 1:
+        raise ValueError("expected collection passes must be positive")
+    if manifest.get("freeze_tool_sha256") != _sha256(Path(__file__)):
+        raise ValueError("role dataset freeze-tool trust root changed")
+    if manifest.get("role_source_contract") != EXPECTED_SOURCE_SPLIT:
+        raise ValueError("role dataset source-role contract changed")
+
+    collection_path = root / "collection_manifest.json"
+    collection, collection_digest = _load_json_snapshot(collection_path)
+    if collection_digest != manifest.get("collection_manifest_sha256"):
+        raise ValueError("role dataset collection manifest changed")
+    if (
+        _integer(
+            collection.get("passes_requested"),
+            field="passes_requested",
+            minimum=1,
+        )
+        != manifest.get("source_requested_passes")
+        or (collection.get("resume_contract") or {}).get("deck_seed_scheme")
+        != "disjoint_match_blocks_v1"
+    ):
+        raise ValueError("role dataset collection contract changed")
+
+    pool_path = root / "pool_snapshots.completed.jsonl"
+    pool_rows, pool_details = _read_jsonl_snapshot(pool_path)
+    recorded_pool = manifest.get("frozen_pool_snapshot")
+    if not isinstance(recorded_pool, dict) or any(
+        pool_details[field] != recorded_pool.get(field)
+        for field in ("bytes", "rows", "sha256")
+    ):
+        raise ValueError("completed pool snapshot changed")
+    if [row.get("pass") for row in pool_rows] != list(
+        range(1, expected_passes + 1)
+    ):
+        raise ValueError("completed pool snapshot is not the exact pass prefix")
+
+    registry_path = root / "opponent_snapshots.completed.json"
+    registry, registry_digest = _load_json_snapshot(registry_path)
+    opponents = registry.get("opponents")
+    if (
+        registry_digest != manifest.get("frozen_opponent_registry_sha256")
+        or registry.get("schema") != "opponent_execution_snapshot_v1"
+        or not isinstance(opponents, dict)
+    ):
+        raise ValueError("role dataset opponent registry changed")
+
+    plan_root = root / "pass_plans"
+    expected_plan_names = {
+        f"pass_{index:04d}.json" for index in range(1, expected_passes + 1)
+    }
+    try:
+        plan_entries = list(plan_root.iterdir())
+    except OSError as exc:
+        raise ValueError("frozen pass-plan directory is unavailable") from exc
+    if (
+        {entry.name for entry in plan_entries} != expected_plan_names
+        or any(entry.is_symlink() or not entry.is_file() for entry in plan_entries)
+    ):
+        raise ValueError("frozen pass-plan set is not exact")
+    tasks, plan_hashes = _completed_plans(
+        root,
+        expected_passes,
+        collection_manifest=collection,
+        pool_rows=pool_rows,
+        registry=registry,
+    )
+    if plan_hashes != manifest.get("pass_plan_sha256"):
+        raise ValueError("frozen pass-plan hashes changed")
+
+    raw_roles = manifest.get("roles")
+    if not isinstance(raw_roles, dict) or set(raw_roles) != set(EVIDENCE_ROLES):
+        raise ValueError("role dataset manifest has invalid roles")
+    explicit_roles = {
+        role: {
+            str(name).strip()
+            for name in raw_roles[role]
+            if str(name).strip()
+        }
+        for role in EXPLICIT_ROLES
+    }
+    derived_roles = _normalize_roles(explicit_roles, tasks)
+    recorded_roles = {
+        role: {
+            str(name).strip()
+            for name in raw_roles[role]
+            if str(name).strip()
+        }
+        for role in EVIDENCE_ROLES
+    }
+    if derived_roles != recorded_roles:
+        raise ValueError("role dataset opponent partition changed")
+
+    task_opponents = {str(task["name"]) for task in tasks.values()}
+    if set(opponents) != task_opponents:
+        raise ValueError("role dataset opponent registry coverage changed")
+    for task in tasks.values():
+        name = str(task["name"])
+        entry = opponents.get(name)
+        expected_digest = str(task.get("execution_directory_sha256") or "")
+        if (
+            not isinstance(entry, dict)
+            or entry.get("execution_directory_sha256") != expected_digest
+        ):
+            raise ValueError(f"role dataset opponent binding changed: {name}")
+        snapshot = Path(str(entry.get("snapshot_path") or ""))
+        if (
+            not snapshot.is_dir()
+            or collector._directory_digest(snapshot) != expected_digest
+        ):
+            raise ValueError(f"role dataset opponent snapshot changed: {name}")
+
+    candidate = manifest.get("candidate_snapshot")
+    contract = collection.get("resume_contract") or {}
+    if not isinstance(candidate, dict):
+        raise ValueError("role dataset candidate snapshot is invalid")
+    candidate_path = Path(str(candidate.get("path") or ""))
+    candidate_digest = str(candidate.get("sha256") or "")
+    if (
+        str(candidate_path) != str(contract.get("candidate_execution_path") or "")
+        or candidate_digest != contract.get("candidate_snapshot_sha256")
+        or not candidate_path.is_dir()
+        or collector._directory_digest(candidate_path) != candidate_digest
+    ):
+        raise ValueError("role dataset candidate snapshot changed")
 
 
 def freeze_role_dataset(
@@ -406,15 +967,21 @@ def freeze_role_dataset(
         "disjoint_match_blocks_v1"
     ):
         raise RuntimeError("collection does not use independent deck blocks")
-    tasks, plan_hashes = _completed_plans(source_dir, completed)
-    roles = _normalize_roles(role_opponents, tasks)
-
     pool_path = source_dir / "pool_snapshots.jsonl"
     pool_rows, pool_manifest = _read_jsonl_snapshot(
         pool_path, row_limit=completed
     )
     if [row.get("pass") for row in pool_rows] != list(range(1, completed + 1)):
         raise RuntimeError("completed pool snapshot prefix is not contiguous")
+    tasks, plan_hashes = _completed_plans(
+        source_dir,
+        completed,
+        collection_manifest=collection,
+        pool_rows=pool_rows,
+        registry=registry,
+        validate_data_prefix=True,
+    )
+    roles = _normalize_roles(role_opponents, tasks)
 
     data: dict[str, dict[str, list[dict[str, Any]]]] = {}
     input_files = {}
@@ -571,10 +1138,22 @@ def freeze_role_dataset(
             "role_source_contract": EXPECTED_SOURCE_SPLIT,
             "input_files": input_files,
             "completed_pool_snapshot": pool_manifest,
+            "frozen_pool_snapshot": {
+                "bytes": (
+                    temporary / "pool_snapshots.completed.jsonl"
+                ).stat().st_size,
+                "rows": len(pool_rows),
+                "sha256": _sha256(
+                    temporary / "pool_snapshots.completed.jsonl"
+                ),
+            },
             "pass_plan_sha256": plan_hashes,
             "collection_manifest_sha256": collection_digest,
             "collector_state_sha256": state_digest,
             "opponent_registry_sha256": registry_digest,
+            "frozen_opponent_registry_sha256": _sha256(
+                temporary / "opponent_snapshots.completed.json"
+            ),
             "outputs": outputs,
             "behavior_supervision": {
                 **response_schema_metadata(),

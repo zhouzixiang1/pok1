@@ -878,6 +878,38 @@ def test_calibration_chain_does_not_read_policy_roles(tmp_path: Path) -> None:
     assert opened == {"train", "early_stop", "model_calibration"}
 
 
+def test_calibration_code_closure_covers_fit_and_validation_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closure = calibration._calibration_code_artifacts()
+
+    assert closure["schema"] == calibration.CALIBRATION_CODE_CLOSURE_SCHEMA
+    assert {
+        "calibrator",
+        "calibration_input_snapshot",
+        "calibrate_match_outcome_v4",
+        "calibrate_opponent_multitask_v3_ensemble",
+        "match_outcome_calibration",
+        "run_opponent_multitask_v3_scaling",
+        "run_opponent_multitask_v4_scaling",
+        "win_first_policy_v4",
+    } == set(closure["files"])
+    assert closure["training_code_artifacts"] == (
+        calibration._current_training_code_artifacts()
+    )
+    assert calibration._verify_calibration_code_artifacts_unchanged(
+        closure
+    ) == closure
+
+    changed = copy.deepcopy(closure)
+    changed["files"]["calibrate_match_outcome_v4"]["bytes"] += 1
+    monkeypatch.setattr(
+        calibration, "_calibration_code_artifacts", lambda: changed
+    )
+    with pytest.raises(RuntimeError, match="calibration code changed"):
+        calibration._verify_calibration_code_artifacts_unchanged(closure)
+
+
 def test_member_outcome_calibration_binds_exact_provenance() -> None:
     observations = {
         "logits": torch.tensor([-1.0, 1.0]),
@@ -1088,17 +1120,36 @@ def test_verified_member_rejects_current_training_code_drift(
         "training_report.json": report,
         "checkpoint_authorization.json": authorization,
     }
+    member_files = {
+        name: {
+            "path": str(root / name),
+            "bytes": 7,
+            "sha256": checkpoint_sha if name == "checkpoint.pt" else "f" * 64,
+        }
+        for name in (*calibration.EXPECTED_TRAINING_FILES,
+                     "artifact_manifest.json")
+    }
+    member_snapshot = {
+        "raw": {"checkpoint.pt": b"fixture"},
+        "payloads": payloads,
+        "receipt": {
+            "schema": calibration.MEMBER_INPUT_RECEIPT_SCHEMA,
+            "root": str(root.resolve()),
+            "entries": sorted(member_files),
+            "files": member_files,
+        },
+    }
     monkeypatch.setattr(
-        calibration, "_load_json",
-        lambda path, **kwargs: payloads[path.name],
+        calibration, "_member_input_snapshot", lambda path: member_snapshot,
     )
-    monkeypatch.setattr(calibration, "_verify_file_contracts", lambda *a, **k: None)
+    loaded_raw = []
+
+    def load_checkpoint(source, **_kwargs):
+        loaded_raw.append(source.read())
+        return object(), checkpoint
+
     monkeypatch.setattr(
-        calibration, "_sha256",
-        lambda path: checkpoint_sha if path.name == "checkpoint.pt" else "f" * 64,
-    )
-    monkeypatch.setattr(
-        calibration, "load_checkpoint", lambda *a, **k: (object(), checkpoint)
+        calibration, "load_checkpoint", load_checkpoint
     )
     monkeypatch.setattr(
         calibration, "_current_training_code_artifacts", lambda: current_code
@@ -1129,6 +1180,7 @@ def test_verified_member_rejects_current_training_code_drift(
         retain_model=False,
     )
     assert "model" not in verified
+    assert loaded_raw == [b"fixture"]
 
     stale_code = {"trainer": {"bytes": 9, "sha256": "4" * 64}}
     report["code_artifacts"] = stale_code
@@ -1150,11 +1202,57 @@ class _LoaderDataset:
     roles = {"model_calibration": ["national_v3"]}
 
     def _role_artifact_sha256(self, role: str) -> str:
+        if hasattr(self, "_artifacts"):
+            return self._artifacts[role]
         return {
             "train": "1" * 64,
             "early_stop": "2" * 64,
             "model_calibration": "3" * 64,
         }[role]
+
+
+def _receipt_loader_dataset(tmp_path: Path) -> _LoaderDataset:
+    dataset = _LoaderDataset()
+    dataset.root = tmp_path / "loader-dataset"
+    dataset.root.mkdir()
+    dataset.manifest_path = dataset.root / "role_manifest.json"
+    dataset.manifest_path.write_text('{"fixture": true}\n')
+    dataset.manifest_sha256 = calibration._sha256(dataset.manifest_path)
+    dataset.roles = {
+        role: [f"national_{role}"]
+        for role in ("train", "early_stop", "model_calibration")
+    }
+    dataset.outputs = {}
+    for role in dataset.roles:
+        for prefix in ("cf", "opponent_actions"):
+            name = f"{prefix}_{role}.jsonl"
+            (dataset.root / name).write_text(f"{role}:{prefix}\n")
+            dataset.outputs[name] = {
+                "bytes": (dataset.root / name).stat().st_size,
+                "sha256": calibration._sha256(dataset.root / name),
+            }
+    dataset._artifacts = {
+        role: _sha(f"loader-artifact:{role}".encode())
+        for role in dataset.roles
+    }
+    dataset.ledger_path = dataset.root / "ledger.json"
+    dataset._events = [
+        {
+            "sequence": index,
+            "timestamp_utc": f"2026-07-12T00:00:0{index}+00:00",
+            "event": "open",
+            "role": role,
+            "run_id": dataset.run_id,
+            "opponents": dataset.roles[role],
+            "candidate_sha256": None,
+            "artifact_sha256": dataset._role_artifact_sha256(role),
+        }
+        for index, role in enumerate(dataset.roles, 1)
+    ]
+    calibration._write_json(dataset.ledger_path, {
+        "schema": exposure.SCHEMA, "events": dataset._events,
+    })
+    return dataset
 
 
 def test_strict_loader_checks_boundary_before_artifact_reads(tmp_path: Path) -> None:
@@ -1173,24 +1271,153 @@ def test_strict_loader_checks_boundary_before_artifact_reads(tmp_path: Path) -> 
         )
 
 
+def test_input_snapshots_detect_summary_and_member_replacement(
+    tmp_path: Path,
+) -> None:
+    summary = tmp_path / "summary.json"
+    summary.write_text('{"selected": 1}\n')
+    raw, payload, receipt = calibration._json_snapshot(
+        summary, field="scaling summary"
+    )
+    assert raw == b'{"selected": 1}\n'
+    assert payload == {"selected": 1}
+    summary.write_text('{"selected": 2}\n')
+    with pytest.raises(RuntimeError, match="changed after startup"):
+        calibration._verify_file_receipt(receipt, field="scaling summary")
+
+    member_root = tmp_path / "member"
+    member_root.mkdir()
+    for name, raw_file in {
+        "checkpoint.pt": b"checkpoint-before",
+        "checkpoint_authorization.json": b"{}",
+        "training_report.json": b"{}",
+    }.items():
+        (member_root / name).write_bytes(raw_file)
+    contracts = {
+        name: {
+            "bytes": (member_root / name).stat().st_size,
+            "sha256": calibration._sha256(member_root / name),
+        }
+        for name in calibration.EXPECTED_TRAINING_FILES
+    }
+    calibration._write_json(
+        member_root / "artifact_manifest.json", {"files": contracts}
+    )
+    member_receipt = calibration._member_input_snapshot(member_root)["receipt"]
+    (member_root / "checkpoint.pt").write_bytes(b"checkpoint-after")
+    with pytest.raises((ValueError, RuntimeError), match="changed"):
+        calibration._verify_member_receipt(member_receipt)
+
+
+def test_member_input_snapshot_rejects_symlink_root(tmp_path: Path) -> None:
+    target = tmp_path / "member"
+    target.mkdir()
+    link = tmp_path / "member-link"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="directory is invalid"):
+        calibration._member_input_snapshot(link)
+
+
+def test_calibration_ledger_receipt_allows_later_policy_events_only() -> None:
+    events = [
+        {"run_id": "chain-1", "role": role, "artifact_sha256": str(index)}
+        for index, role in enumerate(
+            ("train", "early_stop", "model_calibration"), 1
+        )
+    ]
+    recorded = {
+        "file": {"path": "/tmp/ledger.json", "bytes": 1, "sha256": "a" * 64},
+        "run_id": "chain-1",
+        "calibration_events": events,
+    }
+    current = {
+        "events": [
+            *events,
+            {"run_id": "chain-1", "role": "policy_selection"},
+            {"run_id": "other-run", "role": "train"},
+        ]
+    }
+    stable_roles = {"train", "early_stop", "model_calibration"}
+    calibration.input_snapshot.validate_current_ledger_state(
+        recorded, current, stable_roles=stable_roles
+    )
+
+    changed = copy.deepcopy(current)
+    changed["events"][0]["artifact_sha256"] = "forged"
+    with pytest.raises(ValueError, match="ledger evidence changed"):
+        calibration.input_snapshot.validate_current_ledger_state(
+            recorded, changed, stable_roles=stable_roles
+        )
+
+
+def test_calibration_publish_is_atomic_no_clobber(tmp_path: Path) -> None:
+    source = tmp_path / "staging"
+    destination = tmp_path / "published"
+    source.mkdir()
+    destination.mkdir()
+    (source / "candidate").write_text("new")
+    (destination / "owner").write_text("existing")
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        calibration._publish_tree_noreplace(source, destination)
+    assert (source / "candidate").read_text() == "new"
+    assert (destination / "owner").read_text() == "existing"
+
+
 def test_strict_loader_returns_outcome_calibration_on_each_member(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    dataset = _receipt_loader_dataset(tmp_path)
     root = tmp_path / "calibration"
     root.mkdir()
-    checkpoint = "a" * 64
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text('{"selected": "small-gru"}\n')
+    _raw, summary_receipt = calibration._read_regular_snapshot(
+        summary_path, field="scaling summary"
+    )
+    _raw, _payload, role_manifest_receipt = calibration._json_snapshot(
+        dataset.manifest_path, field="role manifest"
+    )
+    role_file_receipts = calibration._role_input_receipts(dataset)
+    _raw, ledger_file_receipt = calibration._read_regular_snapshot(
+        dataset.ledger_path, field="exposure ledger"
+    )
+    member_root = tmp_path / "member-101"
+    member_root.mkdir()
+    for name, raw in {
+        "checkpoint.pt": b"checkpoint",
+        "checkpoint_authorization.json": b"{\"frozen\": true}\n",
+        "training_report.json": b"{\"completed\": true}\n",
+    }.items():
+        (member_root / name).write_bytes(raw)
+    member_contracts = {
+        name: {
+            "bytes": (member_root / name).stat().st_size,
+            "sha256": calibration._sha256(member_root / name),
+        }
+        for name in calibration.EXPECTED_TRAINING_FILES
+    }
+    calibration._write_json(
+        member_root / "artifact_manifest.json", {"files": member_contracts}
+    )
+    member_receipt = calibration._member_input_snapshot(member_root)["receipt"]
+    checkpoint = member_receipt["files"]["checkpoint.pt"]["sha256"]
     member = {
         "seed": 101,
         "run_id": "member-101",
-        "output_dir": "/tmp/member-101",
+        "output_dir": str(member_root.resolve()),
         "checkpoint_sha256": checkpoint,
-        "checkpoint_authorization_sha256": "4" * 64,
-        "training_report_sha256": "5" * 64,
-        "training_artifact_manifest_sha256": "6" * 64,
+        "checkpoint_authorization_sha256": member_receipt["files"]
+        ["checkpoint_authorization.json"]["sha256"],
+        "training_report_sha256": member_receipt["files"]
+        ["training_report.json"]["sha256"],
+        "training_artifact_manifest_sha256": member_receipt["files"]
+        ["artifact_manifest.json"]["sha256"],
         "scale": "small",
         "encoder": "gru",
         "parameters": 1000,
-        "role_manifest_sha256": "b" * 64,
+        "role_manifest_sha256": dataset.manifest_sha256,
         "selection_key_order": list(calibration.SELECTION_KEY_ORDER),
         "early_stop_selection_key": [0.1, 0.2, 0.3, 0.4],
         "source_completed_passes": None,
@@ -1199,10 +1426,22 @@ def test_strict_loader_returns_outcome_calibration_on_each_member(
         "incomplete_smoke": True,
         "training_device": "cpu",
     }
+    input_receipts = calibration._input_receipts_payload(
+        summary=summary_receipt,
+        role_manifest=role_manifest_receipt,
+        role_files=role_file_receipts,
+        ledger={
+            "file": ledger_file_receipt,
+            "run_id": dataset.run_id,
+            "calibration_events": dataset._events,
+        },
+        members=[member_receipt],
+    )
     ensemble = {
         "schema": calibration.ENSEMBLE_MANIFEST_SCHEMA,
         "run_id": "chain-1",
-        "role_manifest_sha256": "b" * 64,
+        "role_manifest_sha256": dataset.manifest_sha256,
+        "scaling_summary_sha256": summary_receipt["sha256"],
         "selected_configuration": {
             "scale": "small", "encoder": "gru", "requested_seeds": [101],
             "median_selection_key": [0.1, 0.2, 0.3, 0.4],
@@ -1228,9 +1467,9 @@ def test_strict_loader_returns_outcome_calibration_on_each_member(
     outcome = _outcome_payload(
         checkpoint,
         seed=101,
-        role_manifest="b" * 64,
-        role_artifact="3" * 64,
-        opponents=["national_v3"],
+        role_manifest=dataset.manifest_sha256,
+        role_artifact=dataset._role_artifact_sha256("model_calibration"),
+        opponents=dataset.roles["model_calibration"],
     )
     value_lower = {
         "target_preprocessing": "symmetric_clip_before_residual",
@@ -1245,11 +1484,13 @@ def test_strict_loader_returns_outcome_calibration_on_each_member(
     payload = {
         "schema": calibration.ENSEMBLE_CALIBRATION_SCHEMA,
         "run_id": "chain-1",
-        "role_manifest_sha256": "b" * 64,
+        "role_manifest_sha256": dataset.manifest_sha256,
         "checkpoint_sha256": ensemble_sha,
         "calibration_role": "model_calibration",
-        "calibration_artifact_sha256": "3" * 64,
-        "opponents": ["national_v3"],
+        "calibration_artifact_sha256": dataset._role_artifact_sha256(
+            "model_calibration"
+        ),
+        "opponents": dataset.roles["model_calibration"],
         "value_lower": value_lower,
         "response_temperature": {"temperature": 1.0},
         "policy_evidence_used": False,
@@ -1267,6 +1508,7 @@ def test_strict_loader_returns_outcome_calibration_on_each_member(
             "outcome_calibration_payload_sha256": [outcome["payload_sha256"]],
         },
         "outcome_calibrations": [outcome],
+        "input_receipts_sha256": input_receipts["payload_sha256"],
         "source_collection_complete": False,
         "deployment_policy_value": False,
         "strength_evidence": False,
@@ -1278,18 +1520,25 @@ def test_strict_loader_returns_outcome_calibration_on_each_member(
         "frozen": True,
         "early_stop_complete": True,
         "run_id": "chain-1",
-        "role_manifest_sha256": "b" * 64,
+        "role_manifest_sha256": dataset.manifest_sha256,
         "training_roles": ["train", "early_stop"],
         "training_artifact_sha256": {
-            "train": "1" * 64, "early_stop": "2" * 64,
+            role: dataset._role_artifact_sha256(role)
+            for role in ("train", "early_stop")
         },
         "checkpoint_sha256": ensemble_sha,
     }
     calibration._write_json(root / "checkpoint_authorization.json", authorization)
+    calibration_code = calibration._calibration_code_artifacts()
+    calibration_code_sha256 = (
+        calibration._calibration_code_artifacts_sha256(calibration_code)
+    )
     report = {
         "schema": calibration.CALIBRATION_REPORT_SCHEMA,
         "run_id": "chain-1",
-        "role_manifest_sha256": "b" * 64,
+        "scaling_summary": str(summary_path.resolve()),
+        "role_manifest": str(dataset.manifest_path),
+        "role_manifest_sha256": dataset.manifest_sha256,
         "ensemble_manifest_sha256": ensemble_sha,
         "calibration_payload_sha256": payload["payload_sha256"],
         "member_checkpoint_sha256": [checkpoint],
@@ -1304,6 +1553,10 @@ def test_strict_loader_returns_outcome_calibration_on_each_member(
         "calibration_tool_sha256": calibration._sha256(
             Path(calibration.__file__).resolve()
         ),
+        "calibration_code_artifacts": calibration_code,
+        "calibration_code_artifacts_sha256": calibration_code_sha256,
+        "input_receipts": input_receipts,
+        "input_receipts_sha256": input_receipts["payload_sha256"],
     }
     calibration._write_json(root / "calibration_report.json", report)
     files = calibration.EXPECTED_CALIBRATION_FILES
@@ -1321,24 +1574,32 @@ def test_strict_loader_returns_outcome_calibration_on_each_member(
         "calibration_tool_sha256": calibration._sha256(
             Path(calibration.__file__).resolve()
         ),
+        "calibration_code_artifacts": calibration_code,
+        "calibration_code_artifacts_sha256": calibration_code_sha256,
+        "input_receipts": input_receipts,
+        "input_receipts_sha256": input_receipts["payload_sha256"],
         "deployment_policy_value": False,
         "strength_evidence": False,
     })
     fake_member = {
         "seed": 101,
         "checkpoint_sha256": checkpoint,
-        "checkpoint_path": "/tmp/checkpoint.pt",
+        "checkpoint_path": str(member_root / "checkpoint.pt"),
         "early_stop_selection_key": [0.1, 0.2, 0.3, 0.4],
         "training_device": "cpu",
         "model": object(),
     }
-    monkeypatch.setattr(
-        calibration, "verify_members", lambda *args, **kwargs: [fake_member]
-    )
+    member_loads = []
+
+    def verify_members(*_args, **_kwargs):
+        member_loads.append(True)
+        return [fake_member]
+
+    monkeypatch.setattr(calibration, "verify_members", verify_members)
 
     loaded = calibration.load_calibrated_ensemble(
         root,
-        dataset=_LoaderDataset(),
+        dataset=dataset,
         run_id="chain-1",
         device="cpu",
         formal=False,
@@ -1347,6 +1608,87 @@ def test_strict_loader_returns_outcome_calibration_on_each_member(
     assert loaded["outcome_uncertainty_std_weight"] == 1.25
     assert loaded["outcome_calibrations"] == [outcome]
     assert loaded["members"][0]["outcome_calibration"] == outcome
+    assert loaded["calibration_code_artifacts"] == calibration_code
+    assert loaded["calibration_code_artifacts_sha256"] == (
+        calibration_code_sha256
+    )
+    assert member_loads == [True]
+
+    def install_receipts(receipts: dict) -> None:
+        unsigned_payload = dict(payload)
+        unsigned_payload.pop("payload_sha256", None)
+        unsigned_payload["input_receipts_sha256"] = receipts["payload_sha256"]
+        payload.clear()
+        payload.update({
+            **unsigned_payload,
+            "payload_sha256": calibration._canonical_sha256(unsigned_payload),
+        })
+        calibration._write_json(root / "calibration.json", payload)
+        report.update({
+            "input_receipts": receipts,
+            "input_receipts_sha256": receipts["payload_sha256"],
+            "calibration_payload_sha256": payload["payload_sha256"],
+        })
+        calibration._write_json(root / "calibration_report.json", report)
+        manifest = calibration._load_json(
+            root / "artifact_manifest.json", field="artifact manifest"
+        )
+        manifest.update({
+            "input_receipts": receipts,
+            "input_receipts_sha256": receipts["payload_sha256"],
+        })
+        manifest["files"] = {
+            name: {
+                "bytes": (root / name).stat().st_size,
+                "sha256": calibration._sha256(root / name),
+            }
+            for name in calibration.EXPECTED_CALIBRATION_FILES
+        }
+        calibration._write_json(root / "artifact_manifest.json", manifest)
+
+    empty = copy.deepcopy(input_receipts)
+    empty.update({"role_files": {}, "member_inputs": []})
+    empty["exposure_ledger"]["calibration_events"] = []
+    unsigned_receipts = dict(empty)
+    unsigned_receipts.pop("payload_sha256")
+    empty["payload_sha256"] = calibration._canonical_sha256(unsigned_receipts)
+    install_receipts(empty)
+    with pytest.raises(ValueError, match="input receipt bindings"):
+        calibration.load_calibrated_ensemble(
+            root, dataset=dataset, run_id="chain-1", device="cpu", formal=False,
+        )
+    assert member_loads == [True]
+
+    bogus = copy.deepcopy(input_receipts)
+    bogus["scaling_summary"] = {
+        "path": "/tmp/bogus-summary.json", "bytes": 1, "sha256": "7" * 64,
+    }
+    unsigned_receipts = dict(bogus)
+    unsigned_receipts.pop("payload_sha256")
+    bogus["payload_sha256"] = calibration._canonical_sha256(unsigned_receipts)
+    install_receipts(bogus)
+    dataset.require_collection_boundary = lambda expected_passes=160: {}
+    with pytest.raises(ValueError, match="input receipt bindings"):
+        calibration.load_calibrated_ensemble(
+            root, dataset=dataset, run_id="chain-1", device="cpu", formal=True,
+        )
+    assert member_loads == [True]
+    install_receipts(input_receipts)
+
+    changed_code = copy.deepcopy(calibration_code)
+    changed_code["files"]["calibrate_match_outcome_v4"]["sha256"] = "f" * 64
+    with monkeypatch.context() as changed:
+        changed.setattr(
+            calibration, "_calibration_code_artifacts", lambda: changed_code
+        )
+        with pytest.raises(ValueError, match="bindings are invalid"):
+            calibration.load_calibrated_ensemble(
+                root,
+                dataset=dataset,
+                run_id="chain-1",
+                device="cpu",
+                formal=False,
+            )
 
     report["calibration_tool_sha256"] = "f" * 64
     calibration._write_json(root / "calibration_report.json", report)
@@ -1361,7 +1703,7 @@ def test_strict_loader_returns_outcome_calibration_on_each_member(
     with pytest.raises(ValueError, match="bindings are invalid"):
         calibration.load_calibrated_ensemble(
             root,
-            dataset=_LoaderDataset(),
+            dataset=dataset,
             run_id="chain-1",
             device="cpu",
             formal=False,
