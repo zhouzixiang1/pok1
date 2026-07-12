@@ -16,7 +16,7 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-RUNDIR="${POK_ARENA_RUNDIR:-/tmp/pok-arena-ctl}"
+RUNDIR="${POK_ARENA_RUNDIR:-$PWD/pok-arena-ctl}"  # 默认当前目录 ./pok-arena-ctl
 PY="${PY:-$HERE/.venv/bin/python}"
 TCP_PORT="${POK_ARENA_TCP_PORT:-50101}"
 WEB_PORT="${POK_ARENA_WEB_PORT:-50180}"

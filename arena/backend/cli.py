@@ -36,7 +36,7 @@ app = typer.Typer(
 thp_app = typer.Typer(help="THP 棋谱导出/列表", no_args_is_help=True)
 app.add_typer(thp_app, name="thp")
 
-DEFAULT_RECORDS_DIR = Path("~/.local/share/pok-arena/records").expanduser()
+DEFAULT_RECORDS_DIR = Path("records")  # 默认当前目录 ./records
 
 
 def _setup_logging(log_file: str | None, log_level: str) -> None:

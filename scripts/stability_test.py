@@ -151,7 +151,7 @@ async def main() -> None:
     print(f"=== 稳定性测试: {len(pairs)} 场 × {args.hands} 手, "
           f"{args.parallel} 路并行 ===", flush=True)
 
-    records_root = Path("/tmp/stability-records")
+    records_root = Path("stability-records")  # 默认当前目录 ./stability-records
     shutil.rmtree(records_root, ignore_errors=True)
     records_root.mkdir(parents=True)
     log: list = []

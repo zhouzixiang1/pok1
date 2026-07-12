@@ -30,7 +30,7 @@ CONNECT_TIMEOUT_SEC = 20.0
 NAME_TIMEOUT_SEC = 30.0
 SSE_QUEUE_MAXSIZE = 512
 SSE_KEEPALIVE_SEC = 15.0
-DEFAULT_RECORDS_DIR = Path("~/.local/share/pok-arena/records").expanduser()
+DEFAULT_RECORDS_DIR = Path("records")  # 默认当前目录 ./records(可 --records-dir 覆盖)
 
 
 class MatchManager:

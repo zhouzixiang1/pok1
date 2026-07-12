@@ -60,3 +60,4 @@ STABILITY_REPORT.json
 # 稳定性测试日志归档(大,不 commit)
 stability-logs.tar.gz
 stability-records/
+pok-arena-ctl/
