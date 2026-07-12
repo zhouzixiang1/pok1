@@ -268,16 +268,17 @@ def convert_to_legacy_recovery_prefix(
     collection_path = root / "collection_manifest.json"
     collection = json.loads(collection_path.read_text(encoding="utf-8"))
     ratings_sha = pool_rows[completed_prefix - 1]["ratings_sha256"]
+    current_collector_sha = collection["resume_contract"]["collector_sha256"]
     reviewed = {
         "pool_snapshots": prefix_pool,
-        **{
-            name: "b" * 64
-            for name in (
-                "collection_manifest", "collector_state", "recovery_plan",
-                "legacy_collector", "current_collector", "identity_migration",
-                "archived_ratings", "opponent_registry",
-            )
-        },
+        "collection_manifest": "5" * 64,
+        "collector_state": "6" * 64,
+        "recovery_plan": "7" * 64,
+        "legacy_collector": "8" * 64,
+        "current_collector": current_collector_sha,
+        "identity_migration": "9" * 64,
+        "archived_ratings": ratings_sha,
+        "opponent_registry": "b" * 64,
         **{
             f"{prefix}_{split}.jsonl": "3" * 64
             for prefix in ("cf", "opponent_actions")
@@ -296,23 +297,23 @@ def convert_to_legacy_recovery_prefix(
         "reviewed_hashes": reviewed,
         "completed_plan_sha256": completed_hashes,
         "before": {
-            "collection_manifest_sha256": "5" * 64,
-            "collector_state_sha256": "6" * 64,
+            "collection_manifest_sha256": reviewed["collection_manifest"],
+            "collector_state_sha256": reviewed["collector_state"],
             "pool_snapshots_sha256": prefix_pool,
-            "recovery_plan_sha256": "7" * 64,
-            "legacy_collector_sha256": "8" * 64,
+            "recovery_plan_sha256": reviewed["recovery_plan"],
+            "legacy_collector_sha256": reviewed["legacy_collector"],
         },
         "archived_ratings": {
-            "ratings_sha256": ratings_sha,
+            "ratings_sha256": reviewed["archived_ratings"],
             "ratings_snapshot_sha256": pool_rows[recovered - 1][
                 "ratings_snapshot_sha256"
             ],
-            "identity_migration_sha256": "9" * 64,
+            "identity_migration_sha256": reviewed["identity_migration"],
         },
         "tail": {"fixture": {"value_rows": 1, "behavior_rows": 1}},
         "after": {
             "collector_schema_version": collector.COLLECTION_CONTRACT_SCHEMA_VERSION,
-            "collector_sha256": collection["resume_contract"]["collector_sha256"],
+            "collector_sha256": current_collector_sha,
             "pass_plan_schema_version": collector.PASS_PLAN_SCHEMA_VERSION,
             "recovery_plan_sha256": _sha(
                 (plan_root / f"pass_{recovered:04d}.json").read_bytes()

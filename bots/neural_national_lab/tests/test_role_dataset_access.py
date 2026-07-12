@@ -601,7 +601,7 @@ def test_formal_collection_boundary_requires_exact_atomic_160_passes(
     }
 
 
-def test_formal_boundary_accepts_strict_75_plus_recovered_76_prefix(
+def test_formal_boundary_rejects_legacy_recovery_resigned_directly_to_schema6(
     tmp_path: Path,
 ) -> None:
     manifest_path, ledger_path = _dataset(tmp_path)
@@ -611,11 +611,11 @@ def test_formal_boundary_accepts_strict_75_plus_recovered_76_prefix(
     )
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    dataset = access.RoleDatasetAccess(
-        manifest_path, ledger_path=ledger_path, run_id="legacy-recovered"
-    )
-
-    assert dataset.require_collection_boundary()["source_completed_passes"] == 160
+    with pytest.raises(RuntimeError, match="current-collector binding"):
+        access.RoleDatasetAccess(
+            manifest_path, ledger_path=ledger_path, run_id="legacy-recovered"
+        )
+    assert not ledger_path.exists()
 
 
 def test_formal_boundary_rejects_re_signed_invalid_legacy_receipt(
@@ -639,7 +639,9 @@ def test_formal_boundary_rejects_re_signed_invalid_legacy_receipt(
     manifest["collection_manifest_sha256"] = _sha(raw)
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="completed-plan prefix|boundary"):
+    with pytest.raises(
+        RuntimeError, match="completed-plan prefix|boundary|current-collector binding"
+    ):
         access.RoleDatasetAccess(
             manifest_path, ledger_path=ledger_path, run_id="invalid-recovery"
         )

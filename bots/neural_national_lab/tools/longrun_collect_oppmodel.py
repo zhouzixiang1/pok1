@@ -7,7 +7,7 @@ Designed to run detached under ``nohup`` for hours. Each pass:
      never rotated across splits within one collection run.
   3. Rotates early/middle/late hand windows so cross-hand features receive
      actual match-history coverage. Probes emit hand, tail, and match deltas.
-  4. Runs port-isolated probes with at most four concurrent workers.
+  4. Runs port-isolated probes under the host-wide twelve-match capacity lease.
   5. Appends annotated rows to cumulative train/val/held_out JSONL and logs
      progress.
 
@@ -46,9 +46,12 @@ DECK_SEED_SLOTS_PER_PASS = 1024
 DEFAULT_DECK_SEED_BASE = 5_000_000
 DEFAULT_DECK_SEED_GUARD = 10
 DEFAULT_BOT_SEED_BASE = 1_000_000
-COLLECTION_CONTRACT_SCHEMA_VERSION = 5
+COLLECTION_CONTRACT_SCHEMA_VERSION = 6
 RATINGS_SNAPSHOT_SCHEMA_VERSION = 1
 PASS_PLAN_SCHEMA_VERSION = 2
+MAX_OUTER_WORKERS = 6
+MAX_PROBE_WORKERS = 4
+MAX_CONCURRENT_NATIVE_MATCHES = 12
 
 
 def _operator_root() -> Path:
@@ -205,6 +208,7 @@ def probe_one(candidate: str, opponent_dir: str, split: str, name: str,
     tag = f"{split}_{name}_s{seed_base}_b{bot_seed_base}"
     tmp_jsonl = Path(out_dir) / f"_tmp_{tag}.jsonl"
     tmp_behavior = Path(out_dir) / f"_tmp_behavior_{tag}.jsonl"
+    tmp_summary = Path(out_dir) / f"_tmp_{tag}.json"
     cmd = [
         sys.executable, str(TOOLS / "native_tcp_counterfactual_probe.py"),
         "--candidate", candidate, "--opponent", opponent_dir,
@@ -216,16 +220,87 @@ def probe_one(candidate: str, opponent_dir: str, split: str, name: str,
         "--probe-workers", str(probe_workers),
         "--decision-sampling", decision_sampling,
         "--timeout-sec", str(timeout_sec),
-        "--output", str(Path(out_dir) / f"_tmp_{tag}.json"),
+        "--output", str(tmp_summary),
         "--jsonl-output", str(tmp_jsonl),
         "--behavior-jsonl-output", str(tmp_behavior),
     ]
     try:
         forced_waves = math.ceil(max_decisions * max_alternatives / max(1, probe_workers))
-        subprocess.run(cmd, cwd=str(ROOT), timeout=timeout_sec * (1 + forced_waves) + 60,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        pass
+        probe_env = os.environ.copy()
+        inherited_pythonpath = probe_env.get("PYTHONPATH", "").strip()
+        probe_env["PYTHONPATH"] = os.pathsep.join(
+            value for value in (str(ROOT), inherited_pythonpath) if value
+        )
+        completed = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            timeout=timeout_sec * (1 + forced_waves) + 60,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=probe_env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stderr = exc.stderr.decode("utf-8", "replace") if isinstance(
+            exc.stderr, bytes
+        ) else str(exc.stderr or "")
+        raise RuntimeError(
+            f"counterfactual probe timed out for {name}: {stderr[-2000:]}"
+        ) from exc
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"counterfactual probe failed for {name} rc={completed.returncode}: "
+            f"{str(completed.stderr or '')[-2000:]}"
+        )
+    missing_outputs = [
+        str(path) for path in (tmp_summary, tmp_jsonl, tmp_behavior)
+        if not path.is_file()
+    ]
+    if missing_outputs:
+        raise RuntimeError(
+            f"counterfactual probe omitted outputs for {name}: {missing_outputs}"
+        )
+    try:
+        summary = json.loads(tmp_summary.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"counterfactual probe summary is invalid for {name}"
+        ) from exc
+    def read_probe_rows(path: Path) -> list[dict]:
+        rows = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        f"invalid probe JSONL row in {path}"
+                    ) from exc
+                if not isinstance(row, dict):
+                    raise RuntimeError(f"non-object probe JSONL row in {path}")
+                rows.append(row)
+        return rows
+    value_rows = read_probe_rows(tmp_jsonl)
+    behavior_rows = read_probe_rows(tmp_behavior)
+    if (
+        not isinstance(summary, dict)
+        or summary.get("execution_mode") != "native_tcp_counterfactual"
+        or summary.get("baseline_passed_compliance") is not True
+        or summary.get("hands") != hands
+        or summary.get("deck_seed_base") != seed_base
+        or summary.get("bot_seed_base") != bot_seed_base
+        or Path(str(summary.get("candidate_path") or "")).resolve()
+        != Path(candidate).resolve()
+        or Path(str(summary.get("opponent_path") or "")).resolve()
+        != Path(opponent_dir).resolve()
+        or summary.get("rows") != value_rows
+        or summary.get("behavior_rows") != behavior_rows
+    ):
+        raise RuntimeError(
+            f"counterfactual probe summary contract failed for {name}"
+        )
     def append_annotated(tmp_path: Path, cumulative_name: str) -> int:
         if not tmp_path.exists():
             return 0
@@ -233,10 +308,16 @@ def probe_one(candidate: str, opponent_dir: str, split: str, name: str,
         annotated: list[dict] = []
         with open(tmp_path, "r", encoding="utf-8") as src:
             for line in src:
+                if not line.strip():
+                    continue
                 try:
                     obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        f"invalid probe JSONL row in {tmp_path}"
+                    ) from exc
+                if not isinstance(obj, dict):
+                    raise RuntimeError(f"non-object probe JSONL row in {tmp_path}")
                 obj["_split"] = split
                 obj["_opponent_label"] = name
                 obj["_seed_base"] = seed_base
@@ -263,8 +344,14 @@ def probe_one(candidate: str, opponent_dir: str, split: str, name: str,
                             continue
                         try:
                             obj = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
+                        except json.JSONDecodeError as exc:
+                            raise RuntimeError(
+                                f"invalid cumulative JSONL row in {cum}"
+                            ) from exc
+                        if not isinstance(obj, dict):
+                            raise RuntimeError(
+                                f"non-object cumulative JSONL row in {cum}"
+                            )
                         existing[row_key(obj)] = obj
             pending = []
             for obj in annotated:
@@ -293,7 +380,7 @@ def probe_one(candidate: str, opponent_dir: str, split: str, name: str,
         tmp_behavior, f"opponent_actions_{split}.jsonl"
     )
     try:
-        (Path(out_dir) / f"_tmp_{tag}.json").unlink(missing_ok=True)
+        tmp_summary.unlink(missing_ok=True)
     except Exception:
         pass
     return rows, behavior_rows, name
@@ -766,12 +853,15 @@ def main(argv=None) -> int:
             "--allow-fallback-pool is incompatible with frozen match-scope "
             "ratings evidence"
         )
-    args.workers = max(1, min(4, int(args.workers)))
-    args.probe_workers = max(1, min(4, int(args.probe_workers)))
+    args.workers = max(1, min(MAX_OUTER_WORKERS, int(args.workers)))
+    args.probe_workers = max(1, min(MAX_PROBE_WORKERS, int(args.probe_workers)))
     if args.passes <= 0:
         raise SystemExit("--passes must be positive")
-    if args.workers * args.probe_workers > 4:
-        raise SystemExit("--workers * --probe-workers must not exceed 4 native matches")
+    if args.workers * args.probe_workers > MAX_CONCURRENT_NATIVE_MATCHES:
+        raise SystemExit(
+            "--workers * --probe-workers must not exceed "
+            f"{MAX_CONCURRENT_NATIVE_MATCHES} native matches"
+        )
     if args.hands <= 0 or args.deck_seed_guard < 0:
         raise SystemExit("--hands must be positive and --deck-seed-guard non-negative")
     ratings_path = Path(args.ratings).expanduser().resolve()
@@ -875,6 +965,11 @@ def main(argv=None) -> int:
                 f"--passes cannot shrink below {minimum_passes} for {out_dir}"
             )
         if args.passes > recorded_passes:
+            if "concurrency_migration" in collection_config:
+                raise SystemExit(
+                    "--passes cannot extend a concurrency-migrated collection; "
+                    "the reviewed target is fixed"
+                )
             collection_config = dict(collection_config)
             collection_config["passes_requested"] = args.passes
             _write_json_atomic(manifest_path, collection_config)
