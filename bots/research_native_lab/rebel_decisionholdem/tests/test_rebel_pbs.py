@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 
 from ..common_runtime.kuhn import CARDS, is_terminal
-from ..rebel_like.pbs import KuhnPublicBeliefState
+from ..rebel_like.pbs import KuhnMarginalPublicBeliefState, KuhnPublicBeliefState
 from ..rebel_like.toy_loop import fixture_policy, run_toy_selfplay
 
 
-def test_exact_joint_pbs_bayes_update_and_card_exclusion() -> None:
+def test_exact_joint_oracle_bayes_update_and_card_exclusion() -> None:
     pbs = KuhnPublicBeliefState.initial()
     assert pbs.range_for(0) == pytest.approx({card: 1.0 / 3.0 for card in CARDS})
     assert pbs.range_for(1) == pytest.approx({card: 1.0 / 3.0 for card in CARDS})
@@ -25,6 +25,39 @@ def test_exact_joint_pbs_bayes_update_and_card_exclusion() -> None:
     conditional = posterior.conditional_opponent_range(0, 2)
     assert conditional[2] == 0.0
     assert conditional[0] + conditional[1] == pytest.approx(1.0)
+
+
+def test_paper_shaped_marginals_project_and_bayes_update_consistently() -> None:
+    joint = KuhnPublicBeliefState.initial()
+    marginal = KuhnMarginalPublicBeliefState.initial()
+    assert joint.to_marginal_projection() == marginal
+
+    bet_likelihood = {
+        0: {"check": 0.9, "bet": 0.1},
+        1: {"check": 0.8, "bet": 0.2},
+        2: {"check": 0.3, "bet": 0.7},
+    }
+    assert marginal.action_probability("bet", bet_likelihood) == pytest.approx(
+        joint.action_probability("bet", bet_likelihood)
+    )
+    marginal_after = marginal.observe("bet", bet_likelihood)
+    joint_after = joint.observe("bet", bet_likelihood)
+
+    # The acting player's Delta-S Bayes update agrees with exact joint truth.
+    assert marginal_after.range_for(0) == pytest.approx(joint_after.range_for(0))
+    assert marginal_after.range_for(0) == pytest.approx({0: 0.1, 1: 0.2, 2: 0.7})
+
+    # A pair of marginal reach ranges does not carry cross-player blockers.  The
+    # paper-shaped update leaves the non-acting range unchanged, while the exact
+    # toy oracle projects the blocker-induced correlation for validation.
+    assert marginal_after.range_for(1) == pytest.approx(
+        {card: 1.0 / 3.0 for card in CARDS}
+    )
+    joint_projection = KuhnMarginalPublicBeliefState.from_joint(joint_after)
+    assert joint_projection.range_for(1) == pytest.approx(
+        {0: 0.45, 1: 0.40, 2: 0.15}
+    )
+    assert joint_projection.range_for(1) != pytest.approx(marginal_after.range_for(1))
 
 
 def test_zero_likelihood_observation_is_rejected() -> None:
@@ -52,6 +85,10 @@ def test_toy_loop_is_deterministic_terminal_and_zero_sum() -> None:
     assert is_terminal(first["terminal_history"])
     assert sum(first["utility"]) == 0.0
     assert first["trace"]
+    assert "marginal_before" in first["trace"][0]
+    assert "joint_oracle_before" in first["trace"][0]
+    assert "terminal_marginal_pbs" in first
+    assert "terminal_joint_oracle" in first
 
 
 def test_on_policy_pbs_values_preserve_zero_sum_in_expectation() -> None:

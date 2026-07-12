@@ -45,6 +45,13 @@
       "license": "AGPL-3.0",
       "license_sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
       "availability": "blueprint/game-tree source plus binary interfaces; real-time search source and required blueprint/cluster assets are incomplete",
+      "fidelity_conflicts": [
+        "paper and README opening say Linear CFR",
+        "README framework and detail sections call Multi_Blureprint.h and BlueprintMCCFR.cpp MCCFR",
+        "tracked tree contains BlueprintMCCFR.h rather than the README-named BlueprintMCCFR.cpp",
+        "README-named Depth_limit_Search.h is absent from the tracked tree",
+        "sevencards_strength.bin, four street cluster files, and blueprint_strategy.dat are absent"
+      ],
       "role": "read-only availability and symbol audit; no code copied"
     },
     {

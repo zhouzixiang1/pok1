@@ -25,6 +25,7 @@
     "national_v_packaging",
     "agpl_code_copy",
     "neural_value_training",
-    "claiming_decisionholdem_resolver_fidelity"
+    "claiming_decisionholdem_resolver_fidelity",
+    "claiming_toy_lcfr_resolves_decisionholdem_blueprint_fidelity"
   ]
 }

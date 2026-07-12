@@ -13,7 +13,7 @@ from ..common_runtime.kuhn import (
     legal_actions,
     terminal_utility,
 )
-from .pbs import KuhnPublicBeliefState
+from .pbs import KuhnMarginalPublicBeliefState, KuhnPublicBeliefState
 
 
 def fixture_policy() -> StrategyProfile:
@@ -60,40 +60,53 @@ def run_toy_selfplay(deal: Deal = (0, 2), seed: int = 7) -> dict[str, object]:
         raise ValueError(f"invalid Kuhn deal: {deal}")
     rng = Random(seed)
     profile = fixture_policy()
-    pbs = KuhnPublicBeliefState.initial()
+    marginal_pbs = KuhnMarginalPublicBeliefState.initial()
+    joint_oracle = KuhnPublicBeliefState.initial()
     trace: list[dict[str, object]] = []
 
-    while not is_terminal(pbs.history):
-        actor = current_player(pbs.history)
-        actions = legal_actions(pbs.history)
-        probabilities = profile[(actor, deal[actor], pbs.history)]
+    while not is_terminal(marginal_pbs.history):
+        if marginal_pbs.history != joint_oracle.history:
+            raise AssertionError("marginal PBS and joint oracle histories diverged")
+        actor = current_player(marginal_pbs.history)
+        actions = legal_actions(marginal_pbs.history)
+        probabilities = profile[(actor, deal[actor], marginal_pbs.history)]
         action = _sample_action(probabilities, actions, rng)
         card_policy = {
-            card: profile[(actor, card, pbs.history)] for card in CARDS
+            card: profile[(actor, card, marginal_pbs.history)] for card in CARDS
         }
-        before = pbs
-        action_probability = before.action_probability(action, card_policy)
-        pbs = before.observe(action, card_policy)
+        marginal_before = marginal_pbs
+        joint_before = joint_oracle
+        marginal_probability = marginal_before.action_probability(action, card_policy)
+        joint_probability = joint_before.action_probability(action, card_policy)
+        marginal_pbs = marginal_before.observe(action, card_policy)
+        joint_oracle = joint_before.observe(action, card_policy)
         trace.append(
             {
                 "actor": actor,
                 "action": action,
-                "public_action_probability": action_probability,
-                "before": before.snapshot(),
-                "after": pbs.snapshot(),
+                "marginal_action_probability": marginal_probability,
+                "joint_oracle_action_probability": joint_probability,
+                "marginal_before": marginal_before.snapshot(),
+                "marginal_after": marginal_pbs.snapshot(),
+                "joint_oracle_before": joint_before.snapshot(),
+                "joint_oracle_after": joint_oracle.snapshot(),
             }
         )
 
     return {
         "route": "A1-rebel-like-toy-pbs",
-        "fidelity": "paper-faithful clean-room PBS update; no learned value/search",
+        "fidelity": (
+            "paper-shaped per-player marginal update plus exact-toy joint oracle "
+            "extension; no learned value/search"
+        ),
         "seed": seed,
         "deal": list(deal),
         "trace": trace,
-        "terminal_history": pbs.history,
+        "terminal_history": marginal_pbs.history,
         "utility": [
-            terminal_utility(deal, pbs.history, 0),
-            terminal_utility(deal, pbs.history, 1),
+            terminal_utility(deal, marginal_pbs.history, 0),
+            terminal_utility(deal, marginal_pbs.history, 1),
         ],
-        "terminal_pbs": pbs.snapshot(),
+        "terminal_marginal_pbs": marginal_pbs.snapshot(),
+        "terminal_joint_oracle": joint_oracle.snapshot(),
     }

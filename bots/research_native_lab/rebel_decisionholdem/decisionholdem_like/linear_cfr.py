@@ -3,7 +3,10 @@
 Brown and Sandholm (AAAI 2019) define LCFR as CFR with iteration ``t``
 weighting both regret updates and average-strategy contributions.  This module
 implements that definition directly.  It does not contain or derive from the
-AGPL DecisionHoldem source code.
+AGPL DecisionHoldem source code.  The DecisionHoldem paper and README opening
+say Linear CFR, while the same README's framework section calls the shipped
+blueprint code MCCFR.  This toy implementation validates the published LCFR
+claim but does not resolve that route-level fidelity conflict.
 """
 
 from __future__ import annotations

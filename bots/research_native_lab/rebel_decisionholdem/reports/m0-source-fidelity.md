@@ -8,20 +8,28 @@ Scope: A1 ReBeL-like and A2 DecisionHoldem-like only
 
 ## Decision
 
-M0 passes as a provenance and falsifiability gate, with two material fidelity
+M0 passes as a provenance and falsifiability gate, with three material fidelity
 gaps frozen up front:
 
 1. The official ReBeL repository is Apache-2.0 but explicitly contains only a
    Liar's Dice implementation. It has no HUNL source, poker model, poker
    checkpoint, or HUNL reproduction recipe. A poker implementation can only be
    called a **ReBeL-like clean-room reproduction**.
-2. The DecisionHoldem repository is AGPL-3.0. Its README requires external
+2. ReBeL Section 4 represents the learnable PBS as per-player distributions
+   `beta=(Delta S1,...,Delta SN)`. The six-deal Kuhn joint distribution in this
+   package is an exact toy truth/blocker oracle, not a source-faithful network
+   input. The implementation now exposes the paper-shaped marginal API
+   separately.
+3. The DecisionHoldem repository is AGPL-3.0. Its README requires external
    `sevencards_strength.bin`, four street-cluster files, and
    `blueprint_strategy.dat`. The repository contains `AlascasiaHoldem.so` and
    `blueprint.so`, but not corresponding real-time-search source. The paper says
    the diverse-opponent safe-search details will appear in later work. No such
    details are supplied by the audited repository. A clean-room route must not
-   claim exact resolver fidelity.
+   claim exact resolver fidelity. Separately, the paper and README opening call
+   the blueprint algorithm Linear CFR, while the README framework/detail section
+   calls it MCCFR. This unresolved LCFR-vs-MCCFR conflict also blocks an exact
+   blueprint reproduction claim.
 
 No third-party source code was copied into this package. In particular, no AGPL
 code or binary was imported, linked, translated, or used to generate code.
@@ -38,6 +46,11 @@ are in `../manifests/sources.json`.
   `7960a42750f3407ea9eb2c3333d4c2a7961f6df4`, archived read-only, Apache-2.0.
 - The README states that the repository contains only Liar's Dice. Released
   checkpoints cover Liar's Dice configurations, not poker.
+- Section 4 defines the PBS with per-player `Delta S_i` distributions. Exact
+  joint deal enumeration is useful as a toy label/blocker oracle but is an
+  additional validation representation, not the claimed learnable PBS shape.
+  The paper's illustrative poker PBS has 104 probabilities, 52 per player,
+  rather than a Cartesian joint tensor over both private-card spaces.
 - Relevant official symbols for audit, not copied implementation:
   `RlRunner::step`, `RlRunner::sample_state`, `beliefs_`,
   `normalize_beliefs_inplace`, `CFR::step`, `CFR::update_value_network`,
@@ -61,6 +74,13 @@ are in `../manifests/sources.json`.
   `multiprocess_blueprint`, and the best-response/CFV routines in
   `Exploitability.h`. These names only establish availability; this package does
   not copy their implementation.
+- The paper and the README introduction say Linear CFR. The same README later
+  labels `Multi_Blureprint.h` and a README-named `BlueprintMCCFR.cpp` as MCCFR.
+  At the audited commit the tracked file is actually `BlueprintMCCFR.h`, not
+  `.cpp`; `Multi_Blureprint.h` is present, but the README-named
+  `Depth_limit_Search.h` is absent. Therefore the shipped blueprint algorithm
+  cannot be identified as a faithful LCFR implementation from the published
+  material.
 - The paper reports 6,000 online iterations on preflop/flop and 10,000 on
   turn/river, but does not specify enough of the diverse-opponent safe resolver
   to reproduce it. The repository's actual real-time interface is binary-only.
@@ -73,7 +93,8 @@ are in `../manifests/sources.json`.
 
 | Paper formula/section | Official source symbol or asset | Current implementation | Fidelity label | Verification | Falsifier / next gate |
 |---|---|---|---|---|---|
-| Section 4, `beta=(Delta S1,...,Delta SN)` and Bayes update after a public action | `beliefs_`, `RlRunner::sample_state`, `normalize_beliefs_inplace` in the Liar's Dice code | `KuhnPublicBeliefState` retains all six legal joint deals and updates by action likelihood | paper-faithful clean-room | exact posterior, marginals, card exclusion, zero-evidence rejection | any posterior differs from direct Bayes calculation or creates an impossible same-card deal |
+| Section 4, `beta=(Delta S1,...,Delta SN)` and Bayes update after a public action | `beliefs_`, `RlRunner::sample_state`, `normalize_beliefs_inplace` in the Liar's Dice code | `KuhnMarginalPublicBeliefState` stores two normalized per-player ranges and Bayes-updates the acting range | paper-faithful clean-room for toy representation/update | joint-to-marginal projection; acting-range posterior equals exact joint truth; zero-evidence rejection | any acting-range posterior differs from direct Bayes calculation |
+| No direct paper counterpart: exact Kuhn joint-deal truth with card conflicts | none; verification-only extension | `KuhnPublicBeliefState` retains all six legal deals, projects marginals, and supplies exact blocker-aware labels | inspired verification extension / exact-toy oracle | impossible same-card deals, joint posterior, projection and zero-sum label tests | must never be used to claim the ReBeL learnable PBS is a six-deal joint tensor |
 | Eq. 1--2 and `v_hat: B -> R^(|S1|+|S2|)` | `get_query`, `CFR::get_hand_values`, `update_value_network` | only exact **on-policy** Kuhn continuation labels | unresolved fidelity gap | zero-sum expectation test | do not pass the next A1 gate until counterfactual values match an exact small-game oracle |
 | Algorithm 1 root solve -> value target -> sampled leaf PBS -> repeat | `RlRunner::step`, `sample_state_to_leaf`, Python `CFVExp` | deterministic PBS/action/update/terminal trace only | functional adaptation | same seed/deal produces identical complete trace | not self-play learning; cannot be cited as ReBeL training |
 | Section 5.1 CFR-D; Appendix-I CFR-AVG changes leaf PBS from current to average policy | `CFR`, `get_belief_propogation_strategy` in Liar's Dice code | not implemented | unresolved fidelity gap | future exact Kuhn/Leduc exploitability test | failure if more search increases exploitability or leaf beliefs use the wrong policy |
@@ -86,7 +107,7 @@ are in `../manifests/sources.json`.
 | Paper formula/section | Official source symbol or asset | Current implementation | Fidelity label | Verification | Falsifier / next gate |
 |---|---|---|---|---|---|
 | Section 2/Table 1 hand and action abstraction | game-tree headers exist; required cluster binaries mostly external | no HUNL abstraction | unresolved fidelity gap | future bucket/action manifest and collision tests | cannot call a toy solver a blueprint Bot |
-| Section 2 LCFR; Brown/Sandholm 2019 defines weight `t` for regret and average-strategy updates | AGPL symbols `blueprint_cfr`, `dfs_discount`, `update_strategy` inspected only | independent alternating full-tree Kuhn `LinearCFR`, with a frozen policy across each chance-complete player update | paper-faithful clean-room | exact BR/exploitability, deterministic convergence, bit-exact checkpoint/resume payload | 10,000-iteration exploitability over 0.02 or resumed state differs from uninterrupted state |
+| Section 2 says LCFR; README later says MCCFR; Brown/Sandholm 2019 defines LCFR weight `t` for regret and average-strategy updates | AGPL symbols `blueprint_cfr`, `dfs_discount`, `update_strategy` inspected only; tracked `BlueprintMCCFR.h`/`Multi_Blureprint.h` conflict with LCFR prose | independent alternating full-tree Kuhn `LinearCFR`, with a frozen policy across each chance-complete player update | paper-faithful clean-room **toy LCFR**, but unresolved fidelity gap for the DecisionHoldem blueprint | exact BR/exploitability, deterministic convergence, bit-exact checkpoint/resume payload | toy LCFR can pass while strict reproduction remains blocked; 10,000-iteration exploitability over 0.02 also fails the toy gate |
 | Approximately 200M iterations on abstract HUNL | external `blueprint_strategy.dat` and cluster files | not started | unresolved fidelity gap | later small-to-large scaling gate | no large training until small-game and common national contracts pass |
 | Off-tree online search, 6k/10k iterations | `AlascasiaHoldem.so`; source absent | not implemented | unresolved fidelity gap | future explicit subgame/tree/action tests | binary behavior cannot be inferred and represented as source-faithful |
 | Safe depth-limited solving with diverse opponent ranges | paper defers details; no source found | Coin Toss per-type alternative-payoff constraint from Brown/Sandholm 2017 | functional adaptation | plain resolver adds 0.25 exploitability; constrained resolver has zero per-type margin violation and zero delta | this oracle is not the DecisionHoldem resolver and cannot pass the HUNL safe-solving gate |
@@ -133,7 +154,9 @@ milestone:
 
 - **M0 source/provenance:** pass.
 - **M0 exact DecisionHoldem reproduction:** impossible with currently published
-  material; route is explicitly downgraded to clean-room/functional adaptation.
+  material; LCFR-vs-MCCFR, missing search source, and missing assets remain
+  strict blockers. The route is explicitly downgraded to clean-room/functional
+  adaptation.
 - **Small-game correctness prerequisite:** implemented and reported separately.
 - **Leduc:** not yet implemented; Kuhn plus the published Coin Toss safety
   example is the current small-game evidence.

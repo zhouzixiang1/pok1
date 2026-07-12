@@ -21,7 +21,10 @@ def run_validation(iterations: int = 10_000) -> dict[str, object]:
     return {
         "route": "A2-decisionholdem-like-small-game",
         "fidelity": {
-            "linear_cfr": "paper-faithful clean-room",
+            "linear_cfr": (
+                "paper-faithful clean-room toy LCFR; unresolved DecisionHoldem "
+                "LCFR-vs-MCCFR blueprint conflict"
+            ),
             "safe_resolve": "functional adaptation from NIPS 2017 Coin Toss; not DecisionHoldem implementation",
         },
         "iterations": solver.iterations_completed,
