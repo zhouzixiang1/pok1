@@ -19,6 +19,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..rating import (BIG_BLIND, DEFAULT_RATING, DEFAULT_RD, DEFAULT_VOL,
+                      bb_per_100, ci_normal, score_tanh, update as glicko2_update)
+from ..store import Store
 from .game_runtime import NationalTCPGameEngine
 from .tcp_server import ArenaTCPServer
 
@@ -51,6 +54,8 @@ class MatchManager:
         action_timeout_sec: float = ACTION_TIMEOUT_SEC,
         connect_timeout_sec: float = CONNECT_TIMEOUT_SEC,
         name_timeout_sec: float = NAME_TIMEOUT_SEC,
+        db_path: Path | str | None = None,
+        write_logs: bool = True,
     ) -> None:
         self.records_dir = Path(records_dir) if records_dir else DEFAULT_RECORDS_DIR
         self.event_name = event_name
@@ -59,6 +64,9 @@ class MatchManager:
         self.action_timeout_sec = action_timeout_sec
         self.connect_timeout_sec = connect_timeout_sec
         self.name_timeout_sec = name_timeout_sec
+        self.write_logs = write_logs
+        # 扩展:SQLite 存储(用户/对战/评分/对统计);db_path=None 则不持久化
+        self.store: Store | None = Store(db_path) if db_path else None
 
         self.server: ArenaTCPServer | None = None
         self.engine: NationalTCPGameEngine | None = None
@@ -211,6 +219,8 @@ class MatchManager:
             })
         self._finalize_thp()
         self._update_index(names)
+        self._persist_to_db(names)     # 扩展:DB(用户/对战/评分/对统计)
+        self._write_match_log(names)   # 扩展:logs/<match_id>/{events.jsonl, result.json}
         self._matches_played += 1
         self.engine = None
 
@@ -344,6 +354,112 @@ class MatchManager:
             return path.read_text(encoding="gb2312", errors="replace")
         except OSError:
             return None
+
+    # ── 扩展:DB 持久化 + Glicko-2 评分 + 日志 ────────────────
+
+    def _persist_to_db(self, names: list[str]) -> None:
+        """一场结束写 SQLite:users/matches/ratings(Glicko-2)/pair_stats(bb-100 CI)。"""
+        store = self.store
+        if store is None or self.engine is None:
+            return
+        earnings = list(getattr(self.engine, "total_earnings", [0, 0]))
+        hands = int(getattr(self.engine, "hand_num", 0) or 0)
+        store.ensure_user(names[0])
+        store.ensure_user(names[1])
+        if earnings[0] > earnings[1]:
+            winner = 0
+        elif earnings[1] > earnings[0]:
+            winner = 1
+        else:
+            winner = None
+        store.insert_match({
+            "match_id": self._match_id, "name_a": names[0], "name_b": names[1],
+            "hands_played": hands, "total_hands": self.hands_per_match,
+            "earnings_a": int(earnings[0]), "earnings_b": int(earnings[1]),
+            "winner": winner, "reason": self._forfeit_reason or "completed",
+            "net_bb_a": float(earnings[0]) / BIG_BLIND,
+            "thp_file": self._thp_path.name if self._thp_path else "",
+            "log_dir": f"logs/{self._match_id}",
+            "started_at": (self._match_started_at.isoformat(timespec="seconds")
+                           if self._match_started_at else ""),
+            "ended_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        self._update_ratings(store, names, earnings)
+        self._update_pair_stats(store, names)
+
+    def _update_ratings(self, store: Store, names: list[str],
+                        earnings: list[int]) -> None:
+        """Glicko-2 双向更新(tanh 量级分数,零和对称战绩)。"""
+        ra = store.get_rating(names[0]) or {"rating": DEFAULT_RATING, "rd": DEFAULT_RD,
+            "vol": DEFAULT_VOL, "wins": 0, "losses": 0, "draws": 0,
+            "net_chips": 0, "matches_played": 0}
+        rb = store.get_rating(names[1]) or {"rating": DEFAULT_RATING, "rd": DEFAULT_RD,
+            "vol": DEFAULT_VOL, "wins": 0, "losses": 0, "draws": 0,
+            "net_chips": 0, "matches_played": 0}
+        score_a = score_tanh(earnings[0])
+        score_b = score_tanh(earnings[1])  # 零和:≈ 1 - score_a
+        nra = glicko2_update(ra["rating"], ra["rd"], ra["vol"],
+                             rb["rating"], rb["rd"], score_a)
+        nrb = glicko2_update(rb["rating"], rb["rd"], rb["vol"],
+                             ra["rating"], ra["rd"], score_b)
+        if earnings[0] > earnings[1]:
+            wa, la, da = 1, 0, 0
+        elif earnings[1] > earnings[0]:
+            wa, la, da = 0, 1, 0
+        else:
+            wa, la, da = 0, 0, 1
+        store.upsert_rating(names[0], nra[0], nra[1], nra[2],
+            ra["wins"] + wa, ra["losses"] + la, ra["draws"] + da,
+            ra["net_chips"] + int(earnings[0]), ra["matches_played"] + 1)
+        store.upsert_rating(names[1], nrb[0], nrb[1], nrb[2],
+            rb["wins"] + la, rb["losses"] + wa, rb["draws"] + da,
+            rb["net_chips"] + int(earnings[1]), rb["matches_played"] + 1)
+
+    def _update_pair_stats(self, store: Store, names: list[str]) -> None:
+        """重算该对(A 视角)bb/100 mean + 95% CI,从 matches 历史。"""
+        a, b = names[0], names[1]
+        bbs: list[float] = []
+        for m in store.list_matches(user=a, limit=5000):
+            if m["name_a"] == a and m["name_b"] == b:
+                bbs.append(bb_per_100(m["earnings_a"], m["hands_played"]))
+            elif m["name_a"] == b and m["name_b"] == a:
+                bbs.append(bb_per_100(m["earnings_b"], m["hands_played"]))
+        if not bbs:
+            return
+        mean, lo, hi = ci_normal(bbs)
+        store.upsert_pair_stats(a, b, mean, lo, hi, len(bbs))
+
+    def _write_match_log(self, names: list[str]) -> None:
+        """每场写 logs/<match_id>/{events.jsonl, result.json}(默认开启)。"""
+        if not self.write_logs or not self._match_id:
+            return
+        log_dir = Path("logs") / self._match_id
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        try:
+            with open(log_dir / "events.jsonl", "w", encoding="utf-8") as f:
+                for e in self._event_log:
+                    f.write(json.dumps(e, ensure_ascii=False, default=str) + "\n")
+        except OSError as exc:
+            logger.warning("write events.jsonl failed: %s", exc)
+        earnings = list(getattr(self.engine, "total_earnings", [0, 0])) if self.engine else [0, 0]
+        result = {
+            "match_id": self._match_id, "names": list(names),
+            "hands_played": getattr(self.engine, "hand_num", 0) if self.engine else 0,
+            "total_earnings": earnings,
+            "reason": self._forfeit_reason or "completed",
+            "loser_idx": self._forfeit_loser,
+            "started_at": (self._match_started_at.isoformat(timespec="seconds")
+                           if self._match_started_at else None),
+            "ended_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            (log_dir / "result.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            logger.warning("write result.json failed: %s", exc)
 
     # ── 辅助 ─────────────────────────────────────────────────
 

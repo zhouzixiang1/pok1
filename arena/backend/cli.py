@@ -62,6 +62,8 @@ def serve(
     records_dir: Path = typer.Option(DEFAULT_RECORDS_DIR, "--records-dir", help="THP/索引目录"),
     event_name: str = typer.Option("CCGC", "--event-name", help="赛事名(写入 THP footer)"),
     hands_per_match: int = typer.Option(70, "--hands-per-match", help="每场手数(默认 70;测试可调小)"),
+    db_path: str = typer.Option("arena.db", "--db-path", help="SQLite 库路径(默认当前目录 arena.db;空串禁用 DB)"),
+    no_logs: bool = typer.Option(False, "--no-logs", help="禁用每场日志(默认写 logs/<match_id>/)"),
     log_file: str | None = typer.Option(None, "--log-file", help="日志文件(默认仅 stderr)"),
     log_level: str = typer.Option("INFO", "--log-level", help="DEBUG/INFO/WARNING/ERROR"),
 ) -> None:
@@ -71,7 +73,8 @@ def serve(
     _setup_logging(log_file, log_level)
     n = 1 if once else max_matches
     manager = MatchManager(records_dir=str(records_dir), event_name=event_name,
-                           hands_per_match=hands_per_match)
+                           hands_per_match=hands_per_match,
+                           db_path=db_path or None, write_logs=not no_logs)
     static_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     try:
         asyncio.run(run_server(
