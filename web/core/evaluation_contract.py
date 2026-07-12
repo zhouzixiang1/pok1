@@ -31,7 +31,7 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 9
+CONTRACT_VERSION = 11
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
@@ -47,16 +47,21 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/evaluation_data_identity.py",
     "web/core/evolution_infra.py",
     "web/core/evolution_scope.py",
+    "web/core/managed_bot_executor.py",
+    "web/core/managed_bot_socket.py",
     "web/core/national_epoch_registry.py",
     "web/core/national_bot_launcher.py",
     "web/core/national_game_runtime.py",
     "web/core/national_runtime_telemetry.py",
     "web/core/national_transport.py",
+    "web/core/national_protocol_quarantine.py",
+    "web/core/national_protocol_quarantine.json",
     "web/core/official_attribution.py",
     "web/core/official_certificate_signing.py",
     "web/core/official_certification.py",
     "web/core/official_certification_job.py",
     "web/core/official_certifier_allowed_signers",
+    "web/core/official_certifier_trust_policy.json",
     "web/core/official_bot_sandbox.py",
     "web/core/official_bootstrap.py",
     "web/core/official_bootstrap_roots.json",
@@ -72,7 +77,9 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/official_platform_resource.py",
     "web/core/official_verdict_ledger.py",
     "web/core/official_wire_probe.py",
+    "scripts/official_certify.py",
     "web/core/orchestrator.py",
+    "web/core/orchestrator_cost_policy.py",
     "web/core/pipeline_recovery.py",
     "web/core/pipeline_infrastructure.py",
     "web/core/pipeline_state.py",

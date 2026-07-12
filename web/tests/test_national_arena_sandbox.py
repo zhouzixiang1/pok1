@@ -1,21 +1,18 @@
 from pathlib import Path
 import socket
-from types import SimpleNamespace
 
 import pytest
 
 from bot_artifact import hash_path
+from managed_bot_executor import EndpointLease, EndpointLeaseError
 from national_arena import sandbox as arena_sandbox
 
 
-@pytest.fixture
-def preconnected_fd():
-    peer, inherited = socket.socketpair()
-    try:
-        yield inherited.fileno()
-    finally:
-        peer.close()
-        inherited.close()
+def _listener() -> socket.socket:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    return listener
 
 
 def _bot_source(tmp_path: Path) -> Path:
@@ -53,7 +50,7 @@ def test_arena_seal_is_content_bound_and_read_only(tmp_path):
         )
 
 
-def test_arena_sandbox_plan_exposes_no_writable_host_bind(tmp_path, preconnected_fd):
+def test_arena_launch_uses_central_managed_executor(tmp_path):
     source = _bot_source(tmp_path)
     sealed = arena_sandbox.seal_bot_artifact(
         source,
@@ -62,97 +59,100 @@ def test_arena_sandbox_plan_exposes_no_writable_host_bind(tmp_path, preconnected
     )
     capability = arena_sandbox.require_managed_sandbox(probe=False)
 
-    launch = arena_sandbox.build_sandboxed_bot_launch(
-        sealed,
-        capability,
-        host="127.0.0.1",
-        port=43210,
-        name="BoundTop",
-        seat="upper",
-        session_id="arena_20260711_cafebabe",
-        action_delay=0.30,
-        hard_deadline=55.0,
-        refinement_budget=54.0,
-        baseline_target=0.25,
-        preconnected_fd=preconnected_fd,
-    )
+    listener = _listener()
+    port = int(listener.getsockname()[1])
+    try:
+        with EndpointLease.connect("127.0.0.1", port, timeout=2.0) as endpoint:
+            accepted, _peer = listener.accept()
+            managed = arena_sandbox.launch_sandboxed_bot(
+                sealed,
+                capability,
+                endpoint,
+                name="BoundTop",
+                seat="upper",
+                session_id="arena_20260711_cafebabe",
+                action_delay=0.30,
+                hard_deadline=55.0,
+                refinement_budget=54.0,
+                baseline_target=0.25,
+            )
+        stdout, stderr = managed.process.communicate(timeout=10)
+        accepted.close()
+    finally:
+        listener.close()
 
-    command = list(launch.command)
-    assert "--unshare-all" in command
-    assert "--share-net" not in command
-    assert "POK_PRECONNECTED_SOCKET_FD" in command
-    assert launch.pass_fds == (preconnected_fd,)
-    assert "--bind" not in command
-    assert command[command.index("--ro-bind", command.index("--tmpfs")) + 1] == str(
-        sealed.root
-    )
-    assert command[-8:] == [
-        "--host", "127.0.0.1",
-        "--port", "43210",
-        "--name", "BoundTop",
-        "--seat", "upper",
-    ]
-    protected_tokens = (
-        str(arena_sandbox.ROOT / "bots"),
-        str(arena_sandbox.ROOT / "web" / "core" / "results"),
-        str(arena_sandbox.ROOT / "official_certificates"),
-    )
-    assert not any(token in command for token in protected_tokens)
-    assert launch.environment == {
-        "PATH": arena_sandbox.os.defpath,
-        "POK_ARENA_SESSION_ID": "arena_20260711_cafebabe",
-    }
+    assert managed.process.returncode == 0, (stdout, stderr)
+    assert managed.isolation.network == "isolated-netns-inherited-exact-peer-only"
+    assert managed.isolation.resource_limits
 
 
 def test_arena_sandbox_missing_or_unusable_bwrap_fails_closed(monkeypatch):
-    monkeypatch.setattr(arena_sandbox.shutil, "which", lambda _name: None)
     with pytest.raises(
         arena_sandbox.ArenaSandboxUnavailable,
         match="no fallback",
     ):
-        arena_sandbox.require_managed_sandbox()
+        arena_sandbox.require_managed_sandbox(
+            environment={"POK_ARENA_BWRAP": "/definitely/missing/bwrap"}
+        )
 
     monkeypatch.setattr(
-        arena_sandbox.shutil,
-        "which",
-        lambda _name: "/usr/bin/bwrap",
-    )
-    monkeypatch.setattr(
-        arena_sandbox.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=1,
-            stderr="Creating new namespace failed",
-        ),
+        arena_sandbox,
+        "probe_managed_executor",
+        lambda _runtime: {"ok": False, "issues": ["namespace unavailable"]},
     )
     with pytest.raises(
         arena_sandbox.ArenaSandboxUnavailable,
-        match="namespace_unavailable",
+        match="probe_failed",
     ):
         arena_sandbox.require_managed_sandbox()
 
 
-def test_arena_sandbox_rejects_non_loopback_endpoint(tmp_path, preconnected_fd):
-    source = _bot_source(tmp_path)
+def test_arena_sandbox_rejects_non_loopback_endpoint():
+    with pytest.raises(EndpointLeaseError, match="loopback"):
+        EndpointLease.connect("0.0.0.0", 12345, timeout=0.1)
+
+
+def test_arena_never_seals_or_launches_quarantined_raw_entry(
+    tmp_path, monkeypatch
+):
+    repository_root = Path(__file__).resolve().parents[2]
+    quarantined = repository_root / "bots" / "national_v142"
+    with pytest.raises(
+        arena_sandbox.ArenaSandboxError,
+        match="protocol_quarantined_native_entry_forbidden",
+    ):
+        arena_sandbox.seal_bot_artifact(
+            quarantined,
+            tmp_path / "sealed" / "v142",
+            expected_hash=hash_path(quarantined),
+        )
+
+    ordinary_root = tmp_path / "ordinary"
+    ordinary_root.mkdir()
+    source = _bot_source(ordinary_root)
     sealed = arena_sandbox.seal_bot_artifact(
         source,
-        tmp_path / "sealed" / "bot",
+        tmp_path / "sealed" / "ordinary",
         expected_hash=hash_path(source),
     )
-    capability = arena_sandbox.require_managed_sandbox(probe=False)
-
-    with pytest.raises(arena_sandbox.ArenaSandboxError, match="must_be_loopback"):
-        arena_sandbox.build_sandboxed_bot_launch(
+    monkeypatch.setattr(
+        arena_sandbox,
+        "quarantined_native_entry_sources",
+        lambda _path: ("national_v142",),
+    )
+    with pytest.raises(
+        arena_sandbox.ArenaSandboxError,
+        match="protocol_quarantined_native_entry_forbidden",
+    ):
+        arena_sandbox.launch_sandboxed_bot(
             sealed,
-            capability,
-            host="0.0.0.0",
-            port=12345,
-            name="Bad",
+            object(),
+            object(),
+            name="v142-copy",
             seat="upper",
             session_id="arena_20260711_deadbeef",
-            action_delay=0.30,
+            action_delay=0.3,
             hard_deadline=55.0,
             refinement_budget=54.0,
             baseline_target=0.25,
-            preconnected_fd=preconnected_fd,
         )

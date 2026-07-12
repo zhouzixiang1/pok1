@@ -50,8 +50,24 @@ The certificate is signed with the local key selected by
 `web/core/official_certifier_allowed_signers`. The private key is never stored
 in Git. Production verification cannot replace this trust root through an
 environment variable; tests may inject a temporary trust file only through an
-explicit API. The doctor also validates the signed append-only verdict ledger;
-it never creates or repairs authority state. Run it before an expensive suite:
+explicit API. This is an integrity/publication-binding mechanism for keyless
+verifiers, not isolation from the orchestrator: the current LLM tool processes
+and key owner share one Unix uid, so a malicious same-uid agent is outside the
+signature threat model. Independent authentication also requires the verifier
+to anchor the expected public-key fingerprint outside the repository being
+verified; when the repository commit is already the sole trust root, its Git
+objects and canonical hashes already provide the content binding and the
+signature adds no separate trust assertion. The doctor reports these boundaries
+explicitly. The doctor also validates the crash-consistent signed verdict
+history. It never creates or
+guesses authority state; under the ledger lock it may only finish the defined
+append crash protocol: roll a valid signed-entry suffix into a new signed head,
+or truncate an incomplete write exactly to the previously signed head byte
+boundary. Complete invalid suffixes remain blocking evidence. The ledger and
+its head share one same-uid writable filesystem and have no external latest-head
+anchor, so restoring an older valid pair is not detected; this is not a
+transparency log or a same-uid rollback defense. Run doctor before an expensive
+suite:
 
 ```bash
 python3 scripts/official_certify.py doctor
@@ -150,16 +166,20 @@ not a normal opponent, active-pool fallback, or automatic evolution choice. It
 can certify exactly one fresh, unpublished candidate through the explicit
 `bootstrap-full` command. Only a successful certificate appended to the signed
 verdict ledger consumes the root; failed or inconclusive runs do not create a
-normal opponent. Once consumed, it cannot be replayed.
+normal opponent. The normal locked workflow will not replay a consumed root.
+This is an operational state-machine guarantee, not a cryptographic guarantee
+against a same-uid rollback of both the ledger and its signed head; durable
+rollback resistance would require an independently protected monotonic anchor.
 
 After that manual suite succeeds, `commit_bot` may reuse only the exact existing
 certificate that passes the complete content-bound validator (candidate hash,
-signed receipt, evidence, ledger, selection receipt, and policy). It skips a
-second opponent selection/job for that handoff, then runs the same validator
-again immediately before staging and tagging. A status label, mutable JSON, or
-ledger entry alone is insufficient. Publishing that first attestation creates
-the first normal full-v5 opponent; subsequent candidates use the ordinary
-policy path.
+signed receipt, evidence, ledger, selection receipt, job envelope, parked
+checkpoint, workflow/evaluation contract, and policy). It skips a second
+opponent selection/job for that handoff, then reruns the consumed-root-aware
+authorization immediately before staging and tagging. A status label, mutable
+JSON, or ledger entry alone is insufficient. Publishing that first attestation
+creates the first normal full-v5 opponent; subsequent candidates use the
+ordinary policy path.
 
 When the first verified candidate finds no normal opponent, the pipeline parks
 at `official_bootstrap_required`. This is a deliberate stop barrier:

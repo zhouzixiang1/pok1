@@ -135,6 +135,46 @@ def test_job_start_and_poll_are_identity_stable(tmp_path, monkeypatch):
     assert second["attempt"] == 1
 
 
+def test_bootstrap_job_delayed_state_drift_fails_before_worker_spawn(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(tmp_path / "jobs"))
+    candidate = _bot(tmp_path / "bots" / "national_v200")
+    opponent = _bot(tmp_path / "bots" / "national_v141")
+    spec = build_spec(
+        "full",
+        candidate,
+        opponent=opponent,
+        bootstrap_root_id="national-v141-official-full-v5-signed-ledger-root",
+    )
+    selection = {
+        "selected": True,
+        "bootstrap_root_id": spec.bootstrap_root_id,
+        "candidate": str(candidate),
+        "opponent": {"path": str(opponent), "eligible": True},
+        "operator_bootstrap_authorization": {
+            "authorization_digest": "a" * 64,
+        },
+    }
+    monkeypatch.setattr(
+        jobs,
+        "_bootstrap_authorization_issues",
+        lambda _request: ["official_bootstrap_candidate_hash_mismatch"],
+    )
+    monkeypatch.setattr(
+        jobs,
+        "_spawn_worker",
+        lambda *_args, **_kwargs: pytest.fail("drifted bootstrap spawned a worker"),
+    )
+
+    result = jobs.start_or_poll_job(spec, opponent_selection=selection)
+
+    assert result["state"] == "failed"
+    assert result["phase"] == "bootstrap_authorization"
+    assert result["failure_class"] == "authorization"
+    assert result["issues"] == ["official_bootstrap_candidate_hash_mismatch"]
+
+
 def test_dead_worker_restarts_without_losing_job_identity(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(tmp_path / "jobs"))
     monkeypatch.setattr(jobs, "_spawn_worker", _fake_spawn)

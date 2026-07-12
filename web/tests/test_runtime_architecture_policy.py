@@ -1,10 +1,19 @@
 import ast
+from copy import deepcopy
 import json
 from pathlib import Path
 
 import pytest
 
-from output_schema import RuntimeContract
+from output_schema import (
+    LEGACY_CONSUMER_MIGRATION_CHECKS,
+    LEGACY_CONSUMER_MIGRATION_FILES,
+    LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
+    MasterPlan,
+    RuntimeContract,
+    STATE_LEARNING_PRIMARY_CHECKS,
+)
+from plan_compiler import bind_system_owned_legacy_consumer_migration
 from pipeline_state import validate_stage_transition
 from runtime_architecture_policy import (
     ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
@@ -13,6 +22,7 @@ from runtime_architecture_policy import (
     PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION,
     RUNTIME_ARCHITECTURE_POLICY_VERSION,
     RUNTIME_CORRECTNESS_FLOOR_CHECKS,
+    RUNTIME_FLOOR_CHECKS,
     STATE_LEARNING_INNOVATION_CHECKS,
     attach_runtime_contract_ledger,
     architecture_policy_prompt,
@@ -120,7 +130,11 @@ def _choose(req):
         pressure = profile.get('fold_to_raise', 0.0) + profile.get('fold_to_jam_rate', 0.0) - profile.get('river_overcall_freq', 0.0)
         return -2 if pressure > 0.5 else 0
     revealed = profile.get('showdown_range', {})
-    if revealed.get('samples', 0) >= 10 and revealed.get('tightness', 0.0) > 0.30:
+    if (revealed.get('selection_scope') == 'reached_showdown_only'
+            and revealed.get('confidence', 0.0) > 0.0
+            and revealed.get('adaptation_weight', 0.0) > 0.0
+            and (revealed.get('tightness', 0.0) > 0.30
+                 or revealed.get('bucket_rates', {}).get('premium', 0.0) > 0.2)):
         return -1
     adaptation = profile.get('adaptation_weight', 0.0)
     threshold = 0.4 if equity_lookup(60) else 0.6
@@ -159,6 +173,11 @@ def get_action(req, requests):
     return total
 """
     (root / "strategy.py").write_text(strategy, encoding="utf-8")
+    for helper in ("opponent.py", "simulation.py", "donk_probe.py"):
+        (root / helper).write_text(
+            f"# {helper} is part of the strategy consumer ABI.\n",
+            encoding="utf-8",
+        )
     return root
 
 
@@ -182,7 +201,7 @@ def _capability_result(state: dict[str, bool]) -> dict:
     }
 
 
-def test_policy_selects_one_coherent_parent_debt(tmp_path):
+def test_policy_selects_system_owned_legacy_consumer_migration_first(tmp_path):
     source = _write_bot(tmp_path / "national_v1", complete=False)
 
     policy = build_architecture_policy(source)
@@ -190,22 +209,41 @@ def test_policy_selects_one_coherent_parent_debt(tmp_path):
     assert policy["policy_version"] == RUNTIME_ARCHITECTURE_POLICY_VERSION
     assert policy["official_policy_id"] == OFFICIAL_FULL_POLICY_ID
     assert policy["official_oracle_digests"] == OFFICIAL_ORACLE_DOC_DIGESTS
-    assert policy["selected_focus"]["focus_id"] == "national_runtime_v4_state_learning"
-    assert policy["selected_focus"]["required_checks"] == list(
-        RUNTIME_CORRECTNESS_FLOOR_CHECKS
+    assert policy["selected_focus"]["focus_id"] == (
+        LEGACY_CONSUMER_MIGRATION_FOCUS_ID
     )
-    assert "budget_scaled_refinement" in policy["selected_focus"]["innovation_checks"]
-    assert "semantic_line_reachability" in policy["selected_focus"]["innovation_checks"]
+    assert set(policy["selected_focus"]["required_checks"]) == set(
+        RUNTIME_FLOOR_CHECKS
+    )
+    assert policy["legacy_consumer_migration_failures"] == list(
+        LEGACY_CONSUMER_MIGRATION_CHECKS
+    )
+    bundle = policy["legacy_consumer_migration_bundle"]
+    assert bundle["required_checks"] == list(LEGACY_CONSUMER_MIGRATION_CHECKS)
+    assert bundle["consumer_files"] == list(LEGACY_CONSUMER_MIGRATION_FILES)
+    assert len(bundle["bundle_digest"]) == 64
     assert len(policy["source_capability_digest"]) == 64
     rendered = architecture_policy_prompt(policy)
     assert f"official_policy_id={OFFICIAL_FULL_POLICY_ID}" in rendered
     for path, digest in OFFICIAL_ORACLE_DOC_DIGESTS.items():
         assert f"{path}:{digest}" in rendered
+    assert f"migration_bundle_digest={bundle['bundle_digest']}" in rendered
 
 
 def test_fast_baseline_is_a_universal_correctness_floor():
     assert "fast_strategy_baseline" in RUNTIME_CORRECTNESS_FLOOR_CHECKS
     assert "fast_strategy_baseline" not in STATE_LEARNING_INNOVATION_CHECKS
+
+
+def test_semantic_line_aggregate_is_compatibility_only_not_a_primary():
+    assert STATE_LEARNING_PRIMARY_CHECKS["donk"] == (
+        "donk_line_reachability",
+    )
+    assert STATE_LEARNING_PRIMARY_CHECKS["delayed_probe"] == (
+        "delayed_probe_line_reachability",
+    )
+    assert "semantic_line_reachability" not in RUNTIME_FLOOR_CHECKS
+    assert "semantic_line_reachability" not in STATE_LEARNING_INNOVATION_CHECKS
 
 
 def test_prepared_capability_snapshot_is_serializable_and_digest_bound(tmp_path):
@@ -261,7 +299,7 @@ def test_prepared_child_acquired_capability_is_a_final_regression_baseline(
     prepared = tmp_path / "national_v2"
     parent.mkdir()
     prepared.mkdir()
-    parent_state = {check_id: True for check_id in RUNTIME_CORRECTNESS_FLOOR_CHECKS}
+    parent_state = {check_id: True for check_id in RUNTIME_FLOOR_CHECKS}
     parent_state.update({
         "official_safe_wire_send": True,
         "precompute_lookup_path": False,
@@ -314,10 +352,10 @@ def test_prepared_child_closed_floor_debt_is_not_reassigned_to_master(tmp_path):
     prepared = tmp_path / "national_v2"
     parent.mkdir()
     prepared.mkdir()
-    parent_state = {check_id: True for check_id in RUNTIME_CORRECTNESS_FLOOR_CHECKS}
+    parent_state = {check_id: True for check_id in RUNTIME_FLOOR_CHECKS}
     parent_state["fast_strategy_baseline"] = False
     parent_state["decision_path_no_full_history_scan"] = False
-    prepared_state = {check_id: True for check_id in RUNTIME_CORRECTNESS_FLOOR_CHECKS}
+    prepared_state = {check_id: True for check_id in RUNTIME_FLOOR_CHECKS}
     parent_capabilities = _capability_result(parent_state)
     prepared_capabilities = _capability_result(prepared_state)
     snapshot = build_prepared_capability_snapshot(
@@ -354,7 +392,7 @@ def test_prepared_child_closed_floor_debt_is_not_reassigned_to_master(tmp_path):
 def test_single_parent_policy_keeps_source_as_effective_baseline(tmp_path):
     parent = tmp_path / "national_v1"
     parent.mkdir()
-    state = {check_id: True for check_id in RUNTIME_CORRECTNESS_FLOOR_CHECKS}
+    state = {check_id: True for check_id in RUNTIME_FLOOR_CHECKS}
     state["fast_strategy_baseline"] = False
     capabilities = _capability_result(state)
 
@@ -472,6 +510,9 @@ def test_preplan_transition_defers_only_master_owned_source_debt(tmp_path, monke
             check_id: bool(candidate_side and check_id in provider_checks)
             for check_id in provider_checks | plan_checks
         }
+        state.update({
+            check_id: True for check_id in LEGACY_CONSUMER_MIGRATION_CHECKS
+        })
         state["official_safe_wire_send"] = not lose_parent_capability
         checks = [
             {
@@ -658,71 +699,138 @@ def test_policy_identity_detects_focus_contract_tampering(tmp_path, field):
     assert any("expected_content_digest_mismatch" in item for item in result["policy_identity_errors"])
 
 
-def test_plan_must_cover_system_selected_focus(tmp_path):
+def test_system_compiler_restores_migration_when_weak_plan_omits_it(tmp_path):
     source = _write_bot(tmp_path / "national_v1", complete=False)
     policy = build_architecture_policy(source)
-    task = {
-        "architecture_focus_id": "national_runtime_v4_state_learning",
-        "skill_layer": "runtime_architecture",
-        "target_files": ["strategy.py", "precompute.py", "opponent.py"],
-        "checks_required": [
-            *policy["plan_required_floor_checks"],
-            "fast_strategy_baseline",
-            "incremental_refinement_protocol",
-            "budget_scaled_refinement",
-        ],
-        "runtime_contract": {
-            "decision": {
-                "clock": "time.monotonic",
-                "hard_deadline_ms": 55_000,
-                "baseline_target_ms": 250,
-                "refinement_budget_ms": 54_000,
-                "baseline_path": "compute a legal strategy baseline first",
-                "fallback_action": "return the sanitized legal fallback",
-                "refinement_bound": "sample-counted batches stop at deadline",
-                "max_samples": 64,
-            },
-            "precompute_artifacts": [],
-            "match_memory": None,
-            "state_learning": {
-                "work_primitive": "sample_counted_candidate_batch",
-                "profile_dimensions": [],
-                "line_controls": [],
-                "oracle_refs": [
-                    "docs/official-raise-boundary-oracle-2026-07-11.md",
-                    "docs/official-terminal-settlement-oracle-2026-07-11.md",
+    weak_plan = {
+        "analysis": "The weak planner emitted a generic one-file task.",
+        "targeted_failure": "generic strategy issue",
+        "tasks": [
+            {
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "skill_layer": "line_template",
+                "checks_required": [
+                    "precompute_runtime_influence",
+                    "semantic_line_reachability",
                 ],
+                "prohibited_files": ["opponent.py"],
+                "instruction": "Implement ordinary river state_learning now.",
+                "worker_prompt": (
+                    "Implement an ordinary river state_learning primary beside "
+                    "the migration and tune its thresholds."
+                ),
             },
-            "reference_pack_id": "range_weighted_candidate_batch_v1",
-            "official_feedback_refs": [],
-            "forbidden_runtime_work": [],
-        },
-        "worker_prompt": (
-            "Implement a budget-bounded legal baseline and fallback before the deadline, then "
-            "publish increasing sample_count batches that change a sanitized action and telemetry."
-        ),
+            {
+                "worker_id": 2,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["postflop.py"],
+                "skill_layer": "line_template",
+                "worker_prompt": (
+                    "Implement a second ordinary river adaptation in this generation."
+                ),
+            },
+        ],
     }
 
-    assert validate_plan_architecture_focus({"tasks": [task]}, policy) == []
-    task["checks_required"] = []
-    floor_errors = validate_plan_architecture_focus({"tasks": [task]}, policy)
-    assert any("Runtime floor check" in error for error in floor_errors)
-    task["checks_required"] = [
+    assert validate_plan_architecture_focus(weak_plan, policy)
+    bound, meta = bind_system_owned_legacy_consumer_migration(
+        weak_plan,
+        policy=policy,
+    )
+    task = bound["tasks"][0]
+
+    assert meta["bound"] is True
+    assert len(bound["tasks"]) == 1
+    assert meta["dropped_worker_ids"] == [2]
+    assert task["architecture_focus_id"] == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
+    assert task["target_files"] == list(LEGACY_CONSUMER_MIGRATION_FILES[:3])
+    assert task["files_allowed"] == [LEGACY_CONSUMER_MIGRATION_FILES[3]]
+    assert set(LEGACY_CONSUMER_MIGRATION_FILES) == {
+        *task["target_files"],
+        *task["files_allowed"],
+    }
+    assert set(LEGACY_CONSUMER_MIGRATION_CHECKS).issubset(
+        task["checks_required"]
+    )
+    assert set(task["checks_required"]) == {
         *policy["plan_required_floor_checks"],
-        "fast_strategy_baseline",
-        "incremental_refinement_protocol",
-        "budget_scaled_refinement",
-    ]
-    task["architecture_focus_id"] = "wrong"
-    errors = validate_plan_architecture_focus({"tasks": [task]}, policy)
-    assert any("mandatory" in error for error in errors)
+        *LEGACY_CONSUMER_MIGRATION_CHECKS,
+    }
+    assert task["prohibited_files"] == []
+    assert task["runtime_contract"]["state_learning"] is None
+    assert task["runtime_contract"]["legacy_consumer_migration"] is not None
+    assert "instruction" not in task
+    assert "river" not in task["worker_prompt"].lower()
+    assert "ordinary" not in task["worker_prompt"].lower()
+    assert validate_plan_architecture_focus(bound, policy) == []
+    MasterPlan.model_validate(bound)
+
+    mixed = deepcopy(bound)
+    mixed["tasks"].append({
+        "worker_id": 2,
+        "role": "Algorithmic Logic Architect",
+        "target_files": ["postflop.py"],
+        "skill_layer": "line_template",
+        "worker_prompt": "Implement an ordinary river adaptation in parallel.",
+    })
+    with pytest.raises(ValueError, match="exactly one total worker task"):
+        MasterPlan.model_validate(mixed)
+    assert any(
+        "exactly one total worker task" in error
+        for error in validate_plan_architecture_focus(mixed, policy)
+    )
+
+    missing_file = deepcopy(bound)
+    missing_file["tasks"][0]["files_allowed"] = []
+    with pytest.raises(ValueError, match="requires writable target_files/files_allowed"):
+        MasterPlan.model_validate(missing_file)
+    assert any(
+        "must have writable scope" in error
+        for error in validate_plan_architecture_focus(missing_file, policy)
+    )
+
+    extra_file = deepcopy(bound)
+    extra_file["tasks"][0]["files_allowed"].append("postflop.py")
+    with pytest.raises(ValueError, match="unexpected files"):
+        MasterPlan.model_validate(extra_file)
+    assert any(
+        "writable scope is exact" in error
+        for error in validate_plan_architecture_focus(extra_file, policy)
+    )
+
+    extra_check = deepcopy(bound)
+    extra_check["tasks"][0]["checks_required"].append(
+        "precompute_runtime_influence"
+    )
+    with pytest.raises(ValueError, match="ordinary innovation or aggregate checks"):
+        MasterPlan.model_validate(extra_check)
+    assert any(
+        "unexpected ordinary/aggregate checks" in error
+        for error in validate_plan_architecture_focus(extra_check, policy)
+    )
+    assert any(
+        "ordinary innovation or aggregate checks" in error
+        for error in tool_planning._runtime_contract_errors(
+            extra_check["tasks"][0],
+            0,
+            "runtime_architecture",
+        )
+    )
+    rebound, rebound_meta = bind_system_owned_legacy_consumer_migration(
+        bound,
+        policy=policy,
+    )
+    assert rebound_meta["bound"] is True
+    assert rebound == bound
 
     prompt = architecture_policy_prompt(policy)
-    assert "selected_focus=national_runtime_v4_state_learning" in prompt
+    assert f"selected_focus={LEGACY_CONSUMER_MIGRATION_FOCUS_ID}" in prompt
     assert "required_worker_prompt_terms=" in prompt
     for term in policy["selected_focus"]["required_terms"]:
         assert term in prompt
-    assert "label is not proof" in prompt
+    assert "system plan compiler discards other tasks" in prompt
 
 
 def _match_memory_contract():
@@ -770,7 +878,7 @@ def test_quality_failure_routes_one_structured_architecture_repair(tmp_path, mon
         "master_plan": {
             "architecture_policy": policy,
             "tasks": [{
-                "architecture_focus_id": "national_runtime_v4_state_learning",
+                "architecture_focus_id": LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
                 "skill_layer": "runtime_architecture",
                 "runtime_contract": inherited,
             }],
@@ -795,21 +903,32 @@ def test_quality_failure_routes_one_structured_architecture_repair(tmp_path, mon
     assert repaired_contract["match_memory"] == inherited["match_memory"]
     assert repaired_contract["decision"] is not None
     assert repaired_contract["precompute_artifacts"] == []
-    assert repaired_contract["state_learning"]["work_primitive"] == (
-        "sample_counted_candidate_batch"
-    )
+    assert repaired_contract["state_learning"] is None
+    assert repaired_contract["legacy_consumer_migration"][
+        "required_checks"
+    ] == list(LEGACY_CONSUMER_MIGRATION_CHECKS)
     assert len(tasks) == 1
     task = tasks[0]
     assert task["repair_blocker"] == "runtime_architecture"
-    assert task["architecture_focus_id"] == "national_runtime_v4_state_learning"
+    assert task["architecture_focus_id"] == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
     assert task["skill_layer"] == "runtime_architecture"
     assert task["must_change_files"] == ["strategy.py"]
+    assert set(task["checks_required"]) == {
+        *policy["plan_required_floor_checks"],
+        *LEGACY_CONSUMER_MIGRATION_CHECKS,
+    }
     assert "national_bot.py" not in task["files_allowed"]
     assert task["read_only_dependencies"] == ["national_bot.py"]
+    assert set(LEGACY_CONSUMER_MIGRATION_FILES) == {
+        *task["target_files"],
+        *task["files_allowed"],
+    }
     assert "label, comment, or telemetry field" in task["worker_prompt"]
     assert "opponent_runtime" in task["worker_prompt"]
     assert tool_planning._task_quality_recheck_blockers(task) == {
         "runtime_architecture",
+        "reachability",
+        "position_semantics",
     }
     RuntimeContract.model_validate(task["runtime_contract"])
     assert task["runtime_contract"] == repaired_contract
@@ -845,9 +964,12 @@ def test_crossover_architecture_repair_gets_valid_default_runtime_contract(tmp_p
     assert validated.match_memory is not None
     assert validated.match_memory.reset_boundary == "tcp_connection"
     assert validated.match_memory.consumer == "strategy.get_baseline_action"
-    assert validated.state_learning.primary_innovation() == (
-        "sample_counted_candidate_batch"
-    )
+    assert validated.state_learning is None
+    assert validated.legacy_consumer_migration is not None
+    assert set(LEGACY_CONSUMER_MIGRATION_FILES) == {
+        *task["target_files"],
+        *task["files_allowed"],
+    }
 
 
 def test_policy_identity_drift_is_not_routed_to_bot_code_worker(tmp_path, monkeypatch):
@@ -1017,7 +1139,17 @@ def test_v4_contract_allows_only_one_typed_primary_innovation():
 
 def test_focus_validator_rejects_second_generation_primary(tmp_path):
     source = _write_bot(tmp_path / "national_v1", complete=False)
-    policy = build_architecture_policy(source)
+    state = {check_id: True for check_id in RUNTIME_FLOOR_CHECKS}
+    state.update({
+        check_id: False for check_id in STATE_LEARNING_INNOVATION_CHECKS
+    })
+    policy = build_architecture_policy(
+        source,
+        source_capabilities=_capability_result(state),
+    )
+    assert policy["selected_focus"]["focus_id"] == (
+        "national_runtime_v4_state_learning"
+    )
     oracle_refs = [
         "docs/official-raise-boundary-oracle-2026-07-11.md",
         "docs/official-terminal-settlement-oracle-2026-07-11.md",
@@ -1028,7 +1160,7 @@ def test_focus_validator_rejects_second_generation_primary(tmp_path):
             "architecture_focus_id": "national_runtime_v4_state_learning",
             "skill_layer": "line_template",
             "target_files": ["strategy.py"],
-            "checks_required": ["semantic_line_reachability"],
+            "checks_required": ["donk_line_reachability"],
             "runtime_contract": {
                 "state_learning": {
                     "work_primitive": None,
@@ -1044,7 +1176,7 @@ def test_focus_validator_rejects_second_generation_primary(tmp_path):
             "architecture_focus_id": "",
             "skill_layer": "line_template",
             "target_files": ["postflop.py"],
-            "checks_required": ["semantic_line_reachability"],
+            "checks_required": ["delayed_probe_line_reachability"],
             "runtime_contract": {
                 "state_learning": {
                     "work_primitive": None,
@@ -1162,15 +1294,51 @@ def test_selected_donk_control_does_not_require_delayed_probe_control():
         },
     }]}
     capabilities = {
-        "checks": [{"check_id": "semantic_line_reachability", "passed": False}],
+        "checks": [
+            {"check_id": "donk_line_reachability", "passed": True},
+            {"check_id": "delayed_probe_line_reachability", "passed": False},
+            {"check_id": "semantic_line_reachability", "passed": False},
+        ],
         "incremental_model_evidence": {
             "decision_field_locations": {
                 "hand_runtime": ["strategy.py:get_action"],
                 "can_donk": ["strategy.py:get_action"],
                 "can_delayed_probe": [],
             },
+            "source_rooted_live_access_paths": {
+                "hand_runtime.can_donk": ["strategy.py:get_action"],
+            },
         },
         "dynamic_runtime_probe": {
+            "failure_class": "none",
+            "repeatability_ok": True,
+            "evidence_integrity_ok": True,
+            "migration_evidence_repeatability": {
+                "schema_version": 1,
+                "candidate_fingerprint_unchanged": True,
+                "run_count": 2,
+                "runs_eligible": True,
+                "dimensions": {
+                    "donk": {
+                        "stable": True,
+                        "authority_tier": "baseline",
+                        "evidence_present": True,
+                        "observations_identical": True,
+                        "observation_digests": ["same", "same"],
+                        "evidence": [{
+                            "dimension": "donk",
+                            "scenario_id": "flop_donk_vs_opponent_pfr",
+                            "tier": "baseline",
+                            "left_label": "positive",
+                            "right_label": "negative",
+                            "left_wire": "raise 600",
+                            "right_wire": "check",
+                            "control_kind": "same_scenario_flag_false",
+                            "flag": "can_donk",
+                        }],
+                    },
+                },
+            },
             "strategy_influence": {
                 "dimensions": {
                     "semantic_lines": {
@@ -1178,6 +1346,9 @@ def test_selected_donk_control_does_not_require_delayed_probe_control():
                         "rows": [
                             {
                                 "dimension": "donk",
+                                "scenario_id": "flop_donk_vs_opponent_pfr",
+                                "control_kind": "same_scenario_flag_false",
+                                "flag": "can_donk",
                                 "tiers": {
                                     "baseline": {
                                         "positive": {"wire": "raise 600"},
@@ -1190,6 +1361,9 @@ def test_selected_donk_control_does_not_require_delayed_probe_control():
                             },
                             {
                                 "dimension": "delayed_probe",
+                                "scenario_id": "turn_delayed_probe_vs_opponent_pfr",
+                                "control_kind": "same_scenario_flag_false",
+                                "flag": "can_delayed_probe",
                                 "tiers": {
                                     "baseline": {"changed": False},
                                     "short": {"changed": False},
@@ -1204,6 +1378,100 @@ def test_selected_donk_control_does_not_require_delayed_probe_control():
     }
 
     assert validate_runtime_contract_implementation(plan, capabilities) == []
+
+
+@pytest.mark.parametrize("missing_check", LEGACY_CONSUMER_MIGRATION_CHECKS)
+def test_each_legacy_consumer_keeps_system_migration_focus_active(
+    tmp_path,
+    missing_check,
+):
+    source = tmp_path / f"source_{missing_check}"
+    source.mkdir()
+    state = {check_id: True for check_id in RUNTIME_FLOOR_CHECKS}
+    state.update({
+        check_id: False for check_id in STATE_LEARNING_INNOVATION_CHECKS
+    })
+    state[missing_check] = False
+
+    policy = build_architecture_policy(
+        source,
+        source_capabilities=_capability_result(state),
+    )
+
+    assert policy["selected_focus"]["focus_id"] == (
+        LEGACY_CONSUMER_MIGRATION_FOCUS_ID
+    )
+    assert policy["legacy_consumer_migration_failures"] == [missing_check]
+    assert policy["legacy_consumer_migration_bundle"]["required_checks"] == list(
+        LEGACY_CONSUMER_MIGRATION_CHECKS
+    )
+
+
+def test_all_legacy_consumers_must_pass_before_one_primary_focus_resumes(tmp_path):
+    source = tmp_path / "source_complete_migration"
+    source.mkdir()
+    state = {check_id: True for check_id in RUNTIME_FLOOR_CHECKS}
+    state.update({
+        check_id: False for check_id in STATE_LEARNING_INNOVATION_CHECKS
+    })
+
+    policy = build_architecture_policy(
+        source,
+        source_capabilities=_capability_result(state),
+    )
+
+    assert policy["legacy_consumer_migration_failures"] == []
+    assert policy["legacy_consumer_migration_bundle"] is None
+    assert policy["selected_focus"]["focus_id"] == (
+        "national_runtime_v4_state_learning"
+    )
+
+
+def test_donk_passed_but_delayed_probe_missing_remains_final_blocking(
+    tmp_path,
+    monkeypatch,
+):
+    import runtime_architecture_policy as policy_module
+
+    source = tmp_path / "national_v1"
+    candidate = tmp_path / "national_v2"
+    source.mkdir()
+    candidate.mkdir()
+    source_state = {check_id: True for check_id in RUNTIME_FLOOR_CHECKS}
+    source_state["delayed_probe_line_reachability"] = False
+    candidate_state = dict(source_state)
+    source_capabilities = _capability_result(source_state)
+    candidate_capabilities = _capability_result(candidate_state)
+    responses = {
+        source.resolve(): source_capabilities,
+        candidate.resolve(): candidate_capabilities,
+    }
+    monkeypatch.setattr(
+        policy_module,
+        "evaluate_national_capabilities",
+        lambda path: responses[Path(path).resolve()],
+    )
+    policy = build_architecture_policy(
+        source,
+        source_capabilities=source_capabilities,
+    )
+
+    transition = evaluate_architecture_transition(
+        source,
+        candidate,
+        expected_policy=policy,
+    )
+
+    assert transition["ok"] is False
+    assert transition["legacy_consumer_migration_failures"] == [
+        "delayed_probe_line_reachability"
+    ]
+    assert {
+        item["check_id"] for item in transition["runtime_floor_failures"]
+    } == {"delayed_probe_line_reachability"}
+    assert "donk_line_reachability" not in transition[
+        "legacy_consumer_migration_failures"
+    ]
 
 
 def _source_rooted_incremental_evidence(strategy_source: str) -> dict:

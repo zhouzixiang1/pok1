@@ -176,7 +176,20 @@ hard planning gate, not optional prose.
 
 The system-owned policy may also contain `plan_required_floor_checks`. Every
 listed check id must appear verbatim in at least one task's `checks_required`.
-For `national_runtime_v4_state_learning`, declare exactly one typed primary
+When `selected_focus=national_runtime_v4_legacy_consumer_migration`, the entire
+generation has exactly one task: the system-owned task carrying the complete
+`legacy_consumer_migration` bundle. Do not emit support, tuning, river, or other
+strategy tasks beside it.
+All terminal-response adaptation, showdown-range adaptation, donk reachability,
+and delayed-probe reachability checks are final-blocking; put `strategy.py`,
+`opponent.py`, and `simulation.py` in `target_files` and `donk_probe.py` in
+`files_allowed`. Do not emit `state_learning` in that generation. The plan
+compiler restores these fixed obligations if your draft omits them, so spend
+planning effort on one coherent producer-to-consumer implementation rather than
+trying to select or defer a migration item.
+
+Only after that migration focus is absent, for
+`national_runtime_v4_state_learning`, declare exactly one typed primary
 innovation in `runtime_contract.state_learning`: one work primitive, one
 opponent-profile dimension, or one line control. Only its mapped consumer checks
 are newly blocking this generation; every other strategy dimension stays
@@ -228,6 +241,10 @@ and do not require a worker unless quality evidence says they still fail.
   fields must remain `null`/omitted while the two list fields remain arrays.
   Do not add unrelated primary dimensions merely because their shadow evidence
   is visible.
+- `legacy_consumer_migration`: required only for the universal migration focus.
+  Its `bundle_id`, exact four `required_checks`, exact four `consumer_files`, and
+  two oracle refs are system-owned. It is mutually exclusive with
+  `state_learning`; neither Master nor a repair model may reduce the bundle.
 - `reference_pack_id`: required exactly when `state_learning.work_primitive`
   is selected; it must name the injected local card supporting that primitive.
   Leave it empty for profile and line-control primaries. A precompute primary

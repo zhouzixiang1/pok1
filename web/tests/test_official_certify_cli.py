@@ -275,6 +275,19 @@ def test_cli_bootstrap_full_binds_the_explicit_root_to_full_spec(monkeypatch):
     )
     monkeypatch.setattr(
         module,
+        "authorize_operator_bootstrap_selection",
+        lambda selected, *_args, **_kwargs: {
+            "valid": True,
+            "selection": {
+                **selected,
+                "operator_bootstrap_authorization": {
+                    "authorization_digest": "a" * 64,
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        module,
         "build_spec",
         lambda mode, candidate, **kwargs: seen.update({"mode": mode, "spec_candidate": candidate, **kwargs}) or object(),
     )

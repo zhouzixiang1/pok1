@@ -89,10 +89,14 @@ use official EXE or Web Arena chip outcomes as strength evidence.
   retains 55 s/54 s. Terminate
   cheap and low-uncertainty decisions early; reserve long formal work for
   ambiguous spots where more batches can change EV/action.
-- A v4 state-learning task selects exactly one primary innovation: one bounded
-  work primitive, one opponent-profile dimension, or one line control. Implement
-  that primary and preserve parent capabilities; other visible dimensions are
-  shadow/advisory, not an invitation to rewrite them all in one generation.
+- When the active focus is `national_runtime_v4_legacy_consumer_migration`, the
+  four wrapper-to-strategy consumers are one universal ABI migration: terminal
+  responses, showdown range, donk, and delayed probe must all influence separate
+  final sanitized-action controls in the same generation. This is the only task
+  in that generation; none is advisory and no ordinary `state_learning`, river,
+  tuning, or support task is allowed beside it. After that focus closes, a
+  v4 state-learning task again selects exactly one ordinary primary innovation
+  and preserves all passing migration capabilities.
 - For all line/history-derived decisions, consume authoritative
   `req['hand_runtime']`: `preflop_aggressor`, `preflop_spot`, `hero_position`,
   `previous_street` (`checked_through`/`opponent_checked_back`), `can_donk`,

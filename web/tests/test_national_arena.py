@@ -446,6 +446,104 @@ def test_managed_seat_endpoints_ignore_connection_order_and_reported_name(
     asyncio.run(scenario())
 
 
+def test_managed_launch_records_central_executor_profile(tmp_path, monkeypatch):
+    async def scenario():
+        manager = NationalArenaManager(ArenaStore(tmp_path / "arena"))
+        identity = {"artifact_hash": "a" * 64}
+        session = ArenaSession(
+            session_id="arena_20260711_feedbabe",
+            mode="managed_bots",
+            top_bot="national_v1",
+            bottom_bot="national_v1",
+            managed_bot_identities={"top": identity, "bottom": identity},
+            managed_endpoints={
+                "top": {"host": "127.0.0.1", "port": 41001},
+                "bottom": {"host": "127.0.0.1", "port": 41002},
+            },
+        )
+        manager.store.create_session(session)
+        runtime = arena_manager._ArenaRuntime(session_id=session.session_id)
+        runtime.sandbox_capability = object()
+        emitted = []
+
+        async def capture_event(_session, event_type, payload):
+            emitted.append((event_type, payload))
+
+        class FakeEndpoint:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeEndpointLease:
+            @staticmethod
+            def connect(*_args, **_kwargs):
+                return FakeEndpoint()
+
+        launched = []
+
+        def fake_launch(*_args, **_kwargs):
+            process = SimpleNamespace(pid=42000 + len(launched))
+            managed = SimpleNamespace(
+                process=process,
+                isolation=SimpleNamespace(policy_sha256="b" * 64),
+            )
+            launched.append(managed)
+            return managed
+
+        monkeypatch.setattr(manager, "_emit", capture_event)
+        monkeypatch.setattr(
+            manager,
+            "_certification_snapshot",
+            lambda _bot: {"artifact_identity": identity},
+        )
+        monkeypatch.setattr(manager, "_proc_start_ticks", lambda _pid: 123)
+        monkeypatch.setattr(
+            arena_manager,
+            "resolve_bot",
+            lambda label: (label, tmp_path / label),
+        )
+        monkeypatch.setattr(arena_manager, "check_native_contract", lambda _bot: [])
+        monkeypatch.setattr(
+            arena_manager,
+            "seal_bot_artifact",
+            lambda _source, destination, expected_hash: SimpleNamespace(
+                root=destination,
+                artifact_hash=expected_hash,
+                manifest_digest="c" * 64,
+            ),
+        )
+        monkeypatch.setattr(arena_manager, "EndpointLease", FakeEndpointLease)
+        monkeypatch.setattr(arena_manager, "launch_sandboxed_bot", fake_launch)
+        monkeypatch.setattr(arena_manager.os, "getpgid", lambda pid: pid)
+
+        await manager._launch_managed_bots(session, runtime)
+
+        expected_profile = "central-managed-executor:" + "b" * 16
+        assert session.sandbox_profile == expected_profile
+        assert len(session.managed_processes) == 2
+        assert all(
+            record["sandbox_profile"] == expected_profile
+            for record in session.managed_processes
+        )
+        process_events = [
+            payload
+            for event_type, payload in emitted
+            if event_type == "bot_process_started"
+        ]
+        assert len(process_events) == 2
+        assert all(
+            payload["sandbox_profile"] == expected_profile
+            for payload in process_events
+        )
+        for managed in runtime.processes:
+            managed.stdout_handle.close()
+            managed.stderr_handle.close()
+
+    asyncio.run(scenario())
+
+
 def test_managed_capacity_is_acquired_before_official_port_lease(
     tmp_path, monkeypatch
 ):

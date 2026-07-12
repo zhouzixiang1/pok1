@@ -232,6 +232,119 @@ attribution. A single portfolio arbitrates them before the existing legal
 action projector. A module being called and a module changing the final action
 are separate telemetry counters.
 
+### Protocol authority and migration boundary
+
+The current native wrapper is the only owner of TCP framing, omitted-action
+inference, chip movement, pot, street closure, settlement, and showdown
+ingestion.  Before a new street clears stage bets, it first records only the
+call/check that is proven by the official-EXE boundary.  Relayed terminal folds
+and relayed or boundary-inferred calls enter the same incremental opponent
+tracker, so later decisions no longer depend on a lossy cross-hand replay of
+old request/response arrays.  Showdown cards update a bounded, explicitly
+`reached_showdown_only` posterior whose influence is capped for selection bias.
+
+The wrapper publishes two bounded strategy ABIs:
+
+- `hand_runtime`: preflop aggressor/spot, semantic street history, donk and
+  delayed-probe opportunities, pot, stacks, SPR, pot odds, and line tags;
+- `opponent_runtime`: sample counts, priors, confidence, terminal responses,
+  street profiles, and the capped showdown posterior.
+
+Publishing fields is not acceptance.  The legacy strategy seed currently
+consumes neither terminal-response nor showdown-range evidence and does not
+prove separate donk/delayed-probe effects on the final sanitized wire action.
+The first strict migration generation is therefore bound to one system-owned,
+all-or-nothing contract with four final-blocking counterfactuals:
+
+1. `terminal_response_adaptation`;
+2. `showdown_range_adaptation`;
+3. `donk_line_reachability`;
+4. `delayed_probe_line_reachability`.
+
+The weak planner cannot omit, rename, split, or replace this bundle with an
+ordinary one-primary innovation.  The deterministic plan compiler restores
+the exact checks and writable consumer surface, and quality independently
+reruns the dynamic positive/control probes.  Normal one-primary architectural
+innovation resumes only after all four consumers pass together.
+
+Published bots whose immutable `national_bot.py` predates the current stream
+decoder and decision runtime are content/tag/tree-bound in the protocol
+quarantine.  They are never executed bilaterally or admitted to ratings.  The
+exact national_v142 artifact may seed strategy files for the first migration,
+but the system replaces its launcher with the current wrapper before freezing
+the candidate.  After the first strict publication this exception closes.
+
+The zero/one-strict-bot bootstrap never launders quarantined match history into
+planning. Direction becomes a deterministic digest-bound neutral receipt;
+Master receives explicit no-strength placeholders instead of historical
+ratings, H2H, replay, action/opponent profiles, experience-pool, critic, or
+official-result feedback. It may use only the prepared target source, typed
+strategy references, the pinned official oracles, and the architecture
+contract. With one strict bot, the same no-peer-evidence rule builds a distinct
+second bot; ordinary strength selection starts only once two strict bots exist.
+
+The first candidate parks at `official_bootstrap_required` only after its exact
+artifact, complete local gates, workflow/evaluation contract, empty strict
+pool, transition receipt, and unpublished status are frozen. The operator
+authorization is embedded in the selection, job request, and envelope, then
+recomputed immediately before process spawn, worker claim, and every formal
+round. After a successful 5+3x70 suite consumes the root, `commit_bot` performs
+a consumed-root-aware rebind against the still-parked checkpoint when it first
+reuses the certificate and again immediately before Git publication. None of
+these checks can start a second EXE job or consume the root again.
+
+### Central managed execution boundary
+
+Every native bot execution path now converges on one host-owned launcher:
+local strength, runtime probes, Arena diagnostics, and formal official-EXE
+certification no longer maintain independent sandbox policies.  The launcher:
+
+- opens and validates one exact loopback TCP stream on the host, then hands
+  only that descriptor to the child;
+- creates user, IPC, PID, network, UTS, and cgroup namespaces with Bubblewrap;
+- mounts no host root, mounts only the read-only runtime and sealed bot
+  artifact, clears the environment, drops capabilities, and applies resource
+  limits;
+- installs an argument-aware seccomp BPF that forbids new INET sockets,
+  `connect` (including `AF_UNSPEC` disconnect/reconnect), listener APIs,
+  namespace/mount APIs, and namespace-bearing `clone` while preserving normal
+  threads/process pools; and
+- records the exact launcher source, tools, libseccomp, BPF, policy, endpoint
+  lease, and both A/B process identities in formal evidence.
+
+There is no permissive fallback.  Missing isolation support makes the run
+ineligible rather than silently executing a candidate on the host.
+
+### Formal evidence boundary
+
+The official Windows EXE remains the sole protocol-compliance oracle and has
+zero strength weight.  Signatures are an internal publication seal, not a
+competition requirement: they bind a frozen candidate, opponent selection,
+execution profile, evidence archive, certificate, and one-time bootstrap
+ledger transition.  They are used only during formal finalization, never in
+the decision path, Arena, native strength, Glicko, or prompts.
+
+The current signer and the Claude/Orchestrator processes run under the same
+Unix uid.  Consequently `0600` key permissions do not make the signature
+resistant to a malicious same-uid LLM.  The signature authenticates a
+publication only when the later verifier independently anchors the expected
+public-key fingerprint; if Git is already the sole trust root, Git objects and
+canonical hashes provide the content binding.  Candidate isolation comes from
+the managed sandbox, not from the signature.  The signature is not claimed as
+an agent-isolation boundary.  Such a claim requires a different OS identity or
+host/HSM behind a non-generic finalizer that validates the complete receipt
+before signing.
+
+The crash-consistent verdict history validates an unconsumed bootstrap root and
+appends its consuming verdict under one lock.  Complete signed suffixes left by
+a crash are rolled forward; partial suffixes are truncated to the prior signed
+head.  A failed official run never consumes the one-time root, and concurrent
+successful requests cannot both consume it.  Because ledger and head share one
+same-uid writable filesystem and there is no external latest-head anchor, an
+older valid pair can still be restored; the history is an operational
+serialization boundary, not a transparency log or cryptographic rollback
+defense.
+
 ### Space-for-time asset layer
 
 Large data is system generated and shared, never imagined or rewritten by an
@@ -288,6 +401,22 @@ role-specific lens; compact retrieval by failure signature is a later
 optimization, not an implemented claim. Reflexion memory contains only typed,
 externally-verified failure signatures and outcomes.
 
+### Cost is telemetry, not an evolution objective
+
+The former fixed generation-cost stop has been removed. The default policy
+records every paid model attempt against a stable `workflow_run_id`, warns at
+the operator threshold, and never interrupts evolution. Empty-output/schema
+retries are accounted as separate paid attempts rather than charging only the
+last successful response. Restart/resume preserves both usage and any known
+accounting error, and stable event IDs make replay idempotent.
+
+An operator may explicitly configure a finite emergency circuit breaker in the
+parent process. It is deliberately described as a post-call breaker, not a
+strict dollar ceiling: already-running parallel calls can overshoot before the
+next launch is stopped. Model output, MCP arguments, prompts, and checkpoint
+fields cannot enable or raise it. The default remains monitor-only because
+token cost is not a strategy-quality gate.
+
 ## Implementation slices
 
 ### Slice 1 (this change)
@@ -302,6 +431,22 @@ externally-verified failure signatures and outcomes.
   ballots, and unique Master selection contracts;
 - add the shared poker asset ABI and real hole-combination metadata prototype
   without claiming evaluator/equity values or granting candidate-owned file I/O.
+
+### Slice 1b (this change)
+
+- centralize all native launches behind the fail-closed managed executor and
+  bind its measured identity into the official execution profile;
+- quarantine every published legacy runtime by content and Git identity, with
+  a one-way strategy-only migration path for the first strict bot;
+- make omitted street closure, terminal actions, settlement, showdown, and
+  bounded opponent state wrapper-owned canonical facts;
+- require the four-consumer legacy migration bundle before ordinary strategy
+  innovation resumes;
+- remove the default cost stop and make paid-attempt accounting durable,
+  idempotent, and monitor-only; and
+- make the one-time official bootstrap consumption and ledger crash recovery
+  one locked, tested publication transaction while explicitly documenting the
+  signer's same-uid limitation.
 
 ### Slice 2
 
@@ -349,8 +494,9 @@ artifact files between the two checkouts.
 
 ## Verification completed in Slice 1
 
-- the complete Web/evolution suite passes (`2634 passed, 7 skipped, 1 deselected`)
-  and the national TCP suite passes (`33 passed`);
+- the complete Web/evolution suite passes (`2758 passed, 12 skipped, 1
+  deselected`) and the national TCP suite passes (`33 passed`);
+- the frontend production build succeeds (`153` modules transformed);
 - identical histories produce byte-identical state and commands;
 - crash injection before/after event commit, outbox dispatch, artifact
   materialization, and completion acceptance converges without duplicate
@@ -366,6 +512,24 @@ artifact files between the two checkouts.
   payload hashes, concurrent build, corruption rejection, and size bounds;
 - official raise and terminal-settlement oracle documents remain byte-identical
   and the formal EXE is not rerun merely for control-plane changes.
+
+## Verification completed in Slice 1b
+
+- official certification, bootstrap, commit, and harness integration passes
+  `180` focused tests; the final doctor reports the v5 managed-executor profile,
+  real namespace/seccomp probe, signer, and ledger healthy with an empty job
+  queue;
+- the wrapper/protocol/quarantine integration passes `139` focused tests;
+- the migration contract passes `121` core tests, `38` Master-adjacent tests,
+  and `8` adversarial boundary tests;
+- three independent real runtime probes report all four migration dimensions
+  behaviorally stable even while unrelated CPU contention changes short-tier
+  deadline telemetry;
+- the signer/ledger suite includes an explicit old-ledger/head rollback test and
+  reports `same_uid_llm_resistance=false` plus
+  `rollback_resistance_without_external_anchor=false`; and
+- both official-oracle hashes match the pinned values, compile/diff checks pass,
+  and no official EXE suite was launched during the control-plane refactor.
 
 ## Future acceptance gates
 

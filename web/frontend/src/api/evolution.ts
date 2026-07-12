@@ -2,6 +2,20 @@ import { useCallback, useEffect, useRef } from "react";
 
 export type StreamType = "prompt" | "claude" | "thinking" | "tool" | "tool_result" | "error" | "default";
 
+export interface GenerationCostPolicyState {
+  policy_id: string;
+  enforcement_mode: "monitor_only" | "operator_hard_limit";
+  warning_usd: number;
+  hard_limit_usd: number | null;
+  receipt_sha256: string;
+  binding_sha256?: string;
+  ledger_errors?: string[];
+  configuration_from_llm_input: false;
+  same_uid_llm_resistance: false;
+  candidate_sandbox_mutable: false;
+  workflow_guarded_paths: true;
+}
+
 export type EvolutionEventType =
   | "history"
   | "status"
@@ -11,6 +25,7 @@ export type EvolutionEventType =
   | "daemon_stats"
   | "header"
   | "cost"
+  | "generation_cost_policy"
   | "metrics"
   | "tool_call"
   | "log_event"
@@ -43,6 +58,8 @@ export interface EvolutionState {
   active_bots: string[];
   grand_cost_total: number;
   gen_cost_total: number;
+  generation_cost_identity?: string | null;
+  generation_cost_policy?: GenerationCostPolicyState | null;
 }
 
 export interface IOLine {
@@ -69,6 +86,11 @@ type EvolutionHandlers = {
     output_tokens: number;
     gen_total: number;
     grand_total: number;
+  }) => void;
+  onGenerationCostPolicy?: (data: {
+    generation_id: string | null;
+    spent_usd: number;
+    policy: GenerationCostPolicyState | null;
   }) => void;
   onMetrics?: (metrics: Record<string, number>) => void;
   onToolCall?: (data: { tool_name: string; args: Record<string, unknown>; ts: number; role?: string }) => void;
@@ -101,7 +123,7 @@ export function useEvolutionSSE(
 
       const eventTypes: EvolutionEventType[] = [
         "history", "status", "io", "clear_io",
-        "eval_table", "daemon_stats", "header", "cost", "metrics", "tool_call",
+        "eval_table", "daemon_stats", "header", "cost", "generation_cost_policy", "metrics", "tool_call",
         "log_event", "system_event",
       ];
 
@@ -134,6 +156,9 @@ export function useEvolutionSSE(
                 break;
               case "cost":
                 activeHandlers.onCost?.(data);
+                break;
+              case "generation_cost_policy":
+                activeHandlers.onGenerationCostPolicy?.(data);
                 break;
               case "metrics":
                 activeHandlers.onMetrics?.(data);

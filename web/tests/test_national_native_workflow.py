@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -2061,6 +2062,47 @@ def test_native_tcp_smoke_runs_without_adapter(tmp_path):
     ))
 
     assert report["execution_mode"] == "native_tcp"
+
+
+def test_protocol_bootstrap_smoke_projects_v142_strategy_without_executing_raw_entry(
+    monkeypatch, tmp_path,
+):
+    candidate = tmp_path / "BootstrapCandidate"
+    _write_minimal_strategy_bot(candidate)
+    ensure_native_entry(candidate)
+    legacy = national_native.ROOT / "bots" / "national_v142"
+    legacy_entry_before = (legacy / "national_bot.py").read_bytes()
+    launched_seed_entry_hashes = []
+    original_launch = national_native.launch_managed_bot
+
+    def audited_launch(artifact_dir, *args, **kwargs):
+        artifact_dir = Path(artifact_dir)
+        if artifact_dir.name == "national_v142":
+            launched = (artifact_dir / "national_bot.py").read_bytes()
+            assert launched != legacy_entry_before
+            launched_seed_entry_hashes.append(hashlib.sha256(launched).hexdigest())
+        return original_launch(artifact_dir, *args, **kwargs)
+
+    monkeypatch.setattr(national_native, "launch_managed_bot", audited_launch)
+
+    report = asyncio.run(national_native.run_native_tcp_smoke(
+        candidate,
+        source_v=142,
+        hands=1,
+        timeout_sec=30,
+    ))
+
+    assert report["passed"] is True
+    assert report["opponent"] == "national_v142"
+    assert report["opponent_runtime_mode"] == "projected_strategy_seed"
+    overlay = report["result"]["runtime_overlay"]
+    assert overlay["mode"] == "candidate_raw_opponent_current_runtime_projection"
+    assert overlay["by_player"]["BootstrapCandidate"]["enabled"] is False
+    assert overlay["by_player"]["national_v142"]["enabled"] is True
+    assert launched_seed_entry_hashes == [
+        national_native.CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST
+    ]
+    assert (legacy / "national_bot.py").read_bytes() == legacy_entry_before
     assert report["passed"] is True
     assert report["issues"] == []
     assert report["result"]["hands_played"] == 1
@@ -2068,6 +2110,176 @@ def test_native_tcp_smoke_runs_without_adapter(tmp_path):
         row["adapter"]["actions_sent"] == 0
         for row in report["result"]["per_player"].values()
     )
+
+
+def test_quarantined_v142_raw_and_bilateral_execution_are_forbidden(tmp_path):
+    candidate = tmp_path / "Candidate"
+    _write_minimal_strategy_bot(candidate)
+    ensure_native_entry(candidate)
+    legacy = national_native.ROOT / "bots" / "national_v142"
+
+    with pytest.raises(ValueError, match="protocol_quarantined_native_entry_forbidden"):
+        asyncio.run(run_native_tcp_pair(
+            legacy,
+            candidate,
+            hands=1,
+            timeout_sec=5,
+        ))
+    with pytest.raises(ValueError, match="protocol_quarantined_native_entry_forbidden"):
+        asyncio.run(run_current_runtime_native_strength_pair(
+            candidate,
+            legacy,
+            hands=1,
+            timeout_sec=5,
+        ))
+
+
+def test_copied_quarantined_native_entry_cannot_bypass_by_directory_name(tmp_path):
+    candidate = tmp_path / "Candidate"
+    copied = tmp_path / "RenamedLegacy"
+    for bot_dir in (candidate, copied):
+        _write_minimal_strategy_bot(bot_dir)
+        ensure_native_entry(bot_dir)
+    legacy_entry = (
+        national_native.ROOT / "bots" / "national_v142" / "national_bot.py"
+    )
+    (copied / "national_bot.py").write_bytes(legacy_entry.read_bytes())
+
+    with pytest.raises(ValueError, match="protocol_quarantined_native_entry_forbidden"):
+        asyncio.run(run_native_tcp_pair(
+            candidate,
+            copied,
+            hands=1,
+            timeout_sec=5,
+        ))
+
+
+def test_projected_strategy_seed_api_rejects_other_historical_bot(tmp_path):
+    candidate = tmp_path / "Candidate"
+    _write_minimal_strategy_bot(candidate)
+    ensure_native_entry(candidate)
+    other = national_native.ROOT / "bots" / "national_v141"
+
+    with pytest.raises(
+        RuntimeError,
+        match="protocol_quarantined_opponent_execution_forbidden",
+    ):
+        asyncio.run(national_native.run_native_candidate_vs_projected_strategy_seed(
+            candidate,
+            other,
+            hands=1,
+            timeout_sec=5,
+        ))
+
+
+def test_bootstrap_precommit_projects_v142_as_non_rating_70_hand_wld_gate(
+    monkeypatch, tmp_path,
+):
+    candidate = tmp_path / "BootstrapCandidate"
+    _write_minimal_strategy_bot(candidate)
+    ensure_native_entry(candidate)
+    legacy = national_native.ROOT / "bots" / "national_v142"
+    calls = []
+
+    async def projected(candidate_path, seed_path, hands, **kwargs):
+        calls.append((Path(candidate_path), Path(seed_path), hands, kwargs))
+        return {
+            "bot_a": "BootstrapCandidate",
+            "bot_b": "national_v142",
+            "hands_played": 70,
+            "net_chips_a": -100,
+            "passed_compliance": True,
+            "wrapper_used": False,
+            "issues": [],
+            "runtime_overlay": {
+                "enabled": True,
+                "both_sides": False,
+                "mode": "candidate_raw_opponent_current_runtime_projection",
+                "by_player": {
+                    "BootstrapCandidate": {"enabled": False},
+                    "national_v142": {"enabled": True},
+                },
+            },
+        }
+
+    async def forbidden_bilateral(*_args, **_kwargs):
+        raise AssertionError("v142 precommit must never use bilateral overlay")
+
+    monkeypatch.setattr(
+        national_native,
+        "_run_authorized_projected_strategy_seed",
+        projected,
+    )
+    monkeypatch.setattr(
+        national_native,
+        "run_current_runtime_native_strength_pair",
+        forbidden_bilateral,
+    )
+    sample_plan = [
+        {
+            "opponent": "national_v142",
+            "repeat": repeat,
+            "deck_seed_base": 10_000 + repeat,
+            "bot_seed_base": 20_000 + repeat,
+        }
+        for repeat in range(1, 5)
+    ]
+
+    result = asyncio.run(national_native.run_native_precommit(
+        candidate,
+        [{"name": "national_v142", "path": str(legacy), "reason": "parent"}],
+        hands=70,
+        matches_per_opponent=4,
+        parent_label="national_v142",
+        sample_plan=sample_plan,
+    ))
+
+    assert len(calls) == 4
+    assert all(call[2] == 70 for call in calls)
+    assert all(call[1] == legacy for call in calls)
+    matchup = result["matchups"][0]
+    assert matchup["migration_projection"] is True
+    assert matchup["opponent_runtime_mode"] == "projected_strategy_seed"
+    assert matchup["rating_eligible"] is False
+    assert matchup["strength_authoritative"] is True
+    assert matchup["evaluation_authority"] == (
+        "local_precommit_only_non_rating_migration"
+    )
+    assert matchup["matches"] == 4
+    assert matchup["losses"] == 4
+    assert matchup["n_played"] == 4
+    assert all(row["hands_played"] == 70 for row in matchup["repeats"])
+    assert all(row["rating_eligible"] is False for row in matchup["repeats"])
+    assert any(blocker["reason"] == "lost_to_parent" for blocker in result["blockers"])
+    assert result["passed"] is False
+
+
+def test_bootstrap_precommit_rejects_non_v142_quarantined_opponent(
+    monkeypatch, tmp_path,
+):
+    candidate = tmp_path / "BootstrapCandidate"
+    _write_minimal_strategy_bot(candidate)
+    ensure_native_entry(candidate)
+    legacy = national_native.ROOT / "bots" / "national_v141"
+    monkeypatch.setattr(
+        national_native,
+        "run_current_runtime_native_strength_pair",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a rejected historical opponent must not launch")
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="protocol_quarantined_opponent_execution_forbidden",
+    ):
+        asyncio.run(national_native.run_native_precommit(
+            candidate,
+            [{"name": "national_v141", "path": str(legacy), "reason": "parent"}],
+            hands=70,
+            matches_per_opponent=1,
+            parent_label="national_v141",
+        ))
 
 
 @pytest.mark.parametrize(
@@ -2818,6 +3030,53 @@ def test_native_tcp_pair_applies_per_bot_environment_overrides(monkeypatch, tmp_
     assert result["passed_compliance"] is True
 
 
+@pytest.mark.parametrize("unknown_key", ["POK_FORCE_HAND", "PATH"])
+def test_formal_native_environment_overrides_fail_closed_before_resolution(
+    monkeypatch, unknown_key,
+):
+    def forbidden_resolve(_token):
+        raise AssertionError("bot resolution must not occur for an invalid override")
+
+    monkeypatch.setattr(national_native, "resolve_bot", forbidden_resolve)
+    with pytest.raises(
+        ValueError,
+        match="unsupported formal native environment override",
+    ):
+        asyncio.run(run_native_tcp_pair(
+            "BotA",
+            "BotB",
+            hands=1,
+            bot_a_env_overrides={unknown_key: "1"},
+        ))
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("POK_NATIVE_LOCAL_ACTION_DELAY", "nan", "timing override"),
+        ("POK_NATIVE_DECISION_HARD_DEADLINE_SEC", "not-a-number", "timing override"),
+        ("POK_TRACE_DECISIONS", "yes", "trace override"),
+    ],
+)
+def test_formal_native_environment_override_values_fail_closed(
+    monkeypatch, key, value, message,
+):
+    monkeypatch.setattr(
+        national_native,
+        "resolve_bot",
+        lambda _token: (_ for _ in ()).throw(
+            AssertionError("invalid overrides must fail before bot resolution")
+        ),
+    )
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(run_current_runtime_native_strength_pair(
+            "BotA",
+            "BotB",
+            hands=1,
+            bot_b_env_overrides={key: value},
+        ))
+
+
 def test_compact_native_hand_records_bind_multistreet_action_request_pots():
     events = [
         {"type": "hand_start", "hand": 1, "sb_idx": 0, "bb_idx": 1, "pot": 150},
@@ -3029,7 +3288,7 @@ def test_native_acceptance_and_precommit_require_native_entries_for_both_players
     assert calls[-1]["bot_b_env_overrides"] == calls[-1]["bot_a_env_overrides"]
 
 
-def test_native_tcp_pair_reorders_clients_by_bot_label(tmp_path):
+def test_native_tcp_pair_preconnect_order_is_host_controlled(tmp_path):
     bot_a = tmp_path / "BotA"
     bot_b = tmp_path / "BotB"
     _write_delay_connect_native_bot(bot_a, 0.5)
@@ -3048,12 +3307,10 @@ def test_native_tcp_pair_reorders_clients_by_bot_label(tmp_path):
     assert result["passed_compliance"] is True
     assert result["bot_a"] == "BotA"
     assert result["bot_b"] == "BotB"
-    assert any(
-        event.get("type") == "client_order"
-        and event.get("order") == ["BotA", "BotB"]
-        and event.get("connection_order") == ["BotB", "BotA"]
-        for event in result["events_tail"]
-    )
+    # The trusted host establishes both leased streams before either untrusted
+    # entry runs, so a child-side sleep can no longer reorder connection
+    # authority. Final seats remain bound to the requested labels.
+    assert not any(event.get("type") == "client_order" for event in result["events_tail"])
 
 
 def test_generated_template_completes_full_70_hand_native_match(tmp_path):

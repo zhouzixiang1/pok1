@@ -767,6 +767,16 @@ def _make_bot_dir_guard_hook():
         "bot_stats.json",
         "cross_gen_exhausted_history.jsonl",
         "abandoned_versions.jsonl",
+        # Operator-owned cost authority.  The main LLM may inspect these files,
+        # but cannot truncate the durable ledger, erase write-ahead failures, or
+        # rewrite the enforcement/launch code for the next process restart.
+        "generation_cost_ledger.jsonl",
+        "generation_cost_pending.json",
+        "orchestrator_cost_policy.py",
+        "llm_query.py",
+        "generation_scheduler.py",
+        "orchestrator.py",
+        "pokctl.sh",
     )
     _HARD_ROUTE_TOOLS = {
         "execute_workers",

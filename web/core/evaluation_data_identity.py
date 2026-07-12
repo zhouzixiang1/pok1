@@ -21,8 +21,8 @@ from workflow_profiles import get_workflow_profile
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_NAME = "evaluation_data_manifest.json"
-IDENTITY_SCHEMA_VERSION = 2
-PROFILE_ID = "national-native-rating-authority-v2-current-runtime-overlay"
+IDENTITY_SCHEMA_VERSION = 3
+PROFILE_ID = "national-native-rating-authority-v3-managed-executor-strict-pool"
 SEMANTIC_PATHS = (
     "sever/engine/deck.py",
     "sever/engine/evaluator.py",
@@ -33,9 +33,13 @@ SEMANTIC_PATHS = (
     "web/core/elo_daemon.py",
     "web/core/evaluation_bundle.py",
     "web/core/evolution_infra.py",
+    "web/core/managed_bot_executor.py",
+    "web/core/managed_bot_socket.py",
     "web/core/national_bot_launcher.py",
     "web/core/national_game_runtime.py",
     "web/core/national_native.py",
+    "web/core/national_protocol_quarantine.py",
+    "web/core/national_protocol_quarantine.json",
     "web/core/national_transport.py",
     "web/core/rating_snapshot.py",
     "web/core/strength_order.py",

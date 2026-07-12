@@ -22,7 +22,10 @@ from official_certification import (  # noqa: E402
     select_official_opponent,
     status_payload,
 )
-from official_bootstrap import select_signed_v5_ledger_bootstrap_root  # noqa: E402
+from official_bootstrap import (  # noqa: E402
+    authorize_operator_bootstrap_selection,
+    select_signed_v5_ledger_bootstrap_root,
+)
 from official_certification_job import job_snapshot, reconcile_jobs, start_or_poll_job  # noqa: E402
 from official_certificate_signing import signing_environment_report  # noqa: E402
 from official_platform_harness import check_environment  # noqa: E402
@@ -218,6 +221,21 @@ def main(argv: list[str] | None = None) -> int:
             "opponent_selection": selection,
         }, ensure_ascii=False, indent=2))
         return 2
+    if args.cmd == "bootstrap-full":
+        authorization = authorize_operator_bootstrap_selection(
+            selection,
+            args.root_id,
+            args.candidate,
+        )
+        if authorization.get("valid") is not True:
+            print(json.dumps({
+                "status": "bootstrap-authorization-blocked",
+                "candidate": args.candidate,
+                "root_id": args.root_id,
+                "authorization": authorization,
+            }, ensure_ascii=False, indent=2))
+            return 2
+        selection = authorization["selection"]
     spec = build_spec(
         "full" if args.cmd == "bootstrap-full" else args.cmd,
         args.candidate,

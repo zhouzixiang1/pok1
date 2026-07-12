@@ -13,9 +13,14 @@ from pathlib import Path
 import re
 from typing import Any
 
+from national_runtime_probe_scenarios import (
+    LINE_SCENARIO_PAIRS,
+    SHOWDOWN_RANGE_SCENARIO_IDS,
+    TERMINAL_RESPONSE_SCENARIO_IDS,
+)
 
-NATIONAL_CAPABILITY_DETECTOR_VERSION = "4.3.0"
-CAPABILITY_SCHEMA_VERSION = 5
+NATIONAL_CAPABILITY_DETECTOR_VERSION = "4.6.0"
+CAPABILITY_SCHEMA_VERSION = 8
 DECISION_GRAPH_MAX_DEPTH = 5
 MIN_PRECOMPUTE_ENTRIES = 20
 MAX_PRECOMPUTE_ENTRIES = 65_536
@@ -1409,6 +1414,300 @@ def _check(
     }
 
 
+_LEGAL_SANITIZED_WIRE_RE = re.compile(
+    r"^(?:fold|call|check|allin|raise [1-9][0-9]*)$"
+)
+_TERMINAL_RESPONSE_LIVE_PATH_GROUPS = (
+    frozenset({
+        "opponent_runtime.fold_to_raise",
+        "opponent_runtime.fold_to_jam_rate",
+        "opponent_runtime.river_overcall_freq",
+    }),
+    frozenset({
+        "opponent_runtime.terminal_response.contexts",
+        "opponent_runtime.terminal_response.confidence",
+        "opponent_runtime.terminal_response.adaptation_weight",
+    }),
+)
+_SHOWDOWN_RANGE_BASE_LIVE_PATHS = frozenset({
+    "opponent_runtime.showdown_range.selection_scope",
+    "opponent_runtime.showdown_range.confidence",
+    "opponent_runtime.showdown_range.adaptation_weight",
+})
+_LINE_PAIR_BY_DIMENSION = {
+    str(item["dimension"]): dict(item) for item in LINE_SCENARIO_PAIRS
+}
+
+
+def _live_path_locations(
+    incremental: dict[str, Any],
+    path: str,
+    *,
+    allow_descendant: bool = False,
+) -> list[str]:
+    paths = incremental.get("source_rooted_live_access_paths") or {}
+    if not isinstance(paths, dict):
+        return []
+    locations: list[str] = []
+    for observed, observed_locations in paths.items():
+        observed = str(observed)
+        if observed != path and not (
+            allow_descendant and observed.startswith(path + ".")
+        ):
+            continue
+        locations.extend(str(item) for item in observed_locations or [])
+    return sorted(dict.fromkeys(locations))
+
+
+def _migration_source_consumption(
+    incremental: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Prove exact request-rooted fields reach a strategy action sink.
+
+    Literal-name evidence is intentionally excluded. A dead tuple containing a
+    field name, or a generic ``repr(runtime_dict)`` branch, does not establish
+    that the named producer/consumer ABI was migrated.
+    """
+
+    terminal_group: frozenset[str] | None = None
+    for group in _TERMINAL_RESPONSE_LIVE_PATH_GROUPS:
+        if all(_live_path_locations(incremental, path) for path in group):
+            terminal_group = group
+            break
+    terminal_locations = sorted({
+        location
+        for path in terminal_group or ()
+        for location in _live_path_locations(incremental, path)
+    })
+
+    showdown_paths = set(_SHOWDOWN_RANGE_BASE_LIVE_PATHS)
+    showdown_shape_path = ""
+    for candidate, allow_descendant in (
+        ("opponent_runtime.showdown_range.tightness", False),
+        ("opponent_runtime.showdown_range.bucket_rates", True),
+    ):
+        if _live_path_locations(
+            incremental,
+            candidate,
+            allow_descendant=allow_descendant,
+        ):
+            showdown_shape_path = candidate
+            showdown_paths.add(candidate)
+            break
+    showdown_ok = bool(
+        showdown_shape_path
+        and all(
+            _live_path_locations(
+                incremental,
+                path,
+                allow_descendant=(path == "opponent_runtime.showdown_range.bucket_rates"),
+            )
+            for path in showdown_paths
+        )
+    )
+    showdown_locations = sorted({
+        location
+        for path in showdown_paths
+        for location in _live_path_locations(
+            incremental,
+            path,
+            allow_descendant=(path == "opponent_runtime.showdown_range.bucket_rates"),
+        )
+    })
+
+    result = {
+        "terminal_response": {
+            "ok": terminal_group is not None,
+            "paths": sorted(terminal_group or ()),
+            "locations": terminal_locations,
+        },
+        "showdown_range": {
+            "ok": showdown_ok,
+            "paths": sorted(showdown_paths) if showdown_ok else [],
+            "locations": showdown_locations,
+        },
+    }
+    for dimension, field in (
+        ("donk", "can_donk"),
+        ("delayed_probe", "can_delayed_probe"),
+    ):
+        path = f"hand_runtime.{field}"
+        locations = _live_path_locations(incremental, path)
+        result[dimension] = {
+            "ok": bool(locations),
+            "paths": [path] if locations else [],
+            "locations": locations,
+        }
+    return result
+
+
+def _probe_migration_evidence_integrity(
+    dynamic_probe: dict[str, Any],
+    dimension: str,
+) -> bool:
+    failure_class = str(dynamic_probe.get("failure_class") or "")
+    repeatability = dynamic_probe.get("migration_evidence_repeatability") or {}
+    dimensions = repeatability.get("dimensions") or {}
+    dimension_result = dimensions.get(dimension) or {}
+    evidence = dimension_result.get("evidence") or []
+    observation_digests = dimension_result.get("observation_digests") or []
+    try:
+        run_count = int(repeatability.get("run_count") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        failure_class not in {"probe_infra", "internal_infrastructure"}
+        and repeatability.get("candidate_fingerprint_unchanged") is True
+        and repeatability.get("runs_eligible") is True
+        and run_count >= 2
+        and dimension_result.get("stable") is True
+        and dimension_result.get("authority_tier") == "baseline"
+        and dimension_result.get("evidence_present") is True
+        and dimension_result.get("observations_identical") is True
+        and isinstance(evidence, list)
+        and bool(evidence)
+        and len(observation_digests) == run_count
+        and len(set(str(item) for item in observation_digests)) == 1
+    )
+
+
+def _stable_final_wire_difference(
+    tier: dict[str, Any],
+    left_label: str,
+    right_label: str,
+) -> tuple[bool, str, str]:
+    left = tier.get(left_label)
+    right = tier.get(right_label)
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False, "", ""
+    if "error" in left or "error" in right or tier.get("changed") is not True:
+        return False, "", ""
+    left_wire = left.get("wire")
+    right_wire = right.get("wire")
+    if not isinstance(left_wire, str) or not isinstance(right_wire, str):
+        return False, "", ""
+    if not _LEGAL_SANITIZED_WIRE_RE.fullmatch(left_wire):
+        return False, "", ""
+    if not _LEGAL_SANITIZED_WIRE_RE.fullmatch(right_wire):
+        return False, "", ""
+    return left_wire != right_wire, left_wire, right_wire
+
+
+def _migration_dynamic_influence(
+    dynamic_probe: dict[str, Any],
+    dimension: str,
+) -> dict[str, Any]:
+    """Return trusted, dimension-specific final-wire counterfactual evidence."""
+
+    integrity_ok = _probe_migration_evidence_integrity(dynamic_probe, dimension)
+    influence = dynamic_probe.get("strategy_influence") or {}
+    dimensions = influence.get("dimensions") or {}
+    if dimension in {"donk", "delayed_probe"}:
+        payload = dimensions.get("semantic_lines") or {}
+        left_label, right_label = "positive", "negative"
+    elif dimension == "terminal_response":
+        payload = dimensions.get("terminal_response") or {}
+        left_label, right_label = "terminal_folder", "terminal_caller"
+    elif dimension == "showdown_range":
+        payload = dimensions.get("showdown_range") or {}
+        left_label, right_label = "tight_showdown", "loose_showdown"
+    else:
+        return {"ok": False, "integrity_ok": integrity_ok, "reason": "unknown_dimension"}
+
+    if not integrity_ok:
+        return {
+            "ok": False,
+            "integrity_ok": False,
+            "reason": "dimension_baseline_evidence_not_repeatable_or_integrity_failed",
+        }
+
+    repeatability = dynamic_probe["migration_evidence_repeatability"]
+    stable_evidence = (
+        (repeatability.get("dimensions") or {}).get(dimension) or {}
+    ).get("evidence") or []
+
+    for evidence in stable_evidence:
+        if not isinstance(evidence, dict):
+            continue
+        evidence_scenario = str(evidence.get("scenario_id") or "")
+        if (
+            evidence.get("dimension") != dimension
+            or evidence.get("tier") != "baseline"
+            or evidence.get("left_label") != left_label
+            or evidence.get("right_label") != right_label
+        ):
+            continue
+        if dimension in {"donk", "delayed_probe"}:
+            pair = _LINE_PAIR_BY_DIMENSION[dimension]
+            if (
+                evidence_scenario != pair["positive"]
+                or evidence.get("control_kind") != "same_scenario_flag_false"
+                or evidence.get("flag") != pair["flag"]
+            ):
+                continue
+        elif dimension == "terminal_response":
+            if evidence_scenario not in TERMINAL_RESPONSE_SCENARIO_IDS:
+                continue
+        elif evidence_scenario not in SHOWDOWN_RANGE_SCENARIO_IDS:
+            continue
+        evidence_left_wire = evidence.get("left_wire")
+        evidence_right_wire = evidence.get("right_wire")
+        if (
+            not isinstance(evidence_left_wire, str)
+            or not isinstance(evidence_right_wire, str)
+            or not _LEGAL_SANITIZED_WIRE_RE.fullmatch(evidence_left_wire)
+            or not _LEGAL_SANITIZED_WIRE_RE.fullmatch(evidence_right_wire)
+            or evidence_left_wire == evidence_right_wire
+        ):
+            continue
+
+        for row in payload.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            scenario_id = str(row.get("scenario_id") or "")
+            if scenario_id != evidence_scenario:
+                continue
+            if dimension in {"donk", "delayed_probe"}:
+                pair = _LINE_PAIR_BY_DIMENSION[dimension]
+                if (
+                    row.get("dimension") != dimension
+                    or scenario_id != pair["positive"]
+                    or row.get("control_kind") != "same_scenario_flag_false"
+                    or row.get("flag") != pair["flag"]
+                ):
+                    continue
+            tiers = row.get("tiers") or {}
+            baseline = tiers.get("baseline") if isinstance(tiers, dict) else None
+            if not isinstance(baseline, dict):
+                continue
+            changed, left_wire, right_wire = _stable_final_wire_difference(
+                baseline,
+                left_label,
+                right_label,
+            )
+            if (
+                changed
+                and left_wire == evidence_left_wire
+                and right_wire == evidence_right_wire
+            ):
+                return {
+                    "ok": True,
+                    "integrity_ok": True,
+                    "scenario_id": scenario_id,
+                    "tier": "baseline",
+                    "left_label": left_label,
+                    "right_label": right_label,
+                    "left_wire": left_wire,
+                    "right_wire": right_wire,
+                }
+
+    return {
+        "ok": False,
+        "integrity_ok": True,
+        "reason": "stable_evidence_not_bound_to_first_run_baseline",
+    }
+
+
 def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
     """Return stable, evidence-backed architecture capabilities for one bot."""
 
@@ -1530,32 +1829,25 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
     incremental["dynamic_strategy_influence"] = dynamic_probe.get("strategy_influence") or {}
     hand_context = dynamic_probe.get("hand_context") or {}
     influence_dimensions = incremental["dynamic_strategy_influence"].get("dimensions") or {}
-    decision_field_locations = incremental.get("decision_field_locations") or {}
-    terminal_flat_fields_consumed = all(
-        decision_field_locations.get(field)
-        for field in ("fold_to_raise", "fold_to_jam_rate", "river_overcall_freq")
+    migration_source = _migration_source_consumption(incremental)
+    terminal_fields_consumed = migration_source["terminal_response"]["ok"]
+    showdown_fields_consumed = migration_source["showdown_range"]["ok"]
+    donk_fields_consumed = migration_source["donk"]["ok"]
+    delayed_probe_fields_consumed = migration_source["delayed_probe"]["ok"]
+    line_fields_consumed = bool(
+        donk_fields_consumed and delayed_probe_fields_consumed
     )
-    terminal_context_fields_consumed = all(
-        decision_field_locations.get(field)
-        for field in ("terminal_response", "contexts", "confidence", "adaptation_weight")
-    )
-    terminal_fields_consumed = bool(
-        terminal_flat_fields_consumed or terminal_context_fields_consumed
-    )
-    showdown_fields_consumed = bool(
-        decision_field_locations.get("showdown_range")
-        and (
-            decision_field_locations.get("tightness")
-            or decision_field_locations.get("bucket_rates")
+    migration_dynamic = {
+        dimension: _migration_dynamic_influence(dynamic_probe, dimension)
+        for dimension in (
+            "terminal_response",
+            "showdown_range",
+            "donk",
+            "delayed_probe",
         )
-        and decision_field_locations.get("confidence")
-        and decision_field_locations.get("adaptation_weight")
-        and decision_field_locations.get("selection_scope")
-    )
-    line_fields_consumed = all(
-        decision_field_locations.get(field)
-        for field in ("hand_runtime", "can_donk", "can_delayed_probe")
-    )
+    }
+    donk_line_changed = migration_dynamic["donk"]["ok"]
+    delayed_probe_line_changed = migration_dynamic["delayed_probe"]["ok"]
     decision_runtime = dynamic_probe.get("decision_runtime") or {}
     baseline_samples_ms = [
         float(value)
@@ -1831,48 +2123,85 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
             "terminal_response_adaptation",
             bool(
                 terminal_fields_consumed
-                and (influence_dimensions.get("terminal_response") or {}).get("ok")
+                and migration_dynamic["terminal_response"]["ok"]
             ),
             "advisory",
             "opponent_model",
             "terminal fold/call response profiles produce an observable legal action difference",
             "Consume fold-to-raise, fold-to-jam, and river-overcall evidence with confidence in a reachable decision path.",
             facts={
-                "ok": (influence_dimensions.get("terminal_response") or {}).get("ok"),
+                "ok": migration_dynamic["terminal_response"]["ok"],
                 "changed_pairs": (influence_dimensions.get("terminal_response") or {}).get("changed_pairs", 0),
                 "required_fields_consumed": terminal_fields_consumed,
+                "source_rooted_paths": migration_source["terminal_response"]["paths"],
+                "dynamic_evidence": migration_dynamic["terminal_response"],
             },
         ),
         _check(
             "showdown_range_adaptation",
             bool(
                 showdown_fields_consumed
-                and (influence_dimensions.get("showdown_range") or {}).get("ok")
+                and migration_dynamic["showdown_range"]["ok"]
             ),
             "advisory",
             "opponent_model",
             "showdown-only tight and loose counterfactuals produce an observable legal action difference",
             "Feed opponent_runtime.showdown_range posterior weights into range/EV logic; reading a counter without changing a decision is insufficient.",
             facts={
-                "ok": (influence_dimensions.get("showdown_range") or {}).get("ok"),
+                "ok": migration_dynamic["showdown_range"]["ok"],
                 "changed_pairs": (influence_dimensions.get("showdown_range") or {}).get("changed_pairs", 0),
                 "required_fields_consumed": showdown_fields_consumed,
+                "source_rooted_paths": migration_source["showdown_range"]["paths"],
+                "dynamic_evidence": migration_dynamic["showdown_range"],
+            },
+        ),
+        _check(
+            "donk_line_reachability",
+            bool(donk_fields_consumed and donk_line_changed),
+            "advisory",
+            "line_template",
+            "the authoritative donk positive/control pair reaches distinct sanitized actions",
+            "Consume hand_runtime.can_donk in the live strategy path and prove the official BB-versus-SB-raise transcript changes the final wire action.",
+            facts={
+                "ok": donk_line_changed,
+                "required_fields_consumed": donk_fields_consumed,
+                "source_rooted_paths": migration_source["donk"]["paths"],
+                "dynamic_evidence": migration_dynamic["donk"],
+            },
+        ),
+        _check(
+            "delayed_probe_line_reachability",
+            bool(delayed_probe_fields_consumed and delayed_probe_line_changed),
+            "advisory",
+            "line_template",
+            "the authoritative delayed-probe positive/control pair reaches distinct sanitized actions",
+            "Consume hand_runtime.can_delayed_probe in the live strategy path and prove the official checked-back-pass transcript changes the final wire action.",
+            facts={
+                "ok": delayed_probe_line_changed,
+                "required_fields_consumed": delayed_probe_fields_consumed,
+                "source_rooted_paths": migration_source["delayed_probe"]["paths"],
+                "dynamic_evidence": migration_dynamic["delayed_probe"],
             },
         ),
         _check(
             "semantic_line_reachability",
             bool(
                 line_fields_consumed
-                and (influence_dimensions.get("semantic_lines") or {}).get("ok")
+                and donk_line_changed
+                and delayed_probe_line_changed
             ),
             "advisory",
             "line_template",
             "donk and delayed-probe positive/control pairs both reach distinct sanitized actions",
             "Wire hand_runtime.can_donk and can_delayed_probe into live strategy using the official BB-check/SB-pass-call transcript.",
             facts={
-                "ok": (influence_dimensions.get("semantic_lines") or {}).get("ok"),
+                "ok": bool(donk_line_changed and delayed_probe_line_changed),
                 "changed_pairs": (influence_dimensions.get("semantic_lines") or {}).get("changed_pairs", 0),
                 "required_fields_consumed": line_fields_consumed,
+                "source_rooted_paths": [
+                    *migration_source["donk"]["paths"],
+                    *migration_source["delayed_probe"]["paths"],
+                ],
             },
         ),
     ]
@@ -1893,6 +2222,8 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
                 "incremental_opponent_model",
                 "terminal_response_adaptation",
                 "showdown_range_adaptation",
+                "donk_line_reachability",
+                "delayed_probe_line_reachability",
                 "semantic_line_reachability",
             }:
                 item["passed"] = None

@@ -22,24 +22,29 @@ import random
 import re
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import threading
 import time
 from typing import Any, Callable
 
-from bot_artifact import canonical_digest
+from bot_artifact import canonical_digest, hash_path
 from pipeline_schema import NationalAcceptanceResult
 from official_attribution import round_topology
 from official_bot_sandbox import (
+    OfficialBootstrapLaunchAuthorization,
     SealedBotArtifact,
-    build_sandboxed_bot_command,
+    launch_sandboxed_bot,
     seal_bot_artifact,
 )
-from managed_bot_socket import connect_managed_endpoint
+from managed_bot_executor import EndpointLease
+from national_protocol_quarantine import (
+    ProtocolQuarantineError,
+    quarantined_native_entry_sources,
+)
 from official_execution_profile import (
     execution_profile_identity,
+    load_execution_profile,
     validate_execution_profile,
 )
 from blocking_runtime import run_blocking_isolated
@@ -595,60 +600,190 @@ def _launch_bot(
     stdout_path: Path,
     stderr_path: Path,
     port: int | None = None,
+    quarantine_authorization: OfficialBootstrapLaunchAuthorization | None = None,
 ) -> subprocess.Popen:
-    entry = resolve_bot_entry(bot.path)
     stdout = stdout_path.open("wb")
     stderr = stderr_path.open("wb")
-    preconnected: socket.socket | None = None
-    pass_fds: tuple[int, ...] = ()
     endpoint_port = config.port if port is None else int(port)
     try:
-        if bot.sealed_artifact is not None:
-            preconnected = connect_managed_endpoint(
-                config.host,
-                endpoint_port,
-                timeout=min(10.0, config.listen_timeout_sec),
+        artifact = bot.sealed_artifact
+        if artifact is None:
+            # Manual/diagnostic rounds retain their lower authority, but bot
+            # execution still uses the same central process boundary.  A
+            # round-local content-bound copy avoids mounting a mutable source.
+            source_hash = hash_path(bot.path)
+            artifact = seal_bot_artifact(
+                bot.path,
+                stdout_path.parent / "managed_inputs" / stdout_path.stem,
+                expected_hash=source_hash,
             )
-            pass_fds = (preconnected.fileno(),)
-            cmd, bot_env = build_sandboxed_bot_command(
-                bot.sealed_artifact,
-                host=config.host,
-                port=endpoint_port,
+        quarantine_matches = tuple(sorted(set(
+            quarantined_native_entry_sources(bot.path)
+            + quarantined_native_entry_sources(artifact.root)
+        )))
+        if quarantine_matches and quarantine_authorization is None:
+            raise RuntimeError(
+                "protocol_quarantined_native_entry_forbidden:"
+                f"{bot.name}:matches={','.join(quarantine_matches)}"
+            )
+        profile = load_execution_profile()
+        source_relative = str(
+            ((profile.get("managed_executor") or {}).get("source") or {}).get("path")
+            or ""
+        )
+        source_sha256 = hashlib.sha256(
+            (ROOT / source_relative).read_bytes()
+        ).hexdigest()
+        profile_identity = execution_profile_identity()
+        managed_group = env.get("POK_OFFICIAL_JOB_PROCESS_GROUP") == "1"
+        with EndpointLease.connect(
+            config.host,
+            endpoint_port,
+            timeout=min(10.0, config.listen_timeout_sec),
+        ) as endpoint:
+            managed = launch_sandboxed_bot(
+                artifact,
+                endpoint,
                 name=bot.name,
                 seat=bot.seat if bot.supports_seat else None,
                 log_path=log_path,
                 supports_log=bot.supports_log,
-                preconnected_fd=preconnected.fileno(),
                 extra_args=bot.extra_args,
+                quarantine_authorization=quarantine_authorization,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=not managed_group,
             )
-            cwd = None
-        else:
-            cmd = build_bot_command(
-                bot,
-                host=config.host,
-                port=endpoint_port,
-                log_path=log_path,
-            )
-            cwd = entry.parent
-            bot_env = env
-        proc = _popen(
-            cmd,
-            cwd=cwd,
-            env=bot_env,
-            stdout=stdout,
-            stderr=stderr,
-            pass_fds=pass_fds,
-        )
+        proc = managed.process
+        proc._pok_managed_isolation = asdict(managed.isolation)  # type: ignore[attr-defined]
+        proc._pok_managed_artifact_hash = artifact.artifact_hash  # type: ignore[attr-defined]
+        proc._pok_endpoint_lease = {  # type: ignore[attr-defined]
+            "consumed": endpoint.consumed,
+            "closed": endpoint.closed,
+        }
+        proc._pok_managed_executor_source_sha256 = source_sha256  # type: ignore[attr-defined]
+        proc._pok_execution_profile_identity = profile_identity  # type: ignore[attr-defined]
     except BaseException:
         stdout.close()
         stderr.close()
         raise
-    finally:
-        if preconnected is not None:
-            preconnected.close()
     proc._pok_stdout = stdout  # type: ignore[attr-defined]
     proc._pok_stderr = stderr  # type: ignore[attr-defined]
     return proc
+
+
+def _official_quarantine_authorization(
+    bot: BotLaunchConfig,
+    peer: BotLaunchConfig,
+    job_envelope: dict[str, Any] | None,
+) -> tuple[OfficialBootstrapLaunchAuthorization | None, list[str]]:
+    """Authorize only the exact one-time v141 bootstrap opponent."""
+
+    try:
+        matches = tuple(sorted(set(
+            quarantined_native_entry_sources(bot.path)
+            + (
+                quarantined_native_entry_sources(bot.sealed_artifact.root)
+                if bot.sealed_artifact is not None
+                else ()
+            )
+        )))
+    except ProtocolQuarantineError as exc:
+        return None, [
+            "protocol_quarantine_authority_unavailable:"
+            f"{bot.name}:{type(exc).__name__}:{str(exc)[:180]}"
+        ]
+    if not matches:
+        return None, []
+
+    prefix = (
+        "protocol_quarantined_native_entry_forbidden:"
+        f"{bot.name}:matches={','.join(matches)}"
+    )
+    if bot.role != "opponent" or peer.role != "candidate":
+        return None, [f"{prefix}:bootstrap_role_invalid"]
+    if bot.sealed_artifact is None or not isinstance(job_envelope, dict):
+        return None, [f"{prefix}:bootstrap_formal_binding_missing"]
+    root_id = str(job_envelope.get("bootstrap_root_id") or "")
+    if root_id != "national-v141-official-full-v5-signed-ledger-root":
+        return None, [f"{prefix}:bootstrap_root_invalid"]
+    selection = job_envelope.get("opponent_selection")
+    if not isinstance(selection, dict):
+        return None, [f"{prefix}:bootstrap_selection_missing"]
+    if job_envelope.get("opponent_selection_digest") != canonical_digest(selection):
+        return None, [f"{prefix}:bootstrap_selection_digest_mismatch"]
+
+    opponent = (
+        selection.get("opponent")
+        if isinstance(selection.get("opponent"), dict)
+        else {}
+    )
+    try:
+        bot_hash = hash_path(bot.path)
+        peer_hash = hash_path(peer.path)
+    except Exception as exc:
+        return None, [
+            f"{prefix}:bootstrap_artifact_hash_error:{type(exc).__name__}"
+        ]
+    exact_fields = (
+        opponent.get("bot") == "national_v141",
+        Path(str(opponent.get("path") or "")).expanduser().resolve()
+        == Path(bot.path).expanduser().resolve(),
+        opponent.get("artifact_hash") == bot_hash,
+        job_envelope.get("opponent_hash") == bot_hash,
+        bot.sealed_artifact.artifact_hash == bot_hash,
+        job_envelope.get("candidate_hash") == peer_hash,
+        bool(opponent.get("tag_object")),
+        bool(opponent.get("completion_tree_oid")),
+        isinstance(opponent.get("eligibility_receipt"), dict),
+    )
+    if not all(exact_fields):
+        return None, [f"{prefix}:bootstrap_exact_identity_mismatch"]
+    try:
+        from official_bootstrap import (
+            validate_operator_bootstrap_authorized_selection,
+            validate_signed_v5_ledger_bootstrap_selection,
+        )
+
+        validation = validate_signed_v5_ledger_bootstrap_selection(
+            selection,
+            root_id,
+            peer.path,
+            allow_consumed=False,
+        )
+        authorization = validate_operator_bootstrap_authorized_selection(
+            selection,
+            root_id,
+            peer.path,
+        )
+    except Exception as exc:
+        return None, [
+            f"{prefix}:bootstrap_validation_error:"
+            f"{type(exc).__name__}:{str(exc)[:160]}"
+        ]
+    if validation.get("valid") is not True:
+        detail = ",".join(str(item) for item in (validation.get("issues") or [])[:4])
+        return None, [f"{prefix}:bootstrap_selection_invalid:{detail or 'unknown'}"]
+    if authorization.get("valid") is not True:
+        detail = ",".join(
+            str(item) for item in (authorization.get("issues") or [])[:4]
+        )
+        return None, [
+            f"{prefix}:bootstrap_operator_authorization_invalid:"
+            f"{detail or authorization.get('reason') or 'unknown'}"
+        ]
+    return OfficialBootstrapLaunchAuthorization(
+        root_id=root_id,
+        artifact_hash=bot_hash,
+        selection_digest=canonical_digest(selection),
+        selection_json=json.dumps(
+            selection,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        candidate_path=str(Path(peer.path).expanduser().resolve()),
+    ), []
 
 
 def _close_process_files(proc: subprocess.Popen | None) -> None:
@@ -661,6 +796,34 @@ def _close_process_files(proc: subprocess.Popen | None) -> None:
                 handle.close()
             except Exception:
                 pass
+
+
+def _bot_process_isolation_receipt(
+    connection: str,
+    bot: BotLaunchConfig,
+    process: subprocess.Popen,
+) -> dict[str, Any]:
+    return {
+        "connection": connection,
+        "name": bot.name,
+        "role": bot.role,
+        "instance_id": bot.instance_id,
+        "seat": bot.seat,
+        "path": str(Path(bot.path).expanduser().resolve()),
+        "artifact_hash": getattr(process, "_pok_managed_artifact_hash", None),
+        "endpoint_lease": getattr(process, "_pok_endpoint_lease", None),
+        "execution_profile": getattr(
+            process,
+            "_pok_execution_profile_identity",
+            None,
+        ),
+        "managed_executor_source_sha256": getattr(
+            process,
+            "_pok_managed_executor_source_sha256",
+            None,
+        ),
+        "isolation": getattr(process, "_pok_managed_isolation", None),
+    }
 
 
 def _read_issue_file(path: Path, patterns: tuple[str, ...] = CRITICAL_LOG_PATTERNS) -> list[str]:
@@ -1604,7 +1767,26 @@ def run_official_round(
     """Run one official-platform round and return an evidence receipt."""
     cfg = config or OfficialPlatformConfig()
     target_hands = max(1, min(70, int(target_hands)))
-    formal_sandbox = bot_a.sealed_artifact is not None or bot_b.sealed_artifact is not None
+    sealed_a = bot_a.sealed_artifact is not None
+    sealed_b = bot_b.sealed_artifact is not None
+    formal_sandbox = sealed_a and sealed_b
+    launch_contract_issues: list[str] = []
+    if sealed_a != sealed_b:
+        launch_contract_issues.append("official_formal_sandbox_asymmetric")
+    if job_envelope is not None and not formal_sandbox:
+        launch_contract_issues.append("official_formal_sandbox_required")
+    quarantine_authorization_a, quarantine_issues_a = _official_quarantine_authorization(
+        bot_a,
+        bot_b,
+        job_envelope,
+    )
+    quarantine_authorization_b, quarantine_issues_b = _official_quarantine_authorization(
+        bot_b,
+        bot_a,
+        job_envelope,
+    )
+    launch_contract_issues.extend(quarantine_issues_a)
+    launch_contract_issues.extend(quarantine_issues_b)
     environment = check_environment(
         cfg,
         require_formal_sandbox=formal_sandbox,
@@ -1625,7 +1807,7 @@ def run_official_round(
         "bot_b": _jsonable(bot_b),
         "environment": environment,
         "artifacts": {},
-        "issues": [],
+        "issues": launch_contract_issues,
         "passed": False,
         "job_envelope": job_envelope,
         "formal_execution": {
@@ -1648,6 +1830,9 @@ def run_official_round(
 
         receipt["issues"].extend(job_envelope_issues(job_envelope))
     receipt["topology"] = round_topology(receipt)
+    if launch_contract_issues:
+        _write_json(round_dir / "receipt.json", receipt)
+        return receipt
     if not environment["ok"]:
         receipt["issues"].extend(environment["issues"])
         _write_json(round_dir / "receipt.json", receipt)
@@ -1740,6 +1925,7 @@ def run_official_round(
                 stdout_path=bot_a_stdout,
                 stderr_path=bot_a_stderr,
                 port=proxy_ports.get("A") if proxy_ports else None,
+                quarantine_authorization=quarantine_authorization_a,
             )
             bot_b_proc = _launch_bot(
                 bot_b,
@@ -1749,7 +1935,16 @@ def run_official_round(
                 stdout_path=bot_b_stdout,
                 stderr_path=bot_b_stderr,
                 port=proxy_ports.get("B") if proxy_ports else None,
+                quarantine_authorization=quarantine_authorization_b,
             )
+            receipt["formal_execution"]["bot_isolation"] = {
+                "schema_version": 1,
+                "authority": "central-managed-executor-process-observation",
+                "connections": {
+                    "A": _bot_process_isolation_receipt("A", bot_a, bot_a_proc),
+                    "B": _bot_process_isolation_receipt("B", bot_b, bot_b_proc),
+                },
+            }
             _wait_for_bot_handshakes(log_a, log_b, timeout_sec=4.0)
             third = _maybe_screenshot(env, round_dir / "screenshots" / "03_connected.png", "connected")
             if third:

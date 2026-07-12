@@ -1,4 +1,12 @@
-"""Signed append-only authority history for formal official-EXE verdicts."""
+"""Crash-consistent signed history for formal official-EXE verdicts.
+
+The signatures and hash chain detect byte drift relative to the currently
+present signed head. They do not make the ledger rollback-resistant: this
+single-user host has no independently anchored latest-head checkpoint, so a
+same-uid actor that restores an older valid ledger/head pair is outside the
+threat model. The ledger is therefore an operational serialization and crash
+recovery boundary, not a transparency log.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +19,11 @@ import time
 from typing import Any, Iterator
 
 from bot_artifact import canonical_digest
-from official_certificate_signing import sign_certificate, verify_certificate_signature
+from official_certificate_signing import (
+    current_signer_record_fields,
+    sign_certificate,
+    verify_certificate_signature,
+)
 
 
 LEDGER_SCHEMA_VERSION = 1
@@ -20,6 +32,12 @@ LEDGER_HEAD_SCHEMA_VERSION = 1
 LEDGER_HEAD_KIND = "official-exe-verdict-ledger-head"
 DEFAULT_LEDGER_PATH = Path.home() / ".local" / "share" / "pok" / "official-verdict-ledger.jsonl"
 AUTHORITATIVE_OUTCOMES = {"official-certified", "official-failed"}
+LEDGER_THREAT_MODEL = {
+    "scope": "operational-serialization-crash-recovery-and-chain-integrity",
+    "same_uid_tamper_resistance": False,
+    "rollback_resistance_without_external_anchor": False,
+    "external_latest_head_anchor": "not-configured",
+}
 
 
 def ledger_path() -> Path:
@@ -63,6 +81,7 @@ def _head_payload(
         "sequence": int(entry.get("sequence", 0) or 0),
         "entry_digest": str(entry.get("entry_digest") or ""),
         "ledger_size_bytes": path.stat().st_size,
+        **current_signer_record_fields(),
     }
 
 
@@ -78,33 +97,51 @@ def _write_signed_head(path: Path, entry: dict[str, Any] | None = None) -> None:
         + "\n"
     ).encode("utf-8")
     tmp = head.with_name(f".{head.name}.tmp-{os.getpid()}-{time.time_ns()}")
-    descriptor = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
-        os.fchmod(descriptor, 0o600)
-        os.write(descriptor, raw)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    os.replace(tmp, head)
-    directory = os.open(head.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
+        descriptor = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            _write_all(descriptor, raw)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(tmp, head)
+        directory = os.open(head.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
-def _validate_signed_head(path: Path, entries: list[dict[str, Any]]) -> list[str]:
+def _write_all(descriptor: int, data: bytes) -> None:
+    """Write every byte or raise without treating a short write as a commit."""
+
+    view = memoryview(data)
+    written = 0
+    while written < len(view):
+        count = os.write(descriptor, view[written:])
+        if count <= 0:
+            raise OSError("official verdict ledger write made no progress")
+        written += int(count)
+
+
+def _read_signed_head(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
     head_path = ledger_head_path(path)
     try:
         if head_path.is_symlink() or not head_path.is_file():
-            return ["official_verdict_ledger_head_missing"]
+            return None, ["official_verdict_ledger_head_missing"]
         wrapper = json.loads(head_path.read_text(encoding="utf-8"))
     except Exception as exc:
-        return [f"official_verdict_ledger_head_read_error:{type(exc).__name__}"]
+        return None, [
+            f"official_verdict_ledger_head_read_error:{type(exc).__name__}"
+        ]
     head = wrapper.get("head") if isinstance(wrapper, dict) else None
     signature = wrapper.get("signature") if isinstance(wrapper, dict) else None
     if not isinstance(head, dict) or not isinstance(signature, str):
-        return ["official_verdict_ledger_head_wrapper_invalid"]
+        return None, ["official_verdict_ledger_head_wrapper_invalid"]
     issues: list[str] = []
     if (
         head.get("schema_version") != LEDGER_HEAD_SCHEMA_VERSION
@@ -114,6 +151,16 @@ def _validate_signed_head(path: Path, entries: list[dict[str, Any]]) -> list[str
     verification = verify_certificate_signature(head, signature)
     if not verification.get("valid"):
         issues.append("official_verdict_ledger_head_signature_invalid")
+    return head, issues
+
+
+def _head_binding_issues(
+    head: dict[str, Any],
+    entries: list[dict[str, Any]],
+    *,
+    ledger_size_bytes: int,
+) -> list[str]:
+    issues: list[str] = []
     latest = entries[-1] if entries else {}
     expected_sequence = int(latest.get("sequence", 0) or 0)
     expected_digest = str(latest.get("entry_digest") or "")
@@ -122,24 +169,30 @@ def _validate_signed_head(path: Path, entries: list[dict[str, Any]]) -> list[str
     if head.get("entry_digest") != expected_digest:
         issues.append("official_verdict_ledger_truncated_digest")
     try:
-        if int(head.get("ledger_size_bytes", -1)) != path.stat().st_size:
+        if int(head.get("ledger_size_bytes", -1)) != int(ledger_size_bytes):
             issues.append("official_verdict_ledger_truncated_size")
-    except (TypeError, ValueError, OSError):
+    except (TypeError, ValueError):
         issues.append("official_verdict_ledger_head_size_invalid")
     return issues
 
 
-def _read_validated(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    if not path.exists():
-        return [], ["official_verdict_ledger_missing"]
-    try:
-        if path.is_symlink() or not path.is_file():
-            return [], ["official_verdict_ledger_not_regular"]
-        raw = path.read_bytes()
-    except Exception as exc:
-        return [], [f"official_verdict_ledger_read_error:{type(exc).__name__}"]
+def _validate_signed_head(path: Path, entries: list[dict[str, Any]]) -> list[str]:
+    head, issues = _read_signed_head(path)
+    if head is None:
+        return issues
+    return [
+        *issues,
+        *_head_binding_issues(
+            head,
+            entries,
+            ledger_size_bytes=path.stat().st_size,
+        ),
+    ]
+
+
+def _parse_ledger_bytes(raw: bytes) -> tuple[list[dict[str, Any]], list[str]]:
     if not raw:
-        return [], _validate_signed_head(path, [])
+        return [], []
     if not raw.endswith(b"\n"):
         return [], ["official_verdict_ledger_truncated_line"]
     entries: list[dict[str, Any]] = []
@@ -176,14 +229,109 @@ def _read_validated(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
             break
         entries.append(entry)
         previous = digest
-    if not issues:
-        issues.extend(_validate_signed_head(path, entries))
     return entries, issues
+
+
+def _truncate_to_signed_prefix(path: Path, size: int) -> None:
+    descriptor = os.open(path, os.O_WRONLY)
+    try:
+        os.ftruncate(descriptor, int(size))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _recover_locked_ledger(
+    path: Path,
+    raw: bytes,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Recover only a suffix that is unambiguously beyond a valid signed head.
+
+    A complete, signature-valid chained suffix is rolled forward by signing a
+    new head.  An incomplete final write is truncated exactly to the old head's
+    signed byte boundary.  Complete but invalid data is never discarded as a
+    "crash" because it may be evidence of tampering.
+    """
+
+    head, head_issues = _read_signed_head(path)
+    if head is None or head_issues:
+        return [], head_issues
+    try:
+        signed_size = int(head.get("ledger_size_bytes", -1))
+    except (TypeError, ValueError, OverflowError):
+        return [], ["official_verdict_ledger_head_size_invalid"]
+    if signed_size < 0:
+        return [], ["official_verdict_ledger_head_size_invalid"]
+    if signed_size > len(raw):
+        return [], ["official_verdict_ledger_truncated_size"]
+    prefix_raw = raw[:signed_size]
+    prefix_entries, prefix_issues = _parse_ledger_bytes(prefix_raw)
+    if prefix_issues:
+        return [], [
+            "official_verdict_ledger_signed_prefix_invalid",
+            *prefix_issues,
+        ]
+    binding_issues = _head_binding_issues(
+        head,
+        prefix_entries,
+        ledger_size_bytes=signed_size,
+    )
+    if binding_issues:
+        return [], binding_issues
+    suffix = raw[signed_size:]
+    if not suffix:
+        return prefix_entries, []
+    if not suffix.endswith(b"\n"):
+        _truncate_to_signed_prefix(path, signed_size)
+        return prefix_entries, []
+
+    entries, suffix_issues = _parse_ledger_bytes(raw)
+    if suffix_issues:
+        return [], [
+            "official_verdict_ledger_uncommitted_suffix_invalid",
+            *suffix_issues,
+        ]
+    if len(entries) <= len(prefix_entries):
+        return [], ["official_verdict_ledger_recovery_suffix_missing"]
+    try:
+        _write_signed_head(path, entries[-1])
+    except Exception as exc:
+        return [], [
+            "official_verdict_ledger_head_rollforward_failed:"
+            f"{type(exc).__name__}"
+        ]
+    final_head_issues = _validate_signed_head(path, entries)
+    if final_head_issues:
+        return [], final_head_issues
+    return entries, []
+
+
+def _read_validated(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """Read and, while the caller owns the ledger lock, recover crash suffixes."""
+
+    if not path.exists():
+        return [], ["official_verdict_ledger_missing"]
+    try:
+        if path.is_symlink() or not path.is_file():
+            return [], ["official_verdict_ledger_not_regular"]
+        raw = path.read_bytes()
+    except Exception as exc:
+        return [], [f"official_verdict_ledger_read_error:{type(exc).__name__}"]
+    entries, entry_issues = _parse_ledger_bytes(raw)
+    if not entry_issues:
+        head_issues = _validate_signed_head(path, entries)
+        if not head_issues:
+            return entries, []
+    recovered, recovery_issues = _recover_locked_ledger(path, raw)
+    if recovery_issues:
+        return [], list(dict.fromkeys([*entry_issues, *recovery_issues]))
+    return recovered, []
 
 
 def _successful_bootstrap_consumption_fields(
     status: dict[str, Any],
     outcome: str,
+    validated_entries: list[dict[str, Any]],
 ) -> dict[str, str]:
     """Extract the one-time root receipt only for a successful full verdict.
 
@@ -219,6 +367,24 @@ def _successful_bootstrap_consumption_fields(
     opponent = opponent if isinstance(opponent, dict) else {}
     if opponent.get("eligibility_receipt") != receipt:
         raise ValueError("bootstrap root consumption opponent receipt does not match")
+    for entry in validated_entries:
+        prior_root_id = str(entry.get("bootstrap_root_id") or "")
+        if prior_root_id != root_id:
+            continue
+        prior_receipt = str(entry.get("bootstrap_root_receipt_digest") or "")
+        if prior_receipt != receipt_digest:
+            raise ValueError(
+                "bootstrap root has a prior mismatched signed consumption marker"
+            )
+        if (
+            entry.get("outcome") == "official-certified"
+            and entry.get("policy_id") == "official-full-v5"
+            and entry.get("mode") == "full"
+            and entry.get("authoritative") is True
+            and entry.get("blocking") is False
+            and entry.get("classification") == "pass"
+        ):
+            raise ValueError("bootstrap root was already successfully consumed")
     return {
         "bootstrap_root_id": root_id,
         "bootstrap_root_receipt_digest": receipt_digest,
@@ -239,19 +405,29 @@ def append_verdict(status: dict[str, Any]) -> dict[str, Any]:
     deterministic = deterministic if isinstance(deterministic, dict) else {}
     envelope = status.get("official_job_envelope")
     envelope = envelope if isinstance(envelope, dict) else {}
+    preflight_issues = authoritative_verdict_status_issues(status)
+    if preflight_issues:
+        raise ValueError(
+            "official verdict ledger rejected unverified status: "
+            + ", ".join(preflight_issues)
+        )
     with _locked_ledger() as path:
-        status_issues = authoritative_verdict_status_issues(status)
+        entries, issues = _read_validated(path)
+        if issues:
+            raise RuntimeError("official verdict ledger is invalid: " + ", ".join(issues))
+        status_issues = authoritative_verdict_status_issues(
+            status,
+            _validated_ledger_entries=entries,
+        )
         if status_issues:
             raise ValueError(
                 "official verdict ledger rejected unverified status: "
                 + ", ".join(status_issues)
             )
-        entries, issues = _read_validated(path)
-        if issues:
-            raise RuntimeError("official verdict ledger is invalid: " + ", ".join(issues))
         bootstrap_consumption = _successful_bootstrap_consumption_fields(
             status,
             outcome,
+            entries,
         )
         payload = {
             "schema_version": LEDGER_SCHEMA_VERSION,
@@ -274,6 +450,7 @@ def append_verdict(status: dict[str, Any]) -> dict[str, Any]:
             "request_completed_ns": status.get("request_completed_ns"),
             "strength_evaluation": "not_applicable",
             **bootstrap_consumption,
+            **current_signer_record_fields(),
         }
         entry = {**payload, "entry_digest": canonical_digest(payload)}
         wrapper = {
@@ -284,7 +461,7 @@ def append_verdict(status: dict[str, Any]) -> dict[str, Any]:
         descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
         try:
             os.fchmod(descriptor, 0o600)
-            os.write(descriptor, line.encode("utf-8"))
+            _write_all(descriptor, line.encode("utf-8"))
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
@@ -338,6 +515,7 @@ def ledger_integrity() -> dict[str, Any]:
         "issues": issues,
         "entry_count": len(entries),
         "head": entries[-1] if entries else None,
+        "threat_model": dict(LEDGER_THREAT_MODEL),
     }
 
 

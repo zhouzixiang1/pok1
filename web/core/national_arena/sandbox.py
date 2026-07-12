@@ -1,4 +1,4 @@
-"""Fail-closed artifact sealing and Bubblewrap plans for managed Arena bots."""
+"""Fail-closed artifact sealing and central execution for managed Arena bots."""
 
 from __future__ import annotations
 
@@ -7,15 +7,25 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
-import socket
 import stat
 import subprocess
-import sys
-from typing import Any, Mapping
+from typing import Any, IO, Mapping
 import uuid
 
 from bot_artifact import artifact_manifest, canonical_digest, hash_path
-from managed_bot_socket import SANDBOX_BOOTSTRAP, endpoint_environment
+from managed_bot_executor import (
+    BotTiming,
+    EndpointLease,
+    ExecutorRuntime,
+    IsolationUnavailable,
+    ManagedProcess,
+    launch_managed_bot,
+    probe_managed_executor,
+)
+from national_protocol_quarantine import (
+    ProtocolQuarantineError,
+    quarantined_native_entry_sources,
+)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -29,11 +39,7 @@ class ArenaSandboxUnavailable(ArenaSandboxError):
     """The host cannot provide the mandatory managed-bot sandbox."""
 
 
-@dataclass(frozen=True)
-class SandboxCapability:
-    bwrap: Path
-    python: Path
-    python_root: Path | None
+SandboxCapability = ExecutorRuntime
 
 
 @dataclass(frozen=True)
@@ -45,69 +51,19 @@ class SealedBotArtifact:
     entry_relative: str = "national_bot.py"
 
 
-@dataclass(frozen=True)
-class SandboxedBotLaunch:
-    command: tuple[str, ...]
-    environment: dict[str, str]
-    cwd: Path
-    pass_fds: tuple[int, ...]
-    security_profile: str = "bwrap_ro_artifact_tmpfs_preconnected_socket_netns"
-
-
-def _path_is_within(path: Path, parent: Path) -> bool:
+def _reject_quarantined_native_entry(path: Path, *, label: str) -> None:
     try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
-
-
-def _runtime_root(python: Path) -> Path | None:
-    prefixes = {
-        Path(sys.prefix).expanduser().resolve(),
-        Path(sys.base_prefix).expanduser().resolve(),
-    }
-    for prefix in sorted(prefixes, key=lambda item: len(item.parts), reverse=True):
-        if _path_is_within(python, prefix):
-            return prefix
-    return None
-
-
-def _protected_runtime_root(path: Path) -> bool:
-    protected = (
-        ROOT,
-        ROOT / "web" / "core" / "results",
-        ROOT / "official_certificates",
-    )
-    return any(_path_is_within(path, item) for item in protected)
-
-
-def _runtime_mount_arguments(capability: SandboxCapability) -> list[str]:
-    arguments: list[str] = []
-    mounted: list[Path] = []
-    for raw in ("/usr", "/lib", "/lib64"):
-        path = Path(raw)
-        if path.exists():
-            arguments.extend(("--ro-bind", raw, raw))
-            mounted.append(path.resolve())
-
-    python_root = capability.python_root
-    if python_root is not None and not any(
-        _path_is_within(capability.python, mount) for mount in mounted
-    ):
-        if _protected_runtime_root(python_root):
-            raise ArenaSandboxUnavailable(
-                "arena_sandbox_python_runtime_inside_protected_repository"
-            )
-        ancestors: list[Path] = []
-        current = python_root.parent
-        while current != current.parent:
-            ancestors.append(current)
-            current = current.parent
-        for directory in reversed(ancestors):
-            arguments.extend(("--dir", str(directory)))
-        arguments.extend(("--ro-bind", str(python_root), str(python_root)))
-    return arguments
+        matches = quarantined_native_entry_sources(path)
+    except ProtocolQuarantineError as exc:
+        raise ArenaSandboxError(
+            "protocol_quarantine_authority_unavailable:"
+            f"{label}:{type(exc).__name__}:{str(exc)[:180]}"
+        ) from exc
+    if matches:
+        raise ArenaSandboxError(
+            "protocol_quarantined_native_entry_forbidden:"
+            f"{label}:matches={','.join(matches)}"
+        )
 
 
 def require_managed_sandbox(
@@ -115,92 +71,28 @@ def require_managed_sandbox(
     environment: Mapping[str, str] | None = None,
     probe: bool = True,
 ) -> SandboxCapability:
-    """Resolve and, by default, exercise the mandatory Bubblewrap capability."""
+    """Resolve and exercise the repository-wide managed executor."""
 
     source = environment or os.environ
-    requested_bwrap = str(source.get("POK_ARENA_BWRAP", "bwrap")).strip() or "bwrap"
-    bwrap_token = shutil.which(requested_bwrap)
-    if not bwrap_token:
-        raise ArenaSandboxUnavailable(
-            "arena_sandbox_bwrap_unavailable; managed execution has no fallback"
+    try:
+        requested_bwrap = str(source.get("POK_ARENA_BWRAP", "")).strip()
+        capability = ExecutorRuntime.discover(
+            bwrap=requested_bwrap or None,
+            python=str(source.get("POK_ARENA_PYTHON", "/usr/bin/python3")),
+            prlimit=str(source.get("POK_ARENA_PRLIMIT", "/usr/bin/prlimit")),
         )
-    bwrap = Path(bwrap_token).expanduser().resolve()
-    if not bwrap.is_file() or not os.access(bwrap, os.X_OK):
+        if probe:
+            report = probe_managed_executor(capability)
+            if report.get("ok") is not True:
+                raise IsolationUnavailable(
+                    "managed_executor_probe_failed:"
+                    + ";".join(str(item) for item in (report.get("issues") or [])[:6])
+                )
+        return capability
+    except IsolationUnavailable as exc:
         raise ArenaSandboxUnavailable(
-            f"arena_sandbox_bwrap_not_executable: {bwrap}"
-        )
-
-    python_token = str(source.get("POK_ARENA_PYTHON", sys.executable)).strip()
-    python = Path(python_token).expanduser().resolve()
-    if not python.is_file() or not os.access(python, os.X_OK):
-        raise ArenaSandboxUnavailable(
-            f"arena_sandbox_python_not_executable: {python}"
-        )
-    capability = SandboxCapability(
-        bwrap=bwrap,
-        python=python,
-        python_root=_runtime_root(python),
-    )
-    mounts = _runtime_mount_arguments(capability)
-    if probe:
-        probe_parent, probe_child = socket.socketpair()
-        probe_fd = probe_child.fileno()
-        command = [
-            str(bwrap),
-            "--die-with-parent",
-            "--unshare-all",
-            "--new-session",
-            "--cap-drop",
-            "ALL",
-            "--clearenv",
-            *mounts,
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-            str(python),
-            "-I",
-            "-B",
-            "-c",
-            f"import socket; socket.socket(fileno={probe_fd}).sendall(b'1')",
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=5.0,
-                check=False,
-                env={"PATH": os.defpath},
-                pass_fds=(probe_fd,),
-            )
-            probe_child.close()
-            probe_parent.settimeout(1.0)
-            inherited_socket_ok = (
-                completed.returncode == 0 and probe_parent.recv(1) == b"1"
-            )
-        except (OSError, socket.timeout, subprocess.TimeoutExpired) as exc:
-            raise ArenaSandboxUnavailable(
-                f"arena_sandbox_probe_failed: {type(exc).__name__}: {str(exc)[:200]}"
-            ) from exc
-        finally:
-            probe_parent.close()
-            probe_child.close()
-        if completed.returncode != 0:
-            detail = (completed.stderr or "").strip().replace("\n", " ")[:240]
-            raise ArenaSandboxUnavailable(
-                "arena_sandbox_namespace_unavailable"
-                + (f": {detail}" if detail else "")
-            )
-        if not inherited_socket_ok:
-            raise ArenaSandboxUnavailable(
-                "arena_sandbox_preconnected_socket_unavailable"
-            )
-    return capability
+            f"arena_sandbox_unavailable; managed execution has no fallback: {exc}"
+        ) from exc
 
 
 def _copy_verified_file(source: Path, target: Path, manifest_row: dict[str, Any]) -> None:
@@ -262,6 +154,7 @@ def seal_bot_artifact(
 
     source_path = Path(source).expanduser().absolute()
     destination_path = Path(destination).expanduser().absolute()
+    _reject_quarantined_native_entry(source_path, label=source_path.name)
     if len(expected_hash) != 64 or any(
         character not in "0123456789abcdef" for character in expected_hash.lower()
     ):
@@ -323,12 +216,11 @@ def remove_sealed_artifacts(path: str | Path) -> None:
     _remove_tree(Path(path).expanduser().absolute())
 
 
-def build_sandboxed_bot_launch(
+def launch_sandboxed_bot(
     artifact: SealedBotArtifact,
     capability: SandboxCapability,
+    endpoint: EndpointLease,
     *,
-    host: str,
-    port: int,
     name: str,
     seat: str,
     session_id: str,
@@ -336,90 +228,47 @@ def build_sandboxed_bot_launch(
     hard_deadline: float,
     refinement_budget: float,
     baseline_target: float,
-    preconnected_fd: int,
-) -> SandboxedBotLaunch:
-    """Build a read-only bot plan with one inherited stream and no network."""
+    stdin: int | IO[bytes] | None = subprocess.DEVNULL,
+    stdout: int | IO[bytes] | None = subprocess.PIPE,
+    stderr: int | IO[bytes] | None = subprocess.PIPE,
+    start_new_session: bool = True,
+) -> ManagedProcess:
+    """Launch an Arena bot through the repository-wide managed executor."""
 
-    try:
-        endpoint_env = endpoint_environment(preconnected_fd, host, port)
-    except ValueError as exc:
-        message = str(exc)
-        if "literal IP" in message:
-            raise ArenaSandboxError("arena_managed_endpoint_is_not_an_ip") from exc
-        if "loopback" in message:
-            raise ArenaSandboxError("arena_managed_endpoint_must_be_loopback") from exc
-        if "port" in message:
-            raise ArenaSandboxError("arena_managed_endpoint_port_invalid") from exc
-        raise ArenaSandboxError(
-            f"arena_managed_preconnected_socket_invalid: {message}"
-        ) from exc
     if seat not in {"upper", "lower"}:
         raise ArenaSandboxError("arena_managed_seat_invalid")
+    _reject_quarantined_native_entry(artifact.root, label=name)
     if hash_path(artifact.root) != artifact.artifact_hash:
         raise ArenaSandboxError("arena_sealed_artifact_changed_before_launch")
-
-    timing_environment = {
-        "PATH": f"{capability.python.parent}:/usr/bin:/bin",
-        "HOME": "/tmp",
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "PYTHONIOENCODING": "utf-8",
-        "POK_ARENA_SESSION_ID": session_id,
-        "POK_OFFICIAL_ACTION_DELAY": str(max(0.0, float(action_delay))),
-        "POK_DECISION_HARD_DEADLINE_SEC": str(max(0.05, float(hard_deadline))),
-        "POK_DECISION_REFINEMENT_BUDGET_SEC": str(
-            max(0.04, float(refinement_budget))
+    return launch_managed_bot(
+        artifact.root,
+        endpoint,
+        entry_relative=artifact.entry_relative,
+        name=name,
+        seat=seat,
+        timing=BotTiming(
+            action_delay=action_delay,
+            hard_deadline=hard_deadline,
+            refinement_budget=refinement_budget,
+            baseline_target=baseline_target,
         ),
-        "POK_DECISION_BASELINE_TARGET_SEC": str(max(0.01, float(baseline_target))),
-        "POK_DECISION_BUDGET_SEC": str(max(0.05, float(hard_deadline))),
-    }
-    command = [
-        str(capability.bwrap),
-        "--die-with-parent",
-        "--unshare-all",
-        "--new-session",
-        "--cap-drop",
-        "ALL",
-        "--clearenv",
-    ]
-    for key, value in timing_environment.items():
-        command.extend(("--setenv", key, value))
-    for key, value in endpoint_env.items():
-        command.extend(("--setenv", key, value))
-    command.extend(_runtime_mount_arguments(capability))
-    command.extend((
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--tmpfs",
-        "/tmp",
-        "--ro-bind",
-        str(artifact.root),
-        "/bot",
-        "--chdir",
-        "/bot",
-        str(capability.python),
-        "-I",
-        "-B",
-        "-c",
-        SANDBOX_BOOTSTRAP,
-        f"/bot/{artifact.entry_relative}",
-        "--host",
-        host,
-        "--port",
-        str(int(port)),
-        "--name",
-        name,
-        "--seat",
-        seat,
-    ))
-    return SandboxedBotLaunch(
-        command=tuple(command),
-        environment={
-            "PATH": os.defpath,
-            "POK_ARENA_SESSION_ID": session_id,
-        },
-        cwd=artifact.root,
-        pass_fds=(int(preconnected_fd),),
+        environment={"POK_ARENA_SESSION_ID": session_id},
+        runtime=capability,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=start_new_session,
+        host_process_owner=session_id,
     )
+
+
+__all__ = [
+    "ArenaSandboxError",
+    "ArenaSandboxUnavailable",
+    "SandboxCapability",
+    "SealedBotArtifact",
+    "launch_sandboxed_bot",
+    "remove_sealed_artifacts",
+    "require_managed_sandbox",
+    "seal_bot_artifact",
+]

@@ -294,6 +294,14 @@ def _literature_probe_requirement_reasons(checkpoint: dict | None) -> tuple[str,
     if not isinstance(checkpoint, dict):
         return ()
     audit_context = checkpoint.get("audit_context") or {}
+    if isinstance(audit_context, dict) and isinstance(
+        audit_context.get("protocol_bootstrap"), dict
+    ):
+        # Bootstrap Master planning is deliberately free of match-result
+        # evidence. The existing literature probe is H2H-weakness driven, so it
+        # cannot become mandatory until a separately typed non-result probe
+        # contract exists.
+        return ()
     master_context = (
         audit_context.get("master_context")
         if isinstance(audit_context, dict)

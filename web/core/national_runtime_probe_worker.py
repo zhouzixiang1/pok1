@@ -31,10 +31,10 @@ from national_runtime_probe_scenarios import (
 )
 
 
-PROBE_WORKER_VERSION = 6
+PROBE_WORKER_VERSION = 8
 MAX_CAPTURE_CHARS = 64 * 1024
 LEGAL_WIRE_ACTIONS = {"fold", "call", "check", "allin", "raise"}
-PHASE_PATH = Path("/tmp/probe_out/phase.txt")
+PHASE_PATH = Path("/output/phase.txt")
 MAX_TRACKED_LOOKUP_KEYS = 64
 
 
@@ -1028,7 +1028,13 @@ def _probe_strategy_influence(imports: CandidateImports, tracker_result: dict[st
             positive_context = copy.deepcopy(scenario["expected_hand_runtime"])
             negative_context = copy.deepcopy(positive_context)
             negative_context[pair["flag"]] = False
-            row = {"dimension": pair["dimension"], "tiers": {}}
+            row = {
+                "dimension": pair["dimension"],
+                "scenario_id": pair["positive"],
+                "control_kind": "same_scenario_flag_false",
+                "flag": pair["flag"],
+                "tiers": {},
+            }
             for tier, kwargs in _tier_specs():
                 tier_row = {}
                 for label, context in (
@@ -1703,7 +1709,12 @@ def main() -> int:
     _set_limits()
     root = Path(sys.argv[1]).resolve()
     report_path = Path(sys.argv[2])
-    spec = json.loads(sys.argv[3])
+    spec_argument = Path(sys.argv[3])
+    spec = json.loads(
+        spec_argument.read_text(encoding="utf-8")
+        if spec_argument.is_file()
+        else sys.argv[3]
+    )
     try:
         report = run(root, spec)
     except BaseException as exc:

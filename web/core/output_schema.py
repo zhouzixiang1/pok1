@@ -75,6 +75,24 @@ STATE_LEARNING_WORK_PRIMITIVES = tuple(get_args(StateLearningWorkPrimitive))
 STATE_LEARNING_PROFILE_DIMENSIONS = tuple(get_args(StateLearningProfileDimension))
 STATE_LEARNING_LINE_CONTROLS = tuple(get_args(StateLearningLineControl))
 STATE_LEARNING_ORACLE_REFS = tuple(get_args(StateLearningOracleRef))
+LEGACY_CONSUMER_MIGRATION_FOCUS_ID = "national_runtime_v4_legacy_consumer_migration"
+LegacyConsumerMigrationCheck = Literal[
+    "terminal_response_adaptation",
+    "showdown_range_adaptation",
+    "donk_line_reachability",
+    "delayed_probe_line_reachability",
+]
+LegacyConsumerMigrationFile = Literal[
+    "strategy.py",
+    "opponent.py",
+    "simulation.py",
+    "donk_probe.py",
+]
+LEGACY_CONSUMER_MIGRATION_CHECKS = tuple(
+    get_args(LegacyConsumerMigrationCheck)
+)
+LEGACY_CONSUMER_MIGRATION_FILES = tuple(get_args(LegacyConsumerMigrationFile))
+LEGACY_CONSUMER_MIGRATION_BUNDLE_ID = "legacy-consumer-migration-v1"
 STATE_LEARNING_PRIMARY_CHECKS = {
     "sample_counted_candidate_batch": (
         "fast_strategy_baseline",
@@ -92,9 +110,18 @@ STATE_LEARNING_PRIMARY_CHECKS = {
     "action_profile": ("incremental_opponent_model",),
     "terminal_response": ("terminal_response_adaptation",),
     "showdown_range": ("showdown_range_adaptation",),
-    "donk": ("semantic_line_reachability",),
-    "delayed_probe": ("semantic_line_reachability",),
+    "donk": ("donk_line_reachability",),
+    "delayed_probe": ("delayed_probe_line_reachability",),
 }
+LEGACY_CONSUMER_MIGRATION_FORBIDDEN_EXTRA_CHECKS = frozenset(
+    {
+        check_id
+        for checks in STATE_LEARNING_PRIMARY_CHECKS.values()
+        for check_id in checks
+    }.difference(LEGACY_CONSUMER_MIGRATION_CHECKS)
+    .difference({"fast_strategy_baseline"})
+    | {"semantic_line_reachability"}
+)
 STATE_LEARNING_PRIMARY_PROMPT_TERMS = {
     "sample_counted_candidate_batch": ("sample_count", "deadline"),
     "bounded_precompute_lookup": ("precompute", "fallback"),
@@ -110,6 +137,13 @@ RUNTIME_CONTRACT_WORKER_PROMPT_TERMS = {
     "precompute_artifacts": ("precompute",),
     "match_memory": ("memory", "confidence", "opponent_runtime"),
     "official_feedback_refs": ("official",),
+    "legacy_consumer_migration": (
+        "terminal_response",
+        "showdown_range",
+        "can_donk",
+        "can_delayed_probe",
+        "sanitized wire action",
+    ),
 }
 
 
@@ -121,6 +155,7 @@ RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_LAYER = {
     "native_tcp": ("decision",),
 }
 RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_FOCUS = {
+    LEGACY_CONSUMER_MIGRATION_FOCUS_ID: ("legacy_consumer_migration",),
     "national_runtime_v4_state_learning": ("state_learning",),
     "incremental_match_model": ("match_memory",),
     "reusable_precompute": ("precompute_artifacts",),
@@ -328,6 +363,62 @@ class StateLearningRuntimeContract(BaseModel):
         return STATE_LEARNING_PRIMARY_CHECKS[self.primary_innovation()]
 
 
+class LegacyConsumerMigrationContract(BaseModel):
+    """System-owned all-or-nothing migration from wrapper state to strategy.
+
+    These four checks close the user-observed legacy state-consumer defects. They
+    are deliberately separate from ``state_learning``: a weak planner may choose
+    one later innovation, but it may not choose which migration obligations exist.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bundle_id: Literal["legacy-consumer-migration-v1"] = (
+        LEGACY_CONSUMER_MIGRATION_BUNDLE_ID
+    )
+    required_checks: list[LegacyConsumerMigrationCheck] = Field(
+        min_length=len(LEGACY_CONSUMER_MIGRATION_CHECKS),
+        max_length=len(LEGACY_CONSUMER_MIGRATION_CHECKS),
+    )
+    consumer_files: list[LegacyConsumerMigrationFile] = Field(
+        min_length=len(LEGACY_CONSUMER_MIGRATION_FILES),
+        max_length=len(LEGACY_CONSUMER_MIGRATION_FILES),
+    )
+    oracle_refs: list[StateLearningOracleRef] = Field(min_length=2, max_length=2)
+
+    @field_validator("required_checks")
+    @classmethod
+    def _complete_migration_checks(
+        cls, value: list[str]
+    ) -> list[str]:
+        if set(value) != set(LEGACY_CONSUMER_MIGRATION_CHECKS):
+            raise ValueError(
+                "legacy consumer migration required_checks must contain the exact "
+                f"system-owned bundle {list(LEGACY_CONSUMER_MIGRATION_CHECKS)}"
+            )
+        return list(LEGACY_CONSUMER_MIGRATION_CHECKS)
+
+    @field_validator("consumer_files")
+    @classmethod
+    def _complete_consumer_files(cls, value: list[str]) -> list[str]:
+        if set(value) != set(LEGACY_CONSUMER_MIGRATION_FILES):
+            raise ValueError(
+                "legacy consumer migration consumer_files must contain the exact "
+                f"writable bundle {list(LEGACY_CONSUMER_MIGRATION_FILES)}"
+            )
+        return list(LEGACY_CONSUMER_MIGRATION_FILES)
+
+    @field_validator("oracle_refs")
+    @classmethod
+    def _complete_oracle_pair(cls, value: list[str]) -> list[str]:
+        if set(value) != set(STATE_LEARNING_ORACLE_REFS):
+            raise ValueError(
+                "legacy consumer migration oracle_refs must contain the exact "
+                "raise-boundary and terminal-settlement oracle documents"
+            )
+        return list(STATE_LEARNING_ORACLE_REFS)
+
+
 class RuntimeContract(BaseModel):
     """Executable contract shared by Master, worker prompt, and quality policy."""
 
@@ -337,6 +428,7 @@ class RuntimeContract(BaseModel):
     precompute_artifacts: list[PrecomputeArtifactContract] = Field(default_factory=list, max_length=4)
     match_memory: Optional[MatchMemoryRuntimeContract] = None
     state_learning: Optional[StateLearningRuntimeContract] = None
+    legacy_consumer_migration: Optional[LegacyConsumerMigrationContract] = None
     reference_pack_id: str = Field(default="", max_length=128)
     official_feedback_refs: list[str] = Field(default_factory=list, max_length=8)
     forbidden_runtime_work: list[str] = Field(default_factory=list, max_length=8)
@@ -361,6 +453,11 @@ class RuntimeContract(BaseModel):
             if state_learning is not None
             else ""
         )
+        if self.legacy_consumer_migration is not None and state_learning is not None:
+            raise ValueError(
+                "legacy_consumer_migration and state_learning are mutually exclusive; "
+                "finish universal migration before selecting an ordinary innovation"
+            )
         if state_learning is not None and state_learning.work_primitive is not None:
             from strategy_reference_pack import validate_reference_selection
 
@@ -386,6 +483,8 @@ def runtime_contract_worker_prompt_terms(contract: RuntimeContract) -> tuple[str
         populated_sections.append("match_memory")
     if contract.official_feedback_refs:
         populated_sections.append("official_feedback_refs")
+    if contract.legacy_consumer_migration is not None:
+        populated_sections.append("legacy_consumer_migration")
 
     terms: list[str] = []
     for section in populated_sections:
@@ -476,6 +575,14 @@ def master_plan_executable_contract_text() -> str:
             "from the source-controlled local strategy cards; profile dimensions "
             "and line controls must leave reference_pack_id empty. Foundation-only "
             "tables never satisfy this requirement by themselves."
+        ),
+        (
+            f'- architecture_focus_id="{LEGACY_CONSUMER_MIGRATION_FOCUS_ID}" '
+            "is a system-owned migration, not a selectable innovation: its "
+            f"required_checks must equal {list(LEGACY_CONSUMER_MIGRATION_CHECKS)} "
+            f"and its writable scope must include {list(LEGACY_CONSUMER_MIGRATION_FILES)}. "
+            "It is the generation's only task and forbids state_learning or any "
+            "parallel strategy/support task in the same generation."
         ),
     ]
     for primary, terms in STATE_LEARNING_PRIMARY_PROMPT_TERMS.items():
@@ -622,6 +729,50 @@ class WorkerTask(BaseModel):
                 if reference_errors:
                     raise ValueError("; ".join(reference_errors))
 
+        migration = contract.legacy_consumer_migration
+        if migration is not None:
+            if focus_id != LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
+                raise ValueError(
+                    "legacy_consumer_migration may appear only on the system-owned "
+                    f"{LEGACY_CONSUMER_MIGRATION_FOCUS_ID!r} focus task"
+                )
+            missing_checks = sorted(
+                set(LEGACY_CONSUMER_MIGRATION_CHECKS).difference(
+                    self.checks_required
+                )
+            )
+            if missing_checks:
+                raise ValueError(
+                    "legacy_consumer_migration requires checks_required to include "
+                    f"the complete system-owned bundle; missing {missing_checks}"
+                )
+            missing_files = sorted(
+                set(LEGACY_CONSUMER_MIGRATION_FILES).difference(writable_scope)
+            )
+            if missing_files:
+                raise ValueError(
+                    "legacy_consumer_migration requires writable target_files/"
+                    f"files_allowed for {missing_files}"
+                )
+            unexpected_files = sorted(
+                writable_scope.difference(LEGACY_CONSUMER_MIGRATION_FILES)
+            )
+            if unexpected_files:
+                raise ValueError(
+                    "legacy_consumer_migration writable scope is system-owned; "
+                    f"unexpected files {unexpected_files}"
+                )
+            forbidden_extra_checks = sorted(
+                set(self.checks_required).intersection(
+                    LEGACY_CONSUMER_MIGRATION_FORBIDDEN_EXTRA_CHECKS
+                )
+            )
+            if forbidden_extra_checks:
+                raise ValueError(
+                    "legacy_consumer_migration may not carry ordinary innovation "
+                    f"or aggregate checks {forbidden_extra_checks}"
+                )
+
         read_only_scope = {
             str(item).replace("\\", "/").rsplit("/", 1)[-1]
             for item in self.read_only_dependencies
@@ -698,6 +849,38 @@ class MasterPlan(BaseModel):
             if task.runtime_contract is not None
             and task.runtime_contract.state_learning is not None
         ]
+        migration_focus_tasks = [
+            task
+            for task in self.tasks
+            if task.architecture_focus_id.strip()
+            == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
+        ]
+        migration_contract_tasks = [
+            task
+            for task in self.tasks
+            if task.runtime_contract is not None
+            and task.runtime_contract.legacy_consumer_migration is not None
+        ]
+        if migration_focus_tasks or migration_contract_tasks:
+            if len(self.tasks) != 1:
+                raise ValueError(
+                    "legacy consumer migration is a generation-wide isolation "
+                    "boundary and requires exactly one total worker task"
+                )
+            if len(migration_focus_tasks) != 1 or len(migration_contract_tasks) != 1:
+                raise ValueError(
+                    "legacy consumer migration requires exactly one system-owned "
+                    "focus task carrying the complete migration bundle"
+                )
+            if migration_contract_tasks[0] not in migration_focus_tasks:
+                raise ValueError(
+                    "legacy consumer migration bundle must belong to its focus task"
+                )
+            if primary_tasks:
+                raise ValueError(
+                    "state_learning is forbidden until the universal legacy consumer "
+                    "migration bundle is complete"
+                )
         if len(primary_tasks) > 1:
             raise ValueError(
                 "exactly one state_learning primary is allowed across the entire generation"

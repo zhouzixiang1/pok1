@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import ast
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -33,7 +34,8 @@ from national_runtime_telemetry import (
     parse_native_bot_log as _parse_native_bot_log,
     server_action_latency as _server_action_latency,
 )
-from national_bot_launcher import build_native_bot_launch, native_entry_supports_log_arg
+from managed_bot_executor import BotTiming, EndpointLease, launch_managed_bot
+from national_bot_launcher import native_entry_supports_log_arg
 from national_game_runtime import NationalTCPGameEngine
 from national_transport import NationalTCPClient
 from pipeline_schema import NationalAcceptanceResult
@@ -50,6 +52,16 @@ LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC = 2.0
 LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC = 1.8
 LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC = 0.20
 LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC = 420.0
+FORMAL_NATIVE_ENV_OVERRIDE_KEYS = frozenset({
+    "POK_NATIVE_LOCAL_ACTION_DELAY",
+    "POK_NATIVE_DECISION_HARD_DEADLINE_SEC",
+    "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC",
+    "POK_NATIVE_DECISION_BASELINE_TARGET_SEC",
+    "POK_TRACE_DECISIONS",
+})
+_FORMAL_NATIVE_TIMING_OVERRIDE_KEYS = FORMAL_NATIVE_ENV_OVERRIDE_KEYS - {
+    "POK_TRACE_DECISIONS"
+}
 
 
 NATIVE_BOT_TEMPLATE = r'''#!/usr/bin/env python3
@@ -2964,6 +2976,7 @@ def _prepare_native_spec(
     *,
     allow_legacy_wrapper: bool = False,
     current_runtime_overlay: bool = False,
+    projected_strategy_seed: bool = False,
 ) -> NativeBotSpec:
     """Resolve an existing native entry, optionally wrapping a copied legacy bot.
 
@@ -2972,6 +2985,29 @@ def _prepare_native_spec(
     copy of the source bot.
     """
     entry = bot_dir / NATIVE_ENTRY
+    from national_protocol_quarantine import quarantined_native_entry_sources
+
+    quarantined_sources = quarantined_native_entry_sources(bot_dir)
+    if quarantined_sources:
+        migration_seed = bot_name(142)
+        canonical_seed = (ROOT / "bots" / migration_seed).resolve()
+        legal_projection = bool(
+            projected_strategy_seed
+            and current_runtime_overlay
+            and not allow_legacy_wrapper
+            and label == migration_seed
+            and bot_dir.resolve() == canonical_seed
+            and migration_seed in quarantined_sources
+        )
+        if not legal_projection:
+            raise ValueError(
+                "protocol_quarantined_native_entry_forbidden:"
+                f"{label}:matches={','.join(quarantined_sources)}"
+            )
+    elif projected_strategy_seed:
+        raise ValueError(
+            f"projected_strategy_seed_source_not_quarantined:{label}"
+        )
     if current_runtime_overlay:
         if allow_legacy_wrapper:
             raise ValueError(
@@ -3058,6 +3094,49 @@ def _native_bot_seed(bot_seed_base: int | None, player_idx: int) -> int | None:
     if bot_seed_base is None:
         return None
     return int(bot_seed_base) + int(player_idx)
+
+
+def _validate_formal_native_env_overrides(
+    side: str,
+    overrides: dict[str, str | int | None] | None,
+) -> dict[str, str | int | None]:
+    """Validate the complete caller-controlled environment ABI.
+
+    The managed executor does not inherit arbitrary ``POK_*`` variables.  An
+    unknown explicit override must therefore be rejected, not accepted and
+    silently discarded as if an experiment or gate had actually run.
+    """
+
+    normalized = dict(overrides or {})
+    unknown = sorted(
+        str(key)
+        for key in normalized
+        if str(key) not in FORMAL_NATIVE_ENV_OVERRIDE_KEYS
+    )
+    if unknown:
+        raise ValueError(
+            f"unsupported formal native environment override ({side}):"
+            + ",".join(unknown)
+        )
+    for raw_key, value in normalized.items():
+        key = str(raw_key)
+        if key in _FORMAL_NATIVE_TIMING_OVERRIDE_KEYS and value is not None:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"invalid formal native timing override ({side}):{key}"
+                ) from exc
+            if not math.isfinite(numeric):
+                raise ValueError(
+                    f"invalid formal native timing override ({side}):{key}"
+                )
+        if key == "POK_TRACE_DECISIONS" and value is not None:
+            if str(value) not in {"0", "1"}:
+                raise ValueError(
+                    f"invalid formal native trace override ({side}):{key}"
+                )
+    return normalized
 
 
 def _parse_decision_trace(stderr_text: str) -> list[dict[str, Any]]:
@@ -3211,6 +3290,7 @@ async def _run_tcp_server_with_processes(
         run_labels = [f"{run_labels[0]}_A", f"{run_labels[1]}_B"]
     procs: list[subprocess.Popen] = []
     proc_streams = []
+    process_isolation: dict[str, dict[str, Any]] = {}
     stdout_stderr: dict[str, dict[str, Any]] = {}
     log_temp_root = Path(tempfile.mkdtemp(prefix="pok_native_logs_"))
     bot_log_paths: dict[str, Path] = {}
@@ -3224,9 +3304,18 @@ async def _run_tcp_server_with_processes(
     try:
         env_overrides = (bot_a_env_overrides or {}, bot_b_env_overrides or {})
         for idx, (spec, label) in enumerate(zip((bot_a, bot_b), run_labels)):
-            base_environment = (
-                {} if sanitize_parent_environment else os.environ.copy()
-            )
+            inherited_keys = {
+                "POK_NATIVE_LOCAL_ACTION_DELAY",
+                "POK_NATIVE_DECISION_HARD_DEADLINE_SEC",
+                "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC",
+                "POK_NATIVE_DECISION_BASELINE_TARGET_SEC",
+                "POK_TRACE_DECISIONS",
+            }
+            base_environment = {
+                key: str(os.environ[key])
+                for key in inherited_keys
+                if not sanitize_parent_environment and key in os.environ
+            }
             for key, value in env_overrides[idx].items():
                 if value is None:
                     base_environment.pop(str(key), None)
@@ -3302,33 +3391,39 @@ async def _run_tcp_server_with_processes(
             if native_entry_supports_log_arg(spec.entry):
                 log_path = log_temp_root / f"{idx}_{_safe_label_fragment(label)}.log"
                 bot_log_paths[label] = log_path
-            launch = build_native_bot_launch(
-                bot_dir=spec.path,
-                entry=spec.entry,
-                label=label,
-                host=str(host),
-                port=int(port),
-                action_delay=float(action_delay),
-                hard_deadline=local_hard_deadline_value,
-                refinement_budget=refinement_budget,
-                baseline_target=baseline_target,
-                decision_log=log_path,
-                seed=seed,
-                base_environment=base_environment,
-                inherit_all_environment=True,
-            )
             stdout_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
             stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
             try:
-                proc = subprocess.Popen(
-                    list(launch.command),
-                    cwd=str(launch.cwd),
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    text=True,
-                    env=launch.environment,
-                )
+                child_environment = {
+                    key: value
+                    for key, value in base_environment.items()
+                    if key == "POK_TRACE_DECISIONS"
+                }
+                with EndpointLease.connect(
+                    str(host),
+                    int(port),
+                    timeout=connect_timeout,
+                ) as endpoint:
+                    managed = launch_managed_bot(
+                        spec.path,
+                        endpoint,
+                        entry_relative=spec.entry.relative_to(spec.path),
+                        name=label,
+                        decision_log=log_path,
+                        seed=seed,
+                        timing=BotTiming(
+                            action_delay=float(action_delay),
+                            hard_deadline=local_hard_deadline_value,
+                            refinement_budget=refinement_budget,
+                            baseline_target=baseline_target,
+                        ),
+                        environment=child_environment,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                    )
+                proc = managed.process
+                process_isolation[label] = asdict(managed.isolation)
             except Exception:
                 stdout_file.close()
                 stderr_file.close()
@@ -3471,6 +3566,7 @@ async def _run_tcp_server_with_processes(
             "native": {
                 "returncode": proc_info.get("returncode"),
                 "bot_seed": bot_seeds.get(label),
+                "managed_isolation": process_isolation.get(label, {}),
                 "stdout_tail": stdout_text[-2000:] if stdout_text else "",
                 "stderr_tail": stderr_text[-2000:] if stderr_text else "",
                 "bot_log_supported": bool(proc_info.get("bot_log_supported")),
@@ -3524,7 +3620,11 @@ async def _run_tcp_server_with_processes(
             "mode": (
                 "current_system_wrapper_bilateral"
                 if bot_a.runtime_overlay and bot_b.runtime_overlay
-                else "artifact_native_entry"
+                else (
+                    "candidate_raw_opponent_current_runtime_projection"
+                    if bot_b.runtime_overlay and not bot_a.runtime_overlay
+                    else "artifact_native_entry"
+                )
             ),
             "native_template_digest": (
                 CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST
@@ -3595,7 +3695,8 @@ async def run_native_tcp_pair(
         bot_a_env_overrides=bot_a_env_overrides,
         bot_b_env_overrides=bot_b_env_overrides,
         capture_events=capture_events,
-        current_runtime_overlay=False,
+        current_runtime_overlay_a=False,
+        current_runtime_overlay_b=False,
         sanitize_parent_environment=sanitize_parent_environment,
     )
 
@@ -3638,7 +3739,72 @@ async def run_current_runtime_native_strength_pair(
         bot_a_env_overrides=bot_a_env_overrides,
         bot_b_env_overrides=bot_b_env_overrides,
         capture_events=capture_events,
-        current_runtime_overlay=True,
+        current_runtime_overlay_a=True,
+        current_runtime_overlay_b=True,
+    )
+
+
+async def run_native_candidate_vs_projected_strategy_seed(
+    candidate_token: str | Path,
+    strategy_seed_token: str | Path,
+    hands: int,
+    *,
+    deck_seed_base: int | None = None,
+    bot_seed_base: int | None = None,
+    timeout_sec: float | None = None,
+) -> dict[str, Any]:
+    """Exercise a candidate's raw entry against a legacy strategy only.
+
+    The second artifact's immutable ``national_bot.py`` is never executed.  A
+    temporary copy receives the current system-owned stream/deadline runtime,
+    while its strategy files remain content-bound.  This transition exists
+    only for the one-time protocol migration seed and is not a rating mode.
+    """
+
+    strategy_label, strategy_path = resolve_bot(strategy_seed_token)
+    mode = _acceptance_opponent_runtime_mode(strategy_label, strategy_path)
+    if mode != "projected_strategy_seed":
+        raise RuntimeError(
+            "projected_strategy_seed_transition_not_authorized:"
+            f"{strategy_label}:{mode}"
+        )
+
+    return await _run_authorized_projected_strategy_seed(
+        candidate_token,
+        strategy_path,
+        hands,
+        deck_seed_base=deck_seed_base,
+        bot_seed_base=bot_seed_base,
+        timeout_sec=timeout_sec,
+    )
+
+
+async def _run_authorized_projected_strategy_seed(
+    candidate_token: str | Path,
+    strategy_seed_path: Path,
+    hands: int,
+    *,
+    deck_seed_base: int | None = None,
+    bot_seed_base: int | None = None,
+    timeout_sec: float | None = None,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
+) -> dict[str, Any]:
+    """Run the projection after the caller validated the current transition."""
+
+    return await _run_native_tcp_pair(
+        candidate_token,
+        strategy_seed_path,
+        hands,
+        allow_legacy_wrappers=False,
+        deck_seed_base=deck_seed_base,
+        bot_seed_base=bot_seed_base,
+        timeout_sec=timeout_sec,
+        bot_a_env_overrides=bot_a_env_overrides,
+        bot_b_env_overrides=bot_b_env_overrides,
+        current_runtime_overlay_a=False,
+        current_runtime_overlay_b=True,
+        projected_strategy_seed_b=True,
     )
 
 
@@ -3669,7 +3835,8 @@ async def run_legacy_debug_tcp_pair_with_wrappers(
         timeout_sec=timeout_sec,
         bot_a_env_overrides=bot_a_env_overrides,
         bot_b_env_overrides=bot_b_env_overrides,
-        current_runtime_overlay=False,
+        current_runtime_overlay_a=False,
+        current_runtime_overlay_b=False,
         sanitize_parent_environment=sanitize_parent_environment,
     )
 
@@ -3686,9 +3853,22 @@ async def _run_native_tcp_pair(
     bot_a_env_overrides: dict[str, str | int | None] | None = None,
     bot_b_env_overrides: dict[str, str | int | None] | None = None,
     capture_events: bool = False,
-    current_runtime_overlay: bool = False,
+    current_runtime_overlay_a: bool = False,
+    current_runtime_overlay_b: bool = False,
+    projected_strategy_seed_b: bool = False,
     sanitize_parent_environment: bool = False,
 ) -> dict[str, Any]:
+    if not allow_legacy_wrappers:
+        bot_a_env_overrides = _validate_formal_native_env_overrides(
+            "bot_a", bot_a_env_overrides
+        )
+        bot_b_env_overrides = _validate_formal_native_env_overrides(
+            "bot_b", bot_b_env_overrides
+        )
+    if projected_strategy_seed_b and not current_runtime_overlay_b:
+        raise ValueError(
+            "projected strategy seed requires the current runtime overlay"
+        )
     label_a, dir_a = resolve_bot(bot_a_token)
     label_b, dir_b = resolve_bot(bot_b_token)
     capacity_owner = (
@@ -3701,13 +3881,14 @@ async def _run_native_tcp_pair(
             label_a,
             dir_a,
             allow_legacy_wrapper=allow_legacy_wrappers,
-            current_runtime_overlay=current_runtime_overlay,
+            current_runtime_overlay=current_runtime_overlay_a,
         ))
         specs.append(_prepare_native_spec(
             label_b,
             dir_b,
             allow_legacy_wrapper=allow_legacy_wrappers,
-            current_runtime_overlay=current_runtime_overlay,
+            current_runtime_overlay=current_runtime_overlay_b,
+            projected_strategy_seed=projected_strategy_seed_b,
         ))
         hands = max(1, min(70, int(hands)))
         if timeout_sec is None:
@@ -3727,6 +3908,44 @@ async def _run_native_tcp_pair(
     finally:
         _cleanup_specs(specs)
         capacity_lease.release()
+
+
+def _acceptance_opponent_runtime_mode(label: str, path: Path) -> str:
+    """Return ``raw`` or the one legal migration projection, failing closed."""
+
+    version = parse_bot_version(label)
+    if version is None:
+        return "raw"
+    from national_protocol_quarantine import (
+        is_quarantined_version,
+        protocol_quarantine_health,
+        select_protocol_bootstrap_source,
+    )
+
+    health = protocol_quarantine_health()
+    if not health.get("valid"):
+        raise RuntimeError(
+            "protocol_quarantine_policy_invalid:"
+            + ";".join(str(item) for item in (health.get("issues") or [])[:6])
+        )
+    if not is_quarantined_version(version, health=health):
+        return "raw"
+    expected = (ROOT / "bots" / label).resolve()
+    if path.resolve() != expected:
+        raise RuntimeError("protocol_quarantine_opponent_path_mismatch")
+    from evolution_infra import get_active_bots
+
+    transition = select_protocol_bootstrap_source(get_active_bots())
+    if (
+        transition.get("available") is True
+        and transition.get("reason") == "legacy_strategy_migration"
+        and transition.get("source") == label
+    ):
+        return "projected_strategy_seed"
+    raise RuntimeError(
+        "protocol_quarantined_opponent_execution_forbidden:"
+        f"{label}:{transition.get('reason', 'transition_unavailable')}"
+    )
 
 
 async def run_native_tcp_smoke(
@@ -3783,14 +4002,26 @@ async def run_native_tcp_smoke(
 
     opponent_label, opponent_dir = opponents[0]
     try:
-        result = await run_native_tcp_pair(
-            candidate_dir,
+        opponent_mode = _acceptance_opponent_runtime_mode(
+            opponent_label,
             opponent_dir,
-            hands,
-            require_native_a=True,
-            require_native_b=True,
-            timeout_sec=timeout_sec,
         )
+        if opponent_mode == "projected_strategy_seed":
+            result = await _run_authorized_projected_strategy_seed(
+                candidate_dir,
+                opponent_dir,
+                hands,
+                timeout_sec=timeout_sec,
+            )
+        else:
+            result = await run_native_tcp_pair(
+                candidate_dir,
+                opponent_dir,
+                hands,
+                require_native_a=True,
+                require_native_b=True,
+                timeout_sec=timeout_sec,
+            )
     except Exception as exc:
         return {
             "candidate": candidate_label,
@@ -3826,6 +4057,7 @@ async def run_native_tcp_smoke(
     return {
         "candidate": candidate_label,
         "opponent": opponent_label,
+        "opponent_runtime_mode": opponent_mode,
         "passed": passed,
         "execution_mode": "native_tcp",
         "wrapper_used": bool(result.get("wrapper_used")),
@@ -3913,20 +4145,34 @@ async def run_native_acceptance_for_candidate(
         timeout_sec = max(180.0, float(hands * len(pair_indices) * 5))
 
     results: list[dict[str, Any]] = []
+    opponent_runtime_modes: dict[str, str] = {}
     try:
         for pair_index, (i, j) in enumerate(pair_indices):
             pair_seed = 71_000 + pair_index * 1_000
             bot_seed = 171_000 + pair_index * 1_000
-            results.append(await run_native_tcp_pair(
-                bots[i][1],
-                bots[j][1],
-                hands,
-                require_native_a=True,
-                require_native_b=True,
-                deck_seed_base=pair_seed,
-                bot_seed_base=bot_seed,
-                timeout_sec=timeout_sec,
-            ))
+            mode = _acceptance_opponent_runtime_mode(bots[j][0], bots[j][1])
+            opponent_runtime_modes[bots[j][0]] = mode
+            if mode == "projected_strategy_seed":
+                result = await _run_authorized_projected_strategy_seed(
+                    bots[i][1],
+                    bots[j][1],
+                    hands,
+                    deck_seed_base=pair_seed,
+                    bot_seed_base=bot_seed,
+                    timeout_sec=timeout_sec,
+                )
+            else:
+                result = await run_native_tcp_pair(
+                    bots[i][1],
+                    bots[j][1],
+                    hands,
+                    require_native_a=True,
+                    require_native_b=True,
+                    deck_seed_base=pair_seed,
+                    bot_seed_base=bot_seed,
+                    timeout_sec=timeout_sec,
+                )
+            results.append(result)
     except TimeoutError:
         issue = f"native_national_acceptance_timeout: exceeded {timeout_sec:g}s"
         return NationalAcceptanceResult(
@@ -3982,6 +4228,7 @@ async def run_native_acceptance_for_candidate(
         "pair_count": len(pair_indices),
         "bots": [{"label": label, "path": str(path)} for label, path in bots],
         "results": results,
+        "opponent_runtime_modes": opponent_runtime_modes,
         "summary": summary,
         "matrix": matrix,
         "candidate_only": True,
@@ -4081,7 +4328,17 @@ async def run_native_precommit(
         strength_authoritative = is_strength_matchup(item)
         token = item.get("path") or item.get("token") or item.get("name")
         opponent = resolve_bot(token)
-        resolved_opponents.append({"name": item.get("name") or opponent[0], "reason": reason, "path": str(opponent[1])})
+        opponent_runtime_mode = _acceptance_opponent_runtime_mode(
+            opponent[0], opponent[1]
+        )
+        migration_projection = opponent_runtime_mode == "projected_strategy_seed"
+        resolved_opponents.append({
+            "name": item.get("name") or opponent[0],
+            "reason": reason,
+            "path": str(opponent[1]),
+            "runtime_mode": opponent_runtime_mode,
+            "rating_eligible": not migration_projection,
+        })
         samples: list[int] = []
         repeats: list[dict[str, Any]] = []
         candidate_issues: list[str] = []
@@ -4108,26 +4365,35 @@ async def run_native_precommit(
                 if frozen is not None
                 else (None if seed is None else int(seed) + 1_000_000_000)
             )
-            result = await run_current_runtime_native_strength_pair(
-                candidate[1],
-                opponent[1],
-                hands,
-                require_native_a=True,
-                require_native_b=True,
-                deck_seed_base=seed,
-                bot_seed_base=bot_seed,
-                timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
-                bot_a_env_overrides={
-                    "POK_NATIVE_DECISION_HARD_DEADLINE_SEC": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
-                    "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
-                    "POK_NATIVE_DECISION_BASELINE_TARGET_SEC": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
-                },
-                bot_b_env_overrides={
-                    "POK_NATIVE_DECISION_HARD_DEADLINE_SEC": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
-                    "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
-                    "POK_NATIVE_DECISION_BASELINE_TARGET_SEC": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
-                },
-            )
+            timing_overrides = {
+                "POK_NATIVE_DECISION_HARD_DEADLINE_SEC": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
+                "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
+                "POK_NATIVE_DECISION_BASELINE_TARGET_SEC": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
+            }
+            if migration_projection:
+                result = await _run_authorized_projected_strategy_seed(
+                    candidate[1],
+                    opponent[1],
+                    hands,
+                    deck_seed_base=seed,
+                    bot_seed_base=bot_seed,
+                    timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+                    bot_a_env_overrides=timing_overrides,
+                    bot_b_env_overrides=timing_overrides,
+                )
+            else:
+                result = await run_current_runtime_native_strength_pair(
+                    candidate[1],
+                    opponent[1],
+                    hands,
+                    require_native_a=True,
+                    require_native_b=True,
+                    deck_seed_base=seed,
+                    bot_seed_base=bot_seed,
+                    timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+                    bot_a_env_overrides=timing_overrides,
+                    bot_b_env_overrides=timing_overrides,
+                )
             net = int(result.get("net_chips_a", 0) or 0)
             hands_played = int(result.get("hands_played", 0) or 0)
             hands_played_total += hands_played
@@ -4144,11 +4410,24 @@ async def run_native_precommit(
             complete = hands_played == hands
             compliance_passed = bool(result.get("passed_compliance", False))
             overlay = result.get("runtime_overlay") or {}
-            overlay_valid = bool(
-                overlay.get("enabled") is True
-                and overlay.get("both_sides") is True
-                and overlay.get("mode") == "current_system_wrapper_bilateral"
-            )
+            if migration_projection:
+                overlay_by_player = overlay.get("by_player") or {}
+                candidate_overlay = overlay_by_player.get(candidate[0]) or {}
+                opponent_overlay = overlay_by_player.get(opponent[0]) or {}
+                overlay_valid = bool(
+                    overlay.get("enabled") is True
+                    and overlay.get("both_sides") is False
+                    and overlay.get("mode")
+                    == "candidate_raw_opponent_current_runtime_projection"
+                    and candidate_overlay.get("enabled") is False
+                    and opponent_overlay.get("enabled") is True
+                )
+            else:
+                overlay_valid = bool(
+                    overlay.get("enabled") is True
+                    and overlay.get("both_sides") is True
+                    and overlay.get("mode") == "current_system_wrapper_bilateral"
+                )
             if not overlay_valid:
                 c_issues.append("native_runtime_overlay_missing")
             sample_valid = (
@@ -4177,6 +4456,14 @@ async def run_native_precommit(
                 "passed_compliance": compliance_passed,
                 "sample_valid": sample_valid,
                 "strength_admitted": strength_admitted,
+                "opponent_runtime_mode": opponent_runtime_mode,
+                "migration_projection": migration_projection,
+                "rating_eligible": not migration_projection,
+                "evaluation_authority": (
+                    "local_precommit_only_non_rating_migration"
+                    if migration_projection
+                    else "local_precommit_strength"
+                ),
                 "runtime_overlay": overlay,
                 "runtime_overlay_valid": overlay_valid,
                 "local_runtime_budget": {
@@ -4184,7 +4471,11 @@ async def run_native_precommit(
                     "refinement_budget_sec": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
                     "baseline_target_sec": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
                     "match_timeout_sec": LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
-                    "scope": "local_strength_only",
+                    "scope": (
+                        "local_precommit_only_non_rating_migration"
+                        if migration_projection
+                        else "local_strength_only"
+                    ),
                 },
                 "raw": result,
             })
@@ -4201,6 +4492,14 @@ async def run_native_precommit(
             "opponent": item.get("name") or opponent[0],
             "reason": reason,
             "strength_authoritative": strength_authoritative,
+            "opponent_runtime_mode": opponent_runtime_mode,
+            "migration_projection": migration_projection,
+            "rating_eligible": not migration_projection,
+            "evaluation_authority": (
+                "local_precommit_only_non_rating_migration"
+                if migration_projection
+                else "local_precommit_strength"
+            ),
             "protocol": "national_native_tcp",
             "hands_per_match": hands,
             "matches": matches_per_opponent,

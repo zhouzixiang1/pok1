@@ -49,12 +49,19 @@ class TestListBots:
         from server.routes.data_stream import _get_bots
 
         # The global isolation fixture exposes read-only bots through symlinks.
-        # Formal artifact identity correctly rejects symlink roots, but this
-        # route test only verifies namespace projection, not certification.
+        # Formal artifact identity rejects symlink roots and the current
+        # protocol quarantine rejects the historical fixture versions. This
+        # route test verifies namespace projection, not either eligibility
+        # authority, so both filters are replaced explicitly.
         monkeypatch.setattr(
             evolution_infra,
             "_official_parent_eligible",
             lambda _bot_dir: True,
+        )
+        monkeypatch.setattr(
+            evolution_infra,
+            "is_active_bot_protocol_eligible",
+            lambda _version: True,
         )
         data = _get_bots()
         assert data["active"]

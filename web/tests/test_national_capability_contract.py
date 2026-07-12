@@ -6,6 +6,7 @@ from national_capability_contract import (
     national_runtime_feedback_summary,
 )
 from national_native import NATIVE_BOT_TEMPLATE
+from national_runtime_probe_scenarios import LINE_SCENARIO_PAIRS
 
 
 def _write_bot(root: Path, *, national_bot: str, opponent: str = "", strategy: str = "") -> Path:
@@ -23,6 +24,190 @@ def _write_bot(root: Path, *, national_bot: str, opponent: str = "", strategy: s
         encoding="utf-8",
     )
     return root
+
+
+def _migration_probe_payload(
+    *,
+    repeatable: bool = True,
+    stable_dimensions: set[str] | None = None,
+) -> dict:
+    def tier(left_label, left_wire, right_label, right_wire):
+        return {
+            left_label: {"wire": left_wire},
+            right_label: {"wire": right_wire},
+            "changed": True,
+        }
+
+    line_rows = []
+    for pair in LINE_SCENARIO_PAIRS:
+        line_rows.append({
+            "dimension": pair["dimension"],
+            "scenario_id": pair["positive"],
+            "control_kind": "same_scenario_flag_false",
+            "flag": pair["flag"],
+            "tiers": {
+                "baseline": tier("positive", "raise 600", "negative", "check")
+            },
+        })
+    issues = [] if repeatable else ["runtime_probe_non_repeatable"]
+    payload = {
+        "schema_version": 10,
+        "ok": repeatable,
+        "failure_class": "none" if repeatable else "candidate_contract",
+        "issues": issues,
+        "repeat_count": 2,
+        "repeatability_ok": repeatable,
+        "evidence_integrity_ok": repeatable,
+        "artifacts": [],
+        "tracker": {"ok": True, "issues": []},
+        "hand_context": {"ok": True, "issues": []},
+        "decision_runtime": {},
+        "strategy_influence": {
+            "ok": repeatable,
+            "issues": issues,
+            "rows": [],
+            "dimensions": {
+                "terminal_response": {
+                    "ok": True,
+                    "changed_pairs": 1,
+                    "rows": [{
+                        "scenario_id": "preflop_sb_premium",
+                        "tiers": {
+                            "baseline": tier(
+                                "terminal_folder",
+                                "raise 600",
+                                "terminal_caller",
+                                "check",
+                            )
+                        },
+                    }],
+                },
+                "showdown_range": {
+                    "ok": True,
+                    "changed_pairs": 1,
+                    "rows": [{
+                        "scenario_id": "flop_top_pair_facing_bet",
+                        "tiers": {
+                            "baseline": tier(
+                                "tight_showdown",
+                                "fold",
+                                "loose_showdown",
+                                "call",
+                            )
+                        },
+                    }],
+                },
+                "semantic_lines": {
+                    "ok": True,
+                    "changed_pairs": 2,
+                    "rows": line_rows,
+                },
+            },
+        },
+    }
+    all_dimensions = {
+        "terminal_response",
+        "showdown_range",
+        "donk",
+        "delayed_probe",
+    }
+    if stable_dimensions is None:
+        stable_dimensions = all_dimensions if repeatable else set()
+
+    evidence_by_dimension = {
+        "terminal_response": [{
+            "dimension": "terminal_response",
+            "scenario_id": "preflop_sb_premium",
+            "tier": "baseline",
+            "left_label": "terminal_folder",
+            "right_label": "terminal_caller",
+            "left_wire": "raise 600",
+            "right_wire": "check",
+        }],
+        "showdown_range": [{
+            "dimension": "showdown_range",
+            "scenario_id": "flop_top_pair_facing_bet",
+            "tier": "baseline",
+            "left_label": "tight_showdown",
+            "right_label": "loose_showdown",
+            "left_wire": "fold",
+            "right_wire": "call",
+        }],
+        "donk": [{
+            "dimension": "donk",
+            "scenario_id": "flop_donk_vs_opponent_pfr",
+            "tier": "baseline",
+            "left_label": "positive",
+            "right_label": "negative",
+            "left_wire": "raise 600",
+            "right_wire": "check",
+            "control_kind": "same_scenario_flag_false",
+            "flag": "can_donk",
+        }],
+        "delayed_probe": [{
+            "dimension": "delayed_probe",
+            "scenario_id": "turn_delayed_probe_vs_opponent_pfr",
+            "tier": "baseline",
+            "left_label": "positive",
+            "right_label": "negative",
+            "left_wire": "raise 600",
+            "right_wire": "check",
+            "control_kind": "same_scenario_flag_false",
+            "flag": "can_delayed_probe",
+        }],
+    }
+    repeatability_dimensions = {}
+    for dimension in sorted(all_dimensions):
+        stable = dimension in stable_dimensions
+        repeatability_dimensions[dimension] = {
+            "stable": stable,
+            "authority_tier": "baseline",
+            "evidence_present": True,
+            "observations_identical": stable,
+            "evidence": evidence_by_dimension[dimension] if stable else [],
+            "observation_digests": (
+                [f"{dimension}-same", f"{dimension}-same"]
+                if stable
+                else [f"{dimension}-first", f"{dimension}-second"]
+            ),
+        }
+    payload["migration_evidence_repeatability"] = {
+        "schema_version": 1,
+        "candidate_fingerprint_unchanged": True,
+        "run_count": 2,
+        "runs_eligible": True,
+        "dimensions": repeatability_dimensions,
+    }
+    return payload
+
+
+LIVE_MIGRATION_STRATEGY = """
+def _choose(req):
+    profile = req.get('opponent_runtime', {})
+    hand = req.get('hand_runtime', {})
+    if hand.get('can_donk'):
+        return 600
+    if hand.get('can_delayed_probe'):
+        return 500
+    terminal_pressure = (
+        profile.get('fold_to_raise', 0.0)
+        + profile.get('fold_to_jam_rate', 0.0)
+        - profile.get('river_overcall_freq', 0.0)
+    )
+    if terminal_pressure > 0.5:
+        return -2
+    shown = profile.get('showdown_range', {})
+    if (
+        shown.get('selection_scope') == 'reached_showdown_only'
+        and shown.get('confidence', 0.0) > 0.1
+        and shown.get('adaptation_weight', 0.0) > 0.0
+        and shown.get('tightness', 0.0) > 0.3
+    ):
+        return -1
+    return 0
+def get_action(req, requests): return _choose(req)
+def get_baseline_action(req, requests): return _choose(req)
+"""
 
 
 def test_capability_contract_accepts_safe_wire_and_flags_missing_architecture(tmp_path):
@@ -155,6 +340,11 @@ def iter_refinements(req, current_view, baseline, deadline):
     assert checks["precompute_runtime_influence"] is False
     assert checks["persistent_match_memory"] is True
     assert checks["incremental_opponent_model"] is True
+    assert checks["terminal_response_adaptation"] is True
+    assert checks["showdown_range_adaptation"] is True
+    assert checks["donk_line_reachability"] is True
+    assert checks["delayed_probe_line_reachability"] is True
+    assert checks["semantic_line_reachability"] is True
 
     feedback = national_runtime_feedback_summary(bot, source_label="national_v3")
     assert "precompute_runtime_influence" in feedback
@@ -477,7 +667,7 @@ def main():
 
     result = evaluate_national_capabilities(bot)
 
-    assert result["schema_version"] == 5
+    assert result["schema_version"] == 8
     assert result["detector_version"] == NATIONAL_CAPABILITY_DETECTOR_VERSION
     assert set(result["checks_by_id"]) == {item["check_id"] for item in result["checks"]}
     for check in result["checks"]:
@@ -606,6 +796,8 @@ def get_action(req, requests):
     assert checks["incremental_opponent_model"]["passed"] is True
     assert checks["terminal_response_adaptation"]["passed"] is False
     assert checks["showdown_range_adaptation"]["passed"] is False
+    assert checks["donk_line_reachability"]["passed"] is False
+    assert checks["delayed_probe_line_reachability"]["passed"] is False
     assert checks["semantic_line_reachability"]["passed"] is False
     dimensions = result["dynamic_runtime_probe"]["strategy_influence"]["dimensions"]
     assert dimensions["action_profile"]["ok"] is True
@@ -689,7 +881,228 @@ def get_baseline_action(req, requests): return get_action(req, requests)
 
     assert semantic["ok"] is False
     assert semantic["changed_pairs"] == 0
+    assert result["checks_by_id"]["donk_line_reachability"]["passed"] is False
+    assert result["checks_by_id"]["delayed_probe_line_reachability"]["passed"] is False
     assert result["checks_by_id"]["semantic_line_reachability"]["passed"] is False
+
+
+def test_dead_literals_and_runtime_repr_cannot_fake_migration_consumers(
+    tmp_path,
+    monkeypatch,
+):
+    import national_runtime_probe
+
+    bot = _write_bot(
+        tmp_path / "national_v13g_dead_migration",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def _choose(req):
+    profile = req.get('opponent_runtime', {})
+    hand = req.get('hand_runtime', {})
+    _dead_labels = (
+        'fold_to_raise', 'fold_to_jam_rate', 'river_overcall_freq',
+        'terminal_response', 'contexts', 'showdown_range', 'selection_scope',
+        'confidence', 'adaptation_weight', 'tightness', 'bucket_rates',
+        'can_donk', 'can_delayed_probe',
+    )
+    return 600 if (len(repr(profile)) + len(repr(hand))) % 2 else 0
+def get_action(req, requests): return _choose(req)
+def get_baseline_action(req, requests): return _choose(req)
+""",
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "run_national_runtime_probe",
+        lambda *_args, **_kwargs: _migration_probe_payload(repeatable=True),
+    )
+
+    result = evaluate_national_capabilities(bot)
+    evidence = result["incremental_model_evidence"]
+    checks = result["checks_by_id"]
+
+    assert evidence["source_rooted_live_access_paths"] == {}
+    assert evidence["decision_field_locations"]["can_donk"]
+    assert evidence["decision_field_locations"]["showdown_range"]
+    for check_id in (
+        "terminal_response_adaptation",
+        "showdown_range_adaptation",
+        "donk_line_reachability",
+        "delayed_probe_line_reachability",
+    ):
+        assert checks[check_id]["passed"] is False
+        assert checks[check_id]["evidence"]["facts"]["source_rooted_paths"] == []
+
+
+def test_nonrepeatable_first_run_cannot_prove_migration_consumers(
+    tmp_path,
+    monkeypatch,
+):
+    import national_runtime_probe
+
+    bot = _write_bot(
+        tmp_path / "national_v13g_nonrepeatable",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy=LIVE_MIGRATION_STRATEGY,
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "run_national_runtime_probe",
+        lambda *_args, **_kwargs: _migration_probe_payload(repeatable=False),
+    )
+
+    result = evaluate_national_capabilities(bot)
+    checks = result["checks_by_id"]
+
+    assert result["dynamic_runtime_probe"]["repeatability_ok"] is False
+    for check_id in (
+        "terminal_response_adaptation",
+        "showdown_range_adaptation",
+        "donk_line_reachability",
+        "delayed_probe_line_reachability",
+    ):
+        assert checks[check_id]["passed"] is False
+        assert (
+            checks[check_id]["evidence"]["facts"]["dynamic_evidence"][
+                "integrity_ok"
+            ]
+            is False
+        )
+
+
+def test_global_probe_jitter_does_not_block_stable_migration_dimensions(
+    tmp_path,
+    monkeypatch,
+):
+    import national_runtime_probe
+
+    bot = _write_bot(
+        tmp_path / "national_v13g_global_jitter",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy=LIVE_MIGRATION_STRATEGY,
+    )
+    stable_dimensions = {
+        "terminal_response",
+        "showdown_range",
+        "donk",
+        "delayed_probe",
+    }
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "run_national_runtime_probe",
+        lambda *_args, **_kwargs: _migration_probe_payload(
+            repeatable=False,
+            stable_dimensions=stable_dimensions,
+        ),
+    )
+
+    result = evaluate_national_capabilities(bot)
+    checks = result["checks_by_id"]
+
+    assert result["dynamic_runtime_probe"]["repeatability_ok"] is False
+    for check_id in (
+        "terminal_response_adaptation",
+        "showdown_range_adaptation",
+        "donk_line_reachability",
+        "delayed_probe_line_reachability",
+    ):
+        assert checks[check_id]["passed"] is True
+
+
+def test_one_nonrepeatable_migration_dimension_fails_without_poisoning_others(
+    tmp_path,
+    monkeypatch,
+):
+    import national_runtime_probe
+
+    bot = _write_bot(
+        tmp_path / "national_v13g_donk_jitter",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy=LIVE_MIGRATION_STRATEGY,
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "run_national_runtime_probe",
+        lambda *_args, **_kwargs: _migration_probe_payload(
+            repeatable=False,
+            stable_dimensions={
+                "terminal_response",
+                "showdown_range",
+                "delayed_probe",
+            },
+        ),
+    )
+
+    checks = evaluate_national_capabilities(bot)["checks_by_id"]
+
+    assert checks["terminal_response_adaptation"]["passed"] is True
+    assert checks["showdown_range_adaptation"]["passed"] is True
+    assert checks["delayed_probe_line_reachability"]["passed"] is True
+    assert checks["donk_line_reachability"]["passed"] is False
+    assert (
+        checks["donk_line_reachability"]["evidence"]["facts"][
+            "dynamic_evidence"
+        ]["integrity_ok"]
+        is False
+    )
+
+
+def test_repeatable_specific_final_wire_and_live_paths_prove_all_migrations(
+    tmp_path,
+    monkeypatch,
+):
+    import national_runtime_probe
+
+    bot = _write_bot(
+        tmp_path / "national_v13g_trusted_migration",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy=LIVE_MIGRATION_STRATEGY,
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "run_national_runtime_probe",
+        lambda *_args, **_kwargs: _migration_probe_payload(repeatable=True),
+    )
+
+    result = evaluate_national_capabilities(bot)
+    paths = result["incremental_model_evidence"]["source_rooted_live_access_paths"]
+    checks = result["checks_by_id"]
+
+    assert "hand_runtime.can_donk" in paths
+    assert "hand_runtime.can_delayed_probe" in paths
+    assert "opponent_runtime.fold_to_raise" in paths
+    assert "opponent_runtime.showdown_range.tightness" in paths
+    for check_id in (
+        "terminal_response_adaptation",
+        "showdown_range_adaptation",
+        "donk_line_reachability",
+        "delayed_probe_line_reachability",
+    ):
+        assert checks[check_id]["passed"] is True
+        dynamic = checks[check_id]["evidence"]["facts"]["dynamic_evidence"]
+        assert dynamic["integrity_ok"] is True
+        assert dynamic["left_wire"] != dynamic["right_wire"]
+
+
+def test_donk_and_delayed_probe_emit_independent_capability_checks(tmp_path):
+    bot = _write_bot(
+        tmp_path / "national_v13g_split",
+        national_bot=NATIVE_BOT_TEMPLATE,
+        strategy="""
+def _choose(req):
+    hand_runtime = req.get('hand_runtime', {})
+    return 600 if hand_runtime.get('can_donk') else 0
+def get_action(req, requests): return _choose(req)
+def get_baseline_action(req, requests): return _choose(req)
+""",
+    )
+
+    result = evaluate_national_capabilities(bot)
+    checks = result["checks_by_id"]
+
+    assert checks["donk_line_reachability"]["passed"] is True
+    assert checks["delayed_probe_line_reachability"]["passed"] is False
+    # Compatibility aggregate remains available but is no longer a primary.
+    assert checks["semantic_line_reachability"]["passed"] is False
 
 
 def test_showdown_baseline_influence_is_not_masked_by_common_refinement(tmp_path):

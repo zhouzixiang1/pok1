@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useEvolutionSSE, fetchEvolutionState } from "../api/evolution";
-import type { IOLine } from "../api/evolution";
+import type { GenerationCostPolicyState, IOLine } from "../api/evolution";
 import { api } from "../api/client";
 import type { BotRating, PipelineCheckpoint, WorkerFailure } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
@@ -52,6 +52,7 @@ export default function EvolutionMonitor() {
   const [isWorking, setIsWorking] = useState(false);
   const [grand, setGrand] = useState(0);
   const [gen, setGen] = useState(0);
+  const [costPolicy, setCostPolicy] = useState<GenerationCostPolicyState | null>(null);
   const [leaderboard, setLeaderboard] = useState<BotRating[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
@@ -202,6 +203,11 @@ export default function EvolutionMonitor() {
         return [...prev, updated];
       });
     },
+    onGenerationCostPolicy: (data) => {
+      setGen(data.spent_usd ?? 0);
+      setCostPolicy(data.policy ?? null);
+      if (!data.generation_id) setRoleCosts([]);
+    },
     onToolCall: (data) => {
       closeTool();
       const id = nextId();
@@ -237,14 +243,24 @@ export default function EvolutionMonitor() {
       setFilterRole(""); setActiveRole(""); setKnownRoles([]);
       openToolId.current = null; thinkingId.current = null;
       fetchEvolutionState().then((state) => {
-        if (state) { setGrand(state.grand_cost_total ?? 0); setGen(state.gen_cost_total ?? 0); }
+        if (state) {
+          setGrand(state.grand_cost_total ?? 0);
+          setGen(state.gen_cost_total ?? 0);
+          setCostPolicy(state.generation_cost_policy ?? null);
+        }
       }).catch((e) => console.error("[EvolutionMonitor] fetchEvolutionState error:", e));
     },
   });
 
   useEffect(() => {
     fetchEvolutionState().then((state) => {
-      if (state) { setStatus(state.status); setIsWorking(state.is_working); }
+      if (state) {
+        setStatus(state.status);
+        setIsWorking(state.is_working);
+        setGrand(state.grand_cost_total ?? 0);
+        setGen(state.gen_cost_total ?? 0);
+        setCostPolicy(state.generation_cost_policy ?? null);
+      }
     }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     const refreshLeaderboard = () => api.ratings().then(setLeaderboard).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     refreshLeaderboard();
@@ -489,7 +505,7 @@ export default function EvolutionMonitor() {
               <div className="divide-y divide-gray-100 dark:divide-gray-800">
                 <PipelineStatus checkpoint={checkpoint} />
                 <WorkerProgress workers={workers} />
-                <CostBreakdown costs={roleCosts} grand={grand} gen={gen} onReset={() => { setRoleCosts([]); setGen(0); }} />
+                <CostBreakdown costs={roleCosts} grand={grand} gen={gen} policy={costPolicy} onReset={() => { setRoleCosts([]); setGen(0); }} />
               </div>
             )}
 

@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from output_schema import (
+    LEGACY_CONSUMER_MIGRATION_CHECKS,
+    LEGACY_CONSUMER_MIGRATION_FILES,
+    LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
     RuntimeContract,
     WORKER_PROMPT_MAX_CHARS,
     WORKER_PROMPT_MIN_CHARS,
@@ -38,6 +41,8 @@ _SYSTEM_OWNED_CONTRACT_RE = re.compile(
     + re.escape(SYSTEM_OWNED_CONTRACT_END),
     re.DOTALL,
 )
+SYSTEM_OWNED_MIGRATION_BEGIN = "[[SYSTEM_OWNED_LEGACY_MIGRATION:BEGIN]]"
+SYSTEM_OWNED_MIGRATION_END = "[[SYSTEM_OWNED_LEGACY_MIGRATION:END]]"
 
 
 def _safe_worker_id(value: Any, fallback: int) -> str:
@@ -95,6 +100,143 @@ def _compiled_prompt_validation_terms(
     ):
         terms.extend(str(term) for term in focus.get("required_terms") or [] if str(term))
     return tuple(dict.fromkeys(terms))
+
+
+def bind_system_owned_legacy_consumer_migration(
+    plan: dict[str, Any],
+    *,
+    policy: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Restore the immutable four-consumer migration after weak-model output.
+
+    The planner may choose implementation details, but the migration focus,
+    checks, writable ABI surface, and typed RuntimeContract are policy facts. A
+    model omission is therefore normalized here instead of consuming repeated
+    quality-repair turns. The policy and runtime-contract ledgers bind the result.
+    """
+    bound = copy.deepcopy(plan)
+    active_policy = policy or (
+        bound.get("architecture_policy") if isinstance(bound, dict) else None
+    )
+    focus = (
+        active_policy.get("selected_focus")
+        if isinstance(active_policy, dict)
+        else None
+    )
+    meta: dict[str, Any] = {
+        "bound": False,
+        "focus_id": "",
+        "worker_id": None,
+        "bundle_digest": None,
+        "dropped_worker_ids": [],
+    }
+    if (
+        not isinstance(focus, dict)
+        or focus.get("focus_id") != LEGACY_CONSUMER_MIGRATION_FOCUS_ID
+    ):
+        return bound, meta
+    tasks = bound.get("tasks") if isinstance(bound, dict) else None
+    if not isinstance(tasks, list) or not tasks:
+        return bound, meta
+
+    bundle = active_policy.get("legacy_consumer_migration_bundle") or {}
+    if (
+        set(bundle.get("required_checks") or [])
+        != set(LEGACY_CONSUMER_MIGRATION_CHECKS)
+        or set(bundle.get("consumer_files") or [])
+        != set(LEGACY_CONSUMER_MIGRATION_FILES)
+    ):
+        # A malformed policy is repository/checkpoint drift, not something a
+        # plan compiler may guess around. The downstream identity gate remains
+        # fail-closed.
+        return bound, meta
+
+    selected_index = next(
+        (
+            index
+            for index, task in enumerate(tasks)
+            if isinstance(task, dict)
+            and str(task.get("architecture_focus_id") or "")
+            == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
+        ),
+        0,
+    )
+    selected = tasks[selected_index]
+    if not isinstance(selected, dict):
+        return bound, meta
+
+    dropped_worker_ids = [
+        task.get("worker_id", index + 1)
+        for index, task in enumerate(tasks)
+        if index != selected_index and isinstance(task, dict)
+    ]
+    # The universal migration is a generation-wide isolation boundary, not just
+    # one specially labelled task among otherwise unconstrained strategy work.
+    # Collapse weak-model output to the single system-owned task before schema
+    # validation so an untyped river/state-learning task cannot execute beside
+    # the migration or widen the generation's writable scope.
+    bound["tasks"] = [selected]
+    bound.pop("selected_proposal_id", None)
+    bound.pop("proposal_binding", None)
+
+    selected["role"] = "Algorithmic Runtime Migration Architect"
+    selected["difficulty"] = "hard"
+    selected["skill_layer"] = "runtime_architecture"
+    selected["architecture_focus_id"] = LEGACY_CONSUMER_MIGRATION_FOCUS_ID
+    selected["target_files"] = list(LEGACY_CONSUMER_MIGRATION_FILES[:3])
+    selected["files_allowed"] = list(LEGACY_CONSUMER_MIGRATION_FILES[3:])
+    selected["read_only_dependencies"] = ["national_bot.py"]
+    selected["prohibited_files"] = []
+    selected["checks_required"] = list(dict.fromkeys([
+        *(active_policy.get("plan_required_floor_checks") or []),
+        *LEGACY_CONSUMER_MIGRATION_CHECKS,
+    ]))
+    from runtime_architecture_policy import (
+        legacy_consumer_migration_runtime_contract,
+    )
+
+    selected["runtime_contract"] = legacy_consumer_migration_runtime_contract()
+    selected["merge_policy"] = "system_owned_universal_migration"
+    selected["expected_diff_shape"] = (
+        "One coherent producer-to-consumer migration across exactly strategy.py, "
+        "opponent.py, simulation.py, and donk_probe.py."
+    )
+    selected["behavior_hypothesis"] = (
+        "Each of the four wrapper-owned runtime dimensions changes a repeatable "
+        "specific final sanitized wire action through an exact live source path."
+    )
+    # Do not retain model-authored prompt/instruction prose here. It may contain
+    # the exact ordinary innovation that this focus must postpone, and appending
+    # a contradictory guardrail would still hand both instructions to Worker.
+    selected.pop("instruction", None)
+    migration_prompt = (
+        f"{SYSTEM_OWNED_MIGRATION_BEGIN}\n"
+        "System-owned universal legacy-consumer migration; implement all four "
+        "obligations in one coherent decision graph. Consume terminal_response "
+        "and showdown_range from opponent_runtime with confidence/adaptation "
+        "weight, and consume hand_runtime.can_donk plus "
+        "hand_runtime.can_delayed_probe from the official semantic transcripts. "
+        "Each producer must reach a final sanitized wire action counterfactual; "
+        "telemetry, dead reads, or intermediate-only changes do not pass. Edit "
+        "strategy.py, opponent.py, simulation.py, and donk_probe.py; treat "
+        "national_bot.py as read-only. Preserve bounded connection memory and "
+        "confidence from opponent_runtime; publish a legal baseline within the "
+        "decision budget/deadline and retain the legal fallback. Do not add "
+        "state_learning innovation until the complete migration bundle passes.\n"
+        f"{SYSTEM_OWNED_MIGRATION_END}"
+    )
+    selected["worker_prompt"] = migration_prompt
+
+    meta.update({
+        "bound": True,
+        "focus_id": LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
+        "worker_id": selected.get("worker_id"),
+        "bundle_digest": bundle.get("bundle_digest"),
+        "required_checks": list(LEGACY_CONSUMER_MIGRATION_CHECKS),
+        "consumer_files": list(LEGACY_CONSUMER_MIGRATION_FILES),
+        "dropped_worker_ids": dropped_worker_ids,
+    })
+    return bound, meta
 
 
 def bind_system_owned_worker_contract_terms(
@@ -214,14 +356,18 @@ def compile_master_plan(
     context_chars: int = TASK_CONTEXT_CHARS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return a compiled copy of a Master plan plus compiler metadata."""
-    compiled, contract_binding = bind_system_owned_worker_contract_terms(plan)
+    compiled, migration_binding = bind_system_owned_legacy_consumer_migration(
+        plan
+    )
+    compiled, contract_binding = bind_system_owned_worker_contract_terms(compiled)
     tasks = compiled.get("tasks", []) if isinstance(compiled, dict) else []
     meta = {
-        "compiled": False,
+        "compiled": bool(migration_binding.get("bound")),
         "compiled_tasks": [],
         "hard_prompt_chars": hard_prompt_chars,
         "context_chars": context_chars,
         "contract_binding": contract_binding,
+        "migration_binding": migration_binding,
     }
     context_dir = Path(target_dir) / ".task_context"
     has_precompiled_task = bool(

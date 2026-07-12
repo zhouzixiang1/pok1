@@ -17,7 +17,7 @@ def test_empty_results_initialize_content_bound_manifest(tmp_path):
     loaded = json.loads((results / identity.MANIFEST_NAME).read_text(encoding="utf-8"))
 
     assert manifest == loaded
-    assert manifest["schema_version"] == identity.IDENTITY_SCHEMA_VERSION == 2
+    assert manifest["schema_version"] == identity.IDENTITY_SCHEMA_VERSION == 3
     assert manifest["base_identity"]["schema_version"] == identity.IDENTITY_SCHEMA_VERSION
     assert manifest["base_identity"]["profile_id"] == identity.PROFILE_ID
     assert manifest["base_identity"]["authority"] == "rating_daemon_only"
@@ -246,7 +246,7 @@ def test_evaluation_identity_cli_imports_repo_packages_from_any_cwd(tmp_path):
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
     assert payload["base_identity"]["profile_id"].startswith(
-        "national-native-rating-authority-v2"
+        "national-native-rating-authority-v3"
     )
     assert (results / identity.MANIFEST_NAME).is_file()
 

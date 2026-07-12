@@ -186,6 +186,64 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history(
+    monkeypatch,
+):
+    import agent_master
+    import evidence_snapshot
+    import official_certification
+
+    captured = []
+
+    async def fake_run_claude_query(prompt, *_args, **_kwargs):
+        captured.append(prompt)
+        return _mock_llm_output(), 0.0, {}
+
+    def forbidden_loader(*_args, **_kwargs):
+        raise AssertionError("protocol bootstrap strength loader was called")
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+    monkeypatch.setattr(
+        evidence_snapshot,
+        "load_generation_snapshot_identity",
+        forbidden_loader,
+    )
+    monkeypatch.setattr(
+        official_certification,
+        "official_feedback_summary",
+        forbidden_loader,
+    )
+
+    sentinels = {
+        "stagnation_info": "FORBIDDEN_STAGNATION_STRENGTH",
+        "match_analysis": "FORBIDDEN_MATCH_ANALYSIS",
+        "performance_verification": "FORBIDDEN_CRITIC_CONCLUSION",
+        "replay_spotlight": "FORBIDDEN_REPLAY",
+        "bot_action_stats": "FORBIDDEN_ACTION_PROFILE",
+        "battle_experience": "FORBIDDEN_BATTLE_EXPERIENCE",
+        "exploitability_weaknesses": "FORBIDDEN_EXPLOITABILITY",
+        "opponent_profiles": "FORBIDDEN_OPPONENT_PROFILE",
+        "research_proposals": "FORBIDDEN_MATCH_DERIVED_RESEARCH",
+    }
+    result = await agent_master._run_master_analysis(
+        source_v=142,
+        next_v=150,
+        ui=_MockUI(),
+        protocol_bootstrap={"receipt_digest": "a" * 64},
+        **sentinels,
+    )
+
+    assert result is not None
+    rendered = "\n".join(captured)
+    assert "PROTOCOL BOOTSTRAP NO-STRENGTH" in rendered
+    for forbidden in sentinels.values():
+        assert forbidden not in rendered
+    assert "Historical official-certification feedback was not loaded" in rendered
+    assert "Source bot directory (read-only parent): bots/national_v142/" not in rendered
+    assert "Historical lineage source directory: quarantined" in rendered
+
+
+@pytest.mark.asyncio
 async def test_master_fails_closed_without_generation_evidence(monkeypatch):
     import agent_master
     import evidence_snapshot

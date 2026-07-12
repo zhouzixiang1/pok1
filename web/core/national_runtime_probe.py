@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from collections import OrderedDict
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -11,20 +12,29 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
-import sys
 import tempfile
 import threading
 from typing import Any
 
+from managed_bot_executor import (
+    ExecutorRuntime,
+    IsolationUnavailable,
+    ManagedExecutorError,
+    launch_isolated_worker,
+)
 from national_runtime_probe_scenarios import (
+    LINE_SCENARIO_PAIRS,
     RUNTIME_PROBE_SCENARIO_DIGEST,
     RUNTIME_PROBE_SCENARIO_VERSION,
+    SHOWDOWN_RANGE_SCENARIO_IDS,
+    TERMINAL_RESPONSE_SCENARIO_IDS,
 )
 from national_native import NATIONAL_DECISION_RUNTIME_VERSION
 
 
-RUNTIME_PROBE_SCHEMA_VERSION = 7
-RUNTIME_PROBE_ORCHESTRATOR_VERSION = 7
+RUNTIME_PROBE_SCHEMA_VERSION = 10
+RUNTIME_PROBE_ORCHESTRATOR_VERSION = 10
+MIGRATION_EVIDENCE_REPEATABILITY_SCHEMA_VERSION = 1
 RUNTIME_PROBE_TIMEOUT_SEC = 45.0
 RUNTIME_PROBE_REPEATS = 2
 RUNTIME_PROBE_MAX_IMPORT_MS = 2_500.0
@@ -35,8 +45,43 @@ RUNTIME_PROBE_CACHE_MAX_ENTRIES = 128
 _RUNTIME_PROBE_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _RUNTIME_PROBE_CACHE_LOCK = threading.Lock()
 
+_LEGAL_SANITIZED_WIRE_ACTIONS = frozenset({"fold", "call", "check", "allin"})
+_LINE_PAIR_BY_DIMENSION = {
+    str(item["dimension"]): dict(item) for item in LINE_SCENARIO_PAIRS
+}
+_MIGRATION_DIMENSION_SPECS = {
+    "terminal_response": {
+        "payload": "terminal_response",
+        "left_label": "terminal_folder",
+        "right_label": "terminal_caller",
+        "scenario_ids": frozenset(TERMINAL_RESPONSE_SCENARIO_IDS),
+    },
+    "showdown_range": {
+        "payload": "showdown_range",
+        "left_label": "tight_showdown",
+        "right_label": "loose_showdown",
+        "scenario_ids": frozenset(SHOWDOWN_RANGE_SCENARIO_IDS),
+    },
+    "donk": {
+        "payload": "semantic_lines",
+        "left_label": "positive",
+        "right_label": "negative",
+        "scenario_ids": frozenset({_LINE_PAIR_BY_DIMENSION["donk"]["positive"]}),
+    },
+    "delayed_probe": {
+        "payload": "semantic_lines",
+        "left_label": "positive",
+        "right_label": "negative",
+        "scenario_ids": frozenset({
+            _LINE_PAIR_BY_DIMENSION["delayed_probe"]["positive"]
+        }),
+    },
+}
+
 
 def runtime_probe_limits() -> dict[str, Any]:
+    executor_path = Path(__file__).with_name("managed_bot_executor.py")
+    socket_path = Path(__file__).with_name("managed_bot_socket.py")
     return {
         "timeout_sec": RUNTIME_PROBE_TIMEOUT_SEC,
         "repeats": RUNTIME_PROBE_REPEATS,
@@ -44,7 +89,9 @@ def runtime_probe_limits() -> dict[str, Any]:
         "max_entries": RUNTIME_PROBE_MAX_ENTRIES,
         "max_bytes": RUNTIME_PROBE_MAX_BYTES,
         "max_output_bytes": RUNTIME_PROBE_MAX_OUTPUT_BYTES,
-        "sandbox": "bubblewrap-ro-root-unshare-net-pid",
+        "sandbox": "central-managed-executor-minimal-ro-inputs-seccomp-v1",
+        "managed_executor_sha256": hashlib.sha256(executor_path.read_bytes()).hexdigest(),
+        "managed_socket_sha256": hashlib.sha256(socket_path.read_bytes()).hexdigest(),
     }
 
 
@@ -179,60 +226,76 @@ def _kill_process_group(process: subprocess.Popen) -> None:
 
 
 def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
-    bwrap = shutil.which("bwrap")
-    if not bwrap:
+    try:
+        runtime = ExecutorRuntime.discover()
+    except (IsolationUnavailable, ManagedExecutorError) as exc:
         return {
             "ok": False,
             "failure_class": "probe_infra",
-            "issues": ["runtime_probe_bwrap_unavailable"],
+            "issues": [f"runtime_probe_isolation_unavailable:{type(exc).__name__}:{str(exc)[:180]}"],
         }
     worker = _probe_worker_path()
-    with tempfile.TemporaryDirectory(prefix="pok_runtime_probe_") as output_dir:
+    try:
+        if _bot_code_fingerprint(root) != str(spec.get("code_fingerprint") or ""):
+            return {
+                "ok": False,
+                "failure_class": "candidate_contract",
+                "issues": ["runtime_probe_candidate_changed_before_launch"],
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "failure_class": "candidate_contract",
+            "issues": [f"runtime_probe_candidate_rehash_failed:{type(exc).__name__}:{str(exc)[:180]}"],
+        }
+    scenario = Path(__file__).with_name("national_runtime_probe_scenarios.py").resolve()
+    with (
+        tempfile.TemporaryDirectory(prefix="pok_runtime_probe_work_") as work_dir,
+        tempfile.TemporaryDirectory(prefix="pok_runtime_probe_out_") as output_dir,
+    ):
+        work_root = Path(work_dir)
         output_root = Path(output_dir)
+        shutil.copyfile(worker, work_root / "worker.py")
+        shutil.copyfile(scenario, work_root / "national_runtime_probe_scenarios.py")
+        (work_root / "spec.json").write_text(
+            json.dumps(spec, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        (work_root / "worker.py").chmod(0o444)
+        (work_root / "national_runtime_probe_scenarios.py").chmod(0o444)
+        (work_root / "spec.json").chmod(0o444)
         report_host = output_root / "report.json"
         phase_host = output_root / "phase.txt"
         stdout_host = output_root / "stdout.log"
         stderr_host = output_root / "stderr.log"
         command = [
-            bwrap,
-            "--die-with-parent",
-            "--new-session",
-            "--unshare-net",
-            "--unshare-pid",
-            "--unshare-ipc",
-            "--unshare-uts",
-            "--ro-bind", "/", "/",
-            "--dev", "/dev",
-            "--proc", "/proc",
-            "--tmpfs", "/tmp",
-            "--dir", "/tmp/probe_out",
-            "--bind", str(output_root), "/tmp/probe_out",
-            "--ro-bind", str(root), str(root),
-            "--chdir", str(root),
-            "--clearenv",
-            "--setenv", "PATH", str(Path(sys.executable).parent),
-            "--setenv", "LANG", "C.UTF-8",
-            "--setenv", "HOME", "/tmp",
-            "--setenv", "PYTHONHASHSEED", "0",
-            "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
-            sys.executable,
+            str(runtime.python),
             "-I",
             "-B",
-            str(worker),
-            str(root),
-            "/tmp/probe_out/report.json",
-            json.dumps(spec, sort_keys=True, separators=(",", ":")),
+            "/work/worker.py",
+            "/inputs/bot",
+            "/output/report.json",
+            "/work/spec.json",
         ]
         with stdout_host.open("wb") as stdout_fp, stderr_host.open("wb") as stderr_fp:
             try:
-                process = subprocess.Popen(
+                managed = launch_isolated_worker(
+                    work_root,
                     command,
+                    environment={"PYTHONHASHSEED": "0"},
+                    readonly_inputs={"bot": root},
+                    output_files={
+                        "report.json": report_host,
+                        "phase.txt": phase_host,
+                    },
+                    runtime=runtime,
                     stdin=subprocess.DEVNULL,
                     stdout=stdout_fp,
                     stderr=stderr_fp,
                     start_new_session=True,
                 )
-            except OSError as exc:
+                process = managed.process
+            except (OSError, ManagedExecutorError) as exc:
                 return {
                     "ok": False,
                     "failure_class": "probe_infra",
@@ -255,22 +318,42 @@ def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str,
                 }
         stdout_bytes = stdout_host.stat().st_size
         stderr_bytes = stderr_host.stat().st_size
-        if stdout_bytes > RUNTIME_PROBE_MAX_OUTPUT_BYTES or stderr_bytes > RUNTIME_PROBE_MAX_OUTPUT_BYTES:
+        stderr_text = (
+            stderr_host.read_text(encoding="utf-8", errors="replace")[:2000]
+            if stderr_bytes
+            else ""
+        )
+        try:
+            if _bot_code_fingerprint(root) != str(spec.get("code_fingerprint") or ""):
+                return {
+                    "ok": False,
+                    "failure_class": "candidate_contract",
+                    "issues": ["runtime_probe_candidate_changed_during_probe"],
+                    "process_returncode": returncode,
+                }
+        except Exception as exc:
             return {
                 "ok": False,
                 "failure_class": "candidate_contract",
-                "issues": ["runtime_probe_output_limit_exceeded"],
+                "issues": [f"runtime_probe_candidate_posthash_failed:{type(exc).__name__}:{str(exc)[:180]}"],
                 "process_returncode": returncode,
             }
-        if returncode != 0 or not report_host.is_file():
-            stderr_text = stderr_host.read_text(encoding="utf-8", errors="replace")[:2000]
+        if stdout_bytes > RUNTIME_PROBE_MAX_OUTPUT_BYTES or stderr_bytes > RUNTIME_PROBE_MAX_OUTPUT_BYTES:
             return {
                 "ok": False,
                 "failure_class": (
                     "probe_infra"
-                    if returncode in {125, 126, 127} or stderr_text.startswith("bwrap:")
+                    if returncode in {125, 126, 127}
+                    or stderr_text.startswith(("bwrap:", "prlimit:"))
                     else "candidate_contract"
                 ),
+                "issues": ["runtime_probe_output_limit_exceeded"],
+                "process_returncode": returncode,
+            }
+        if returncode != 0 or not report_host.is_file():
+            return {
+                "ok": False,
+                "failure_class": "candidate_contract",
                 "issues": [f"runtime_probe_worker_failed:rc={returncode}"],
                 "worker_stdout": stdout_host.read_text(encoding="utf-8", errors="replace")[:2000],
                 "worker_stderr": stderr_text,
@@ -290,6 +373,7 @@ def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str,
                 "issues": ["runtime_probe_report_not_object"],
             }
         result["process_returncode"] = returncode
+        result["managed_isolation"] = asdict(managed.isolation)
         if result.get("failure_class") not in {"probe_infra", "candidate_contract", "none"}:
             result["failure_class"] = "candidate_contract" if result.get("issues") else "none"
         if stdout_bytes:
@@ -425,6 +509,155 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_legal_sanitized_wire(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    if value in _LEGAL_SANITIZED_WIRE_ACTIONS:
+        return True
+    if not value.startswith("raise "):
+        return False
+    amount = value[6:]
+    return bool(amount and amount.isascii() and amount.isdigit() and amount[0] != "0")
+
+
+def _migration_baseline_evidence(
+    result: dict[str, Any],
+    dimension: str,
+) -> list[dict[str, str]]:
+    """Extract deterministic final-wire migration evidence from one run.
+
+    Only the baseline tier is authoritative here. It fixes refinement candidates
+    at zero in the worker, so wall-clock deadline/refinement scheduling cannot
+    make a migration capability appear or disappear between otherwise equal
+    runs. Short/long tiers remain useful diagnostics outside this contract.
+    """
+
+    spec = _MIGRATION_DIMENSION_SPECS.get(dimension)
+    if spec is None:
+        return []
+    influence = result.get("strategy_influence") or {}
+    dimensions = influence.get("dimensions") or {}
+    payload = dimensions.get(spec["payload"]) or {}
+    rows = payload.get("rows") or []
+    evidence: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        scenario_id = str(row.get("scenario_id") or "")
+        if scenario_id not in spec["scenario_ids"]:
+            continue
+        if dimension in _LINE_PAIR_BY_DIMENSION:
+            pair = _LINE_PAIR_BY_DIMENSION[dimension]
+            if (
+                row.get("dimension") != dimension
+                or row.get("control_kind") != "same_scenario_flag_false"
+                or row.get("flag") != pair["flag"]
+                or scenario_id != pair["positive"]
+            ):
+                continue
+        tiers = row.get("tiers") or {}
+        baseline = tiers.get("baseline") if isinstance(tiers, dict) else None
+        if not isinstance(baseline, dict) or baseline.get("changed") is not True:
+            continue
+        left_label = str(spec["left_label"])
+        right_label = str(spec["right_label"])
+        left = baseline.get(left_label)
+        right = baseline.get(right_label)
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            continue
+        if "error" in left or "error" in right:
+            continue
+        left_wire = left.get("wire")
+        right_wire = right.get("wire")
+        if (
+            not _is_legal_sanitized_wire(left_wire)
+            or not _is_legal_sanitized_wire(right_wire)
+            or left_wire == right_wire
+        ):
+            continue
+        row_evidence = {
+            "dimension": dimension,
+            "scenario_id": scenario_id,
+            "tier": "baseline",
+            "left_label": left_label,
+            "right_label": right_label,
+            "left_wire": str(left_wire),
+            "right_wire": str(right_wire),
+        }
+        if dimension in _LINE_PAIR_BY_DIMENSION:
+            row_evidence["control_kind"] = "same_scenario_flag_false"
+            row_evidence["flag"] = str(_LINE_PAIR_BY_DIMENSION[dimension]["flag"])
+        evidence.append(row_evidence)
+    return sorted(
+        evidence,
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _migration_evidence_repeatability(
+    runs: list[dict[str, Any]],
+    *,
+    before_fingerprint: str,
+    after_fingerprint: str,
+) -> dict[str, Any]:
+    """Aggregate per-dimension evidence without coupling it to full-probe jitter."""
+
+    candidate_fingerprint_unchanged = bool(
+        before_fingerprint == after_fingerprint
+        and runs
+        and all(
+            str(run.get("code_fingerprint") or "") == before_fingerprint
+            for run in runs
+        )
+    )
+    runs_eligible = bool(
+        len(runs) >= 2
+        and all(
+            str(run.get("failure_class") or "")
+            not in {"probe_infra", "internal_infrastructure"}
+            and not any(
+                str(issue).startswith("runtime_probe_candidate_timeout:")
+                for issue in run.get("issues") or []
+            )
+            for run in runs
+        )
+    )
+    dimensions: dict[str, dict[str, Any]] = {}
+    for dimension in _MIGRATION_DIMENSION_SPECS:
+        observations = [
+            _migration_baseline_evidence(run, dimension) for run in runs
+        ]
+        reference = observations[0] if observations else []
+        observations_identical = bool(
+            len(observations) >= 2
+            and all(observation == reference for observation in observations[1:])
+        )
+        evidence_present = bool(reference)
+        stable = bool(
+            candidate_fingerprint_unchanged
+            and runs_eligible
+            and observations_identical
+            and evidence_present
+        )
+        dimensions[dimension] = {
+            "stable": stable,
+            "authority_tier": "baseline",
+            "evidence_present": evidence_present,
+            "observations_identical": observations_identical,
+            "evidence": copy.deepcopy(reference) if stable else [],
+            "observation_digests": [
+                _canonical_digest(observation) for observation in observations
+            ],
+        }
+    return {
+        "schema_version": MIGRATION_EVIDENCE_REPEATABILITY_SCHEMA_VERSION,
+        "candidate_fingerprint_unchanged": candidate_fingerprint_unchanged,
+        "run_count": len(runs),
+        "runs_eligible": runs_eligible,
+        "dimensions": dimensions,
+    }
+
+
 def run_national_runtime_probe(
     bot_dir: str | Path,
     *,
@@ -459,6 +692,11 @@ def run_national_runtime_probe(
         if non_repeatable_failure:
             break
     after = _bot_code_fingerprint(root)
+    migration_repeatability = _migration_evidence_repeatability(
+        runs,
+        before_fingerprint=before,
+        after_fingerprint=after,
+    )
     for run in runs:
         if run.get("failure_class") == "probe_infra" or any(
             str(issue).startswith("runtime_probe_candidate_timeout:")
@@ -476,14 +714,21 @@ def run_national_runtime_probe(
                 "spec_digest": spec["spec_digest"],
                 "code_fingerprint": before,
                 "repeat_count": len(runs),
+                "repeatability_ok": False,
+                "evidence_integrity_ok": False,
+                "migration_evidence_repeatability": migration_repeatability,
             }
     first = dict(runs[0])
     issues = list(first.get("issues") or [])
     if before != after:
         issues.append("runtime_probe_mutated_candidate")
     reference = _repeatability_view(runs[0])
-    if any(_repeatability_view(run) != reference for run in runs[1:]):
+    repeatability_ok = len(runs) >= 2 and not any(
+        _repeatability_view(run) != reference for run in runs[1:]
+    )
+    if not repeatability_ok:
         issues.append("runtime_probe_non_repeatable")
+    evidence_integrity_ok = bool(repeatability_ok and before == after)
     first.update({
         "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
         "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
@@ -495,6 +740,9 @@ def run_national_runtime_probe(
         "spec_digest": spec["spec_digest"],
         "code_fingerprint": before,
         "repeat_count": len(runs),
+        "repeatability_ok": repeatability_ok,
+        "evidence_integrity_ok": evidence_integrity_ok,
+        "migration_evidence_repeatability": migration_repeatability,
         "cache_key": cache_key,
         "cache_hit": False,
         "issues": list(dict.fromkeys(issues)),

@@ -56,9 +56,12 @@ PLATFORM_RESOURCE_PATH = ROOT / "web" / "core" / "official_platform_resource.py"
 EVIDENCE_ARCHIVE_PATH = ROOT / "web" / "core" / "official_evidence_archive.py"
 CERTIFICATE_SIGNING_PATH = ROOT / "web" / "core" / "official_certificate_signing.py"
 CERTIFIER_TRUST_ROOT_PATH = ROOT / "web" / "core" / "official_certifier_allowed_signers"
+CERTIFIER_TRUST_POLICY_PATH = ROOT / "web" / "core" / "official_certifier_trust_policy.json"
 EXECUTION_PROFILE_PATH = ROOT / "web" / "core" / "official_execution_profile.json"
 EXECUTION_PROFILE_CODE_PATH = ROOT / "web" / "core" / "official_execution_profile.py"
 BOT_SANDBOX_PATH = ROOT / "web" / "core" / "official_bot_sandbox.py"
+MANAGED_EXECUTOR_PATH = ROOT / "web" / "core" / "managed_bot_executor.py"
+MANAGED_SOCKET_PATH = ROOT / "web" / "core" / "managed_bot_socket.py"
 
 CertificationMode = Literal["smoke", "compliance", "full"]
 FULL_POLICY_ID = "official-full-v5"
@@ -481,6 +484,8 @@ def validate_spec(spec: CertificationSpec) -> None:
 
 
 def _config_fingerprint(config: OfficialPlatformConfig) -> dict[str, Any]:
+    from managed_bot_executor import managed_executor_identity
+
     return {
         "exe_path": str(config.exe_path),
         "exe_sha256": _file_sha256(config.exe_path) if config.exe_path.exists() else "missing",
@@ -524,6 +529,22 @@ def _config_fingerprint(config: OfficialPlatformConfig) -> dict[str, Any]:
             if CERTIFIER_TRUST_ROOT_PATH.exists()
             else "missing"
         ),
+        "certifier_trust_policy_sha256": (
+            _file_sha256(CERTIFIER_TRUST_POLICY_PATH)
+            if CERTIFIER_TRUST_POLICY_PATH.exists()
+            else "missing"
+        ),
+        "managed_executor_sha256": (
+            _file_sha256(MANAGED_EXECUTOR_PATH)
+            if MANAGED_EXECUTOR_PATH.exists()
+            else "missing"
+        ),
+        "managed_socket_sha256": (
+            _file_sha256(MANAGED_SOCKET_PATH)
+            if MANAGED_SOCKET_PATH.exists()
+            else "missing"
+        ),
+        "managed_executor_identity": managed_executor_identity(),
         "host": config.host,
         "port": config.port,
         "wineprefix": str(config.wineprefix),
@@ -675,7 +696,11 @@ def _formal_thp_artifact_issues(
 
 
 def _formal_execution_issues(receipt: dict[str, Any]) -> list[str]:
-    from official_execution_profile import execution_profile_identity
+    from managed_bot_executor import IsolationIdentity
+    from official_execution_profile import (
+        execution_profile_identity,
+        load_execution_profile,
+    )
 
     expected_profile = execution_profile_identity()
     execution = (
@@ -691,6 +716,7 @@ def _formal_execution_issues(receipt: dict[str, Any]) -> list[str]:
             issues.append(f"official_formal_execution_{key}_mismatch")
     bot_a = receipt.get("bot_a") if isinstance(receipt.get("bot_a"), dict) else {}
     bot_b = receipt.get("bot_b") if isinstance(receipt.get("bot_b"), dict) else {}
+    expected_hashes: dict[str, str] = {}
     for label, launch in (("a", bot_a), ("b", bot_b)):
         launch_path = launch.get("path")
         if launch_path:
@@ -700,8 +726,88 @@ def _formal_execution_issues(receipt: dict[str, Any]) -> list[str]:
                 expected_hash = ""
         else:
             expected_hash = ""
+        expected_hashes[label.upper()] = expected_hash
         if not expected_hash or execution.get(f"bot_{label}_artifact_hash") != expected_hash:
             issues.append(f"official_formal_bot_{label}_sealed_identity_mismatch")
+
+    isolation_receipt = (
+        execution.get("bot_isolation")
+        if isinstance(execution.get("bot_isolation"), dict)
+        else {}
+    )
+    if isolation_receipt.get("schema_version") != 1:
+        issues.append("official_formal_bot_isolation_schema_mismatch")
+    if isolation_receipt.get("authority") != (
+        "central-managed-executor-process-observation"
+    ):
+        issues.append("official_formal_bot_isolation_authority_mismatch")
+    connections = (
+        isolation_receipt.get("connections")
+        if isinstance(isolation_receipt.get("connections"), dict)
+        else {}
+    )
+    if set(connections) != {"A", "B"}:
+        issues.append("official_formal_bot_isolation_connections_mismatch")
+
+    profile = load_execution_profile()
+    managed_identity = (
+        profile.get("managed_executor")
+        if isinstance(profile.get("managed_executor"), dict)
+        else {}
+    )
+    seccomp = (
+        managed_identity.get("seccomp")
+        if isinstance(managed_identity.get("seccomp"), dict)
+        else {}
+    )
+    expected_isolation = asdict(IsolationIdentity(
+        policy_sha256=str(seccomp.get("policy_sha256") or ""),
+        bpf_sha256=str(seccomp.get("bpf_sha256") or ""),
+        bpf_size=int(seccomp.get("bpf_size", 0) or 0),
+    ))
+    expected_source_sha256 = str(
+        ((managed_identity.get("source") or {}).get("sha256") or "")
+    )
+    instance_ids: list[str] = []
+    for connection, launch in (("A", bot_a), ("B", bot_b)):
+        row = connections.get(connection)
+        if not isinstance(row, dict):
+            issues.append(f"official_formal_bot_isolation_{connection}_missing")
+            continue
+        expected_scalars = {
+            "connection": connection,
+            "name": str(launch.get("name") or ""),
+            "role": str(launch.get("role") or ""),
+            "instance_id": str(launch.get("instance_id") or ""),
+            "seat": str(launch.get("seat") or ""),
+            "artifact_hash": expected_hashes.get(connection, ""),
+            "managed_executor_source_sha256": expected_source_sha256,
+        }
+        for key, value in expected_scalars.items():
+            if not value or row.get(key) != value:
+                issues.append(
+                    f"official_formal_bot_isolation_{connection}_{key}_mismatch"
+                )
+        if not _same_resolved_path(row.get("path"), str(launch.get("path") or "")):
+            issues.append(f"official_formal_bot_isolation_{connection}_path_mismatch")
+        if row.get("endpoint_lease") != {"consumed": True, "closed": True}:
+            issues.append(
+                f"official_formal_bot_isolation_{connection}_endpoint_lease_mismatch"
+            )
+        if row.get("execution_profile") != expected_profile:
+            issues.append(
+                f"official_formal_bot_isolation_{connection}_profile_mismatch"
+            )
+        isolation = row.get("isolation")
+        if not isinstance(isolation, dict) or canonical_digest({
+            "isolation": isolation,
+        }) != canonical_digest({"isolation": expected_isolation}):
+            issues.append(
+                f"official_formal_bot_isolation_{connection}_policy_mismatch"
+            )
+        instance_ids.append(str(row.get("instance_id") or ""))
+    if len(instance_ids) != 2 or len(set(instance_ids)) != 2:
+        issues.append("official_formal_bot_isolation_instance_ids_not_unique")
     environment = receipt.get("environment") if isinstance(receipt.get("environment"), dict) else {}
     observed_profile = (
         environment.get("execution_profile")
@@ -1846,6 +1952,7 @@ def _opponent_selection_issues(
     identity: dict[str, Any],
     *,
     allow_consumed_bootstrap: bool = False,
+    _validated_ledger_entries: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     if spec.mode != "full":
         return []
@@ -1874,17 +1981,34 @@ def _opponent_selection_issues(
         if reason != "signed_v5_ledger_bootstrap_root":
             issues.append("certificate_bootstrap_root_reason_invalid")
         try:
-            from official_bootstrap import validate_signed_v5_ledger_bootstrap_selection
+            if _validated_ledger_entries is None:
+                from official_bootstrap import (
+                    validate_signed_v5_ledger_bootstrap_selection,
+                )
 
-            validation = validate_signed_v5_ledger_bootstrap_selection(
-                selection,
-                spec.bootstrap_root_id,
-                spec.candidate,
-                # The certificate is validated again after its successful
-                # append consumes the one-time root.  That historical check
-                # must validate the same receipt without reauthorizing a run.
-                allow_consumed=allow_consumed_bootstrap,
-            )
+                validation = validate_signed_v5_ledger_bootstrap_selection(
+                    selection,
+                    spec.bootstrap_root_id,
+                    spec.candidate,
+                    # The certificate is validated again after its successful
+                    # append consumes the one-time root.  That historical check
+                    # must validate the same receipt without reauthorizing a run.
+                    allow_consumed=allow_consumed_bootstrap,
+                )
+            else:
+                from official_bootstrap import (
+                    validate_signed_v5_ledger_bootstrap_selection_from_entries,
+                )
+
+                validation = (
+                    validate_signed_v5_ledger_bootstrap_selection_from_entries(
+                        selection,
+                        spec.bootstrap_root_id,
+                        spec.candidate,
+                        _validated_ledger_entries,
+                        allow_consumed=allow_consumed_bootstrap,
+                    )
+                )
             if not validation.get("valid"):
                 issues.extend(
                     f"certificate_{item}"
@@ -2015,6 +2139,7 @@ def certificate_validation(
     config: OfficialPlatformConfig | None = None,
     require_published: bool = False,
     _skip_ledger_check: bool = False,
+    _validated_ledger_entries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     issues: list[str] = []
     path_value = status.get("certificate_path")
@@ -2119,6 +2244,7 @@ def certificate_validation(
             spec,
             current_identity,
             allow_consumed_bootstrap=not _skip_ledger_check,
+            _validated_ledger_entries=_validated_ledger_entries,
         )
     )
     if spec.mode == "full":
@@ -2348,7 +2474,11 @@ def official_full_certified(
     )
 
 
-def authoritative_verdict_status_issues(status: Any) -> list[str]:
+def authoritative_verdict_status_issues(
+    status: Any,
+    *,
+    _validated_ledger_entries: list[dict[str, Any]] | None = None,
+) -> list[str]:
     """Validate a status before the certifier signs it into the verdict ledger."""
     if not isinstance(status, dict):
         return [f"official_verdict_status_invalid_type:{type(status).__name__}"]
@@ -2424,6 +2554,7 @@ def authoritative_verdict_status_issues(status: Any) -> list[str]:
             status,
             candidate=spec.candidate,
             _skip_ledger_check=True,
+            _validated_ledger_entries=_validated_ledger_entries,
         )
         issues.extend(validation.get("issues") or [])
     else:
@@ -2568,6 +2699,9 @@ def stable_official_opponent_selection(
         stable["bootstrap_root_id"] = str(bootstrap_root_id or "")
         stable["bootstrap_root_receipt"] = selection.get("bootstrap_root_receipt")
         stable["candidate_binding"] = selection.get("candidate_binding")
+        stable["operator_bootstrap_authorization"] = selection.get(
+            "operator_bootstrap_authorization"
+        )
         stable["opponent"]["completion_tree_oid"] = opponent.get("completion_tree_oid")
     return stable
 

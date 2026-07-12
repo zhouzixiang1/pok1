@@ -8,7 +8,7 @@ from typing import Any
 from bot_artifact import canonical_digest
 
 
-JOB_ENVELOPE_SCHEMA_VERSION = 1
+JOB_ENVELOPE_SCHEMA_VERSION = 3
 JOB_ENVELOPE_KIND = "official-exe-durable-job-envelope"
 
 
@@ -25,6 +25,12 @@ def build_job_envelope(
         if isinstance(request.get("opponent_selection"), dict)
         else None
     )
+    operator_authorization = (
+        selection.get("operator_bootstrap_authorization")
+        if isinstance(selection, dict)
+        and isinstance(selection.get("operator_bootstrap_authorization"), dict)
+        else None
+    )
     payload = {
         "schema_version": JOB_ENVELOPE_SCHEMA_VERSION,
         "kind": JOB_ENVELOPE_KIND,
@@ -38,6 +44,18 @@ def build_job_envelope(
         "opponent_hash": str(identity.get("opponent_hash") or ""),
         "opponent_selection_digest": (
             canonical_digest(selection) if selection is not None else None
+        ),
+        "opponent_selection": selection,
+        "operator_bootstrap_authorization_digest": (
+            str(operator_authorization.get("authorization_digest") or "")
+            if operator_authorization is not None
+            else None
+        ),
+        "bootstrap_root_id": (
+            str(selection.get("bootstrap_root_id") or selection.get("root_id") or "")
+            if selection is not None
+            and (selection.get("bootstrap_root_id") or selection.get("root_id"))
+            else None
         ),
         "source_v": request.get("source_v"),
         "suite_path_digest": canonical_digest({
@@ -70,6 +88,41 @@ def job_envelope_issues(
     }
     if envelope.get("envelope_digest") != canonical_digest(payload):
         issues.append("official_job_envelope_digest_mismatch")
+    selection = envelope.get("opponent_selection")
+    if selection is not None and not isinstance(selection, dict):
+        issues.append("official_job_envelope_opponent_selection_invalid")
+        selection = None
+    expected_selection_digest = (
+        canonical_digest(selection) if selection is not None else None
+    )
+    if envelope.get("opponent_selection_digest") != expected_selection_digest:
+        issues.append("official_job_envelope_opponent_selection_digest_mismatch")
+    operator_authorization = (
+        selection.get("operator_bootstrap_authorization")
+        if isinstance(selection, dict)
+        and isinstance(selection.get("operator_bootstrap_authorization"), dict)
+        else None
+    )
+    expected_authorization_digest = (
+        str(operator_authorization.get("authorization_digest") or "")
+        if operator_authorization is not None
+        else None
+    )
+    if (
+        envelope.get("operator_bootstrap_authorization_digest")
+        != expected_authorization_digest
+    ):
+        issues.append(
+            "official_job_envelope_operator_bootstrap_authorization_digest_mismatch"
+        )
+    expected_bootstrap_root_id = (
+        str(selection.get("bootstrap_root_id") or selection.get("root_id") or "")
+        if selection is not None
+        and (selection.get("bootstrap_root_id") or selection.get("root_id"))
+        else None
+    )
+    if envelope.get("bootstrap_root_id") != expected_bootstrap_root_id:
+        issues.append("official_job_envelope_bootstrap_root_id_mismatch")
     for key in (
         "job_id",
         "request_digest",

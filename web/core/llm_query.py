@@ -14,6 +14,7 @@ import re
 import shlex
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -36,6 +37,7 @@ from llm_failure import is_shutdown_cancel_error, is_success_error_result
 log = logging.getLogger("pok.infra")
 _shutdown_manager = None
 _LLM_CANCEL_CONTEXT = contextvars.ContextVar("llm_cancel_context", default=None)
+_LLM_BILLING_RESULTS = contextvars.ContextVar("llm_billing_results", default=None)
 
 
 @contextlib.contextmanager
@@ -2083,6 +2085,9 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 _mark_first_activity("result")
                 cost_usd = message.total_cost_usd
                 usage = message.usage
+                billing_results = _LLM_BILLING_RESULTS.get()
+                if isinstance(billing_results, list):
+                    billing_results.append(message)
                 _emit_progress()
                 # A1 (v125 retry-storm fix): capture ResultMessage diagnostic fields.
                 # Previously this branch read ONLY cost/usage, discarding subtype /
@@ -2222,6 +2227,99 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
 _SIGNATURE_MAX_ATTEMPTS = 5
 
 
+def _merge_billing_usage(total, usage):
+    if not isinstance(usage, dict):
+        return total
+    merged = dict(total or {})
+    for key, value in usage.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            previous = merged.get(key, 0)
+            if not isinstance(previous, (int, float)) or isinstance(previous, bool):
+                previous = 0
+            merged[key] = previous + value
+        elif key not in merged:
+            # Keep non-numeric metadata from the first result. It is not summed,
+            # but callers do not lose fields such as service tier/model detail.
+            merged[key] = value
+    return merged
+
+
+def _record_completed_billing_attempt(
+    *,
+    role_name,
+    ui,
+    billing_results,
+    fallback_cost,
+    fallback_usage,
+    attempt,
+    billing_call_id,
+):
+    """Record each SDK Result exactly once and return newly billed totals."""
+
+    from orchestrator_cost_policy import (
+        assert_operator_cost_limit_available,
+        current_generation_cost_scope,
+        record_generation_cost,
+        sdk_result_event_id,
+    )
+
+    results = list(billing_results or [])
+    if not results and (fallback_cost is not None or fallback_usage is not None):
+        results = [None]
+    billed_cost = 0.0
+    billed_usage = None
+    for result_index, result in enumerate(results):
+        if result is None:
+            cost_usd = fallback_cost
+            usage = fallback_usage
+            event_id = (
+                f"llm-result-fallback:{billing_call_id}:"
+                f"{int(attempt)}:{int(result_index)}"
+            )
+        else:
+            cost_usd = getattr(result, "total_cost_usd", None)
+            usage = getattr(result, "usage", None)
+            event_id = sdk_result_event_id(
+                result,
+                source="llm_query",
+                attempt=attempt,
+            )
+        status = record_generation_cost(
+            role_name,
+            cost_usd,
+            usage,
+            source="llm_query_attempt",
+            event_id=event_id,
+        )
+        accepted = bool(
+            not status.get("active")
+            or status.get("recorded")
+            or status.get("pending_only")
+        )
+        if accepted:
+            if cost_usd is not None:
+                billed_cost += float(cost_usd)
+            billed_usage = _merge_billing_usage(billed_usage, usage)
+            if ui:
+                ui.update_cost(role_name, float(cost_usd or 0.0), usage)
+        elif ui and status.get("active") and not status.get("accounting_ok"):
+            # A pending write-ahead entry is already included in durable status;
+            # refresh the projection without incrementing a replay twice.
+            scope = current_generation_cost_scope()
+            begin_cost = getattr(ui, "begin_generation_cost", None)
+            if scope is not None and callable(begin_cost):
+                begin_cost(
+                    scope.generation_id,
+                    status.get("spent_usd", 0.0),
+                    scope.receipt(
+                        spent_before_usd=float(status.get("spent_usd") or 0.0),
+                        ledger_errors=tuple(status.get("accounting_errors") or ()),
+                    ),
+                )
+        assert_operator_cost_limit_available()
+    return billed_cost, billed_usage
+
+
 async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, ui, role_name):
     """Run one streaming query with retries on transient SDK signature errors.
 
@@ -2229,10 +2327,26 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
     Returns (texts_list, cost_usd, usage).
     """
     last_sdk_err = None
+    total_cost = 0.0
+    total_usage = None
+    billing_call_id = uuid.uuid4().hex
     for sdk_attempt in range(_SIGNATURE_MAX_ATTEMPTS):
         query_gen = claude_query(prompt=full_prompt, options=options)
+        billing_results = []
+        billing_token = _LLM_BILLING_RESULTS.set(billing_results)
         try:
             texts, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
+            attempt_cost, attempt_usage = _record_completed_billing_attempt(
+                role_name=role_name,
+                ui=ui,
+                billing_results=billing_results,
+                fallback_cost=cost_usd,
+                fallback_usage=usage,
+                attempt=sdk_attempt,
+                billing_call_id=billing_call_id,
+            )
+            total_cost += attempt_cost
+            total_usage = _merge_billing_usage(total_usage, attempt_usage)
             if sdk_attempt > 0 and ui:
                 ui.log_history(
                     f"{role_name}: SDK stream recovered after {sdk_attempt} signature retry/retries",
@@ -2295,7 +2409,7 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                     record_llm_outcome(success=True)
             except Exception:
                 pass
-            return texts, cost_usd, usage
+            return texts, total_cost, total_usage
         except ClaudeSDKError as e:
             last_sdk_err = e
             err_str = str(e).lower()
@@ -2334,6 +2448,7 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                 pass
             raise  # non-signature SDK error, or signature retries exhausted
         finally:
+            _LLM_BILLING_RESULTS.reset(billing_token)
             # Defensive: ensure SDK generator is closed so subprocess is terminated.
             try:
                 await query_gen.aclose()
@@ -2377,6 +2492,14 @@ async def run_claude_query(
     # analysis) intentionally have no dashboard. Normalize that boundary once
     # so stream, retry, cost, and error paths all receive the same UI contract.
     ui = resolve_ui(ui)
+
+    # Cost is monitor-only unless the operator enabled a finite positive hard
+    # limit in the parent process.  This system-owned check is intentionally
+    # outside prompts and MCP arguments, so an LLM cannot grant itself more
+    # budget or disable enforcement.  It also prevents starting another billed
+    # call after an earlier parallel/sub-agent call crossed the operator limit.
+    from orchestrator_cost_policy import assert_operator_cost_limit_available
+    assert_operator_cost_limit_available()
 
     # Pre-check: if already rate-limited, wait before making any API call
     from rate_limiter import rate_limiter
@@ -2537,13 +2660,7 @@ async def run_claude_query(
                 if retry_cost:
                     cost_usd = (cost_usd or 0) + retry_cost
                 if retry_usage:
-                    if usage is None:
-                        usage = retry_usage
-                    else:
-                        merged = {}
-                        for k in ("input_tokens", "output_tokens"):
-                            merged[k] = (usage.get(k, 0) or 0) + (retry_usage.get(k, 0) or 0)
-                        usage = merged
+                    usage = _merge_billing_usage(usage, retry_usage)
 
                 output = "\n".join(full_text)
                 if not _is_rate_limited(output):
@@ -2575,16 +2692,15 @@ async def run_claude_query(
                 if retry_cost:
                     cost_usd = (cost_usd or 0) + retry_cost
                 if retry_usage:
-                    if usage is None:
-                        usage = retry_usage
-                    else:
-                        merged = {}
-                        for k in ("input_tokens", "output_tokens"):
-                            merged[k] = (usage.get(k, 0) or 0) + (retry_usage.get(k, 0) or 0)
-                        usage = merged
+                    usage = _merge_billing_usage(usage, retry_usage)
                 output = "\n".join(full_text)
 
-        ui.update_cost(role_name, cost_usd, usage)
+        # Every completed SDK Result (including an empty-output/signature retry)
+        # was already recorded and UI-projected inside
+        # _run_stream_with_signature_retry.  Re-check here only to cover a
+        # concurrent sibling that crossed the operator threshold meanwhile.
+        from orchestrator_cost_policy import assert_operator_cost_limit_available
+        assert_operator_cost_limit_available()
         _emit_llm_event(
             "pipeline.llm_role_done", "success",
             f"{role_name}: LLM call finished in {time.time() - call_started_at:.1f}s",

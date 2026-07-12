@@ -585,15 +585,40 @@ def _record_official_bootstrap_required_checkpoint(
     source_v: int,
     ckpt: dict | None,
     official_full_gate: dict,
+    *,
+    candidate_hash: str,
 ) -> bool:
     """Park the first candidate without letting automation consume the root."""
+    from official_bootstrap import build_operator_bootstrap_parked_request
+
+    parked = build_operator_bootstrap_parked_request(
+        get_bot_dir(v),
+        ckpt or {},
+        candidate_hash=candidate_hash,
+    )
+    if parked.get("valid") is not True:
+        log_system_event(
+            "pipeline.official_bootstrap_parking_refused",
+            "error",
+            f"Refused to park v{v}: bootstrap authorization contract is invalid",
+            {
+                "version": v,
+                "source_v": source_v,
+                "issues": (parked.get("issues") or [])[:20],
+            },
+        )
+        return False
+    parked_request = parked["request"]
     gate_payload = {
         **official_full_gate,
         "passed": False,
         "operator_action_required": True,
         "repairable_by_workers": False,
+        "official_bootstrap_request_digest": parked_request["request_digest"],
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
+    audit_context = dict((ckpt or {}).get("audit_context", {}) or {})
+    audit_context["official_bootstrap_request"] = parked_request
     return bool(write_pipeline_checkpoint(
         v,
         source_v,
@@ -604,12 +629,15 @@ def _record_official_bootstrap_required_checkpoint(
         worker_failure_count=(ckpt or {}).get("worker_failure_count", 0),
         parent2_v=(ckpt or {}).get("parent2_v"),
         direction_audit=(ckpt or {}).get("direction_audit"),
-        audit_context=(ckpt or {}).get("audit_context", {}) or {},
+        audit_context=audit_context,
         audit_attempt=(ckpt or {}).get("audit_attempt", 0),
         precommit_attempt=(ckpt or {}).get("precommit_attempt", 0),
         precommit_rework_count=(ckpt or {}).get("precommit_rework_count", 0),
         literature_probe=(ckpt or {}).get("literature_probe"),
         prepare_scope_files=(ckpt or {}).get("prepare_scope_files", []) or [],
+        expected_checkpoint_revision=(ckpt or {}).get("checkpoint_revision"),
+        expected_checkpoint_stage="verified",
+        expected_workflow_run_id=(ckpt or {}).get("workflow_run_id"),
     ))
 
 
@@ -628,14 +656,26 @@ def _record_official_full_pass_checkpoint(
         "passed": True,
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
+    bootstrap_pass = bool(
+        official_full_gate.get("bootstrap_certificate")
+        or (
+            (((official_full_gate.get("status") or {}).get(
+                "certification_identity"
+            ) or {}).get("spec") or {}).get("bootstrap_root_id")
+        )
+    )
+    target_stage = (
+        "official_bootstrap_required"
+        if bootstrap_pass
+        and (ckpt or {}).get("stage") == "official_bootstrap_required"
+        else "official_certifying"
+        if (ckpt or {}).get("stage") == "official_certifying"
+        else "verified"
+    )
     return bool(write_pipeline_checkpoint(
         v,
         source_v,
-        (
-            "official_certifying"
-            if (ckpt or {}).get("stage") == "official_certifying"
-            else "verified"
-        ),
+        target_stage,
         master_plan=(ckpt or {}).get("master_plan"),
         gate_results={"official_full": gate_payload},
         worker_failure_count=(ckpt or {}).get("worker_failure_count", 0),
@@ -660,6 +700,9 @@ def _record_official_full_pass_checkpoint(
             if clear_official_job
             else None
         ),
+        expected_checkpoint_revision=(ckpt or {}).get("checkpoint_revision"),
+        expected_checkpoint_stage=(ckpt or {}).get("stage"),
+        expected_workflow_run_id=(ckpt or {}).get("workflow_run_id"),
     ))
 
 
@@ -718,6 +761,39 @@ async def _run_official_full_commit_gate(
             if isinstance(existing_status.get("opponent_selection"), dict)
             else {}
         )
+        completed_bootstrap_authorization = None
+        if existing_spec.get("bootstrap_root_id"):
+            from official_bootstrap import (
+                validate_completed_operator_bootstrap_authorization,
+            )
+
+            completed_bootstrap_authorization = (
+                validate_completed_operator_bootstrap_authorization(
+                    existing_status,
+                    bot_dir,
+                    checkpoint=ckpt,
+                )
+            )
+            if completed_bootstrap_authorization.get("valid") is not True:
+                return {
+                    "passed": False,
+                    "outcome": "completed_authorization_failure",
+                    "failure_class": "authorization",
+                    "error": (
+                        "COMMIT BLOCKED: completed bootstrap certificate no longer "
+                        "matches the parked generation authorization."
+                    ),
+                    "version": v,
+                    "source_v": source_v,
+                    "status": existing_status,
+                    "opponent_selection": opponent_selection,
+                    "issues": completed_bootstrap_authorization.get("issues") or [],
+                    "completed_bootstrap_authorization": (
+                        completed_bootstrap_authorization
+                    ),
+                    "reused_existing_certificate": True,
+                    "bootstrap_certificate": True,
+                }
         return {
             "passed": True,
             "outcome": "passed",
@@ -737,6 +813,9 @@ async def _run_official_full_commit_gate(
             "issues": existing_status.get("issues") or [],
             "reused_existing_certificate": True,
             "bootstrap_certificate": bool(existing_spec.get("bootstrap_root_id")),
+            "completed_bootstrap_authorization": (
+                completed_bootstrap_authorization
+            ),
         }
 
     opponent_selection = select_official_opponent(
@@ -956,6 +1035,7 @@ async def commit_bot(args):
             source_v,
             ckpt,
             official_full_gate,
+            candidate_hash=str(ledger.get("current_code_fingerprint") or ""),
         ):
             return _json_tool_result({
                 "error": "COMMIT BLOCKED: failed to park candidate for operator bootstrap.",
@@ -1031,6 +1111,27 @@ async def commit_bot(args):
             "version": v,
             "source_v": source_v,
             "checkpoint_stage": "official_certifying",
+            "official_full_gate": official_full_gate,
+        })
+    if official_full_gate.get("outcome") == "completed_authorization_failure":
+        log_system_event(
+            "pipeline.official_bootstrap_completed_authorization_failed",
+            "error",
+            f"Completed bootstrap authorization drift blocked v{v} publication",
+            {
+                "version": v,
+                "source_v": source_v,
+                "issues": (official_full_gate.get("issues") or [])[:20],
+                "checkpoint_stage": (ckpt or {}).get("stage"),
+            },
+        )
+        return _json_tool_result({
+            "error": official_full_gate.get("error"),
+            "failure_class": "authorization",
+            "checkpoint_preserved": True,
+            "version": v,
+            "source_v": source_v,
+            "checkpoint_stage": (ckpt or {}).get("stage"),
             "official_full_gate": official_full_gate,
         })
     if official_full_gate.get("outcome") == "infrastructure_failure":
@@ -1186,6 +1287,7 @@ async def commit_bot(args):
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}{wr_str}" if p else ""
 
     official_certificate = None
+    local_publish_retry = git_has_tag(v)
     if official_certification_status:
         from official_certification import official_full_certified
 
@@ -1199,6 +1301,31 @@ async def commit_bot(args):
                 "source_v": source_v,
             })
         identity = official_certification_status.get("certification_identity") or {}
+        certificate_spec = (
+            identity.get("spec") if isinstance(identity.get("spec"), dict) else {}
+        )
+        if certificate_spec.get("bootstrap_root_id") and not local_publish_retry:
+            from official_bootstrap import (
+                validate_completed_operator_bootstrap_authorization,
+            )
+
+            completed_rebind = validate_completed_operator_bootstrap_authorization(
+                official_certification_status,
+                bot_dir,
+                checkpoint=ckpt,
+            )
+            if completed_rebind.get("valid") is not True:
+                return _json_tool_result({
+                    "error": (
+                        "COMMIT BLOCKED: bootstrap authorization drifted immediately "
+                        "before Git publication."
+                    ),
+                    "failure_class": "authorization",
+                    "checkpoint_preserved": True,
+                    "version": v,
+                    "source_v": source_v,
+                    "validation": completed_rebind,
+                })
         official_certificate = {
             "certificate_digest": official_certification_status.get("certificate_digest"),
             "candidate_hash": identity.get("candidate_hash"),
@@ -1208,7 +1335,6 @@ async def commit_bot(args):
         }
 
     parent2_v = ckpt.get("parent2_v") if ckpt else None
-    local_publish_retry = git_has_tag(v)
     if local_publish_retry:
         tag_matches, mismatch = _existing_local_bot_tag_matches_certificate(
             v,
