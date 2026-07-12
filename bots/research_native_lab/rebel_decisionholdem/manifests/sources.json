@@ -1,0 +1,118 @@
+{
+  "schema": "route-a-source-manifest-v1",
+  "accessed_at": "2026-07-12T15:55:36+08:00",
+  "repository_base_sha": "6ee160c93cee8d0afdad111c4c82bc6ddb6012ca",
+  "third_party_code_copied": false,
+  "agpl_code_copied": false,
+  "sources": [
+    {
+      "id": "rebel-paper",
+      "title": "Combining Deep Reinforcement Learning and Search for Imperfect-Information Games",
+      "authors": "Noam Brown, Anton Bakhtin, Adam Lerer, Qucheng Gong",
+      "url": "https://arxiv.org/abs/2007.13544",
+      "version": "NeurIPS 2020 / arXiv 2007.13544",
+      "artifact_url": "https://arxiv.org/pdf/2007.13544",
+      "artifact_sha256": "69322b213028142bccd9fa5531623cca0b19666bab56015b589e84a43913eb44",
+      "license": "academic publication; no software license inferred",
+      "role": "A1 normative algorithm source"
+    },
+    {
+      "id": "rebel-official-repository",
+      "title": "facebookresearch/rebel",
+      "url": "https://github.com/facebookresearch/rebel",
+      "version": "7960a42750f3407ea9eb2c3333d4c2a7961f6df4",
+      "license": "Apache-2.0",
+      "license_sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a",
+      "availability": "archived repository; Liar's Dice implementation only; no poker code or poker checkpoints",
+      "role": "symbol and availability audit; no source copied"
+    },
+    {
+      "id": "decisionholdem-paper",
+      "title": "DecisionHoldem: Safe Depth-Limited Solving With Diverse Opponents for Imperfect-Information Games",
+      "authors": "Qibin Zhou, Dongdong Bai, Junge Zhang, Fuqing Duan, Kaiqi Huang",
+      "url": "https://arxiv.org/abs/2201.11580",
+      "version": "arXiv:2201.11580v2, 2024-05-28",
+      "artifact_url": "https://arxiv.org/pdf/2201.11580v2",
+      "artifact_sha256": "f5d104c296a92e6b799e191772ede49f563c6a06498e6de12fa11d37cc2f5018",
+      "license": "academic publication; no software license inferred",
+      "role": "A2 normative algorithm and scale source"
+    },
+    {
+      "id": "decisionholdem-official-repository",
+      "title": "AI-Decision/DecisionHoldem",
+      "url": "https://github.com/AI-Decision/DecisionHoldem",
+      "version": "a9ea9a545c7bb24f4e657bc6d1f75af66aa1bb51",
+      "license": "AGPL-3.0",
+      "license_sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+      "availability": "blueprint/game-tree source plus binary interfaces; real-time search source and required blueprint/cluster assets are incomplete",
+      "role": "read-only availability and symbol audit; no code copied"
+    },
+    {
+      "id": "cfr-paper",
+      "title": "Regret Minimization in Games with Incomplete Information",
+      "authors": "Martin Zinkevich, Michael Johanson, Michael Bowling, Carmelo Piccione",
+      "url": "https://papers.nips.cc/paper_files/paper/2007/hash/08d98638c6fcd194a4b1e6992063e944-Abstract.html",
+      "version": "NIPS 2007",
+      "artifact_url": "https://papers.nips.cc/paper_files/paper/2007/file/08d98638c6fcd194a4b1e6992063e944-Paper.pdf",
+      "artifact_sha256": "e02fcf7572fa1dae50547aee346465960ad4a85c39d48e3ce7b12089b7ecd022",
+      "license": "academic publication; no software license inferred",
+      "role": "counterfactual regret and regret-matching formulas"
+    },
+    {
+      "id": "linear-cfr-paper",
+      "title": "Solving Imperfect-Information Games via Discounted Regret Minimization",
+      "authors": "Noam Brown, Tuomas Sandholm",
+      "url": "https://ojs.aaai.org/index.php/AAAI/article/view/4007",
+      "version": "AAAI 2019, DOI 10.1609/aaai.v33i01.33011829",
+      "license": "academic publication; all-rights-reserved notice in PDF",
+      "role": "LCFR iteration weighting definition"
+    },
+    {
+      "id": "safe-nested-solving-paper",
+      "title": "Safe and Nested Subgame Solving for Imperfect-Information Games",
+      "authors": "Noam Brown, Tuomas Sandholm",
+      "url": "https://arxiv.org/abs/1705.02955",
+      "version": "arXiv:1705.02955v3, 2017-11-16",
+      "artifact_url": "https://arxiv.org/pdf/1705.02955v3",
+      "artifact_sha256": "f70b5cf6be537a6b010052a4c6b3581ed4777e0194a7a4548b82f4c88a62fbfb",
+      "license": "academic publication; no software license inferred",
+      "role": "A2 public safe-resolving reference and Coin Toss falsifier"
+    },
+    {
+      "id": "open-spiel-reference",
+      "title": "google-deepmind/open_spiel",
+      "url": "https://github.com/google-deepmind/open_spiel",
+      "version": "6c8edc829962967730e5ff353340df75847fa184",
+      "license": "Apache-2.0",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "availability": "Kuhn/Leduc, CFR, best-response and exploitability references available",
+      "role": "future differential oracle only; no code copied"
+    }
+  ],
+  "national_rule_sources": [
+    {
+      "path": "sever/国赛平台/通信协议.docx",
+      "sha256": "09b33d65a15db2a49ab0a7609cf1bd499d6e042cda7c03d2322fb919936c390f"
+    },
+    {
+      "path": "sever/国赛平台/自对弈平台使用及通信协议补充说明.docx",
+      "sha256": "fd95e044f55b11f2fd01b2ee5a0e6fad7ad5efda58a2010fc6b991ff24cb2de5"
+    },
+    {
+      "path": "sever/国赛平台/非法行为说明.docx",
+      "sha256": "5e07fe7de24b7cffab175a53e9289ad2c84057a998dddb19e9fb9f8fb0463963"
+    },
+    {
+      "path": "sever/国赛平台/德州扑克规则.doc",
+      "sha256": "4aede64090b68b0670371b6ef7df64b99a3d141e0e83161fa469a892e09c30a4"
+    },
+    {
+      "path": "docs/official-raise-boundary-oracle-2026-07-11.md",
+      "sha256": "a83a1ec2680577d71ddb985ddba00c5bcda40817ef2fb92c0c41938dccef3756"
+    },
+    {
+      "path": "docs/official-terminal-settlement-oracle-2026-07-11.md",
+      "sha256": "ad96bc4fbe7939597b7a86ff6f9193ed2e50891be9b6b9c074883f5750c23bd9"
+    }
+  ]
+}
