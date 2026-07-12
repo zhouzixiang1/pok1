@@ -20,6 +20,7 @@ from freeze_opponent_role_dataset import (  # noqa: E402
     SCHEMA as ROLE_DATASET_SCHEMA,
     STRATEGY_CONTEXT_RUNTIME_MODE,
     strategy_context_is_absent,
+    validate_frozen_role_provenance,
 )
 from match_outcome_schema import (  # noqa: E402
     MATCH_OUTCOME_ESTIMAND,
@@ -158,10 +159,18 @@ class RoleDatasetAccess:
             raise ValueError("role dataset manifest has invalid outputs")
         self.roles = {}
         self.outputs = {}
+        role_owner: dict[str, str] = {}
         for role in EVIDENCE_ROLES:
             names = sorted({str(name).strip() for name in roles[role] if str(name).strip()})
             if not names:
                 raise ValueError(f"role has no opponents: {role}")
+            for name in names:
+                previous = role_owner.setdefault(name, role)
+                if previous != role:
+                    raise ValueError(
+                        f"opponent assigned to multiple roles: "
+                        f"{name} ({previous}, {role})"
+                    )
             self.roles[role] = names
             for prefix in PREFIXES:
                 filename = f"{prefix}_{role}.jsonl"
@@ -189,6 +198,10 @@ class RoleDatasetAccess:
                     "sha256": digest,
                     "opponents": opponents,
                 }
+        if require_complete:
+            # No formal consumer may touch even train/model-calibration data
+            # before the complete 160-pass provenance has been replayed.
+            self.require_collection_boundary()
 
     def require_collection_boundary(
         self, expected_passes: int = 160
@@ -215,6 +228,11 @@ class RoleDatasetAccess:
                 "formal role dataset requires the complete atomic "
                 f"{expected_passes}-pass boundary"
             )
+        validate_frozen_role_provenance(
+            self.root,
+            self.manifest,
+            expected_passes=expected_passes,
+        )
         return {
             "schema": "complete_atomic_collection_boundary_v1",
             "source_completed_passes": completed,

@@ -27,6 +27,9 @@ import opponent_exposure_ledger as exposure_ledger  # noqa: E402
 from opponent_response_schema import response_schema_metadata  # noqa: E402
 import v4_native_policy as native_policy  # noqa: E402
 import win_first_policy_v4 as win_first  # noqa: E402
+from bots.neural_national_lab.tests.role_provenance_fixture import (  # noqa: E402
+    add_formal_role_provenance,
+)
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -92,10 +95,10 @@ def _artifacts(
     role_root = tmp_path / "roles"
     role_root.mkdir()
     roles = {
-        "train": ["national_train"],
-        "early_stop": ["national_early"],
-        "model_calibration": ["national_calibration"],
-        "policy_selection": ["national_selection"],
+        "train": ["national_v901"],
+        "early_stop": ["national_v902"],
+        "model_calibration": ["national_v142"],
+        "policy_selection": ["national_v903"],
         "policy_gate": ["national_v1", "national_v2"],
     }
     outputs = {}
@@ -141,6 +144,7 @@ def _artifacts(
             "final_blind_in_dataset": False,
         },
     }
+    add_formal_role_provenance(role_root, role_manifest)
     role_manifest_path = role_root / "role_manifest.json"
     _write(role_manifest_path, role_manifest)
     ledger_path = tmp_path / "ledger.json"

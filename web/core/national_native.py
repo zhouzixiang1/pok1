@@ -3189,6 +3189,7 @@ async def _run_tcp_server_with_processes(
     bot_a_env_overrides: dict[str, str | int | None] | None = None,
     bot_b_env_overrides: dict[str, str | int | None] | None = None,
     capture_events: bool = False,
+    sanitize_parent_environment: bool = False,
 ) -> dict[str, Any]:
     clients: list[NationalTCPClient] = []
     connected = asyncio.Event()
@@ -3223,7 +3224,9 @@ async def _run_tcp_server_with_processes(
     try:
         env_overrides = (bot_a_env_overrides or {}, bot_b_env_overrides or {})
         for idx, (spec, label) in enumerate(zip((bot_a, bot_b), run_labels)):
-            base_environment = os.environ.copy()
+            base_environment = (
+                {} if sanitize_parent_environment else os.environ.copy()
+            )
             for key, value in env_overrides[idx].items():
                 if value is None:
                     base_environment.pop(str(key), None)
@@ -3567,6 +3570,7 @@ async def run_native_tcp_pair(
     bot_a_env_overrides: dict[str, str | int | None] | None = None,
     bot_b_env_overrides: dict[str, str | int | None] | None = None,
     capture_events: bool = False,
+    sanitize_parent_environment: bool = False,
 ) -> dict[str, Any]:
     """Run a formal native TCP match using both bots' existing entries.
 
@@ -3592,6 +3596,7 @@ async def run_native_tcp_pair(
         bot_b_env_overrides=bot_b_env_overrides,
         capture_events=capture_events,
         current_runtime_overlay=False,
+        sanitize_parent_environment=sanitize_parent_environment,
     )
 
 
@@ -3647,6 +3652,7 @@ async def run_legacy_debug_tcp_pair_with_wrappers(
     timeout_sec: float | None = None,
     bot_a_env_overrides: dict[str, str | int | None] | None = None,
     bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    sanitize_parent_environment: bool = False,
 ) -> dict[str, Any]:
     """Run an old regression match, wrapping missing/invalid native entries.
 
@@ -3664,6 +3670,7 @@ async def run_legacy_debug_tcp_pair_with_wrappers(
         bot_a_env_overrides=bot_a_env_overrides,
         bot_b_env_overrides=bot_b_env_overrides,
         current_runtime_overlay=False,
+        sanitize_parent_environment=sanitize_parent_environment,
     )
 
 
@@ -3680,6 +3687,7 @@ async def _run_native_tcp_pair(
     bot_b_env_overrides: dict[str, str | int | None] | None = None,
     capture_events: bool = False,
     current_runtime_overlay: bool = False,
+    sanitize_parent_environment: bool = False,
 ) -> dict[str, Any]:
     label_a, dir_a = resolve_bot(bot_a_token)
     label_b, dir_b = resolve_bot(bot_b_token)
@@ -3714,6 +3722,7 @@ async def _run_native_tcp_pair(
             bot_a_env_overrides=bot_a_env_overrides,
             bot_b_env_overrides=bot_b_env_overrides,
             capture_events=capture_events,
+            sanitize_parent_environment=sanitize_parent_environment,
         )
     finally:
         _cleanup_specs(specs)

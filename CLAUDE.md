@@ -515,13 +515,13 @@ Defaults: `r=1500`, `rd=350`, `sigma=0.06`; the Glicko-2 volatility constant is 
 Line counts are point-in-time snapshots (`wc -l`); they drift as code evolves,
 so treat them as approximate ordering cues, not contracts. This is a map of the
 major and national-runtime-specific modules, not an exhaustive file inventory.
-It is sorted by current line count and excludes `__init__.py`,
+It is approximately grouped by scale (not a strict sort) and excludes `__init__.py`,
 `reference_bots/`, and `__pycache__/`.
 
 | File | Lines | Role |
 |---|---|---|
 | `tool_planning.py` | 9787 | Pipeline tools: direction audit, system-owned Master context, canonical repair authority, literature, transactional Workers |
-| `national_native.py` | 4270 | Native national TCP execution backend for evolved bots |
+| `national_native.py` | 4279 | Native national TCP execution backend for evolved bots |
 | `official_certification.py` | 3947 | Official EXE policy, identity, evidence validation, signed certificates and explicit one-time bootstrap binding |
 | `tool_gates.py` | 3450 | Complete-artifact quality gates, code prep, review, and advisory Critic execution |
 | `orchestrator.py` | 3125 | LLM-driven Orchestrator: pipeline loop and recovery routing |
@@ -613,7 +613,7 @@ It is sorted by current line count and excludes `__init__.py`,
 | `pipeline_schema.py` | 223 | Structured pipeline records for gates/candidates |
 | `rate_limiter.py` | 216 | Global 429 rate-limit handler for LLM API quota exhaustion |
 | `repo_state.py` | 204 | Git/worktree observability helpers for the pipeline |
-| `evaluation_data_identity.py` | 198 | Semantic identity and archive boundary for rating datasets |
+| `evaluation_data_identity.py` | 294 | Semantic identity and archive boundary for rating datasets |
 | `skill_library.py` | 198 | Offline poker skill-library metadata for prompts/harnesses/gates |
 | `qd_fitness.py` | 192 | Phase 4 QD k=3 fitness: median over 3 mirror-battle evals |
 | `candidate_hygiene.py` | 175 | Safe transient artifact cleanup and forbidden runtime-dependency checks |

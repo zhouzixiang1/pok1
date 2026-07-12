@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import math
 import os
@@ -16,6 +17,7 @@ from typing import Any
 
 import torch
 
+import calibration_input_snapshot as input_snapshot
 import calibrate_match_outcome_v4 as outcome_fit
 import calibrate_opponent_multitask_v3_ensemble as v3_calibration
 from feature_spec import LABELS
@@ -71,9 +73,25 @@ from win_first_policy_v4 import OUTCOME_AGGREGATION_METHOD
 
 ENSEMBLE_MANIFEST_SCHEMA = "opponent_multitask_v4_ensemble_checkpoint_v1"
 ENSEMBLE_CALIBRATION_SCHEMA = "opponent_multitask_v4_ensemble_calibration_v1"
-CALIBRATION_REPORT_SCHEMA = "opponent_multitask_v4_ensemble_calibration_report_v1"
-ARTIFACT_MANIFEST_SCHEMA = "opponent_multitask_v4_ensemble_artifacts_v1"
+CALIBRATION_REPORT_SCHEMA = "opponent_multitask_v4_ensemble_calibration_report_v2"
+ARTIFACT_MANIFEST_SCHEMA = "opponent_multitask_v4_ensemble_artifacts_v2"
 FORMAL_GRID_VERIFICATION_SCHEMA = "opponent_multitask_v4_formal_grid_verification_v3"
+CALIBRATION_CODE_CLOSURE_SCHEMA = (
+    "opponent_multitask_v4_calibration_code_closure_v1"
+)
+CALIBRATION_INPUT_RECEIPTS_SCHEMA = (
+    "opponent_multitask_v4_calibration_input_receipts_v1"
+)
+MEMBER_INPUT_RECEIPT_SCHEMA = "opponent_multitask_v4_member_input_receipt_v1"
+CALIBRATION_CODE_MODULES = (
+    "calibration_input_snapshot",
+    "calibrate_match_outcome_v4",
+    "calibrate_opponent_multitask_v3_ensemble",
+    "match_outcome_calibration",
+    "run_opponent_multitask_v3_scaling",
+    "run_opponent_multitask_v4_scaling",
+    "win_first_policy_v4",
+)
 FORMAL_VERIFIED_RUN_FIELDS = {
     "scale",
     "encoder",
@@ -131,6 +149,7 @@ EXPECTED_CALIBRATION_FILES = {
     "calibration_report.json",
 }
 FORMAL_COLLECTION_PASSES = 160
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _scaling_tool_path() -> Path:
@@ -140,7 +159,61 @@ def _scaling_tool_path() -> Path:
 def _current_training_code_artifacts() -> dict[str, dict[str, Any]]:
     return current_training_code_artifacts()
 
-def _verify_current_code_artifacts(report: dict[str, Any], checkpoint: dict[str, Any]) -> dict[str, dict[str, Any]]:
+
+def _calibration_code_artifacts() -> dict[str, Any]:
+    """Return the complete local code closure used to fit calibration."""
+    paths = {"calibrator": Path(__file__).resolve()}
+    for module_name in CALIBRATION_CODE_MODULES:
+        module = sys.modules.get(module_name)
+        raw_path = getattr(module, "__file__", None)
+        if raw_path is None:
+            raise RuntimeError(
+                f"calibration dependency module is not loaded: {module_name}"
+            )
+        paths[module_name] = Path(raw_path).resolve()
+    files = {}
+    for name, path in sorted(paths.items()):
+        try:
+            relative = path.relative_to(REPOSITORY_ROOT)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"calibration dependency is outside the repository: {path}"
+            ) from exc
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(
+                f"calibration dependency is not a regular file: {path}"
+            )
+        raw = path.read_bytes()
+        files[name] = {
+            "path": relative.as_posix(),
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    return {
+        "schema": CALIBRATION_CODE_CLOSURE_SCHEMA,
+        "files": files,
+        "training_code_artifacts": _current_training_code_artifacts(),
+    }
+
+
+def _calibration_code_artifacts_sha256(payload: dict[str, Any]) -> str:
+    return _canonical_sha256(payload)
+
+
+def _verify_calibration_code_artifacts_unchanged(
+    startup: dict[str, Any],
+) -> dict[str, Any]:
+    current = _calibration_code_artifacts()
+    if current != startup:
+        raise RuntimeError(
+            "calibration code changed while ensemble calibration was running"
+        )
+    return current
+
+
+def _verify_current_code_artifacts(
+    report: dict[str, Any], checkpoint: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
     current = _current_training_code_artifacts()
     if (
         report.get("code_artifacts") != current
@@ -190,6 +263,97 @@ def _canonical_sha256(value: Any) -> str:
         allow_nan=False,
     ).encode()
     return hashlib.sha256(raw).hexdigest()
+
+
+_read_regular_snapshot = input_snapshot.read_regular_snapshot
+_json_snapshot = input_snapshot.json_snapshot
+_verify_file_receipt = input_snapshot.verify_file_receipt
+
+
+def _member_input_snapshot(root: Path) -> dict[str, Any]:
+    return input_snapshot.member_input_snapshot(
+        root,
+        expected_files=EXPECTED_TRAINING_FILES,
+        schema=MEMBER_INPUT_RECEIPT_SCHEMA,
+    )
+
+
+def _verify_member_receipt(receipt: dict[str, Any]) -> None:
+    input_snapshot.verify_member_receipt(
+        receipt,
+        expected_files=EXPECTED_TRAINING_FILES,
+        schema=MEMBER_INPUT_RECEIPT_SCHEMA,
+    )
+
+
+def _role_input_receipts(dataset: RoleDatasetAccess) -> dict[str, Any]:
+    files: dict[str, dict[str, Any]] = {}
+    for role in (*MODEL_TRAINING_ROLES, MODEL_CALIBRATION_ROLE):
+        for prefix in ("cf", "opponent_actions"):
+            name = f"{prefix}_{role}.jsonl"
+            _raw, receipt = _read_regular_snapshot(
+                dataset.root / name, field=f"protected role input {name}"
+            )
+            expected = dataset.outputs[name]
+            if (
+                receipt["bytes"] != expected["bytes"]
+                or receipt["sha256"] != expected["sha256"]
+            ):
+                raise RuntimeError(f"protected role input changed: {name}")
+            files[name] = receipt
+    return files
+
+
+def _input_receipts_payload(
+    *, summary: dict[str, Any], role_manifest: dict[str, Any],
+    role_files: dict[str, Any], ledger: dict[str, Any],
+    members: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return input_snapshot.build_receipts(
+        CALIBRATION_INPUT_RECEIPTS_SCHEMA,
+        scaling_summary=summary,
+        role_manifest=role_manifest,
+        role_files=dict(sorted(role_files.items())),
+        exposure_ledger=ledger,
+        member_inputs=sorted(members, key=lambda row: str(row["root"])),
+    )
+
+
+def _validate_input_receipts_payload(payload: Any) -> dict[str, Any]:
+    validated = input_snapshot.validate_receipts(
+        payload, schema=CALIBRATION_INPUT_RECEIPTS_SCHEMA
+    )
+    if set(validated) != {
+        "schema", "scaling_summary", "role_manifest", "role_files",
+        "exposure_ledger", "member_inputs", "payload_sha256",
+    }:
+        raise ValueError("v4 calibration input receipt fields changed")
+    return validated
+
+
+_validate_input_receipts_bindings = input_snapshot.validate_input_receipts_bindings
+
+
+def _verify_external_input_receipts(payload: dict[str, Any]) -> None:
+    receipts = _validate_input_receipts_payload(payload)
+    _verify_file_receipt(receipts["scaling_summary"], field="scaling summary")
+    _verify_file_receipt(receipts["role_manifest"], field="role manifest")
+    for name, receipt in receipts["role_files"].items():
+        _verify_file_receipt(receipt, field=f"protected role input {name}")
+    _verify_file_receipt(
+        receipts["exposure_ledger"]["file"], field="exposure ledger"
+    )
+    for receipt in receipts["member_inputs"]:
+        _verify_member_receipt(receipt)
+
+
+def _fsync_staging_tree(root: Path) -> None:
+    input_snapshot.fsync_flat_tree(
+        root, expected={*EXPECTED_CALIBRATION_FILES, "artifact_manifest.json"}
+    )
+
+
+_publish_tree_noreplace = input_snapshot.publish_tree_noreplace
 
 
 def _digest(value: Any, *, field: str) -> str:
@@ -398,38 +562,25 @@ def _verified_member(
     device: torch.device | str,
     retain_model: bool = True,
 ) -> dict[str, Any]:
-    root = Path(str(row.get("output_dir", ""))).resolve()
-    if root.is_symlink() or not root.is_dir():
+    raw_root = Path(str(row.get("output_dir", "")))
+    if raw_root.is_symlink() or not raw_root.is_dir():
         raise ValueError("v4 member training directory is invalid")
-    expected_entries = {*EXPECTED_TRAINING_FILES, "artifact_manifest.json"}
-    entries = list(root.iterdir())
-    if (
-        {path.name for path in entries} != expected_entries
-        or any(path.is_symlink() for path in entries)
-    ):
-        raise ValueError("v4 member training directory has unexpected artifacts")
-    artifact = _load_json(root / "artifact_manifest.json", field="training artifact")
+    root = raw_root.resolve()
+    snapshot = _member_input_snapshot(root)
+    artifact = snapshot["payloads"]["artifact_manifest.json"]
     if (
         set(artifact) != TRAINING_ARTIFACT_FIELDS
         or artifact.get("schema") != TRAINING_ARTIFACT_SCHEMA
     ):
         raise ValueError("v4 member has the wrong training artifact schema")
-    _verify_file_contracts(
-        root,
-        artifact,
-        expected=EXPECTED_TRAINING_FILES,
-        field="v4 member artifact",
-    )
-    report = _load_json(root / "training_report.json", field="training report")
-    authorization = _load_json(
-        root / "checkpoint_authorization.json", field="checkpoint authorization"
-    )
+    report = snapshot["payloads"]["training_report.json"]
+    authorization = snapshot["payloads"]["checkpoint_authorization.json"]
     if set(report) != TRAINING_REPORT_FIELDS:
         raise ValueError("v4 member training report fields changed")
     if set(authorization) != TRAINING_AUTHORIZATION_FIELDS:
         raise ValueError("v4 member checkpoint authorization fields changed")
     checkpoint_path = root / "checkpoint.pt"
-    checkpoint_sha256 = _sha256(checkpoint_path)
+    checkpoint_sha256 = snapshot["receipt"]["files"]["checkpoint.pt"]["sha256"]
     config = report.get("config") or {}
     metadata = report.get("model") or {}
     early = report.get("early_stop") or {}
@@ -512,7 +663,9 @@ def _verified_member(
         or authorization.get("checkpoint_sha256") != checkpoint_sha256
     ):
         raise ValueError("v4 member checkpoint authorization does not match")
-    model, checkpoint = load_checkpoint(checkpoint_path, device=device)
+    model, checkpoint = load_checkpoint(
+        io.BytesIO(snapshot["raw"]["checkpoint.pt"]), device=device
+    )
     if (
         set(checkpoint) != TRAINING_CHECKPOINT_FIELDS
         or checkpoint.get("schema") != TRAINING_CHECKPOINT_SCHEMA
@@ -540,13 +693,12 @@ def _verified_member(
         "output_dir": str(root),
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": checkpoint_sha256,
-        "checkpoint_authorization_sha256": _sha256(
-            root / "checkpoint_authorization.json"
-        ),
-        "training_report_sha256": _sha256(root / "training_report.json"),
-        "training_artifact_manifest_sha256": _sha256(
-            root / "artifact_manifest.json"
-        ),
+        "checkpoint_authorization_sha256": snapshot["receipt"]["files"]
+        ["checkpoint_authorization.json"]["sha256"],
+        "training_report_sha256": snapshot["receipt"]["files"]
+        ["training_report.json"]["sha256"],
+        "training_artifact_manifest_sha256": snapshot["receipt"]["files"]
+        ["artifact_manifest.json"]["sha256"],
         "scale": str(metadata["scale"]),
         "encoder": str(metadata["cross_encoder"]),
         "cross_transformer_heads": (
@@ -569,6 +721,7 @@ def _verified_member(
         "source_collection_complete": report["source_collection_complete"],
         "incomplete_smoke": report["incomplete_smoke"],
         "training_device": str(environment.get("device")),
+        "_input_receipt": snapshot["receipt"],
     }
     if retain_model:
         verified["model"] = model
@@ -1194,6 +1347,7 @@ def _ensemble_calibration_artifact(
     outcome_uncertainty_std_weight: float,
     diagnostics: dict[str, Any],
     source_collection_complete: bool,
+    input_receipts_sha256: str,
 ) -> dict[str, Any]:
     payload = dict(base)
     payload.pop("payload_sha256", None)
@@ -1223,6 +1377,7 @@ def _ensemble_calibration_artifact(
             "diagnostics": diagnostics,
         },
         "outcome_calibrations": outcome_calibrations,
+        "input_receipts_sha256": input_receipts_sha256,
         "source_collection_complete": bool(source_collection_complete),
         "deployment_policy_value": False,
         "strength_evidence": False,
@@ -1293,6 +1448,10 @@ def load_calibrated_ensemble(
 ) -> dict[str, Any]:
     """Strictly verify and load one calibrated v4 ensemble."""
     require_formal_collection_boundary(dataset, formal=formal)
+    current_calibration_code = _calibration_code_artifacts()
+    current_calibration_code_sha256 = (
+        _calibration_code_artifacts_sha256(current_calibration_code)
+    )
     root = calibration_dir.resolve()
     artifact = _load_json(root / "artifact_manifest.json", field="artifact manifest")
     if (
@@ -1320,7 +1479,9 @@ def load_calibrated_ensemble(
         authorization_path, field="v4 ensemble checkpoint authorization"
     )
     ensemble_sha256 = _sha256(ensemble_path)
-    current_tool_sha256 = _sha256(Path(__file__).resolve())
+    current_tool_sha256 = current_calibration_code["files"]["calibrator"][
+        "sha256"
+    ]
     unsigned = dict(calibration)
     payload_sha256 = str(unsigned.pop("payload_sha256", ""))
     members_raw = ensemble.get("members")
@@ -1333,6 +1494,16 @@ def load_calibrated_ensemble(
     )
     expected_calibration_opponents = list(dataset.roles[MODEL_CALIBRATION_ROLE])
     source_complete = dataset.manifest.get("source_collection_complete") is True
+    input_receipts = _validate_input_receipts_payload(
+        report.get("input_receipts")
+    )
+    _validate_input_receipts_bindings(
+        input_receipts, ensemble=ensemble, calibration=calibration,
+        report=report, artifact=artifact, dataset=dataset, run_id=run_id,
+        roles=(*MODEL_TRAINING_ROLES, MODEL_CALIBRATION_ROLE),
+        member_files=EXPECTED_TRAINING_FILES,
+        member_schema=MEMBER_INPUT_RECEIPT_SCHEMA,
+    )
     if (
         ensemble.get("schema") != ENSEMBLE_MANIFEST_SCHEMA
         or ensemble.get("run_id") != run_id
@@ -1381,8 +1552,23 @@ def load_calibrated_ensemble(
         or authorization.get("training_artifact_sha256") != expected_training
         or authorization.get("checkpoint_sha256") != ensemble_sha256
         or artifact.get("calibration_tool_sha256") != current_tool_sha256
+        or report.get("calibration_code_artifacts")
+        != current_calibration_code
+        or artifact.get("calibration_code_artifacts")
+        != current_calibration_code
+        or report.get("calibration_code_artifacts_sha256")
+        != current_calibration_code_sha256
+        or artifact.get("calibration_code_artifacts_sha256")
+        != current_calibration_code_sha256
     ):
         raise ValueError("v4 ensemble calibration bindings are invalid")
+    ledger_path = getattr(dataset, "ledger_path", None)
+    if ledger_path is not None:
+        with locked_exposure_ledger_snapshot(ledger_path) as ledger_snapshot:
+            input_snapshot.validate_current_ledger_state(
+                input_receipts["exposure_ledger"], ledger_snapshot,
+                stable_roles={*MODEL_TRAINING_ROLES, MODEL_CALIBRATION_ROLE},
+            )
     selected = ensemble.get("selected_configuration")
     if not isinstance(selected, dict):
         raise ValueError("v4 ensemble manifest has no selected configuration")
@@ -1531,6 +1717,10 @@ def load_calibrated_ensemble(
         "calibration_file_sha256": _sha256(calibration_path),
         "calibration_report_sha256": _sha256(report_path),
         "calibration_payload_sha256": payload_sha256,
+        "calibration_code_artifacts": current_calibration_code,
+        "calibration_code_artifacts_sha256": (
+            current_calibration_code_sha256
+        ),
         "members": members,
         "models": [member["model"] for member in members],
         "clips": clips,
@@ -1591,8 +1781,23 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(str(exc)) from exc
     if str(args.device).startswith("cuda") and not torch.cuda.is_available():
         raise SystemExit("CUDA was requested but is unavailable")
+    try:
+        startup_calibration_code = _calibration_code_artifacts()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    startup_calibration_code_sha256 = (
+        _calibration_code_artifacts_sha256(startup_calibration_code)
+    )
+    startup_calibration_tool_sha256 = startup_calibration_code["files"][
+        "calibrator"
+    ]["sha256"]
     summary_path = args.scaling_summary.resolve()
-    summary = _load_json(summary_path, field="v4 scaling summary")
+    _summary_raw, summary, summary_receipt = _json_snapshot(
+        summary_path, field="v4 scaling summary"
+    )
+    _role_raw, _role_payload, role_manifest_receipt = _json_snapshot(
+        args.role_manifest, field="role manifest"
+    )
     try:
         selected, run_rows = selected_scaling_runs(
             summary, allow_incomplete_smoke=args.allow_incomplete_smoke
@@ -1603,6 +1808,8 @@ def main(argv: list[str] | None = None) -> int:
             run_id=args.run_id,
             require_complete=formal,
         )
+        if dataset.manifest_sha256 != role_manifest_receipt["sha256"]:
+            raise ValueError("role manifest changed during startup")
         require_formal_collection_boundary(dataset, formal=formal)
         training_artifacts = {
             role: dataset._role_artifact_sha256(role)
@@ -1634,6 +1841,7 @@ def main(argv: list[str] | None = None) -> int:
             device=args.device,
             formal=formal,
         )
+        member_receipts = [member["_input_receipt"] for member in members]
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
     clips = dict(members[0]["training_config"]["clips"])
@@ -1651,7 +1859,7 @@ def main(argv: list[str] | None = None) -> int:
             "schema": ENSEMBLE_MANIFEST_SCHEMA,
             "run_id": args.run_id,
             "role_manifest_sha256": dataset.manifest_sha256,
-            "scaling_summary_sha256": _sha256(summary_path),
+            "scaling_summary_sha256": summary_receipt["sha256"],
             "selected_configuration": selected,
             "formal_grid_verification": formal_grid_verification,
             "members": [
@@ -1704,6 +1912,30 @@ def main(argv: list[str] | None = None) -> int:
         del training_phase
         _write_json(temporary / "checkpoint_authorization.json", authorization)
         raw_role = calibration_phase["roles"][MODEL_CALIBRATION_ROLE]
+        role_file_receipts = _role_input_receipts(dataset)
+        with locked_exposure_ledger_snapshot(dataset.ledger_path) as ledger_snapshot:
+            ledger_raw, ledger_file_receipt = _read_regular_snapshot(
+                dataset.ledger_path, field="exposure ledger"
+            )
+            if json.loads(ledger_raw) != ledger_snapshot:
+                raise RuntimeError("exposure ledger snapshot changed")
+            expected_events = [
+                {
+                    "event": "open", "role": role, "run_id": dataset.run_id,
+                    "opponents": dataset.roles[role], "candidate_sha256": None,
+                    "artifact_sha256": dataset._role_artifact_sha256(role),
+                }
+                for role in (*MODEL_TRAINING_ROLES, MODEL_CALIBRATION_ROLE)
+            ]
+            ledger_receipt = input_snapshot.build_ledger_state(
+                ledger_snapshot, ledger_file_receipt,
+                run_id=dataset.run_id, expected=expected_events,
+            )
+        input_receipts = _input_receipts_payload(
+            summary=summary_receipt, role_manifest=role_manifest_receipt,
+            role_files=role_file_receipts, ledger=ledger_receipt,
+            members=member_receipts,
+        )
         role = v3_calibration._encoded_calibration_role(raw_role)
         value_observations, response_rows, diagnostics = (
             v3_calibration.ensemble_calibration_predictions(
@@ -1761,6 +1993,7 @@ def main(argv: list[str] | None = None) -> int:
             outcome_uncertainty_std_weight=args.outcome_uncertainty_std_weight,
             diagnostics=diagnostics,
             source_collection_complete=source_complete,
+            input_receipts_sha256=input_receipts["payload_sha256"],
         )
         _write_json(temporary / "calibration.json", calibration)
         report = {
@@ -1795,7 +2028,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             ],
             "diagnostics": diagnostics,
-            "calibration_tool_sha256": _sha256(Path(__file__).resolve()),
+            "calibration_tool_sha256": startup_calibration_tool_sha256,
+            "calibration_code_artifacts": startup_calibration_code,
+            "calibration_code_artifacts_sha256": (
+                startup_calibration_code_sha256
+            ),
+            "input_receipts": input_receipts,
+            "input_receipts_sha256": input_receipts["payload_sha256"],
             "calibration_payload_sha256": calibration["payload_sha256"],
             "deployment_policy_value": False,
             "strength_evidence": False,
@@ -1814,13 +2053,42 @@ def main(argv: list[str] | None = None) -> int:
             },
             "ensemble_manifest_sha256": ensemble_sha256,
             "calibration_payload_sha256": calibration["payload_sha256"],
-            "calibration_tool_sha256": _sha256(Path(__file__).resolve()),
+            "calibration_tool_sha256": startup_calibration_tool_sha256,
+            "calibration_code_artifacts": startup_calibration_code,
+            "calibration_code_artifacts_sha256": (
+                startup_calibration_code_sha256
+            ),
+            "input_receipts": input_receipts,
+            "input_receipts_sha256": input_receipts["payload_sha256"],
             "source_collection_complete": source_complete,
             "policy_roles_opened": False,
             "deployment_policy_value": False,
             "strength_evidence": False,
         })
-        temporary.replace(out_dir)
+        with locked_exposure_ledger_snapshot(dataset.ledger_path) as ledger_snapshot:
+            input_snapshot.validate_current_ledger_state(
+                input_receipts["exposure_ledger"], ledger_snapshot,
+                stable_roles={*MODEL_TRAINING_ROLES, MODEL_CALIBRATION_ROLE},
+            )
+            _verify_external_input_receipts(input_receipts)
+            require_formal_collection_boundary(dataset, formal=formal)
+            _verify_calibration_code_artifacts_unchanged(startup_calibration_code)
+            staged = load_calibrated_ensemble(
+                temporary, dataset=dataset, run_id=args.run_id,
+                device="cpu", formal=formal,
+            )
+            if (
+                staged["calibration_payload_sha256"]
+                != calibration["payload_sha256"]
+                or [row["checkpoint_sha256"] for row in staged["members"]]
+                != [row["checkpoint_sha256"] for row in members]
+            ):
+                raise RuntimeError("v4 calibration staging self-check changed")
+            del staged
+            _verify_external_input_receipts(input_receipts)
+            _verify_calibration_code_artifacts_unchanged(startup_calibration_code)
+            _fsync_staging_tree(temporary)
+            _publish_tree_noreplace(temporary, out_dir)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise

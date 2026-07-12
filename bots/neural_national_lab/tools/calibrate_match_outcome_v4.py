@@ -37,6 +37,7 @@ import train_opponent_multitask_v3 as v3
 
 REPORT_SCHEMA = "match_outcome_calibration_report_v1"
 ARTIFACT_SCHEMA = "match_outcome_calibration_artifacts_v1"
+FORMAL_COLLECTION_PASSES = 160
 
 
 def _weighted_mean(values: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
@@ -326,6 +327,8 @@ def main(argv: list[str] | None = None) -> int:
             run_id=args.run_id,
             require_complete=not args.allow_incomplete_smoke,
         )
+        if not args.allow_incomplete_smoke:
+            dataset.require_collection_boundary(FORMAL_COLLECTION_PASSES)
         model, checkpoint = load_checkpoint(
             checkpoint_path, device=args.device
         )

@@ -22,6 +22,10 @@ from opponent_response_schema import (  # noqa: E402
     response_schema_metadata,
 )
 import role_dataset_access as access  # noqa: E402
+from bots.neural_national_lab.tests.role_provenance_fixture import (  # noqa: E402
+    add_formal_role_provenance,
+    convert_to_legacy_recovery_prefix,
+)
 
 
 CANDIDATE_SHA = "a" * 64
@@ -129,6 +133,8 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
             "final_blind_in_dataset": False,
         },
     }
+    if complete:
+        add_formal_role_provenance(root, manifest)
     manifest_path = root / "role_manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return manifest_path, tmp_path / "ledger.json"
@@ -215,6 +221,54 @@ def test_manifest_load_does_not_touch_role_files(tmp_path: Path) -> None:
     )
 
     assert dataset.roles["policy_gate"] == ["national_v5"]
+    assert not ledger_path.exists()
+
+
+def test_manifest_rejects_cross_role_opponent_overlap_even_if_self_reported(
+    tmp_path: Path,
+) -> None:
+    manifest_path, ledger_path = _dataset(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    shared = manifest["roles"]["train"][0]
+    manifest["roles"]["early_stop"] = [shared]
+    for prefix in freeze.PREFIXES:
+        manifest["outputs"][f"{prefix}_early_stop.jsonl"]["opponents"] = [
+            shared
+        ]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="multiple roles"):
+        access.RoleDatasetAccess(
+            manifest_path,
+            ledger_path=ledger_path,
+            run_id="overlap",
+        )
+
+
+def test_formal_provenance_replays_plan_roles_after_hash_rewrite(
+    tmp_path: Path,
+) -> None:
+    manifest_path, ledger_path = _dataset(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    plan_path = manifest_path.parent / "pass_plans" / "pass_0001.json"
+    plan = json.loads(plan_path.read_text())
+    early_stop = manifest["roles"]["early_stop"][0]
+    next(task for task in plan["tasks"] if task["name"] == early_stop)[
+        "split"
+    ] = "held_out"
+    raw = json.dumps(plan, sort_keys=True).encode()
+    plan_path.write_bytes(raw)
+    manifest["pass_plan_sha256"][plan_path.name] = _sha(raw)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(
+        (ValueError, RuntimeError),
+        match="role mismatch|crosses source splits|must come from train",
+    ):
+        access.RoleDatasetAccess(
+            manifest_path,
+            ledger_path=ledger_path,
+            run_id="plan-rewrite",
+        )
     assert not ledger_path.exists()
 
 
@@ -547,6 +601,51 @@ def test_formal_collection_boundary_requires_exact_atomic_160_passes(
     }
 
 
+def test_formal_boundary_accepts_strict_75_plus_recovered_76_prefix(
+    tmp_path: Path,
+) -> None:
+    manifest_path, ledger_path = _dataset(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    convert_to_legacy_recovery_prefix(
+        manifest_path.parent, manifest, completed_prefix=75
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    dataset = access.RoleDatasetAccess(
+        manifest_path, ledger_path=ledger_path, run_id="legacy-recovered"
+    )
+
+    assert dataset.require_collection_boundary()["source_completed_passes"] == 160
+
+
+def test_formal_boundary_rejects_re_signed_invalid_legacy_receipt(
+    tmp_path: Path,
+) -> None:
+    manifest_path, ledger_path = _dataset(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    convert_to_legacy_recovery_prefix(
+        manifest_path.parent, manifest, completed_prefix=75
+    )
+    collection_path = manifest_path.parent / "collection_manifest.json"
+    collection = json.loads(collection_path.read_text(encoding="utf-8"))
+    collection["legacy_recovery"]["completed_prefix_pass"] = 74
+    unsigned = dict(collection["legacy_recovery"])
+    unsigned.pop("receipt_sha256")
+    collection["legacy_recovery"]["receipt_sha256"] = freeze._canonical_sha256(
+        unsigned
+    )
+    raw = json.dumps(collection, sort_keys=True).encode()
+    collection_path.write_bytes(raw)
+    manifest["collection_manifest_sha256"] = _sha(raw)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="completed-plan prefix|boundary"):
+        access.RoleDatasetAccess(
+            manifest_path, ledger_path=ledger_path, run_id="invalid-recovery"
+        )
+    assert not ledger_path.exists()
+
+
 @pytest.mark.parametrize(
     "updates",
     [
@@ -567,12 +666,27 @@ def test_formal_collection_boundary_rejects_partial_or_missing_fields(
     if remove is not None:
         manifest.pop(remove)
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    dataset = access.RoleDatasetAccess(
-        manifest_path, ledger_path=ledger_path, run_id="formal-boundary"
-    )
-
     with pytest.raises(ValueError, match="complete atomic 160-pass"):
-        dataset.require_collection_boundary()
+        access.RoleDatasetAccess(
+            manifest_path,
+            ledger_path=ledger_path,
+            run_id="formal-boundary",
+        )
+
+
+def test_complete_constructor_replays_physical_plan_prefix_before_any_open(
+    tmp_path: Path,
+) -> None:
+    manifest_path, ledger_path = _dataset(tmp_path)
+    (manifest_path.parent / "pass_plans" / "pass_0160.json").unlink()
+
+    with pytest.raises(ValueError, match="pass-plan set"):
+        access.RoleDatasetAccess(
+            manifest_path,
+            ledger_path=ledger_path,
+            run_id="short-physical-prefix",
+        )
+    assert not ledger_path.exists()
 
 
 def test_formal_collection_boundary_rejects_boolean_expected_passes(
