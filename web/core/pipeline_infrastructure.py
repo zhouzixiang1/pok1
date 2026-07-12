@@ -216,7 +216,7 @@ def infrastructure_route(checkpoint: dict[str, Any] | None) -> dict[str, Any] | 
         "directive": (
             f"Retry {failure['owner_tool']} for {failure['component']} infrastructure "
             f"attempt {failure['attempt'] + 1}/{failure['max_attempts']}. Preserve the "
-            "candidate and do not call execute_workers."
+            "candidate and do not call any other pipeline tool."
         ),
         "infra_failure": failure,
     }

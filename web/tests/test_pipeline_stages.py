@@ -1156,6 +1156,9 @@ class TestWorkerFailureCircuitBreaker:
         state = {
             "next_v": 11,
             "source_v": 10,
+            "run_id": "11#0",
+            "workflow_run_id": "generation:11:test-worker",
+            "checkpoint_revision": 1,
             "stage": stage,
             "master_plan": {
                 "tasks": [
@@ -1294,8 +1297,9 @@ class TestWorkerFailureCircuitBreaker:
         before = (next_dir / "strategy.py").read_bytes()
 
         async def fail_after_first_worker(*_args, **_kwargs):
-            (next_dir / "strategy.py").write_text("value = 999\n")
-            (next_dir / "partial_table.bin").write_bytes(b"partial")
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text("value = 999\n")
+            (worker_dir / "partial_table.bin").write_bytes(b"partial")
             return False, {}, []
 
         async def _run():
@@ -1344,8 +1348,9 @@ class TestWorkerFailureCircuitBreaker:
         monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
 
         async def fail_after_first_worker(*_args, **_kwargs):
-            (next_dir / "strategy.py").write_text("value = 999\n")
-            (next_dir / "partial_table.bin").write_bytes(b"partial")
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text("value = 999\n")
+            (worker_dir / "partial_table.bin").write_bytes(b"partial")
             return False, {}, []
 
         async def _run():
@@ -1368,9 +1373,11 @@ class TestWorkerFailureCircuitBreaker:
         assert not (next_dir / "partial_table.bin").exists()
         persisted = json.loads(ckpt_file.read_text())
         assert persisted["stage"] == "repair_planned"
-        assert persisted["repair_baseline_artifact_hash"] == tool_planning._complete_artifact_fingerprint(
-            next_dir
-        )
+        work_item = persisted["master_plan"]["work_item"]
+        assert work_item["repair_baseline_artifact_hash"]
+        assert work_item["prepared_snapshot_hash"] == work_item[
+            "repair_baseline_artifact_hash"
+        ]
 
     def test_task_context_cleanup_failure_restores_then_abandons(
         self, tmp_path, monkeypatch
@@ -1388,11 +1395,12 @@ class TestWorkerFailureCircuitBreaker:
         before = (next_dir / "strategy.py").read_bytes()
 
         async def successful_worker(*_args, **_kwargs):
-            (next_dir / "strategy.py").write_text("value = 999\n")
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text("value = 999\n")
             return True, {}, []
 
-        def poisoned_cleanup(_next_dir):
-            (next_dir / ".task_context").symlink_to(tmp_path / "outside")
+        def poisoned_cleanup(worker_dir):
+            (Path(worker_dir) / ".task_context").symlink_to(tmp_path / "outside")
             raise RuntimeError("transient candidate artifact is a symlink")
 
         async def _run():
@@ -1418,13 +1426,12 @@ class TestWorkerFailureCircuitBreaker:
 
         result = asyncio.run(_run())
         data = json.loads(result["content"][0]["text"])
-        assert data["error"] == "TRANSIENT_CONTROL_ARTIFACT_CLEANUP_FAILED"
-        assert data["next_tool"] == "abandon_generation"
-        assert data["candidate_restored"] is True
+        assert data["success"] is False
+        assert data["failure_class"] == "semantic"
         assert (next_dir / "strategy.py").read_bytes() == before
         assert not (next_dir / ".task_context").exists()
         assert not (next_dir / ".task_context").is_symlink()
-        assert json.loads(ckpt_file.read_text())["stage"] == "master_planned"
+        assert json.loads(ckpt_file.read_text())["stage"] == "direction_audited"
 
     def test_runtime_error_after_worker_write_restores_then_reraises(
         self, tmp_path, monkeypatch
@@ -1442,8 +1449,9 @@ class TestWorkerFailureCircuitBreaker:
         before = (next_dir / "strategy.py").read_bytes()
 
         async def write_then_raise(*_args, **_kwargs):
-            (next_dir / "strategy.py").write_text("value = 999\n")
-            (next_dir / "partial_table.bin").write_bytes(b"partial")
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text("value = 999\n")
+            (worker_dir / "partial_table.bin").write_bytes(b"partial")
             raise RuntimeError("later worker exploded")
 
         async def _run():
@@ -1459,11 +1467,100 @@ class TestWorkerFailureCircuitBreaker:
                     "reviewer_feedback": "",
                 })
 
-        with pytest.raises(RuntimeError, match="later worker exploded"):
-            asyncio.run(_run())
+        data = json.loads(asyncio.run(_run())["content"][0]["text"])
+        assert data["error"] == "DURABLE_WORKER_HARNESS_FAILED"
+        assert data["action"] == "retry_same_tool"
         assert (next_dir / "strategy.py").read_bytes() == before
         assert not (next_dir / "partial_table.bin").exists()
         assert json.loads(ckpt_file.read_text())["stage"] == "master_planned"
+
+    @pytest.mark.parametrize(
+        "failing_hook",
+        ["workspace_for", "snapshot_python_files", "boundary_validator"],
+    )
+    def test_post_claim_hook_exception_never_leaves_running_effect(
+        self, failing_hook, tmp_path, monkeypatch
+    ):
+        """Any exception after lease claim durably releases that lease for retry."""
+        import asyncio
+        import worker_boundary
+        import tool_planning
+        from worker_workflow import WorkerWorkflow, build_worker_envelope
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="master_planned",
+        )
+        checkpoint = json.loads(ckpt_file.read_text())
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        workflow = WorkerWorkflow.for_checkpoint(checkpoint)
+        snapshot_hash = workflow.artifacts.capture(next_dir)
+        worker_template = "test worker template"
+        envelope = build_worker_envelope(
+            checkpoint=checkpoint,
+            kind="initial_worker",
+            source_stage="master_planned",
+            prepared_artifact_hash=snapshot_hash,
+            prepared_snapshot_hash=snapshot_hash,
+            source_artifact_hash=tool_planning._complete_artifact_fingerprint(
+                source_dir
+            ),
+            tasks=[{
+                "worker_id": "logic",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "worker_prompt": "make one deterministic edit",
+            }],
+            reviewer_feedback="",
+            worker_template_hash=tool_planning.hashlib.sha256(
+                worker_template.encode("utf-8")
+            ).hexdigest(),
+            worker_execution_context={"schema_version": 1},
+            work_item={"kind": "initial_worker"},
+            backend_contract={"model": "test"},
+            precommit_rework_count=0,
+            official_rework_count=0,
+        )
+        workflow.prepare(envelope)
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError(f"injected {failing_hook} failure")
+
+        if failing_hook == "workspace_for":
+            monkeypatch.setattr(workflow.artifacts, "workspace_for", boom)
+        elif failing_hook == "snapshot_python_files":
+            monkeypatch.setattr(worker_boundary, "snapshot_python_files", boom)
+
+        async def successful_worker(*_args, **_kwargs):
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text("value = 2\n")
+            return True, {}, []
+
+        validator = boom if failing_hook == "boundary_validator" else lambda *_a, **_k: []
+        with patch.object(
+            tool_planning,
+            "_execute_workers",
+            side_effect=successful_worker,
+        ), patch.object(
+            tool_planning,
+            "_validate_worker_boundaries",
+            side_effect=validator,
+        ), pytest.raises(RuntimeError, match=failing_hook):
+            asyncio.run(tool_planning._run_durable_worker_effect(
+                workflow,
+                envelope,
+                next_dir,
+                worker_template,
+            ))
+
+        durable_state = workflow.state()
+        effect = workflow.store.effect(durable_state["effect_id"])
+        assert durable_state["status"] == "retry_wait"
+        assert effect["status"] == "retry"
+        assert effect["lease_owner"] is None
+        assert effect["lease_until"] is None
 
     def test_cancelled_error_after_worker_write_restores_then_reraises(
         self, tmp_path, monkeypatch
@@ -1481,8 +1578,9 @@ class TestWorkerFailureCircuitBreaker:
         before = (next_dir / "strategy.py").read_bytes()
 
         async def write_then_cancel(*_args, **_kwargs):
-            (next_dir / "strategy.py").write_text("value = 999\n")
-            (next_dir / "partial_table.bin").write_bytes(b"partial")
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text("value = 999\n")
+            (worker_dir / "partial_table.bin").write_bytes(b"partial")
             raise asyncio.CancelledError("controller cancelled")
 
         async def _run():
@@ -1498,8 +1596,9 @@ class TestWorkerFailureCircuitBreaker:
                     "reviewer_feedback": "",
                 })
 
-        with pytest.raises(asyncio.CancelledError, match="controller cancelled"):
-            asyncio.run(_run())
+        data = json.loads(asyncio.run(_run())["content"][0]["text"])
+        assert data["error"] == "DURABLE_WORKER_HARNESS_FAILED"
+        assert data["action"] == "retry_same_tool"
         assert (next_dir / "strategy.py").read_bytes() == before
         assert not (next_dir / "partial_table.bin").exists()
         assert json.loads(ckpt_file.read_text())["stage"] == "master_planned"
@@ -1516,7 +1615,8 @@ class TestWorkerFailureCircuitBreaker:
         next_dir = tmp_path / "claude_v11"
 
         async def successful_worker(*_args, **_kwargs):
-            (next_dir / "strategy.py").write_text("value = 1\n")
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text("value = 1\n")
             return (True, {}, [])
 
         async def _run():
@@ -1556,7 +1656,8 @@ class TestWorkerFailureCircuitBreaker:
         ckpt_file.write_text(json.dumps(state))
 
         async def successful_table_worker(*_args, **_kwargs):
-            table.write_bytes(b"after\xfe")
+            worker_table = Path(_args[2]) / "tables" / "equity.bin"
+            worker_table.write_bytes(b"after\xfe")
             return (True, {(0, "tables/equity.bin"): b"before\xff"}, [])
 
         async def _run():
@@ -1585,7 +1686,7 @@ class TestWorkerFailureCircuitBreaker:
         assert checkpoint["stage"] == "workers_done"
         assert table.read_bytes() == b"after\xfe"
 
-    def test_worker_llm_failure_uses_infrastructure_overlay_and_clean_retry(
+    def test_worker_llm_failure_uses_durable_event_and_clean_retry(
         self, tmp_path, monkeypatch
     ):
         import asyncio
@@ -1631,11 +1732,18 @@ class TestWorkerFailureCircuitBreaker:
         assert failed["action"] == "retry_same_tool"
         assert checkpoint["stage"] == "master_planned"
         assert checkpoint["worker_failure_count"] == 0
-        assert checkpoint["infra_failure"]["owner_tool"] == "execute_workers"
+        assert checkpoint.get("infra_failure") is None
+        from worker_workflow import WorkerWorkflow
+
+        workflow = WorkerWorkflow.for_checkpoint(checkpoint)
+        failed_state = workflow.state()
+        assert failed_state["status"] == "retry_wait"
+        assert failed_state["attempt"] == 1
 
         async def run_success():
             async def successful_worker(*_args, **_kwargs):
-                (next_dir / "strategy.py").write_text("value = 1\n")
+                worker_dir = Path(_args[2])
+                (worker_dir / "strategy.py").write_text("value = 1\n")
                 return (True, {}, [])
 
             with patch.object(
@@ -1661,7 +1769,1020 @@ class TestWorkerFailureCircuitBreaker:
         checkpoint = json.loads(ckpt_file.read_text())
         assert recovered["success"] is True
         assert checkpoint["stage"] == "workers_done"
-        assert checkpoint["infra_failure"] is None
+        assert checkpoint.get("infra_failure") is None
+        assert workflow.state()["status"] == "completed"
+
+    def test_worker_retry_rejects_source_artifact_drift_before_second_llm(
+        self, tmp_path, monkeypatch
+    ):
+        """A retry is bound to the exact source tree captured in its envelope."""
+        import asyncio
+        import agent_workers
+        import tool_planning
+        from worker_workflow import WorkerWorkflow
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="master_planned",
+        )
+        source_dir = tmp_path / "claude_v10"
+
+        async def unavailable(*_args, **_kwargs):
+            raise agent_workers.WorkerInfrastructureError(
+                "logic",
+                "Algorithmic Logic Architect",
+                ["transport timeout"],
+            )
+
+        with patch.object(
+            tool_planning,
+            "_execute_workers",
+            side_effect=unavailable,
+        ):
+            first_result = asyncio.run(tool_planning.execute_workers.handler({
+                "tasks": [],
+                "next_v": 11,
+                "source_v": 10,
+            }))
+        first = json.loads(first_result["content"][0]["text"])
+        assert first["action"] == "retry_same_tool"
+
+        # Source selection is immutable for the activity. A tag/worktree change
+        # between attempts must terminate this actor rather than silently moving
+        # the baseline beneath the frozen prompt and prepared candidate.
+        (source_dir / "strategy.py").write_text("value = 999\n")
+        with patch.object(
+            tool_planning,
+            "_execute_workers",
+            new_callable=AsyncMock,
+        ) as second_llm:
+            second_result = asyncio.run(tool_planning.execute_workers.handler({
+                "tasks": [],
+                "next_v": 11,
+                "source_v": 10,
+            }))
+
+        second = json.loads(second_result["content"][0]["text"])
+        assert second["error"] == "DURABLE_WORKER_SOURCE_ARTIFACT_DRIFT"
+        assert second["action"] == "abandon_generation"
+        assert second["expected_source_hash"] != second["current_source_hash"]
+        second_llm.assert_not_awaited()
+        workflow = WorkerWorkflow.for_checkpoint(json.loads(ckpt_file.read_text()))
+        assert workflow.state()["status"] == "abandoned"
+
+    def test_quality_rework_infrastructure_retries_reuse_frozen_transaction(
+        self, tmp_path, monkeypatch
+    ):
+        """Repeated Worker outages replay only the frozen rework transaction."""
+        import asyncio
+        import agent_workers
+        import fix_injection
+        import tool_planning
+        from agent_workers import WorkerInfrastructureError
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy.py:2492L/2474L)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+        next_dir = tmp_path / "claude_v11"
+        baseline = (next_dir / "strategy.py").read_bytes()
+        calls = []
+
+        async def flaky_worker(tasks, *_args, reviewer_feedback="", **kwargs):
+            worker_dir = Path(_args[1])
+            call_number = len(calls) + 1
+            calls.append({
+                "tasks": json.loads(json.dumps(tasks)),
+                "reviewer_feedback": reviewer_feedback,
+                "force_sequential": kwargs.get("force_sequential"),
+                "has_task_skipper": callable(kwargs.get("task_skipper")),
+                "worker_execution_context": kwargs.get(
+                    "worker_execution_context"
+                ),
+            })
+            if call_number <= 2:
+                (worker_dir / "strategy.py").write_text(
+                    f"value = {call_number}\npartial = True\n"
+                )
+                (worker_dir / f"partial_{call_number}.bin").write_bytes(b"partial")
+                raise WorkerInfrastructureError(
+                    "repair",
+                    "Algorithmic Logic Architect",
+                    [f"timeout {call_number}"],
+                )
+            (worker_dir / "strategy.py").write_text("value = 3\n")
+            return True, {}, []
+
+        known_fixes = MagicMock(return_value=([], []))
+        quality_skipper = MagicMock(return_value=lambda _task: "")
+        mechanical_trims = MagicMock(return_value=[])
+        worker_context = {
+            "schema_version": 1,
+            "exhausted_block": "frozen-experience",
+            "recent_failures": [{"gen": 9, "worker_id": "old"}],
+        }
+        context_builder = MagicMock(return_value=worker_context)
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", known_fixes)
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            agent_workers,
+            "build_worker_execution_context",
+            context_builder,
+        )
+        monkeypatch.setattr(tool_planning, "_quality_rework_skipper", quality_skipper)
+        monkeypatch.setattr(
+            tool_planning,
+            "_apply_mechanical_file_size_trims",
+            mechanical_trims,
+        )
+
+        async def run_once():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=flaky_worker,
+            ), patch.object(
+                tool_planning,
+                "_validate_worker_boundaries",
+                return_value=[],
+            ):
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": "",
+                })
+                return json.loads(result["content"][0]["text"])
+
+        first = asyncio.run(run_once())
+        first_checkpoint = json.loads(ckpt_file.read_text())
+        first_attempt_key = first["attempt_key"]
+        frozen_feedback = first_checkpoint["reviewer_feedback"]
+        frozen_tasks = first_checkpoint["master_plan"]["tasks"]
+
+        assert first["failure_class"] == "infrastructure"
+        assert first["action"] == "retry_same_tool"
+        assert first_checkpoint["stage"] == "rework_running"
+        assert first["attempt"] == 1
+        assert first_checkpoint.get("infra_failure") is None
+        assert (next_dir / "strategy.py").read_bytes() == baseline
+        assert not (next_dir / "partial_1.bin").exists()
+
+        second = asyncio.run(run_once())
+        second_checkpoint = json.loads(ckpt_file.read_text())
+        assert second["failure_class"] == "infrastructure"
+        assert second["action"] == "retry_same_tool"
+        assert second_checkpoint["stage"] == "rework_running"
+        assert second["attempt"] == 2
+        assert second["attempt_key"] == first_attempt_key
+        assert second_checkpoint["reviewer_feedback"] == frozen_feedback
+        assert second_checkpoint["master_plan"]["tasks"] == frozen_tasks
+        assert (next_dir / "strategy.py").read_bytes() == baseline
+        assert not (next_dir / "partial_2.bin").exists()
+
+        third = asyncio.run(run_once())
+        recovered_checkpoint = json.loads(ckpt_file.read_text())
+        assert third["success"] is True
+        assert recovered_checkpoint["stage"] == "workers_done"
+        assert recovered_checkpoint.get("infra_failure") is None
+        assert recovered_checkpoint["worker_failure_count"] == 0
+        assert (next_dir / "strategy.py").read_text() == "value = 3\n"
+        assert len(calls) == 3
+        assert all(call["tasks"] == calls[0]["tasks"] for call in calls)
+        assert all(
+            call["reviewer_feedback"] == calls[0]["reviewer_feedback"]
+            for call in calls
+        )
+        assert all(call["force_sequential"] is True for call in calls)
+        assert all(call["has_task_skipper"] is True for call in calls)
+        assert all(
+            call["worker_execution_context"] == worker_context
+            for call in calls
+        )
+        assert context_builder.call_count == 1
+        assert known_fixes.call_count == 1
+        assert mechanical_trims.call_count == 1
+        assert quality_skipper.call_count == 3
+
+    def test_rework_infrastructure_retry_semantic_failure_consumes_lease(
+        self, tmp_path, monkeypatch
+    ):
+        """A reached-but-failed Worker batch leaves infra mode atomically."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+        from agent_workers import WorkerInfrastructureError
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["compile(strategy.py)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+        attempts = 0
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def worker(*_args, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise WorkerInfrastructureError(
+                    "repair",
+                    "Algorithmic Logic Architect",
+                    ["timeout"],
+                )
+            return False, {}, []
+
+        async def run_once():
+            with patch.object(tool_planning, "_execute_workers", side_effect=worker):
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                    "reviewer_feedback": "",
+                })
+                return json.loads(result["content"][0]["text"])
+
+        first = asyncio.run(run_once())
+        assert first["action"] == "retry_same_tool"
+        from worker_workflow import WorkerWorkflow
+
+        workflow = WorkerWorkflow.for_checkpoint(
+            json.loads(ckpt_file.read_text())
+        )
+        assert workflow.state()["status"] == "retry_wait"
+
+        second = asyncio.run(run_once())
+        checkpoint = json.loads(ckpt_file.read_text())
+        assert second["success"] is False
+        assert checkpoint["stage"] == "repair_planned"
+        assert checkpoint.get("infra_failure") is None
+        assert workflow.state()["status"] == "completed"
+        assert checkpoint["worker_failure_count"] == 1
+
+    def test_successful_worker_edits_roll_back_when_checkpoint_write_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """Artifact success is not committed without its workers_done receipt."""
+        import asyncio
+        import shutil
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="master_planned",
+        )
+        next_dir = tmp_path / "claude_v11"
+        baseline = (next_dir / "strategy.py").read_bytes()
+
+        async def successful_worker(*_args, **_kwargs):
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text("value = 999\n")
+            return True, {}, []
+
+        async def run_once():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=successful_worker,
+            ), patch.object(
+                tool_planning,
+                "_validate_worker_boundaries",
+                return_value=[],
+            ), patch.object(
+                tool_planning,
+                "write_pipeline_checkpoint",
+                return_value=False,
+            ):
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+                return json.loads(result["content"][0]["text"])
+
+        result = asyncio.run(run_once())
+        assert result["error"] == "DURABLE_WORKER_OUTPUT_PROJECTION_FAILED"
+        assert result["action"] == "retry_same_tool"
+        assert (next_dir / "strategy.py").read_text() == "value = 999\n"
+        from worker_workflow import WorkerWorkflow
+
+        workflow = WorkerWorkflow.for_checkpoint(
+            tool_planning._matching_checkpoint(11, 10)
+        )
+        assert workflow.state()["status"] == "output_ready"
+
+        # Simulate loss of the mutable projection after the immutable output
+        # receipt was committed. Recovery must restore the full tree from the
+        # content-addressed artifact and must never ask the LLM to regenerate it.
+        shutil.rmtree(next_dir)
+        with patch.object(
+            tool_planning,
+            "_execute_workers",
+            new_callable=AsyncMock,
+        ) as second_llm:
+            recovered_result = asyncio.run(tool_planning.execute_workers.handler({
+                "tasks": [],
+                "next_v": 11,
+                "source_v": 10,
+            }))
+        recovered = json.loads(recovered_result["content"][0]["text"])
+        assert recovered["success"] is True
+        assert recovered["durable_recovery"] == "projected_existing_worker_output"
+        assert (next_dir / "strategy.py").read_text() == "value = 999\n"
+        assert json.loads(ckpt_file.read_text())["stage"] == "workers_done"
+        assert workflow.state()["status"] == "completed"
+        second_llm.assert_not_awaited()
+
+    def test_downstream_checkpoint_survives_crash_before_worker_projected_event(
+        self, tmp_path, monkeypatch
+    ):
+        """A downstream gate receipt proves output projection without checkpoint rewind."""
+        import asyncio
+        import tool_helpers
+        import tool_planning
+        from worker_workflow import WorkerWorkflow
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="master_planned",
+        )
+        next_dir = tmp_path / "claude_v11"
+
+        async def successful_worker(*_args, **_kwargs):
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text("value = 777\n")
+            return True, {}, []
+
+        # The checkpoint projection commits first. Inject process death at the
+        # immediately following actor event so replay remains output_ready.
+        with patch.object(
+            tool_planning,
+            "_execute_workers",
+            side_effect=successful_worker,
+        ), patch.object(
+            tool_planning,
+            "_validate_worker_boundaries",
+            return_value=[],
+        ), patch.object(
+            WorkerWorkflow,
+            "projected",
+            side_effect=RuntimeError("crash before WorkerProjected"),
+        ):
+            interrupted_result = asyncio.run(tool_planning.execute_workers.handler({
+                "tasks": [],
+                "next_v": 11,
+                "source_v": 10,
+            }))
+
+        interrupted = json.loads(interrupted_result["content"][0]["text"])
+        assert interrupted["error"] == "DURABLE_WORKER_OUTPUT_RECEIPT_FAILED"
+        workers_done = json.loads(ckpt_file.read_text())
+        assert workers_done["stage"] == "workers_done"
+        output_receipt = workers_done["audit_context"]["durable_worker_output"]
+        assert output_receipt["artifact_hash"]
+        workflow = WorkerWorkflow.for_checkpoint(workers_done)
+        assert workflow.state()["status"] == "output_ready"
+
+        candidate_hash = tool_planning._complete_artifact_fingerprint(next_dir)
+        assert tool_helpers._record_gate(
+            11,
+            10,
+            "quality",
+            {
+                "all_passed": False,
+                "failed_gates": ["compile(strategy.py)"],
+                "code_fingerprint": candidate_hash,
+            },
+            stage="quality_failed",
+        )
+        downstream_checkpoint = json.loads(ckpt_file.read_text())
+        assert downstream_checkpoint["stage"] == "quality_failed"
+        assert downstream_checkpoint["audit_context"][
+            "durable_worker_output"
+        ] == output_receipt
+
+        with patch.object(
+            tool_planning,
+            "_execute_workers",
+            new_callable=AsyncMock,
+        ) as second_llm:
+            reconciled_result = asyncio.run(tool_planning.execute_workers.handler({
+                "tasks": [],
+                "next_v": 11,
+                "source_v": 10,
+            }))
+
+        reconciled = json.loads(reconciled_result["content"][0]["text"])
+        assert reconciled["success"] is True
+        assert reconciled["durable_recovery"] == (
+            "confirmed_downstream_worker_projection"
+        )
+        assert reconciled["current_checkpoint_stage"] == "quality_failed"
+        assert json.loads(ckpt_file.read_text()) == downstream_checkpoint
+        assert workflow.state()["status"] == "completed"
+        projected_events = [
+            event
+            for event in workflow.store.events(workflow.run_id)
+            if event.event_type == "WorkerProjected"
+        ]
+        assert len(projected_events) == 1
+        second_llm.assert_not_awaited()
+
+    @pytest.mark.parametrize("repair_kind", ["precommit", "official"])
+    def test_nonquality_infrastructure_retry_replays_frozen_task_once(
+        self, repair_kind, tmp_path, monkeypatch
+    ):
+        """Stage/NOTE-dependent repair prompts remain byte-identical on retry."""
+        import asyncio
+        import candidate_hygiene
+        import fix_injection
+        import tool_planning
+        from agent_workers import WorkerInfrastructureError
+
+        stage = f"{repair_kind}_failed"
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage=stage)
+        state = json.loads(ckpt_file.read_text())
+        state["master_plan"] = {"tasks": []}
+        if repair_kind == "precommit":
+            state["precommit_attempt"] = 1
+            state["precommit_rework_count"] = 0
+            state["reviewer_feedback"] = "Precommit failed: semantic regression in strategy.py"
+            state["gate_results"] = {
+                "quality": {"all_passed": True},
+                "review": {"approved": True},
+                "critic": {"approved": True},
+                "precommit_eval": {
+                    "passed": False,
+                    "blockers": [{"reason": "semantic_regression"}],
+                },
+            }
+            counter_key = "precommit_rework_count"
+        else:
+            state["official_rework_count"] = 0
+            state["reviewer_feedback"] = "Official obvious_decision_error in strategy.py"
+            state["gate_results"] = {
+                "official_full": {
+                    "passed": False,
+                    "issues": ["obvious_decision_error: river overcall strategy.py"],
+                    "official_evidence_summary": {
+                        "classification": "obvious_decision_error",
+                        "blocking": True,
+                    },
+                }
+            }
+            counter_key = "official_rework_count"
+        ckpt_file.write_text(json.dumps(state))
+
+        next_dir = tmp_path / "claude_v11"
+        worker_calls = []
+
+        async def worker(tasks, *_args, reviewer_feedback="", **_kwargs):
+            worker_dir = Path(_args[1])
+            worker_calls.append({
+                "tasks": json.loads(json.dumps(tasks)),
+                "reviewer_feedback": reviewer_feedback,
+            })
+            if len(worker_calls) == 1:
+                raise WorkerInfrastructureError(
+                    repair_kind,
+                    "Algorithmic Logic Architect",
+                    ["transport timeout"],
+                )
+            (worker_dir / "strategy.py").write_text("value = 2\n")
+            return True, {}, []
+
+        known_fixes = MagicMock(return_value=([], []))
+        hygiene = MagicMock(return_value=None)
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", known_fixes)
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+        monkeypatch.setattr(candidate_hygiene, "sanitize_candidate_dir", hygiene)
+
+        async def run_once():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=worker,
+            ), patch.object(
+                tool_planning,
+                "_validate_worker_boundaries",
+                return_value=[],
+            ):
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+                return json.loads(result["content"][0]["text"])
+
+        first = asyncio.run(run_once())
+        first_checkpoint = json.loads(ckpt_file.read_text())
+        assert first["action"] == "retry_same_tool"
+        assert first_checkpoint["stage"] == "rework_running"
+        assert first_checkpoint[counter_key] == 1
+        assert first["attempt"] == 1
+        assert first_checkpoint.get("infra_failure") is None
+
+        second = asyncio.run(run_once())
+        checkpoint = json.loads(ckpt_file.read_text())
+        assert second["success"] is True
+        assert checkpoint["stage"] == "workers_done"
+        assert checkpoint.get("infra_failure") is None
+        assert checkpoint[counter_key] == 1
+        assert len(worker_calls) == 2
+        assert worker_calls[1] == worker_calls[0]
+        assert known_fixes.call_count == 1
+        assert hygiene.call_count == 1
+
+    def test_rework_running_without_overlay_reuses_prepared_transaction(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed workers_done write cannot repeat precommit preparation."""
+        import asyncio
+        import candidate_hygiene
+        import fix_injection
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="precommit_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["master_plan"] = {"tasks": []}
+        state["precommit_attempt"] = 1
+        state["precommit_rework_count"] = 0
+        state["reviewer_feedback"] = "Precommit failed: strategy.py regression"
+        state["gate_results"] = {
+            "precommit_eval": {
+                "passed": False,
+                "blockers": [{"reason": "semantic_regression"}],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        next_dir = tmp_path / "claude_v11"
+        baseline = (next_dir / "strategy.py").read_bytes()
+        known_fixes = MagicMock(return_value=([], []))
+        hygiene = MagicMock(return_value=None)
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", known_fixes)
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+        monkeypatch.setattr(candidate_hygiene, "sanitize_candidate_dir", hygiene)
+        original_write = tool_planning.write_pipeline_checkpoint
+        failed_workers_done = False
+        worker_calls = 0
+
+        def fail_first_workers_done(next_v, source_v, stage, **kwargs):
+            nonlocal failed_workers_done
+            if stage == "workers_done" and not failed_workers_done:
+                failed_workers_done = True
+                return False
+            return original_write(next_v, source_v, stage, **kwargs)
+
+        async def worker(*_args, **_kwargs):
+            nonlocal worker_calls
+            worker_calls += 1
+            worker_dir = Path(_args[2])
+            (worker_dir / "strategy.py").write_text(
+                f"value = {worker_calls + 4}\n"
+            )
+            return True, {}, []
+
+        async def run_once():
+            with patch.object(
+                tool_planning,
+                "_execute_workers",
+                side_effect=worker,
+            ), patch.object(
+                tool_planning,
+                "_validate_worker_boundaries",
+                return_value=[],
+            ), patch.object(
+                tool_planning,
+                "write_pipeline_checkpoint",
+                side_effect=fail_first_workers_done,
+            ):
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+                return json.loads(result["content"][0]["text"])
+
+        first = asyncio.run(run_once())
+        first_checkpoint = json.loads(ckpt_file.read_text())
+        assert first["error"] == "DURABLE_WORKER_OUTPUT_PROJECTION_FAILED"
+        assert first_checkpoint["stage"] == "rework_running"
+        assert first_checkpoint["precommit_rework_count"] == 1
+        assert (next_dir / "strategy.py").read_text() == "value = 5\n"
+
+        second = asyncio.run(run_once())
+        checkpoint = json.loads(ckpt_file.read_text())
+        assert second["success"] is True
+        assert checkpoint["stage"] == "workers_done"
+        assert checkpoint["precommit_rework_count"] == 1
+        assert worker_calls == 1
+        assert known_fixes.call_count == 1
+        assert hygiene.call_count == 1
+
+    def test_rework_preparation_checkpoint_failure_restores_artifact(
+        self, tmp_path, monkeypatch
+    ):
+        """Reset/fix/trim bytes never escape without a repair receipt."""
+        import asyncio
+        import candidate_hygiene
+        import fix_injection
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy.py:2492L/2474L)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+        next_dir = tmp_path / "claude_v11"
+        baseline = (next_dir / "strategy.py").read_bytes()
+
+        def mutate_known_fixes(_path):
+            candidate = Path(_path)
+            (candidate / "strategy.py").write_text("known_fix = True\n")
+            (candidate / "known_fix.bin").write_bytes(b"temporary")
+            return ["mutated"], []
+
+        def mutate_mechanical_trim(*_args, **_kwargs):
+            candidate = Path(_args[1])
+            (candidate / "strategy.py").write_text("trimmed = True\n")
+            return [{"changed": True, "target": "strategy.py", "before": 10, "after": 1}]
+
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", mutate_known_fixes)
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+        monkeypatch.setattr(candidate_hygiene, "sanitize_candidate_dir", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            tool_planning,
+            "_apply_mechanical_file_size_trims",
+            mutate_mechanical_trim,
+        )
+
+        async def run_once():
+            with patch.object(
+                tool_planning,
+                "write_pipeline_checkpoint",
+                return_value=False,
+            ), patch.object(
+                tool_planning,
+                "_execute_workers",
+                new_callable=AsyncMock,
+            ) as worker:
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+                return json.loads(result["content"][0]["text"]), worker
+
+        result, worker = asyncio.run(run_once())
+        assert result["error"] == "REPAIR_BASELINE_CHECKPOINT_FAILED"
+        assert result["candidate_restored"] is True
+        assert (next_dir / "strategy.py").read_bytes() == baseline
+        assert not (next_dir / "known_fix.bin").exists()
+        assert json.loads(ckpt_file.read_text())["stage"] == "quality_failed"
+        worker.assert_not_called()
+
+    def test_rework_prepare_crash_resumes_frozen_staging_without_repreparing(
+        self, tmp_path, monkeypatch
+    ):
+        """A crash after the repair receipt must resume its immutable staging tree."""
+        import asyncio
+        import agent_workers
+        import evolution_infra
+        import fix_injection
+        import tool_planning
+        from worker_workflow import WorkerWorkflow
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy.py:2492L/2474L)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+        next_dir = tmp_path / "claude_v11"
+        canonical_before = (next_dir / "strategy.py").read_bytes()
+        preparation_calls = 0
+        worker_calls = 0
+        context_builder = MagicMock(
+            return_value={"schema_version": 1, "frozen_context": "before-crash"}
+        )
+        exhausted_reader = MagicMock(
+            return_value=[("direction", "old_exhausted_axis")]
+        )
+        monkeypatch.setattr(
+            agent_workers,
+            "build_worker_execution_context",
+            context_builder,
+        )
+        monkeypatch.setattr(
+            tool_planning,
+            "_extract_exhausted_keywords",
+            exhausted_reader,
+        )
+
+        def prepare_known_fix(candidate_dir):
+            nonlocal preparation_calls
+            preparation_calls += 1
+            candidate = Path(candidate_dir)
+            (candidate / "strategy.py").write_text("prepared = True\n")
+            return ["prepared frozen repair input"], []
+
+        async def worker(*_args, **_kwargs):
+            nonlocal worker_calls
+            worker_calls += 1
+            worker_dir = Path(_args[2])
+            assert (worker_dir / "strategy.py").read_text() == "prepared = True\n"
+            (worker_dir / "strategy.py").write_text("repaired = True\n")
+            return True, {}, []
+
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", prepare_known_fix)
+        monkeypatch.setattr(
+            fix_injection,
+            "log_fix_application",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            tool_planning,
+            "_apply_mechanical_file_size_trims",
+            lambda *_args, **_kwargs: [],
+        )
+        original_prepare = WorkerWorkflow.prepare
+
+        def crash_before_worker_prepared(self, envelope, *, max_attempts=3):
+            raise RuntimeError("process died before WorkerPrepared")
+
+        monkeypatch.setattr(
+            WorkerWorkflow,
+            "prepare",
+            crash_before_worker_prepared,
+        )
+        with pytest.raises(RuntimeError, match="before WorkerPrepared"):
+            asyncio.run(tool_planning.execute_workers.handler({
+                "tasks": [],
+                "next_v": 11,
+                "source_v": 10,
+            }))
+
+        interrupted = json.loads(ckpt_file.read_text())
+        work_item = interrupted["master_plan"]["work_item"]
+        assert interrupted["stage"] in {"repair_planned", "rework_running"}
+        assert work_item["prepared_snapshot_hash"]
+        assert work_item["repair_baseline_artifact_hash"]
+        assert work_item["frozen_worker_input_digest"]
+        assert work_item["frozen_worker_input"]["worker_execution_context"] == {
+            "schema_version": 1,
+            "frozen_context": "before-crash",
+        }
+        assert (next_dir / "strategy.py").read_bytes() == canonical_before
+        assert preparation_calls == 1
+
+        # Live evidence changes after the receipt must not rewrite this logical
+        # activity or trip a newly-populated cross-generation breaker.
+        failures_file = evolution_infra.RESULTS_DIR / "worker_failures.jsonl"
+        failures_file.parent.mkdir(parents=True, exist_ok=True)
+        failures_file.write_text("\n".join(
+            json.dumps({"next_v": version, "category": "worker"})
+            for version in (8, 9, 10)
+        ) + "\n")
+        context_builder.side_effect = AssertionError(
+            "live Worker context was reopened after preparation receipt"
+        )
+        exhausted_reader.side_effect = AssertionError(
+            "live exhausted evidence was reopened after preparation receipt"
+        )
+
+        monkeypatch.setattr(WorkerWorkflow, "prepare", original_prepare)
+        with patch.object(
+            tool_planning,
+            "_execute_workers",
+            side_effect=worker,
+        ), patch.object(
+            tool_planning,
+            "_validate_worker_boundaries",
+            return_value=[],
+        ):
+            resumed_result = asyncio.run(tool_planning.execute_workers.handler({
+                "tasks": [],
+                "next_v": 11,
+                "source_v": 10,
+            }))
+
+        resumed = json.loads(resumed_result["content"][0]["text"])
+        assert resumed["success"] is True
+        assert json.loads(ckpt_file.read_text())["stage"] == "workers_done"
+        assert (next_dir / "strategy.py").read_text() == "repaired = True\n"
+        assert preparation_calls == 1
+        assert worker_calls == 1
+        assert context_builder.call_count == 1
+        assert exhausted_reader.call_count == 1
+
+    def test_concurrent_idle_rework_commands_publish_preparation_once(
+        self, tmp_path, monkeypatch
+    ):
+        """The generation actor serializes repair preparation and WorkerPrepared."""
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        import fix_injection
+        import tool_planning
+        from worker_workflow import WorkerWorkflow
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy.py:2492L/2474L)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+        next_dir = tmp_path / "claude_v11"
+        preparation_entered = threading.Event()
+        allow_preparation = threading.Event()
+        preparation_calls = 0
+        worker_calls = 0
+
+        def blocking_known_fix(candidate_dir):
+            nonlocal preparation_calls
+            preparation_calls += 1
+            candidate = Path(candidate_dir)
+            (candidate / "strategy.py").write_text("prepared = True\n")
+            preparation_entered.set()
+            if not allow_preparation.wait(timeout=10):
+                raise RuntimeError("test did not release repair preparation")
+            return ["prepared once"], []
+
+        async def worker(*_args, **_kwargs):
+            nonlocal worker_calls
+            worker_calls += 1
+            worker_dir = Path(_args[2])
+            assert (worker_dir / "strategy.py").read_text() == "prepared = True\n"
+            (worker_dir / "strategy.py").write_text("repaired = True\n")
+            return True, {}, []
+
+        def invoke():
+            result = asyncio.run(tool_planning.execute_workers.handler({
+                "tasks": [],
+                "next_v": 11,
+                "source_v": 10,
+            }))
+            return json.loads(result["content"][0]["text"])
+
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", blocking_known_fix)
+        monkeypatch.setattr(
+            fix_injection,
+            "log_fix_application",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            tool_planning,
+            "_apply_mechanical_file_size_trims",
+            lambda *_args, **_kwargs: [],
+        )
+        with patch.object(
+            tool_planning,
+            "_execute_workers",
+            side_effect=worker,
+        ), patch.object(
+            tool_planning,
+            "_validate_worker_boundaries",
+            return_value=[],
+        ), patch.object(
+            tool_planning,
+            "_force_abandon_frozen_worker_generation",
+            new_callable=AsyncMock,
+        ) as forced_abandon, ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(invoke)
+            assert preparation_entered.wait(timeout=5)
+            second_future = pool.submit(invoke)
+            try:
+                competing = second_future.result(timeout=5)
+                # The losing command cannot rebuild staging, append a second
+                # WorkerPrepared, or clean up the canonical candidate.
+                assert competing["error"] == "WORKER_COMMAND_BUSY"
+                assert competing["action"] == "retry_same_tool"
+                assert next_dir.is_dir()
+            finally:
+                allow_preparation.set()
+            completed = first_future.result(timeout=15)
+
+        assert completed["success"] is True
+        assert preparation_calls == 1
+        assert worker_calls == 1
+        assert (next_dir / "strategy.py").read_text() == "repaired = True\n"
+        checkpoint = json.loads(ckpt_file.read_text())
+        workflow = WorkerWorkflow.for_checkpoint(checkpoint)
+        worker_prepared_events = [
+            event
+            for event in workflow.store.events(workflow.run_id)
+            if event.event_type == "WorkerPrepared"
+        ]
+        assert len(worker_prepared_events) == 1
+        assert workflow.state()["status"] == "completed"
+        forced_abandon.assert_not_awaited()
+
+    def test_worker_infrastructure_third_failure_exhausts_same_identity(
+        self, tmp_path, monkeypatch
+    ):
+        """Three identical outer outages consume, rather than reset, the budget."""
+        import asyncio
+        import fix_injection
+        import tool_bot_management
+        import tool_planning
+        from agent_workers import WorkerInfrastructureError
+
+        ckpt_file = self._setup_checkpoint(
+            tmp_path,
+            monkeypatch,
+            stage="quality_failed",
+        )
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["compile(strategy.py)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+        abandon = AsyncMock(return_value={"abandoned": True, "abandoned_v": 11})
+        monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", abandon)
+
+        async def unavailable(*_args, **_kwargs):
+            raise WorkerInfrastructureError(
+                "repair",
+                "Algorithmic Logic Architect",
+                ["timeout"],
+            )
+
+        async def run_once():
+            with patch.object(tool_planning, "_execute_workers", side_effect=unavailable):
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": [],
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+                return json.loads(result["content"][0]["text"])
+
+        results = [asyncio.run(run_once()) for _ in range(3)]
+        attempts = [result["attempt"] for result in results]
+        attempt_keys = {result["attempt_key"] for result in results}
+        assert attempts == [1, 2, 3]
+        assert len(attempt_keys) == 1
+        assert results[-1]["action"] == "abandon_generation"
+        from worker_workflow import WorkerWorkflow
+
+        workflow = WorkerWorkflow.for_checkpoint(
+            json.loads(ckpt_file.read_text())
+        )
+        assert workflow.state()["status"] == "abandoned"
+        abandon.assert_not_awaited()
 
     def test_quality_failed_rework_uses_checkpoint_feedback_and_sequential(self, tmp_path, monkeypatch):
         """quality_failed checkpoints should not depend on LLM-supplied feedback."""
@@ -4448,7 +5569,13 @@ class TestWorkerFailureCircuitBreaker:
 
         abandon_calls = []
 
-        async def _fake_force_abandon(next_v, source_v):
+        async def _fake_force_abandon(
+            next_v,
+            source_v,
+            *,
+            actor_lock_owned=False,
+        ):
+            assert actor_lock_owned is True
             abandon_calls.append((next_v, source_v))
             return {"abandoned": True, "abandoned_v": next_v}
 

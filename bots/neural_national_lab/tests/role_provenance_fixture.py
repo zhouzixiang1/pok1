@@ -1,6 +1,7 @@
 """Realistic non-outcome provenance for protected role-dataset tests."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -16,10 +17,95 @@ if str(TOOLS) not in sys.path:
 import freeze_opponent_role_dataset as freeze  # noqa: E402
 import longrun_collect_oppmodel as collector  # noqa: E402
 import migrate_oppmodel_collector_capacity as capacity_migration  # noqa: E402
+import opponent_role_freeze_plan as role_plan  # noqa: E402
 
 
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _embedded(path: Path, raw: bytes) -> dict[str, Any]:
+    return {
+        "path": str(path.resolve()), "bytes": len(raw), "sha256": _sha(raw),
+        "bytes_base64": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def _add_role_plan(root: Path, manifest: dict[str, Any], collection_raw: bytes) -> None:
+    collection = json.loads(collection_raw)
+    state_raw = json.dumps({
+        "completed_passes": 1,
+        "total_rows": {split: 0 for split in role_plan.SOURCE_SPLITS},
+        "total_behavior_rows": {split: 0 for split in role_plan.SOURCE_SPLITS},
+    }, sort_keys=True).encode()
+    ratings_raw = b"{}"
+    ledger_raw = json.dumps({
+        "schema": "opponent_exposure_ledger_v1", "events": [],
+    }, separators=(",", ":")).encode()
+    empty_sha = _sha(b"")
+    unsigned = {
+        "schema": role_plan.SCHEMA,
+        "created_at": "2026-07-12T00:00:00+00:00",
+        "source_dir": str(root.resolve()),
+        "expected_passes": role_plan.FORMAL_EXPECTED_PASSES,
+        "creation_git_commit": role_plan.current_git_commit(),
+        "toolchain": {
+            "plan_tool_sha256": _sha(Path(role_plan.__file__).read_bytes()),
+            "freeze_tool_sha256": _sha(Path(freeze.__file__).read_bytes()),
+        },
+        "collection_manifest": _embedded(root / "collection_manifest.json", collection_raw),
+        "creation_state": {
+            "file": _embedded(root / "collector_state.json", state_raw),
+            "completed_passes": 1,
+            "total_rows": json.loads(state_raw)["total_rows"],
+            "total_behavior_rows": json.loads(state_raw)["total_behavior_rows"],
+        },
+        "completed_prefix": {
+            "pool_snapshots": {
+                "path": str((root / "pool_snapshots.jsonl").resolve()),
+                "rows": 1, "bytes": 3, "sha256": _sha(b"{}\n"),
+            },
+            "pass_plan_sha256": {"pass_0001.json": "0" * 64},
+            "data": {
+                f"{prefix}_{split}.jsonl": {
+                    "path": str((root / f"{prefix}_{split}.jsonl").resolve()),
+                    "rows": 0, "bytes": 0, "sha256": empty_sha,
+                }
+                for prefix in role_plan.PREFIXES
+                for split in role_plan.SOURCE_SPLITS
+            },
+        },
+        "ratings_snapshot": _embedded(
+            Path(collection["resume_contract"]["ratings_path"]), ratings_raw
+        ),
+        "ledger_prefix": {
+            "path": str((root / "exposure_ledger.json").resolve()),
+            "file_at_creation": _embedded(root / "exposure_ledger.json", ledger_raw),
+            "schema": "opponent_exposure_ledger_v1",
+            "event_count": 0,
+            "events": [],
+            "events_sha256": role_plan.canonical_sha256([]),
+        },
+        "roles": {
+            role: list(manifest["roles"][role]) for role in role_plan.EXPLICIT_ROLES
+        },
+        "minimum_rows": {
+            prefix: dict(rows)
+            for prefix, rows in role_plan.FORMAL_MINIMUM_ROWS.items()
+        },
+        "deployment_policy_value": False,
+        "strength_evidence": False,
+    }
+    plan = {**unsigned, "payload_sha256": role_plan.canonical_sha256(unsigned)}
+    raw = json.dumps(plan, indent=2, sort_keys=True).encode()
+    (root / role_plan.PLAN_FILENAME).write_bytes(raw)
+    manifest["role_minimum_rows"] = plan["minimum_rows"]
+    manifest["role_precommit_plan"] = {
+        "filename": role_plan.PLAN_FILENAME,
+        "bytes": len(raw),
+        "sha256": _sha(raw),
+        "payload_sha256": plan["payload_sha256"],
+    }
 
 
 def add_formal_role_provenance(
@@ -271,6 +357,8 @@ def add_formal_role_provenance(
         "input_files": {},
         "freeze_tool_sha256": _sha(Path(freeze.__file__).read_bytes()),
     })
+    if passes == role_plan.FORMAL_EXPECTED_PASSES:
+        _add_role_plan(root, manifest, collection_raw)
 
 
 def convert_to_legacy_recovery_prefix(

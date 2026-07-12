@@ -186,6 +186,27 @@ def test_overlay_fails_closed_for_non_mapping_and_owner_stage_mismatch():
     assert "infra_failure_owner_stage_mismatch" in validate_infrastructure_failure(overlay)
 
 
+def test_worker_retry_directive_calls_owner_without_contradiction():
+    overlay = build_infrastructure_failure(
+        None,
+        component="worker_llm",
+        code="worker_llm_unavailable",
+        owner_tool="execute_workers",
+        resume_stage="rework_running",
+        attempt_key="worker-identity",
+        issues=["timeout"],
+        max_attempts=3,
+        now=1,
+    )
+
+    route = infrastructure_route({"infra_failure": overlay})
+
+    assert route["next_tool"] == "execute_workers"
+    assert "Retry execute_workers" in route["directive"]
+    assert "do not call any other pipeline tool" in route["directive"]
+    assert "do not call execute_workers" not in route["directive"]
+
+
 def test_overlay_mutation_requires_owner_and_compare_and_swap(tmp_path, monkeypatch):
     state_file = tmp_path / "pipeline_state.json"
     monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", state_file)

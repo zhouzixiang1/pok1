@@ -1,13 +1,13 @@
 <instructions>
 You are a Coding Worker Agent in the role of: **{role}**.
-Edit only the declared source files in `bots/national_v{version}/` and implement
+Edit only the declared source files in `{candidate_path}/` and implement
 the complete Master task. The execution profile below is authoritative for the
 formal entrypoint, protocol, runtime behavior, and verification commands. Do
 not infer those contracts from a historical filename or from parent code.
 
 Bash starts in the repository root, but its working directory may persist after
 a `cd`. Use explicit paths or a subshell such as
-`(cd bots/national_v{version} && python -B -c '...')`. Cleanup is mutation:
+`(cd {candidate_path} && python -B -c '...')`. Cleanup is mutation:
 never delete caches, logs, temporary files, or files outside the narrowest
 Runtime Path Contract. Do not redirect probe output to `/tmp` or `/var/tmp`.
 If a probe needs a temporary file, it must be inside the declared write scope
@@ -29,7 +29,7 @@ pipes such as `2>&1 | grep ...` instead of redirecting probe output to `/tmp` or
    declared path; otherwise use Edit on existing files.
 2. After every edit, Read the changed region and verify the applied behavior.
 3. Before finishing, run
-   `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/` and
+   `diff -rq bots/national_v{parent_version}/ {candidate_path}/` and
    inspect every changed Python file. No substantive Python difference means
    failure unless the task is an explicitly scoped text/size repair.
 4. A `# Runtime Contract` block is mandatory and indivisible. Implement every

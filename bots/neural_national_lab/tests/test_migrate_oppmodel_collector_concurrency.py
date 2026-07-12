@@ -4,6 +4,7 @@ import fcntl
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -15,6 +16,7 @@ TOOLS = ROOT / "bots" / "neural_national_lab" / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
+import collector_systemd_quiescence as systemd_quiescence  # noqa: E402
 import freeze_opponent_role_dataset as freeze  # noqa: E402
 import migrate_oppmodel_collector_concurrency as migration  # noqa: E402
 import migrate_oppmodel_collector_capacity as capacity_migration  # noqa: E402
@@ -567,6 +569,91 @@ def test_formal_freezer_replays_mixed_1x4_6x2_and_6x4_profiles(
         "national_native_sha256": current_contract["national_native_sha256"],
     }
     tail_path = root / "pass_plans" / "pass_0004.json"
+    pool3_sha = hashlib.sha256(b"".join(pool_lines[:3])).hexdigest()
+    intent = {
+        "schema": capacity_migration.MIGRATION_INTENT_SCHEMA,
+        "source_dir": str(root.resolve()),
+        "expected_boundary": 3,
+        "workers": 6,
+        "probe_workers": 4,
+        "max_active_native_matches": 24,
+        "capacity_total_slots": 28,
+        "capacity_first_slot": 4,
+        "source_collector_sha256": schema6_contract["collector_sha256"],
+        "collection_manifest_sha256": hashlib.sha256(schema6_raw).hexdigest(),
+        "collector_state_sha256": state3["sha256"],
+        "pool_snapshots_sha256": pool3_sha,
+        "pool_snapshot_rows": 3,
+        "pass_plan_prefix_sha256": capacity_migration._canonical_sha256({
+            "plans": {
+                f"pass_{index:04d}.json": hashlib.sha256(
+                    (root / "pass_plans" / f"pass_{index:04d}.json").read_bytes()
+                ).hexdigest()
+                for index in (1, 2, 3)
+            },
+            "planned_tail": {
+                "name": tail_path.name,
+                "bytes": tail_path.stat().st_size,
+                "sha256": hashlib.sha256(tail_path.read_bytes()).hexdigest(),
+                "published_rows_at_migration": 0,
+                "execution_status": capacity_migration.TAIL_EXECUTION_STATUS,
+            },
+        }),
+        "data_prefix_sha256": capacity_migration._canonical_sha256({
+            "data": empty_data,
+            "row_identity": capacity_migration.stable_row_identity_receipt({
+                "cf": [], "opponent_actions": [],
+            }),
+        }),
+        "opponent_registry_sha256": hashlib.sha256(
+            (root / "opponent_snapshots.completed.json").read_bytes()
+        ).hexdigest(),
+        "temporary_outputs_absent": True,
+        "migration_tool_sha256": hashlib.sha256(
+            Path(capacity_migration.__file__).read_bytes()
+        ).hexdigest(),
+        "systemd_quiescence_sha256": hashlib.sha256(
+            Path(systemd_quiescence.__file__).read_bytes()
+        ).hexdigest(),
+    }
+    argv = [
+        "python", "longrun_collect_oppmodel.py", "--out-dir",
+        str(root.resolve()),
+    ]
+    running_unsigned = {
+        "schema": systemd_quiescence.RUNNING_UNIT_SCHEMA,
+        "collector_unit": "neural-v4-collector.service",
+        "source_dir": str(root.resolve()),
+        "load_state": "loaded",
+        "transient": "yes",
+        "kill_mode": "control-group",
+        "restart": "no",
+        "collect_mode": "inactive",
+        "main_pid": 123,
+        "active_state": "active",
+        "control_group": "/fixture/collector.service",
+        "working_directory": str(TOOLS.resolve()),
+        "invocation_id": "a" * 32,
+        "exec_start": f"{{ path=/python ; argv[]={' '.join(argv)} ; }}",
+        "process_argv": argv,
+        "process_scan_uid": os.getuid(),
+        "process_start_ticks": 1,
+        "process_state": "T",
+        "process_cgroups": ["/fixture/collector.service"],
+        "process_cwd": str(TOOLS.resolve()),
+        "collector_script_path": str(
+            (TOOLS / "longrun_collect_oppmodel.py").resolve()
+        ),
+        "collector_script_sha256": schema6_contract["collector_sha256"],
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "captured_monotonic_ns": 1,
+        "stop_requested_by_tool": True,
+        "migration_intent": intent,
+    }
+    running_unit = {
+        **running_unsigned,
+        "receipt_sha256": systemd_quiescence._canonical_sha256(running_unsigned),
+    }
     unsigned7 = {
         "schema_version": capacity_migration.MIGRATION_SCHEMA_VERSION,
         "mode": capacity_migration.MIGRATION_MODE,
@@ -611,6 +698,9 @@ def test_formal_freezer_replays_mixed_1x4_6x2_and_6x4_profiles(
                 "sha256": hashlib.sha256(
                     (root / "opponent_snapshots.completed.json").read_bytes()
                 ).hexdigest(),
+                "bytes_base64": base64.b64encode(
+                    (root / "opponent_snapshots.completed.json").read_bytes()
+                ).decode("ascii"),
             },
         },
         "planned_tail": {
@@ -628,12 +718,16 @@ def test_formal_freezer_replays_mixed_1x4_6x2_and_6x4_profiles(
             "transient": "yes",
             "kill_mode": "control-group",
             "restart": "no",
+            "collect_mode": "inactive",
             "main_pid": 0,
             "active_state": "inactive",
             "control_group": "/fixture/collector.service",
+            "unit_disposition": "loaded_inactive",
+            "running_unit": running_unit,
+            "control_groups_checked": ["/fixture/collector.service"],
             "control_group_present": False,
             "cgroup_process_count": 0,
-            "process_scan_uid": 1000,
+            "process_scan_uid": os.getuid(),
             "process_markers": list(capacity_migration.PROCESS_MARKERS),
             "matching_process_count": 0,
         },

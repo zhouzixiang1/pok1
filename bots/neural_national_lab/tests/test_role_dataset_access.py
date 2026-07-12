@@ -22,6 +22,7 @@ from opponent_response_schema import (  # noqa: E402
     response_schema_metadata,
 )
 import role_dataset_access as access  # noqa: E402
+import opponent_role_freeze_plan as role_plan  # noqa: E402
 from bots.neural_national_lab.tests.role_provenance_fixture import (  # noqa: E402
     add_formal_role_provenance,
     convert_to_legacy_recovery_prefix,
@@ -46,7 +47,7 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
     }
     outputs = {}
     for prefix in freeze.PREFIXES:
-        for role, opponents in roles.items():
+        for role_index, (role, opponents) in enumerate(roles.items(), 1):
             filename = f"{prefix}_{role}.jsonl"
             row = {
                 "opponent": opponents[0],
@@ -92,10 +93,24 @@ def _dataset(tmp_path: Path, *, complete: bool = True) -> tuple[Path, Path]:
                     "state": {"round": 0, "pot": 150, "to_call": 50},
                 })
                 row = annotate_response_row(row)
-            raw = (json.dumps(row) + "\n").encode()
+            count = (
+                role_plan.FORMAL_MINIMUM_ROWS[prefix][role]
+                if complete else 1
+            )
+            rows = []
+            for index in range(count):
+                sample = dict(row)
+                sample.update({
+                    "deck_seed_base": role_index * 1_000_000 + index // 70,
+                    "bot_seed_base": role_index * 2_000_000 + index // 70,
+                    "hand": index % 70 + 1,
+                    "hand_decision_index": 0,
+                })
+                rows.append(json.dumps(sample) + "\n")
+            raw = "".join(rows).encode()
             (root / filename).write_bytes(raw)
             outputs[filename] = {
-                "rows": 1,
+                "rows": count,
                 "bytes": len(raw),
                 "sha256": _sha(raw),
                 "opponents": opponents,
@@ -277,8 +292,10 @@ def test_open_records_exposure_and_validates_both_modalities(tmp_path: Path) -> 
 
     opened = dataset.open_role("train")
 
-    assert len(opened["value"]) == 1
-    assert len(opened["behavior"]) == 1
+    assert len(opened["value"]) == role_plan.FORMAL_MINIMUM_ROWS["cf"]["train"]
+    assert len(opened["behavior"]) == role_plan.FORMAL_MINIMUM_ROWS[
+        "opponent_actions"
+    ]["train"]
     report = ledger.status(dataset.ledger_path)
     exposure = report["opponents"]["national_v1"]["exposures"][0]
     assert exposure["role"] == "train"
@@ -482,7 +499,7 @@ def test_canonical_response_validation_cannot_be_bypassed_by_manifest(
 ) -> None:
     manifest_path, ledger_path = _dataset(tmp_path)
     path = manifest_path.parent / "opponent_actions_train.jsonl"
-    row = json.loads(path.read_text())
+    row = json.loads(path.read_text().splitlines()[0])
     row["response_legal_action_mask"][row["opponent_action_label_id"]] = 0
     raw = (json.dumps(row) + "\n").encode()
     path.write_bytes(raw)
@@ -519,7 +536,7 @@ def test_zero_context_validation_cannot_be_bypassed_by_manifest(
 ) -> None:
     manifest_path, ledger_path = _dataset(tmp_path)
     path = manifest_path.parent / filename
-    row = json.loads(path.read_text())
+    row = json.loads(path.read_text().splitlines()[0])
     row["request"] = context
     raw = (json.dumps(row) + "\n").encode()
     path.write_bytes(raw)

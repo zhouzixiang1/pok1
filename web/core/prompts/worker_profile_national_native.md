@@ -174,9 +174,9 @@ use official EXE or Web Arena chip outcomes as strength evidence.
 
 <profile_verification>
 Run all of these without writing probe artifacts:
-1. `python -m py_compile bots/national_v{version}/*.py`
-2. `(cd bots/national_v{version} && python -B -c "import national_bot")`
-3. `PYTHONPATH=web/core python -B -c "from national_native import check_native_contract; e=check_native_contract('bots/national_v{version}', require_current_stream_decoder=True, require_current_decision_runtime=True); print(e); raise SystemExit(bool(e))"`
+1. `python -m py_compile {candidate_path}/*.py`
+2. `(cd {candidate_path} && python -B -c "import national_bot")`
+3. `PYTHONPATH=web/core python -B -c "from national_native import check_native_contract; e=check_native_contract('{candidate_path}', require_current_stream_decoder=True, require_current_decision_runtime=True); print(e); raise SystemExit(bool(e))"`
 4. Inspect the formal native diff and confirm no adapter import, JSON response,
    newline-framed socket read, stdout diagnostic, or full-history decision scan.
 The trusted quality gate owns the sandbox runtime capability probe and local

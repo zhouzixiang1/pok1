@@ -386,6 +386,9 @@ def test_execute_workers_rejects_caller_rewritten_initial_task_before_llm(
     checkpoint = {
         "next_v": 11,
         "source_v": 10,
+        "run_id": "11#0",
+        "workflow_run_id": "test-worker-plan-11-10",
+        "checkpoint_revision": 1,
         "stage": "master_planned",
         "master_plan": {"tasks": [deepcopy(authoritative_task)]},
         "audit_context": {
@@ -466,6 +469,9 @@ def test_must_change_cannot_expand_worker_or_repair_write_authority(
     checkpoint = {
         "next_v": 21,
         "source_v": 20,
+        "run_id": "21#0",
+        "workflow_run_id": "test-worker-authority-21-20",
+        "checkpoint_revision": 1,
         "stage": "master_planned",
         "master_plan": {"tasks": [deepcopy(task)]},
         "audit_context": {

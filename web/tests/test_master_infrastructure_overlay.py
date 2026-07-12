@@ -28,6 +28,9 @@ def test_master_source_probe_retries_same_tool_then_abandons(tmp_path, monkeypat
     state_file.write_text(json.dumps({
         "next_v": 2,
         "source_v": 1,
+        "run_id": "2#0",
+        "workflow_run_id": "test-master-probe-2-1",
+        "checkpoint_revision": 1,
         "stage": "direction_audited",
         "master_plan": None,
         "reviewer_feedback": "",

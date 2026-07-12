@@ -371,6 +371,8 @@ chip results have zero strength weight.
 - `evaluation_bundle.py`, `evidence_snapshot.py`, `rating_snapshot.py` - immutable daemon-cycle publication, strict generation cutoffs, and unified strength rows.
 - `bot_action_stats.py`, `replay_spotlight.py` - committed native tracker aggregation and hand-level diagnostic evidence.
 - `master_context_contract.py`, `plan_compiler.py`, `strategy_reference_pack.py` - digest-bound planning evidence, deterministic worker-contract compilation, and typed local strategy cards.
+- `workflow_kernel.py`, `worker_workflow.py` - Worker-only SQLite-WAL journal, fenced effect/outbox leases, pure replay reducer, immutable candidate artifacts, and crash-safe projection. The rest of the pipeline still uses the versioned JSON checkpoint; do not describe the whole pipeline as event-sourced.
+- `poker_assets.py` - system-owned content-addressed/read-only mmap ABI for the real 1,326 hole-combination and 169-class metadata. It is an asset-contract prototype, not an evaluator, equity table, policy, or current bot decision consumer.
 - `orchestrator.py` - Claude agent loop with MCP tools.
 - `tools.py`, `tool_planning.py`, `tool_gates.py`, `tool_eval.py`, `tool_commit.py`, `tool_status.py`, `tool_bot_management.py` - MCP tools.
 - `agent_master.py`, `agent_workers.py`, `agent_review.py`, `audit_agents.py` - LLM roles and advisory audits.
@@ -408,8 +410,13 @@ than inheriting stale provenance/runtime evidence.
 
 Every preparation path, including single-parent copy, freezes a common complete
 artifact manifest/hash before Master. Workers may create declared binary assets,
-but their full batch is byte-snapshotted and atomic; any partial failure restores
-the pre-batch artifact. Gate-derived rework feedback/tasks are checkpoint-owned,
+but they edit only lease-epoch isolated workspaces. Their full batch is
+byte-snapshotted and atomic; any partial failure restores the pre-batch artifact,
+and successful output is content-addressed before actor-serialized materialization
+to the canonical candidate. Infrastructure retry reuses the frozen tasks,
+feedback, source/template/backend hashes, dynamic context, exhausted-direction
+evidence, and preparation snapshot instead of reconstructing them from live
+files. Gate-derived rework feedback/tasks are checkpoint-owned,
 and caller echoes cannot add files or blockers. `must_change_files` never grants
 write authority. Quality binds repair baselines, removes transient caches/context,
 forbids candidate-owned external/import-time I/O, and evaluates prepared→final
@@ -417,11 +424,16 @@ regular-file changes. Publication cross-checks working bytes, staged Git blobs,
 and the immutable tag tree; ignored/empty/nested-Git artifacts are rejected.
 
 The checked-in strategy reference pack is intentionally a small typed registry,
-not a prose dump. Compact import-time facts (1,326 hole combinations, 8,192 rank
-masks, 21 five-of-seven selections) are allowed. Larger packed/mmap tables remain
-deferred until a system-owned read-only loader, packaging proof, hash/key/consumer
-contract, and official submission compatibility exist; candidate file I/O is
-currently forbidden.
+not a prose dump. Master first samples three independent proposals, validates
+their source symbols and syntactic call leaves, obtains two anonymous criterion
+ballots, and selects exactly one proposal ID. The selected structural change,
+expected diff, falsifier, call chain, and contract digest are system-compiled
+into the matching Worker prompts and frozen envelope. Compact import-time facts
+(1,326 hole combinations, 8,192 rank masks, 21 five-of-seven selections) are
+allowed. The shared mmap prototype currently contains metadata only. Larger
+evaluator/equity/blueprint assets remain deferred until a system-owned packager,
+hash/key/consumer contract, official submission compatibility, and measured
+decision influence exist; candidate file I/O is currently forbidden.
 
 Important current thresholds:
 
@@ -434,6 +446,8 @@ Important current thresholds:
 - Decision tests require pass rate at least 70 percent and no critical scenario failures.
 - `run_quality_gates` runs the national protocol regression shard that matches the active execution mode. `national_native` runs `sever/tests/test_national_platform_alignment.py` without importing the legacy adapter; adapter workflows still run `sever/tests/test_national_alignment.py`.
 - Worker concurrency is capped by `MAX_PARALLEL_WORKERS = 3`, with adaptive throttling under API pressure.
+- `pipeline_state.json` carries immutable `workflow_run_id` and monotonic `checkpoint_revision` CAS. Active legacy checkpoints without those fields must be centrally abandoned while stopped; never upgrade them implicitly.
+- `docs/official-raise-boundary-oracle-2026-07-11.md` and `docs/official-terminal-settlement-oracle-2026-07-11.md` are always-critical exact-file evaluation inputs. Their SHA-256 values are pinned by `runtime_architecture_policy.py`; control-plane changes verify hashes but do not rerun the official EXE.
 - Critic is advisory strategy evidence. A successful schema-valid Critic run is required, but its score does not schedule repair or decide acceptance; native TCP precommit is the local strategy gate.
 - `run_precommit_eval` is the final local strength/regression gate. It cannot replace official EXE compliance.
 - `commit_bot` cannot commit/tag a new national bot until a content-bound, signed full official EXE certificate validates.
@@ -490,12 +504,20 @@ Evolution Glicko-2:
   resume/migration trust chain binds both `runtime_capacity.py` and the
   `national_native.py` consumer; do not weaken or bypass those bindings.
 - A live schema-6-to-7 collector switch must stop the explicit transient
-  systemd unit as a control group. Capacity migration apply is valid only with
-  its receipt-bound zero-process proof (`KillMode=control-group`, `Restart=no`,
-  inactive, `MainPID=0`, empty cgroup subtree, and no matching same-UID
-  collector/probe command line). The migration also rejects duplicate stable
+  systemd unit as a control group. The migration tool's mandatory capture mode
+  binds InvocationID, ExecStart, PID start ticks, process/systemd cgroups,
+  executed collector bytes/working directory, source-prefix hashes, and target
+  topology. It first proves every cgroup PID is stopped, writes a no-clobber
+  receipt, then kills the complete control group. Post-stop verification accepts a
+  loaded inactive unit or its normal transient-unit GC only with that binding,
+  an empty cgroup subtree, and no matching same-UID collector/probe command
+  line. The migration also rejects duplicate stable
   row identities in both value and opponent-action prefixes and revalidates all
   bound evidence immediately before manifest replacement.
+  `collector_systemd_quiescence.py` owns this capture/stop/verification boundary;
+  dry-run and apply both require its same-boot, freshness-bounded receipt.
+  Historical registry mappings used by completed plans are immutable, while
+  later schema-7 passes may append newly completed rated opponents.
 - The daemon maintains H2H and bot statistics in addition to ratings.
 - Reaping sorts by conservative Glicko rating as the primary cull key. Reap events include `selection_key=conservative_glicko`, `conservative_rating`, `leaderboard_score`, and `h2h_avg_wr` so logs show both the actual decision key and contextual matchup metrics.
 

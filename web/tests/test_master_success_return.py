@@ -17,13 +17,48 @@ mocked) and asserts:
 
 import json
 import asyncio
+import hashlib
 from pathlib import Path
 
 import pytest
 
+BOUND_TARGETED_FAILURE = (
+    "The selected evidence-bound mechanism fixes one reachable parent decision failure."
+)
+BOUND_PROPOSAL = {
+    "schema_version": "master-proposal-v2",
+    "targeted_failure": BOUND_TARGETED_FAILURE,
+    "structural_change": "Replace one reachable parent branch with a bounded mechanism.",
+    "counterfactual": "Hold cards, seed, state, and legality fixed while toggling only the mechanism.",
+    "measurement": "Run paired positive and control decisions before the native regression gate.",
+    "why_not_threshold_tuning": "The change replaces state flow and its consumer rather than one numeric cutoff.",
+    "expected_diff": "The existing get_action to choose_action path consumes the new mechanism.",
+    "target_files": ["strategy.py"],
+    "source_symbols": ["strategy.py:get_action", "strategy.py:choose_action"],
+    "reachable_chain": ["strategy.py:get_action", "strategy.py:choose_action"],
+    "falsifier": {
+        "test_name": "test_selected_mechanism",
+        "control": "The frozen parent keeps the original decision on the paired state.",
+        "intervention": "Only the selected mechanism changes on the paired state.",
+        "expected_observation": "The intervention changes the target action and control does not.",
+    },
+    "evidence_refs": [
+        "source:strategy.py:get_action",
+        "source:strategy.py:choose_action",
+    ],
+    "risks": "Sparse evidence can overfit, so the mechanism and fallback remain bounded.",
+}
+PROPOSAL_ID = hashlib.sha256(json.dumps(
+    BOUND_PROPOSAL,
+    sort_keys=True,
+    ensure_ascii=False,
+    separators=(",", ":"),
+).encode("utf-8")).hexdigest()[:16]
+BOUND_PROPOSAL["proposal_id"] = PROPOSAL_ID
+
 VALID_PLAN = {
     "analysis": "Deliver the check_raise_freq detector to fix the 0%-fold leak.",
-    "targeted_failure": "0% postflop fold rate vs aggressive opponents (v109/v93/v77 at 30%).",
+    "targeted_failure": BOUND_TARGETED_FAILURE,
     "expected_behavior_change": "Bot folds marginal one-pair hands facing a live check-raise.",
     "do_not_touch": ["card_utils.py", "constants.py"],
     "measurement_plan": "Mirror battles vs v109/v93; paired net-chips CI lower bound > 0.",
@@ -37,6 +72,7 @@ VALID_PLAN = {
             "worker_prompt": "Add check_raise_trap_severity() to opponent.py and wire into strategy.py fold sites.",
         }
     ],
+    "selected_proposal_id": PROPOSAL_ID,
 }
 
 
@@ -92,7 +128,18 @@ def _stable_generation_evidence(monkeypatch, tmp_path):
         lambda *_args, **_kwargs: "Stable test evaluation snapshot contract.",
     )
     async def no_ensemble(*_args, **_kwargs):
-        return "Proposal ensemble stubbed for the single-plan unit contract."
+        return json.dumps({
+            "schema_version": "master-proposal-packet-v2",
+            "valid": True,
+            "authority": "advisory_only",
+            "context_digest": "c" * 64,
+            "source_code_digest": "d" * 64,
+            "proposal_count": 1,
+            "valid_critic_count": 2,
+            "allowed_proposal_ids": [PROPOSAL_ID],
+            "ordered_proposals": [BOUND_PROPOSAL],
+            "critic_reviews": [],
+        })
 
     monkeypatch.setattr(agent_master, "_run_master_proposal_ensemble", no_ensemble)
 
@@ -182,6 +229,8 @@ async def test_master_binds_valid_structured_contract_without_lexical_retry(monk
     start = prompt.index('{\n  "analysis": "Strategic analysis as a single string.')
     end = prompt.index("\n\n- Do NOT include `branch_from`", start)
     structured_plan = json.loads(prompt[start:end])
+    structured_plan["targeted_failure"] = BOUND_TARGETED_FAILURE
+    structured_plan["selected_proposal_id"] = PROPOSAL_ID
     structured_plan["tasks"][0]["worker_prompt"] = (
         "Implement the selected valid structured runtime mechanism in strategy.py "
         "and run only the declared checks."
@@ -225,6 +274,8 @@ async def test_master_does_not_bind_invalid_work_primitive(monkeypatch):
     start = prompt.index('{\n  "analysis": "Strategic analysis as a single string.')
     end = prompt.index("\n\n- Do NOT include `branch_from`", start)
     invalid_plan = json.loads(prompt[start:end])
+    invalid_plan["targeted_failure"] = BOUND_TARGETED_FAILURE
+    invalid_plan["selected_proposal_id"] = PROPOSAL_ID
     invalid_plan["tasks"][0]["runtime_contract"]["state_learning"]["work_primitive"] = []
     original_worker_prompt = invalid_plan["tasks"][0]["worker_prompt"]
     outputs = []

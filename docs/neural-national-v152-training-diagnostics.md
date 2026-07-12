@@ -1399,6 +1399,34 @@ not create strength evidence before the independent collection is complete.
 After this hardening, the complete neural-lab suite passes 484 tests and all 33
 national protocol tests pass.
 
+## Formal Role Precommit Before Pass 160
+
+Formal v4 work no longer accepts role names chosen only when the completed
+corpus is frozen. `opponent_role_freeze_plan.py` must publish one no-clobber
+`opponent_role_freeze_plan_v1` artifact while the atomic collector state is
+still below 160/160. Its CLI is read-only by default; `--apply` is required to
+write the mode-0444 plan. The plan binds the creation Git commit, the plan and
+freeze tool hashes, the complete collection-manifest bytes, the atomic state,
+pool, pass-plan, and six JSONL prefixes visible at creation, an embedded ratings
+snapshot, the append-only exposure-ledger event prefix, the exact opponent
+assignment, and false deployment/strength authority.
+
+The precommitted minimums are 500/100 value rows for train/evaluation roles and
+2,000/500 behavior rows for train/evaluation roles. A formal 160-pass freeze
+requires `--role-plan` before any sample file is opened, requires the requested
+roles and floors to match exactly, proves that every creation prefix is still
+unchanged while the collection advanced monotonically, and permits only an
+append-only ledger tail. It copies the plan into the frozen role dataset and
+records its byte hash, self-hash, and floors in `role_manifest.json`.
+`RoleDatasetAccess` replays that plan without reopening live ratings or the live
+ledger and rejects any formal role output below its precommitted floor. An
+incomplete smoke may omit the plan, but it retains false authority and cannot
+be reused as a formal 160-pass artifact.
+
+Together with exposure-intent ordering and same-byte checkpoint export, this
+protection revision passes all 710 neural-lab tests and all 33 national TCP
+tests.
+
 ## Formal V4 Grid Resumability And Proof Binding
 
 The 36-job formal grid can now resume without treating a directory name or an
@@ -1428,15 +1456,25 @@ metadata temporary left by process termination between `fsync` and rename is
 also quarantined on resume rather than blocking an otherwise valid run root.
 
 Training-role evidence is checked from the raw append-only ledger rather than
-its expanded per-opponent view. The complete ledger must have canonical fields,
-continuous non-boolean sequence numbers, canonical opponent groups, valid UTC
-timestamps and hashes, and known event/role combinations. Each training run ID
-must have exactly two complete group events in `train` then `early_stop` order,
-with no candidate hash or other role. A canonical per-run receipt digest enters
-the scaling row and formal proof. The final all-job verification uses one
-shared-lock ledger snapshot and holds that lock through atomic summary
-publication, so unrelated concurrent runs may append before or after the
-barrier but the published grid cannot race a same-run mutation.
+its expanded per-opponent view. Before statting or hashing either role JSONL,
+the scaling runner opens a dedicated `<run-prefix>-scaling-contract-intent`
+event for `train` and then `early_stop`, using only opponents and composite
+artifact hashes already present in the frozen manifest. Both canonical events
+and their receipt hash enter the immutable collection boundary. A later file,
+trainer, or contract failure leaves those conservative exposures in place;
+resume replays them idempotently. A formal contract with the intent removed is
+rejected even if its outer payload hash is recomputed. Only legacy incomplete
+smoke contracts may lack this newer nested receipt.
+
+The complete ledger must have canonical fields, continuous non-boolean sequence
+numbers, canonical opponent groups, valid UTC timestamps and hashes, and known
+event/role combinations. Each training job run ID must have exactly two complete
+group events in `train` then `early_stop` order, with no candidate hash or other
+role. A canonical per-run receipt digest enters the scaling row and formal
+proof. The final all-job verification uses one shared-lock ledger snapshot and
+holds that lock through atomic summary publication, so unrelated concurrent
+runs may append before or after the barrier but the published grid cannot race
+a same-run mutation.
 
 Formal calibration no longer trusts even a self-consistent embedded proof. It
 reloads every real member on CPU, recomputes the winner, and binds each verified
@@ -1483,7 +1521,13 @@ from current checkpoints and calibration artifacts during protected replay.
 The final exporter independently caps canonical output at exactly 50,000,000
 bytes before it creates an output path. A selected bundle must carry the same
 preselection identity; the exporter and gate recompute it rather than trusting
-the embedded digest. After the builder copies the final bundle and all stdlib
+the embedded digest. Every ensemble member checkpoint is read once through a
+regular-file, no-symlink snapshot descriptor; the exporter verifies the
+snapshot receipt and declared SHA-256, then passes those exact bytes to
+`torch.load` through `BytesIO`. It never reopens the checkpoint pathname for
+model loading, so a temporary replace-and-restore race cannot inject weights
+that differ from the checkpoint bound by calibration. After the builder copies
+the final bundle and all stdlib
 modules into its temporary native candidate, it runs the same isolated
 benchmark again and writes `V4_RUNTIME_BUDGET.json`. This second artifact binds
 the final bundle byte count and SHA-256, stable identity, and preselection
@@ -1629,16 +1673,23 @@ full unattended reboot durability would separately require administrator
 authorization for `loginctl enable-linger zzx`.
 
 Capacity apply additionally requires the explicit collector unit name and does
-not trust `.collector.lock` or `MainPID` alone. Immediately before building and
-again immediately before manifest replacement, it machine-verifies a loaded
-transient unit with `KillMode=control-group`, `Restart=no`, `MainPID=0`, and
-`ActiveState=inactive`; every `cgroup.procs` in its control-group subtree must
-be empty, and a same-UID `/proc` scan must find no long-run collector or native
-probe command line containing the absolute source directory. The quiescence
-proof is receipt-bound. The pre-publish check also revalidates the exact state,
+not trust `.collector.lock` or `MainPID` alone. Its mandatory capture-and-stop
+mode binds the live unit's InvocationID, ExecStart, PID start ticks,
+process/systemd cgroups, working directory and executed collector hash, boot
+identity, exact source state/manifest/pool/data/registry hashes, and target
+topology. It first proves every cgroup PID is stopped, writes a no-clobber,
+fsync-backed receipt, then kills the entire control group. Immediately before
+building and again before
+manifest replacement, verification requires `MainPID=0`, inactive state, every
+bound `cgroup.procs` subtree empty, and no same-UID collector or native-probe
+command line containing the source directory. A loaded inactive unit is valid;
+normal transient-unit garbage collection is valid only with the pre-stop
+receipt. The pre-publish check also revalidates the exact state,
 pool prefix, completed plan set, optional next plan, all six data prefixes and
 row identities, opponent registry and snapshots, temporary-file absence, and
 code hashes, so a non-cooperating writer cannot race build-to-replace.
+The boundary registry is embedded in the receipt: its historical entries cannot
+change, but later schema-7 passes may append newly completed rated opponents.
 
 The collector now treats a probe timeout, nonzero exit, missing output,
 noncompliant baseline, malformed JSONL, or any summary/JSONL mismatch as a hard
@@ -1858,8 +1909,9 @@ Learning with Quantile Regression*, 2018:
    complete the remaining prefix through exactly 160/160 with the 6x4 topology
    and slots 4 through 27. Reuse a receipt-bound next-pass plan if one was
    already persisted. Stop through the systemd control group, never by killing
-   only `MainPID`, and pass `--collector-unit neural-v4-collector.service` so
-   both dry-run and apply bind the zero-process quiescence proof. Monitor the
+   only `MainPID`; use `--capture-running-unit-receipt` for the bound control-group
+   stop, then pass that file with `--running-unit-receipt` to both dry-run and
+   apply. Monitor the
    self-hashed atomic state and `progress.log`; never commit the corpus, probe
    traces, logs, or control receipts to Git.
 2. Only after an exact 160/160 state, freeze the opponent-disjoint role datasets

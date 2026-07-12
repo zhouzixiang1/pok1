@@ -4,6 +4,8 @@ Analysis helpers (stagnation, direction audit, replay, experience, archivist)
 live in their own modules. This module keeps the core Master and match analysis.
 """
 
+import ast
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -66,10 +68,218 @@ _MASTER_PROPOSAL_DIRECTIONS = (
 )
 
 
-def _validated_master_proposal(output: str, direction: str) -> dict | None:
-    """Normalize one advisory proposal before any critic or Master sees it."""
+_PROPOSAL_SCHEMA_VERSION = "master-proposal-v2"
+_PROPOSAL_PACKET_SCHEMA_VERSION = "master-proposal-packet-v2"
+_PROPOSAL_CRITIC_CRITERIA = {
+    "evidence_traceability": (
+        "Every claimed source fact is bound to a verified source symbol or frozen "
+        "snapshot locator."
+    ),
+    "runtime_reachability": (
+        "The verified parent call chain reaches a file that the proposal will edit."
+    ),
+    "falsifiability": (
+        "The control/intervention/expected observation can disprove the mechanism."
+    ),
+    "causal_attribution": (
+        "The measurement distinguishes the mechanism from unrelated threshold drift."
+    ),
+    "bounded_regression_risk": (
+        "The implementation scope and fallback make regressions observable and bounded."
+    ),
+}
+
+
+def _safe_relative_python_path(value: object) -> str | None:
+    """Return one normalized source-relative Python path, never an escape."""
+    raw = str(value or "").strip().replace("\\", "/")
+    path = Path(raw)
+    if (
+        not raw
+        or path.is_absolute()
+        or ".." in path.parts
+        or path.suffix != ".py"
+    ):
+        return None
+    return path.as_posix()
+
+
+def _source_symbol_graph(source_dir: Path) -> tuple[dict[str, set[str]], str]:
+    """Index real top-level functions/methods and their direct call leaves.
+
+    The graph deliberately proves only a small, deterministic claim: every
+    symbol exists in the frozen baseline and every adjacent item in a submitted
+    reachability chain is a direct syntactic call.  It does not ask an LLM to
+    judge whether prose merely *sounds* reachable.
+    """
+    graph: dict[str, set[str]] = {}
+    digest = hashlib.sha256()
+    source_dir = Path(source_dir).resolve()
+    for path in sorted(source_dir.rglob("*.py")):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        try:
+            relative = path.resolve().relative_to(source_dir).as_posix()
+            payload = path.read_bytes()
+        except (OSError, ValueError):
+            continue
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(payload)
+        digest.update(b"\0")
+        try:
+            tree = ast.parse(payload, filename=relative)
+        except SyntaxError:
+            # Syntax-invalid files cannot supply evidence, but they still bind
+            # the source artifact digest and therefore cannot drift invisibly.
+            continue
+
+        def calls(node: ast.AST) -> set[str]:
+            result: set[str] = set()
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Call):
+                    continue
+                target = child.func
+                if isinstance(target, ast.Name):
+                    result.add(target.id)
+                elif isinstance(target, ast.Attribute):
+                    result.add(target.attr)
+            return result
+
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                graph[f"{relative}:{node.name}"] = calls(node)
+            elif isinstance(node, ast.ClassDef):
+                graph[f"{relative}:{node.name}"] = calls(node)
+                for child in node.body:
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        graph[f"{relative}:{node.name}.{child.name}"] = calls(child)
+    return graph, digest.hexdigest()
+
+
+def _source_symbol_prompt_index(
+    graph: dict[str, set[str]],
+    *,
+    maximum_chars: int = 18_000,
+) -> str:
+    """Render deterministic, validator-matching call evidence for weak scouts.
+
+    Asking a weaker model to rediscover exact ``file.py:symbol`` spellings and
+    direct call leaves wastes both calls and context.  The system has already
+    parsed the frozen source, so expose the accepted edge vocabulary directly.
+    Lines are kept whole under a hard bound; omitted tails remain available via
+    the read-only source tool but cannot be invented in a proposal.
+    """
+    symbols_by_leaf: dict[str, list[str]] = {}
+    for symbol in sorted(graph):
+        leaf = symbol.rsplit(":", 1)[1].rsplit(".", 1)[-1]
+        symbols_by_leaf.setdefault(leaf, []).append(symbol)
+    lines = [
+        "SYSTEM-VERIFIED SOURCE CALL INDEX (exact proposal spellings; each arrow "
+        "is a validator-accepted direct syntactic call leaf):"
+    ]
+    for caller in sorted(graph):
+        callees = sorted({
+            candidate
+            for leaf in graph[caller]
+            for candidate in symbols_by_leaf.get(leaf, [])
+            if candidate != caller
+        })
+        if not callees:
+            continue
+        line = f"- {caller} -> {', '.join(callees)}"
+        if sum(len(item) + 1 for item in lines) + len(line) + 1 > maximum_chars:
+            lines.append("- [remaining verified edges omitted by deterministic size bound]")
+            break
+        lines.append(line)
+    if len(lines) == 1:
+        lines.append("- [no validator-accepted internal call edges]")
+    return "\n".join(lines)
+
+
+def _normalize_source_symbol(value: object) -> str | None:
+    text = str(value or "").strip()
+    if ":" not in text:
+        return None
+    filename, symbol = text.rsplit(":", 1)
+    filename = _safe_relative_python_path(filename)
+    if filename is None:
+        return None
+    symbol_parts = symbol.split(".")
+    if not symbol_parts or any(not part.isidentifier() for part in symbol_parts):
+        return None
+    return f"{filename}:{symbol}"
+
+
+def _validated_snapshot_reference(value: object, snapshot_dir: Path | None) -> str | None:
+    text = str(value or "").strip()
+    if not text.startswith("snapshot:") or "#" not in text:
+        return None
+    path_text, locator = text[len("snapshot:"):].split("#", 1)
+    relative = Path(path_text.strip().replace("\\", "/"))
+    if (
+        snapshot_dir is None
+        or not path_text.strip()
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or not locator.strip()
+    ):
+        return None
+    root = Path(snapshot_dir).resolve()
+    candidate = (root / relative).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    locator = locator.strip()
+    if candidate.suffix.lower() != ".json" or not locator.startswith("/"):
+        return None
+    try:
+        node = json.loads(candidate.read_text(encoding="utf-8"))
+        for raw_part in locator[1:].split("/") if locator != "/" else []:
+            part = raw_part.replace("~1", "/").replace("~0", "~")
+            if isinstance(node, dict):
+                if part not in node:
+                    return None
+                node = node[part]
+            elif isinstance(node, list):
+                if not part.isdigit() or int(part) >= len(node):
+                    return None
+                node = node[int(part)]
+            else:
+                return None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    return f"snapshot:{relative.as_posix()}#{locator[:240]}"
+
+
+def _proposal_identity(proposal: dict) -> str:
+    identity_payload = {
+        key: value
+        for key, value in proposal.items()
+        if key not in {"direction", "proposal_id"}
+    }
+    return hashlib.sha256(
+        json.dumps(
+            identity_payload,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _validated_master_proposal(
+    output: str,
+    direction: str,
+    *,
+    source_graph: dict[str, set[str]] | None = None,
+    snapshot_dir: Path | None = None,
+) -> dict | None:
+    """Normalize one evidence-bound proposal before critics or Master see it."""
     from llm_query import parse_json_output_with_mode
-    import hashlib
 
     data, _mode = parse_json_output_with_mode(output or "")
     if not isinstance(data, dict):
@@ -82,29 +292,110 @@ def _validated_master_proposal(output: str, direction: str) -> dict | None:
         "counterfactual",
         "measurement",
         "why_not_threshold_tuning",
+        "expected_diff",
     )
-    normalized = {"direction": direction}
+    normalized = {
+        "schema_version": _PROPOSAL_SCHEMA_VERSION,
+        "direction": direction,
+    }
     for key in required:
         value = str(data.get(key) or "").strip()
         if len(value) < 20:
             return None
-        normalized[key] = value[:3000]
+        normalized[key] = value[:1600]
     raw_files = data.get("target_files") or []
     if not isinstance(raw_files, list):
         return None
     target_files = []
     for value in raw_files[:3]:
-        name = Path(str(value)).name
-        if not name.endswith(".py") or name in target_files:
+        name = _safe_relative_python_path(value)
+        if name is None or name in target_files:
             continue
         target_files.append(name)
     if not target_files:
         return None
     normalized["target_files"] = target_files
-    normalized["risks"] = str(data.get("risks") or "")[:2000]
-    normalized["proposal_id"] = hashlib.sha256(
-        json.dumps(normalized, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()[:16]
+
+    raw_symbols = data.get("source_symbols")
+    if not isinstance(raw_symbols, list) or not 1 <= len(raw_symbols) <= 8:
+        return None
+    source_symbols: list[str] = []
+    for raw_symbol in raw_symbols:
+        symbol = _normalize_source_symbol(raw_symbol)
+        if (
+            symbol is None
+            or symbol in source_symbols
+            or (source_graph is not None and symbol not in source_graph)
+        ):
+            return None
+        source_symbols.append(symbol)
+    normalized["source_symbols"] = source_symbols
+
+    raw_chain = data.get("reachable_chain")
+    if not isinstance(raw_chain, list) or not 2 <= len(raw_chain) <= 8:
+        return None
+    chain: list[str] = []
+    for raw_symbol in raw_chain:
+        symbol = _normalize_source_symbol(raw_symbol)
+        if symbol is None or symbol not in source_symbols:
+            return None
+        chain.append(symbol)
+    if len(set(chain)) != len(chain):
+        return None
+    if source_graph is not None:
+        for caller, callee in zip(chain, chain[1:]):
+            callee_leaf = callee.rsplit(":", 1)[1].rsplit(".", 1)[-1]
+            if callee_leaf not in source_graph.get(caller, set()):
+                return None
+    chain_files = {item.rsplit(":", 1)[0] for item in chain}
+    if not chain_files.intersection(target_files):
+        return None
+    normalized["reachable_chain"] = chain
+
+    falsifier = data.get("falsifier")
+    if not isinstance(falsifier, dict):
+        return None
+    normalized_falsifier = {}
+    for key in ("test_name", "control", "intervention", "expected_observation"):
+        value = str(falsifier.get(key) or "").strip()
+        minimum = 3 if key == "test_name" else 20
+        if len(value) < minimum:
+            return None
+        if key == "test_name" and not value.replace("_", "").isalnum():
+            return None
+        normalized_falsifier[key] = value[:1000]
+    normalized["falsifier"] = normalized_falsifier
+
+    raw_refs = data.get("evidence_refs")
+    if not isinstance(raw_refs, list) or not 1 <= len(raw_refs) <= 10:
+        return None
+    evidence_refs: list[str] = []
+    source_ref_symbols: set[str] = set()
+    for raw_ref in raw_refs:
+        text = str(raw_ref or "").strip()
+        normalized_ref = None
+        if text.startswith("source:"):
+            symbol = _normalize_source_symbol(text[len("source:"):])
+            if symbol in source_symbols:
+                normalized_ref = f"source:{symbol}"
+                source_ref_symbols.add(symbol)
+        elif text.startswith("snapshot:"):
+            normalized_ref = _validated_snapshot_reference(text, snapshot_dir)
+        if normalized_ref is None or normalized_ref in evidence_refs:
+            return None
+        evidence_refs.append(normalized_ref)
+    if source_ref_symbols != set(source_symbols):
+        return None
+    normalized["evidence_refs"] = evidence_refs
+
+    risks = str(data.get("risks") or "").strip()
+    if len(risks) < 20:
+        return None
+    normalized["risks"] = risks[:1200]
+
+    # Identity is a pure function of the proposal claims and verified evidence,
+    # not scout identity, critic order, generation number, or wall clock.
+    normalized["proposal_id"] = _proposal_identity(normalized)
     return normalized
 
 
@@ -114,22 +405,269 @@ def _validated_proposal_critique(output: str, proposal_ids: set[str]) -> dict | 
     data, _mode = parse_json_output_with_mode(output or "")
     if not isinstance(data, dict):
         return None
-    ranking = [
-        str(value) for value in (data.get("ranking") or [])
-        if str(value) in proposal_ids
-    ]
-    ranking = list(dict.fromkeys(ranking))
-    if not ranking:
+    raw_ballots = data.get("ballots")
+    if not isinstance(raw_ballots, list) or len(raw_ballots) != len(proposal_ids):
         return None
-    rejected = [
-        str(value) for value in (data.get("reject") or [])
-        if str(value) in proposal_ids
+    ballots = []
+    seen: set[str] = set()
+    for raw_ballot in raw_ballots:
+        if not isinstance(raw_ballot, dict):
+            return None
+        proposal_id = str(raw_ballot.get("proposal_id") or "")
+        scores = raw_ballot.get("scores")
+        reason = str(raw_ballot.get("reason") or "").strip()
+        reject = raw_ballot.get("reject")
+        if (
+            proposal_id not in proposal_ids
+            or proposal_id in seen
+            or not isinstance(scores, dict)
+            or set(scores) != set(_PROPOSAL_CRITIC_CRITERIA)
+            or not isinstance(reject, bool)
+            or len(reason) < 12
+        ):
+            return None
+        normalized_scores = {}
+        for criterion in _PROPOSAL_CRITIC_CRITERIA:
+            score = scores.get(criterion)
+            if isinstance(score, bool) or not isinstance(score, int) or not 1 <= score <= 5:
+                return None
+            normalized_scores[criterion] = score
+        seen.add(proposal_id)
+        ballots.append({
+            "proposal_id": proposal_id,
+            "scores": normalized_scores,
+            "total_score": sum(normalized_scores.values()),
+            "reject": reject,
+            "reason": reason[:1000],
+        })
+    if seen != proposal_ids:
+        return None
+    ranking = [
+        item["proposal_id"]
+        for item in sorted(
+            ballots,
+            key=lambda item: (
+                item["reject"],
+                -item["total_score"],
+                item["proposal_id"],
+            ),
+        )
     ]
     return {
         "ranking": ranking,
-        "reject": list(dict.fromkeys(rejected)),
-        "reason": str(data.get("reason") or "")[:2500],
+        "reject": [item["proposal_id"] for item in ballots if item["reject"]],
+        "ballots": ballots,
     }
+
+
+def _proposal_packet_error(reason: str, *, context_digest: str = "") -> str:
+    return json.dumps({
+        "schema_version": _PROPOSAL_PACKET_SCHEMA_VERSION,
+        "valid": False,
+        "reason": str(reason)[:500],
+        "context_digest": context_digest,
+        "proposal_count": 0,
+        "valid_critic_count": 0,
+        "allowed_proposal_ids": [],
+        "ordered_proposals": [],
+        "critic_reviews": [],
+    }, ensure_ascii=False, sort_keys=True)
+
+
+def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[str]]:
+    """Validate the machine packet again at the final-Master trust boundary."""
+    try:
+        packet = json.loads(packet_text)
+    except (TypeError, json.JSONDecodeError):
+        return None, ["proposal_packet_not_json"]
+    if not isinstance(packet, dict):
+        return None, ["proposal_packet_not_object"]
+    errors = []
+    if packet.get("schema_version") != _PROPOSAL_PACKET_SCHEMA_VERSION:
+        errors.append("proposal_packet_schema_mismatch")
+    if packet.get("valid") is not True:
+        errors.append(f"proposal_packet_invalid:{packet.get('reason', 'unknown')}")
+    proposals = packet.get("ordered_proposals")
+    allowed = packet.get("allowed_proposal_ids")
+    if not isinstance(proposals, list) or not proposals:
+        errors.append("proposal_packet_has_no_proposals")
+        proposals = []
+    proposal_ids = [
+        str(item.get("proposal_id") or "")
+        for item in proposals
+        if isinstance(item, dict)
+    ]
+    if (
+        len(proposal_ids) != len(proposals)
+        or len(set(proposal_ids)) != len(proposal_ids)
+        or not isinstance(allowed, list)
+        or set(map(str, allowed)) != set(proposal_ids)
+    ):
+        errors.append("proposal_packet_id_set_mismatch")
+    required_proposal_fields = {
+        "schema_version",
+        "proposal_id",
+        "targeted_failure",
+        "structural_change",
+        "counterfactual",
+        "measurement",
+        "why_not_threshold_tuning",
+        "expected_diff",
+        "target_files",
+        "source_symbols",
+        "reachable_chain",
+        "falsifier",
+        "evidence_refs",
+        "risks",
+    }
+    for item in proposals:
+        if not isinstance(item, dict):
+            continue
+        if not required_proposal_fields.issubset(item):
+            errors.append(f"proposal_packet_fields_missing:{item.get('proposal_id', '')}")
+            continue
+        if item.get("schema_version") != _PROPOSAL_SCHEMA_VERSION:
+            errors.append(f"proposal_schema_mismatch:{item.get('proposal_id', '')}")
+        if item.get("proposal_id") != _proposal_identity(item):
+            errors.append(f"proposal_identity_mismatch:{item.get('proposal_id', '')}")
+    if packet.get("valid_critic_count") != 2:
+        errors.append("proposal_packet_requires_two_valid_critics")
+    context_digest = str(packet.get("context_digest") or "")
+    source_digest = str(packet.get("source_code_digest") or "")
+    if (
+        len(context_digest) != 64
+        or len(source_digest) != 64
+        or any(char not in "0123456789abcdef" for char in context_digest + source_digest)
+    ):
+        errors.append("proposal_packet_digest_invalid")
+    return (None, errors) if errors else (packet, [])
+
+
+def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
+    """Require one exact proposal selection and its writable-file contract."""
+    if not isinstance(data, dict):
+        return ["master_output_not_object"]
+    selected = data.get("selected_proposal_id")
+    if not isinstance(selected, str):
+        return ["selected_proposal_id_must_be_one_string"]
+    proposals = {
+        item["proposal_id"]: item
+        for item in packet.get("ordered_proposals", [])
+        if isinstance(item, dict) and isinstance(item.get("proposal_id"), str)
+    }
+    proposal = proposals.get(selected)
+    if proposal is None:
+        return [f"selected_proposal_id_not_allowed:{selected}"]
+    errors = []
+    if str(data.get("targeted_failure") or "").strip() != proposal["targeted_failure"]:
+        errors.append("targeted_failure_must_exactly_copy_selected_proposal")
+    writable: set[str] = set()
+    tasks = data.get("tasks")
+    if isinstance(tasks, list):
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            for key in ("target_files", "files_allowed"):
+                values = task.get(key) or []
+                if isinstance(values, list):
+                    writable.update(
+                        path
+                        for value in values
+                        if (path := _safe_relative_python_path(value)) is not None
+                    )
+    missing_files = sorted(set(proposal["target_files"]) - writable)
+    if missing_files:
+        errors.append(f"selected_proposal_target_files_not_writable:{missing_files}")
+    binding_block = _selected_proposal_worker_block(proposal)
+    bound_task_count = 0
+    try:
+        from output_schema import WORKER_PROMPT_MAX_CHARS
+    except Exception:
+        WORKER_PROMPT_MAX_CHARS = 16_000
+    if isinstance(tasks, list):
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            task_files = {
+                path
+                for key in ("target_files", "files_allowed")
+                for value in (task.get(key) or [])
+                if (path := _safe_relative_python_path(value)) is not None
+            }
+            if not task_files.intersection(proposal["target_files"]):
+                continue
+            bound_task_count += 1
+            prompt = str(task.get("worker_prompt") or "")
+            if len(prompt) + len(binding_block) + 2 > WORKER_PROMPT_MAX_CHARS:
+                errors.append(
+                    "selected_proposal_worker_prompt_has_no_binding_budget:"
+                    f"{task.get('worker_id', bound_task_count)}"
+                )
+    if bound_task_count == 0 and not missing_files:
+        errors.append("selected_proposal_has_no_bound_worker_task")
+    return errors
+
+
+def _selected_proposal_contract(proposal: dict) -> dict:
+    contract = {
+        "schema_version": 1,
+        "proposal_id": str(proposal["proposal_id"]),
+        "structural_change": str(proposal["structural_change"]),
+        "expected_diff": str(proposal["expected_diff"]),
+        "reachable_chain": list(proposal["reachable_chain"]),
+        "falsifier": dict(proposal["falsifier"]),
+        "why_not_threshold_tuning": str(proposal["why_not_threshold_tuning"]),
+    }
+    contract["contract_digest"] = hashlib.sha256(
+        json.dumps(
+            contract,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return contract
+
+
+def _selected_proposal_worker_block(proposal: dict) -> str:
+    contract = _selected_proposal_contract(proposal)
+    return "\n".join((
+        "# SYSTEM-BOUND SELECTED PROPOSAL CONTRACT",
+        f"proposal_id={contract['proposal_id']}",
+        f"contract_digest={contract['contract_digest']}",
+        f"structural_change={contract['structural_change']}",
+        f"expected_diff={contract['expected_diff']}",
+        "reachable_chain=" + json.dumps(
+            contract["reachable_chain"], ensure_ascii=False, separators=(",", ":")
+        ),
+        "falsifier=" + json.dumps(
+            contract["falsifier"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ),
+        "not_threshold_tuning=" + contract["why_not_threshold_tuning"],
+        "Implement this one mechanism through the named reachable chain. Do not "
+        "substitute a threshold-only edit, a second mechanism, or telemetry-only code.",
+    ))
+
+
+def _bind_selected_proposal_workers(data: dict, proposal: dict) -> dict:
+    """Compile the selected mechanism into every writable target task."""
+    result = json.loads(json.dumps(data, ensure_ascii=False))
+    block = _selected_proposal_worker_block(proposal)
+    target_files = set(proposal["target_files"])
+    for task in result.get("tasks") or []:
+        task_files = {
+            path
+            for key in ("target_files", "files_allowed")
+            for value in (task.get(key) or [])
+            if (path := _safe_relative_python_path(value)) is not None
+        }
+        if task_files.intersection(target_files):
+            task["worker_prompt"] = (
+                str(task.get("worker_prompt") or "").rstrip()
+                + "\n\n"
+                + block
+            )
+    return result
 
 
 async def _run_master_proposal_ensemble(
@@ -140,8 +678,9 @@ async def _run_master_proposal_ensemble(
     ui,
     log_dir: Path,
     allowed_evidence_snapshot_dir: str,
+    baseline_v: int | None = None,
 ) -> str:
-    """Three independent proposals, two blind critics, deterministic ordering.
+    """Three proposals, two anonymous criterion critics, deterministic ordering.
 
     The ensemble is advisory.  It cannot alter lineage, evidence cutoffs,
     executable literals, or gates; the final plan still passes the canonical
@@ -149,12 +688,38 @@ async def _run_master_proposal_ensemble(
     """
     import asyncio
 
-    async def propose(direction: str, directive: str):
+    context_digest = hashlib.sha256(planning_context.encode("utf-8")).hexdigest()
+    try:
+        baseline_dir = get_bot_dir(
+            int(baseline_v) if baseline_v is not None else int(source_v)
+        )
+        source_graph, source_code_digest = _source_symbol_graph(baseline_dir)
+    except Exception as exc:
+        return _proposal_packet_error(
+            f"source_symbol_index_failed:{type(exc).__name__}:{str(exc)[:240]}",
+            context_digest=context_digest,
+        )
+    if not source_graph:
+        return _proposal_packet_error(
+            "source_symbol_index_empty",
+            context_digest=context_digest,
+        )
+    snapshot_dir = Path(allowed_evidence_snapshot_dir)
+    source_symbol_index = _source_symbol_prompt_index(source_graph)
+
+    async def propose(direction: str, directive: str, *, schema_retry: bool = False):
         output_contract = (
             "Return one JSON object with exactly: targeted_failure, structural_change, "
             "counterfactual, measurement, why_not_threshold_tuning, target_files "
-            "(1-3 basenames), risks. Do not emit tasks, a worker plan, source choice, "
-            "Markdown, or commentary."
+            "(1-3 source-relative .py paths), expected_diff, source_symbols (1-8 exact "
+            "source-relative file.py:symbol references), reachable_chain (2-8 of those "
+            "symbols in direct caller-to-callee order), falsifier {test_name, control, "
+            "intervention, expected_observation}, evidence_refs (source:file.py:symbol "
+            "for EVERY source_symbols item; optional "
+            "snapshot:relative/file.json#/verified/json/pointer), "
+            "and risks. Every chain edge must be a direct syntactic call in the baseline. "
+            "Do not invent a symbol or snapshot file. Do not emit tasks, a worker plan, "
+            "source choice, proposal_id, Markdown, or commentary."
         )
         prompt = (
             "You are an independent poker-bot mechanism proposal scout. "
@@ -163,6 +728,15 @@ async def _run_master_proposal_ensemble(
             f"Distinct lens: {directive}\n"
             "Read only the allowed frozen snapshot and source/target code.\n\n"
             + planning_context
+            + "\n\n"
+            + source_symbol_index
+            + (
+                "\n\nYour previous response failed the deterministic JSON/evidence "
+                "contract. This is one schema-only repair attempt: keep the same "
+                "independent lens, reread the verified index, and emit a complete "
+                "object without commentary."
+                if schema_retry else ""
+            )
             + "\n\nFINAL SCOUT OUTPUT CONTRACT (this overrides the embedded Master output format):\n"
             + output_contract
         )
@@ -170,8 +744,12 @@ async def _run_master_proposal_ensemble(
             prompt,
             [],
             ui,
-            f"MASTER PROPOSAL {direction}",
-            log_dir / f"master_proposal_{direction}_io.txt",
+            f"MASTER PROPOSAL {direction}{' SCHEMA RETRY' if schema_retry else ''}",
+            log_dir / (
+                f"master_proposal_{direction}_schema_retry_io.txt"
+                if schema_retry
+                else f"master_proposal_{direction}_io.txt"
+            ),
             tools=["Read"],
             allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
         )
@@ -182,12 +760,22 @@ async def _run_master_proposal_ensemble(
     )
     proposals = []
     seen_payloads = set()
+    proposal_exceptions = []
+    invalid_proposal_specs = []
     for (direction, _directive), result in zip(_MASTER_PROPOSAL_DIRECTIONS, proposal_results):
         if isinstance(result, BaseException):
+            proposal_exceptions.append(result)
+            invalid_proposal_specs.append((direction, _directive))
             continue
         output = result[0] if isinstance(result, tuple) else ""
-        proposal = _validated_master_proposal(output, direction)
+        proposal = _validated_master_proposal(
+            output,
+            direction,
+            source_graph=source_graph,
+            snapshot_dir=snapshot_dir,
+        )
         if proposal is None:
+            invalid_proposal_specs.append((direction, _directive))
             continue
         dedupe = json.dumps(
             {key: value for key, value in proposal.items() if key not in {"direction", "proposal_id"}},
@@ -198,31 +786,110 @@ async def _run_master_proposal_ensemble(
             continue
         seen_payloads.add(dedupe)
         proposals.append(proposal)
+    if invalid_proposal_specs:
+        retry_results = await asyncio.gather(
+            *(
+                propose(direction, directive, schema_retry=True)
+                for direction, directive in invalid_proposal_specs
+            ),
+            return_exceptions=True,
+        )
+        for (direction, _directive), result in zip(
+            invalid_proposal_specs, retry_results
+        ):
+            if isinstance(result, BaseException):
+                proposal_exceptions.append(result)
+                continue
+            output = result[0] if isinstance(result, tuple) else ""
+            proposal = _validated_master_proposal(
+                output,
+                direction,
+                source_graph=source_graph,
+                snapshot_dir=snapshot_dir,
+            )
+            if proposal is None:
+                continue
+            dedupe = json.dumps(
+                {
+                    key: value
+                    for key, value in proposal.items()
+                    if key not in {"direction", "proposal_id"}
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            if dedupe in seen_payloads:
+                continue
+            seen_payloads.add(dedupe)
+            proposals.append(proposal)
     if not proposals:
-        return (
-            "Proposal ensemble unavailable or all proposals failed deterministic validation. "
-            "Design the final plan directly from frozen evidence and hard contracts."
+        if len(proposal_exceptions) == len(proposal_results) + len(
+            invalid_proposal_specs
+        ):
+            raise RuntimeError(
+                "all_proposal_scout_calls_failed:"
+                f"{type(proposal_exceptions[0]).__name__}:"
+                f"{str(proposal_exceptions[0])[:240]}"
+            ) from proposal_exceptions[0]
+        return _proposal_packet_error(
+            "all_scout_proposals_failed_deterministic_validation",
+            context_digest=context_digest,
         )
 
-    proposal_payload = json.dumps(proposals, ensure_ascii=False, indent=2)
-
-    async def critique(name: str, lens: str):
+    async def critique(name: str, lens: str, *, schema_retry: bool = False):
+        # No scout lens/identity is exposed.  Each critic receives a different
+        # but replayable ordering derived from the immutable planning digest.
+        critic_proposals = [
+            {key: value for key, value in proposal.items() if key != "direction"}
+            for proposal in proposals
+        ]
+        critic_proposals.sort(
+            key=lambda item: hashlib.sha256(
+                f"{context_digest}:{name}:{item['proposal_id']}".encode("utf-8")
+            ).hexdigest()
+        )
+        proposal_payload = json.dumps(
+            critic_proposals,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        criterion_contract = json.dumps(
+            _PROPOSAL_CRITIC_CRITERIA,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         prompt = (
-            "You are a blind advisory critic. Source, evidence cutoff, scope literals, and "
-            "quality gates are immutable. Rank only the supplied proposal_id values. "
+            "You are an anonymous advisory critic. Scout identities and lenses are hidden. "
+            "Source, evidence cutoff, scope literals, and quality gates are immutable. "
             f"Lens: {lens}\n"
-            "Return JSON: {\"ranking\":[ids best-first],\"reject\":[ids with a concrete "
-            "reachability/attribution flaw],\"reason\":\"...\"}.\n\n"
+            f"Planning context digest: {context_digest}\n"
+            "Score EVERY supplied proposal on EACH named criterion with an integer 1..5. "
+            "Set reject=true only for a concrete evidence, reachability, or falsification "
+            "defect; score is advisory and cannot waive deterministic validation.\n"
+            f"Criteria: {criterion_contract}\n"
+            "Return JSON exactly as {\"ballots\":[{\"proposal_id\":\"...\","
+            "\"scores\":{every criterion: integer 1..5},\"reject\":false,"
+            "\"reason\":\"criterion-grounded reason\"}, ...]}.\n\n"
             + proposal_payload
-            + "\n\nFINAL CRITIC OUTPUT CONTRACT: return only the ranking/reject/reason JSON; "
-            "do not repeat or rewrite a proposal."
+            + (
+                "\n\nYour previous ballot failed deterministic schema validation. "
+                "This is one schema-only repair attempt; score every ID and every "
+                "criterion exactly once."
+                if schema_retry else ""
+            )
+            + "\n\nFINAL CRITIC OUTPUT CONTRACT: return only the ballots JSON in the supplied "
+            "proposal order; do not rank, repeat, or rewrite proposal claims."
         )
         return await run_claude_query(
             prompt,
             [],
             ui,
-            f"MASTER PROPOSAL CRITIC {name}",
-            log_dir / f"master_proposal_critic_{name}_io.txt",
+            f"MASTER PROPOSAL CRITIC {name}{' SCHEMA RETRY' if schema_retry else ''}",
+            log_dir / (
+                f"master_proposal_critic_{name}_schema_retry_io.txt"
+                if schema_retry
+                else f"master_proposal_critic_{name}_io.txt"
+            ),
             tools=[],
         )
 
@@ -233,46 +900,87 @@ async def _run_master_proposal_ensemble(
     )
     proposal_ids = {item["proposal_id"] for item in proposals}
     critiques = []
-    for result in critic_results:
+    invalid_critics = []
+    critic_specs = (
+        ("falsification", "Counterfactual quality, causal attribution, and evidence support."),
+        ("scope", "Reachability, bounded implementation scope, and regression risk."),
+    )
+    for spec, result in zip(critic_specs, critic_results):
         if isinstance(result, BaseException):
+            invalid_critics.append(spec)
             continue
         output = result[0] if isinstance(result, tuple) else ""
         critique_row = _validated_proposal_critique(output, proposal_ids)
         if critique_row is not None:
             critiques.append(critique_row)
+        else:
+            invalid_critics.append(spec)
 
-    # Deterministic Borda ordering.  Critic prose cannot create/delete a
-    # candidate, and two independent rejections are needed to demote one.
+    if invalid_critics:
+        retry_results = await asyncio.gather(
+            *(
+                critique(name, lens, schema_retry=True)
+                for name, lens in invalid_critics
+            ),
+            return_exceptions=True,
+        )
+        for result in retry_results:
+            if isinstance(result, BaseException):
+                raise RuntimeError(
+                    "proposal_critic_call_failed:"
+                    f"{type(result).__name__}:{str(result)[:240]}"
+                ) from result
+            output = result[0] if isinstance(result, tuple) else ""
+            critique_row = _validated_proposal_critique(output, proposal_ids)
+            if critique_row is not None:
+                critiques.append(critique_row)
+
+    if len(critiques) != 2:
+        return _proposal_packet_error(
+            f"expected_two_schema_valid_critics_got_{len(critiques)}",
+            context_digest=context_digest,
+        )
+
+    # Deterministic equal-criterion aggregation. Critic prose cannot
+    # create/delete a candidate, and both independent critics must reject a
+    # deterministically valid candidate before rejection affects ordering.
     order = {item["proposal_id"]: index for index, item in enumerate(proposals)}
     scores = {proposal_id: 0 for proposal_id in proposal_ids}
     rejects = {proposal_id: 0 for proposal_id in proposal_ids}
     for critique_row in critiques:
-        ranked = critique_row["ranking"]
-        default_rank = len(proposals)
-        for proposal_id in proposal_ids:
-            scores[proposal_id] += (
-                ranked.index(proposal_id) if proposal_id in ranked else default_rank
-            )
+        for ballot in critique_row["ballots"]:
+            scores[ballot["proposal_id"]] += ballot["total_score"]
         for proposal_id in critique_row["reject"]:
             rejects[proposal_id] += 1
     proposals.sort(
         key=lambda item: (
             rejects[item["proposal_id"]] >= 2,
-            scores[item["proposal_id"]],
+            -scores[item["proposal_id"]],
             order[item["proposal_id"]],
         )
     )
     packet = {
+        "schema_version": _PROPOSAL_PACKET_SCHEMA_VERSION,
+        "valid": True,
         "authority": (
             "advisory_only; final Master must obey frozen lineage/evidence and canonical "
             "runtime/schema/gate contracts"
         ),
+        "context_digest": context_digest,
+        "source_code_digest": source_code_digest,
+        "critic_criteria": _PROPOSAL_CRITIC_CRITERIA,
         "proposal_count": len(proposals),
         "valid_critic_count": len(critiques),
+        "allowed_proposal_ids": [item["proposal_id"] for item in proposals],
         "ordered_proposals": proposals,
         "critic_reviews": critiques,
     }
-    return _trim_to_budget(json.dumps(packet, ensure_ascii=False, indent=2), 18_000)
+    return json.dumps(
+        packet,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _render_analysis_section(text: str, default_msg: str) -> str:
@@ -526,18 +1234,54 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             allowed_evidence_snapshot_dir=str(
                 Path(h2h_snapshot["manifest_path"]).parent
             ),
+            baseline_v=int(planning_baseline_v),
         )
     except Exception as exc:
-        proposal_ensemble = (
-            "Proposal ensemble infrastructure unavailable; it has no authority over "
-            f"the final plan. error={type(exc).__name__}:{str(exc)[:240]}"
+        raise MasterInfrastructureError(
+            source_v,
+            next_v,
+            hashlib.sha256(
+                (master_prompt + "\n" + master_ctx).encode("utf-8")
+            ).hexdigest(),
+            f"proposal_ensemble:{type(exc).__name__}: {str(exc)[:400]}",
+        ) from exc
+    proposal_packet, proposal_packet_errors = _parse_valid_proposal_packet(
+        proposal_ensemble
+    )
+    if proposal_packet_errors:
+        ui.log_history(
+            "Master blocked: proposal ensemble failed closed ("
+            + "; ".join(proposal_packet_errors[:4])
+            + ").",
+            "error",
         )
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.master_proposal_packet_rejected",
+                "error",
+                f"Master v{next_v} proposal packet rejected",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "errors": proposal_packet_errors,
+                },
+            )
+        except Exception:
+            pass
+        return None
+    assert proposal_packet is not None
     master_ctx += (
-        "\n# Weak-model proposal ensemble (advisory, prefiltered)\n"
+        "\n# Weak-model proposal ensemble (evidence-validated choices)\n"
         + proposal_ensemble
-        + "\nSelect or synthesize one attributable mechanism. Do not copy multiple "
-        "unrelated proposals into one generation, and do not treat critic votes as "
-        "permission to change source, evidence, scope, or gates.\n"
+        + "\nFINAL PROPOSAL BINDING CONTRACT (overrides any conflicting embedded "
+        "output example): select exactly one allowed proposal and emit its ID as the "
+        "top-level string field selected_proposal_id. Copy that proposal's "
+        "targeted_failure EXACTLY into the plan targeted_failure. Every selected "
+        "proposal target_files path must be writable in at least one task. You may "
+        "elaborate implementation details, but may not synthesize a fourth proposal, "
+        "combine mechanisms, or treat critic votes as permission to change source, "
+        "evidence, scope, or gates.\n"
     )
 
     for attempt in range(MAX_MASTER_RETRIES):
@@ -597,6 +1341,48 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         from llm_query import parse_json_output_with_mode
         data, _failure_mode = parse_json_output_with_mode(output)
         if data and "tasks" in data:
+            proposal_binding_errors = _validate_final_proposal_binding(
+                data,
+                proposal_packet,
+            )
+            if proposal_binding_errors:
+                ui.log_history(
+                    "Master plan rejected by proposal binding: "
+                    + "; ".join(proposal_binding_errors[:4]),
+                    "warn",
+                )
+                if attempt + 1 < MAX_MASTER_RETRIES:
+                    master_prompt += (
+                        "\n\n# Previous proposal binding failed; re-emit the complete "
+                        "plan and fix all items:\n- "
+                        + "\n- ".join(proposal_binding_errors)[:1500]
+                        + "\n"
+                    )
+                    import asyncio
+                    await asyncio.sleep(2)
+                    continue
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "pipeline.master_proposal_binding_exhausted",
+                        "error",
+                        f"Master v{next_v} failed proposal binding after retries",
+                        {
+                            "next_v": next_v,
+                            "source_v": source_v,
+                            "errors": proposal_binding_errors,
+                        },
+                    )
+                except Exception:
+                    pass
+                return None
+            selected_proposal_id = data.pop("selected_proposal_id")
+            selected_proposal = next(
+                item
+                for item in proposal_packet["ordered_proposals"]
+                if item["proposal_id"] == selected_proposal_id
+            )
+            data = _bind_selected_proposal_workers(data, selected_proposal)
             # The structured runtime contract and reference-card choice already
             # determine a small set of literal execution anchors.  Bind those
             # system-owned terms before Pydantic validation instead of asking a
@@ -682,6 +1468,25 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 except Exception:
                     pass
                 return None
+            selected_contract = _selected_proposal_contract(selected_proposal)
+            data["selected_proposal_id"] = selected_proposal_id
+            data["proposal_binding"] = {
+                "schema_version": _PROPOSAL_PACKET_SCHEMA_VERSION,
+                "selected_proposal_id": selected_proposal_id,
+                "contract_digest": selected_contract["contract_digest"],
+                "context_digest": proposal_packet["context_digest"],
+                "source_code_digest": proposal_packet["source_code_digest"],
+                "target_files": list(selected_proposal["target_files"]),
+                "source_symbols": list(selected_proposal["source_symbols"]),
+                "reachable_chain": list(selected_proposal["reachable_chain"]),
+                "falsifier": dict(selected_proposal["falsifier"]),
+                "evidence_refs": list(selected_proposal["evidence_refs"]),
+                "structural_change": selected_contract["structural_change"],
+                "expected_diff": selected_contract["expected_diff"],
+                "why_not_threshold_tuning": selected_contract[
+                    "why_not_threshold_tuning"
+                ],
+            }
             # SUCCESS path (BUGFIX, root cause of the v107–v127 Master deadlock):
             # the plan parsed with `tasks`, carries no branch_from override, and
             # passed schema validation with NO errors. This `return data` was
@@ -706,7 +1511,9 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                         f"Master v{next_v} plan accepted (schema-clean, try {attempt+1})",
                         next_v=next_v, source_v=source_v,
                         master_try=attempt + 1,
-                        num_tasks=len(data.get("tasks", [])))
+                        num_tasks=len(data.get("tasks", [])),
+                        selected_proposal_id=selected_proposal_id,
+                        proposal_context_digest=proposal_packet["context_digest"])
             except Exception:
                 pass
             return data

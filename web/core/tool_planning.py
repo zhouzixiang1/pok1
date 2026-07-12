@@ -11,6 +11,7 @@ import hashlib
 import shutil
 import time
 import tokenize
+from dataclasses import dataclass
 from pathlib import Path
 
 from bot_namespace import bot_name, bot_relpath
@@ -648,7 +649,12 @@ async def _abandon_master_generation(next_v, source_v, *, error, fail_count, rea
     return _json_tool_result(result)
 
 
-async def _force_abandon_official_rework_generation(next_v, source_v):
+async def _force_abandon_official_rework_generation(
+    next_v,
+    source_v,
+    *,
+    actor_lock_owned=False,
+):
     """End a non-converging formal-repair loop in the tool control plane."""
     try:
         from orchestrator_session import _clear_orchestrator_session
@@ -658,12 +664,41 @@ async def _force_abandon_official_rework_generation(next_v, source_v):
     try:
         from tool_bot_management import _do_abandon_generation
         return await _do_abandon_generation(
-            reason="official_rework_circuit_breaker"
+            reason="official_rework_circuit_breaker",
+            _actor_lock_owned=actor_lock_owned,
         )
     except Exception as exc:
         return {
             "abandoned": False,
             "error": f"official rework abandon failed: {type(exc).__name__}: {exc}",
+            "next_v": next_v,
+            "source_v": source_v,
+        }
+
+
+async def _force_abandon_frozen_worker_generation(
+    next_v,
+    source_v,
+    reason,
+    *,
+    actor_lock_owned=False,
+):
+    """Fail closed when a frozen Worker transaction cannot be reproduced."""
+    try:
+        from orchestrator_session import _clear_orchestrator_session
+        _clear_orchestrator_session()
+    except Exception:
+        pass
+    try:
+        from tool_bot_management import _do_abandon_generation
+        return await _do_abandon_generation(
+            reason=reason,
+            _actor_lock_owned=actor_lock_owned,
+        )
+    except Exception as exc:
+        return {
+            "abandoned": False,
+            "error": f"frozen Worker abandon failed: {type(exc).__name__}: {exc}",
             "next_v": next_v,
             "source_v": source_v,
         }
@@ -4989,6 +5024,48 @@ def _canonical_tasks_digest(tasks):
     ).hexdigest()
 
 
+def _worker_execution_task_digest(
+    tasks,
+    reviewer_feedback,
+    worker_template,
+    worker_execution_context,
+):
+    """Identity of every frozen input supplied to one outer Worker batch."""
+    return hashlib.sha256(json.dumps({
+        "tasks": tasks,
+        "reviewer_feedback": reviewer_feedback,
+        "worker_template": worker_template,
+        "worker_execution_context": worker_execution_context,
+    }, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _worker_backend_contract():
+    return {
+        key: os.environ.get(key, "")
+        for key in (
+            "ANTHROPIC_MODEL",
+            "CLAUDE_MODEL",
+            "POK_LLM_MODEL",
+            "ANTHROPIC_BASE_URL",
+        )
+    }
+
+
+def _frozen_rework_task_authority_errors(ckpt, tasks):
+    """Validate persisted repair authority without regenerating prompt prose."""
+    errors = _task_write_scope_errors(tasks, ckpt.get("next_v"))
+    if not isinstance(tasks, list) or not tasks:
+        return [*errors, "checkpoint_frozen_rework_tasks_missing_or_empty"]
+    for index, task in enumerate(tasks):
+        if not _repair_contract_signature(task, ckpt.get("next_v")):
+            worker_id = task.get("worker_id") if isinstance(task, dict) else None
+            errors.append(
+                f"task[{index}]_repair_contract_signature_invalid:"
+                f"{worker_id or 'unknown'}"
+            )
+    return errors
+
+
 def _checkpoint_master_task_authority_errors(ckpt, authoritative_tasks):
     """Bind initial worker execution to the accepted checkpoint plan/ledger."""
     if not isinstance(authoritative_tasks, list) or not authoritative_tasks:
@@ -8015,8 +8092,639 @@ def _load_worker_prompt_template(prompts_dir, *, native_tcp=None):
     return common.replace(marker, profile)
 
 
-@tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
-async def execute_workers(args):
+def _durable_checkpoint_contract_matches(checkpoint, contract):
+    if not isinstance(checkpoint, dict) or not isinstance(contract, dict):
+        return False
+    checkpoint_workflow_id = str(
+        checkpoint.get("workflow_run_id")
+        or checkpoint.get("run_id")
+        or (
+            f"{int(checkpoint.get('next_v'))}#"
+            f"{int(checkpoint.get('generation_attempt') or 0)}"
+        )
+    )
+    return (
+        checkpoint_workflow_id
+        == str(contract.get("workflow_run_id") or "")
+        and int(checkpoint.get("checkpoint_revision") or 0)
+        == int(contract.get("checkpoint_revision") or 0)
+        and str(checkpoint.get("stage") or "")
+        == str(contract.get("checkpoint_stage") or "")
+    )
+
+
+def _durable_output_already_projected(checkpoint, projection):
+    if not isinstance(checkpoint, dict):
+        return False
+    contract = projection.get("checkpoint_contract") or {}
+    checkpoint_workflow_id = str(
+        checkpoint.get("workflow_run_id")
+        or checkpoint.get("run_id")
+        or ""
+    )
+    if checkpoint_workflow_id != str(contract.get("workflow_run_id") or ""):
+        return False
+    receipt = (
+        (checkpoint.get("audit_context") or {}).get("durable_worker_output")
+        if isinstance(checkpoint.get("audit_context"), dict)
+        else None
+    )
+    expected = projection.get("durable_worker_output") or {}
+    return bool(
+        isinstance(receipt, dict)
+        and receipt.get("artifact_hash") == expected.get("artifact_hash")
+        and receipt.get("envelope_digest") == expected.get("envelope_digest")
+    )
+
+
+async def _project_durable_worker_output(worker_workflow, next_dir, state):
+    """Project a completed immutable Worker receipt without invoking an LLM."""
+    projection = deepcopy(state.get("projection") or {})
+    envelope = state.get("envelope") or {}
+    next_v = int(envelope.get("next_v"))
+    source_v = int(envelope.get("source_v"))
+    contract = projection.get("checkpoint_contract") or {}
+    checkpoint = _matching_checkpoint(next_v, source_v)
+    if _durable_output_already_projected(checkpoint, projection):
+        # At the immediate workers_done projection, reconcile a missing or
+        # poisoned canonical tree from the immutable artifact.  If downstream
+        # gates already advanced the checkpoint, their matching receipt proves
+        # this output was published; never rewind candidate bytes that a later
+        # authorized stage may have transformed.
+        if checkpoint.get("stage") == "workers_done":
+            worker_workflow.artifacts.materialize(
+                str(state.get("output_snapshot_hash") or ""),
+                next_dir,
+            )
+            if (
+                _complete_artifact_fingerprint(next_dir)
+                != state.get("output_artifact_hash")
+            ):
+                return _json_tool_result({
+                    "error": "DURABLE_WORKER_PROJECTED_ARTIFACT_MISMATCH",
+                    "success": False,
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                })
+        worker_workflow.projected("workers_done")
+        return _json_tool_result({
+            "success": True,
+            "durable_recovery": (
+                "confirmed_existing_worker_projection"
+                if checkpoint.get("stage") == "workers_done"
+                else "confirmed_downstream_worker_projection"
+            ),
+            "current_checkpoint_stage": checkpoint.get("stage"),
+            "output_artifact_hash": state.get("output_artifact_hash"),
+            "next_v": next_v,
+            "source_v": source_v,
+        })
+    if not _durable_checkpoint_contract_matches(checkpoint, contract):
+        return _json_tool_result({
+            "error": "DURABLE_WORKER_OUTPUT_PROJECTION_CONFLICT",
+            "success": False,
+            "action": "operator_reconcile",
+            "next_v": next_v,
+            "source_v": source_v,
+            "expected_checkpoint": contract,
+            "current_checkpoint": {
+                "workflow_run_id": (
+                    checkpoint.get("workflow_run_id") if checkpoint else None
+                ),
+                "checkpoint_revision": (
+                    checkpoint.get("checkpoint_revision") if checkpoint else None
+                ),
+                "stage": checkpoint.get("stage") if checkpoint else None,
+            },
+            "directive": (
+                "The immutable output is safe, but another command advanced the "
+                "checkpoint. Do not rewind it or call the LLM; reconcile the actor "
+                "history with the current projection."
+            ),
+        })
+    worker_workflow.artifacts.materialize(
+        str(state.get("output_snapshot_hash") or ""),
+        next_dir,
+    )
+    audit_context = deepcopy(projection.get("audit_context") or {})
+    audit_context["durable_worker_output"] = deepcopy(
+        projection.get("durable_worker_output") or {}
+    )
+    projected = write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "workers_done",
+        master_plan=deepcopy(projection.get("master_plan") or {}),
+        reviewer_feedback=str(projection.get("reviewer_feedback") or ""),
+        worker_failure_count=int(projection.get("worker_failure_count") or 0),
+        audit_context=audit_context,
+        precommit_rework_count=int(
+            projection.get("precommit_rework_count") or 0
+        ),
+        official_rework_count=int(
+            projection.get("official_rework_count") or 0
+        ),
+        expected_checkpoint_revision=int(contract.get("checkpoint_revision") or 0),
+        expected_checkpoint_stage=str(contract.get("checkpoint_stage") or ""),
+        expected_workflow_run_id=str(contract.get("workflow_run_id") or ""),
+    )
+    if not projected:
+        return _json_tool_result({
+            "error": "DURABLE_WORKER_OUTPUT_PROJECTION_FAILED",
+            "success": False,
+            "action": "retry_same_tool",
+            "next_v": next_v,
+            "source_v": source_v,
+            "output_artifact_hash": state.get("output_artifact_hash"),
+            "directive": (
+                "The immutable Worker output receipt is safe. Retry execute_workers "
+                "to project it; the LLM will not be called again."
+            ),
+        })
+    worker_workflow.projected("workers_done")
+    return _json_tool_result({
+        "success": True,
+        "durable_recovery": "projected_existing_worker_output",
+        "output_artifact_hash": state.get("output_artifact_hash"),
+        "next_v": next_v,
+        "source_v": source_v,
+    })
+
+
+async def _project_durable_worker_failure(worker_workflow, state):
+    """Project a semantic failure receipt before another Worker cycle can open."""
+    projection = deepcopy(state.get("failure_projection") or {})
+    envelope = state.get("envelope") or {}
+    next_v = int(envelope.get("next_v"))
+    source_v = int(envelope.get("source_v"))
+    contract = projection.get("checkpoint_contract") or {}
+    checkpoint = _matching_checkpoint(next_v, source_v)
+    target_stage = str(projection.get("stage") or "repair_planned")
+    receipt = (
+        (checkpoint.get("audit_context") or {}).get("durable_worker_failure")
+        if isinstance(checkpoint, dict)
+        and isinstance(checkpoint.get("audit_context"), dict)
+        else None
+    )
+    expected_receipt = projection.get("durable_worker_failure") or {}
+    already_projected = bool(
+        isinstance(checkpoint, dict)
+        and str(
+            checkpoint.get("workflow_run_id")
+            or checkpoint.get("run_id")
+            or ""
+        ) == str(contract.get("workflow_run_id") or "")
+        and isinstance(receipt, dict)
+        and receipt.get("envelope_digest")
+        == expected_receipt.get("envelope_digest")
+        and receipt.get("semantic_attempt")
+        == expected_receipt.get("semantic_attempt")
+    )
+    if not already_projected:
+        if not _durable_checkpoint_contract_matches(checkpoint, contract):
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_FAILURE_PROJECTION_CONFLICT",
+                "success": False,
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+            })
+        audit_context = deepcopy(projection.get("audit_context") or {})
+        audit_context["durable_worker_failure"] = expected_receipt
+        checkpoint_kwargs = {}
+        if target_stage == "direction_audited" and projection.get(
+            "runtime_contract_ledger_digest"
+        ):
+            checkpoint_kwargs = {
+                "reset_runtime_contract_ledger": True,
+                "expected_runtime_contract_ledger_digest": projection[
+                    "runtime_contract_ledger_digest"
+                ],
+                "runtime_contract_ledger_reset_reason": (
+                    "master_plan_rejected_replan"
+                ),
+            }
+        written = write_pipeline_checkpoint(
+            next_v,
+            source_v,
+            target_stage,
+            master_plan=deepcopy(projection.get("master_plan") or {}),
+            direction_audit=projection.get("direction_audit"),
+            reviewer_feedback=str(projection.get("reviewer_feedback") or ""),
+            worker_failure_count=int(projection.get("worker_failure_count") or 0),
+            audit_context=audit_context,
+            precommit_rework_count=int(
+                projection.get("precommit_rework_count") or 0
+            ),
+            official_rework_count=int(
+                projection.get("official_rework_count") or 0
+            ),
+            touch_stage_timestamp=True,
+            expected_checkpoint_revision=int(
+                contract.get("checkpoint_revision") or 0
+            ),
+            expected_checkpoint_stage=str(contract.get("checkpoint_stage") or ""),
+            expected_workflow_run_id=str(contract.get("workflow_run_id") or ""),
+            **checkpoint_kwargs,
+        )
+        if not written:
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_FAILURE_PROJECTION_FAILED",
+                "success": False,
+                "action": "retry_same_tool",
+                "next_v": next_v,
+                "source_v": source_v,
+            })
+    evidence = projection.get("evidence") or {}
+    if target_stage == "direction_audited":
+        worker_workflow.supersede(
+            "initial_worker_semantic_failure_requires_master_replan",
+            evidence,
+            stage=target_stage,
+        )
+    else:
+        worker_workflow.failure_projected(target_stage)
+    return _json_tool_result({
+        "success": False,
+        "failure_class": "semantic",
+        "next_v": next_v,
+        "source_v": source_v,
+        "next_stage": target_stage,
+        "boundary_errors": evidence.get("boundary_errors") or [],
+    })
+
+
+async def _run_durable_worker_effect(
+    worker_workflow,
+    envelope,
+    next_dir,
+    worker_template,
+):
+    """Run exactly one fenced Worker activity from a frozen envelope."""
+    from agent_workers import WorkerInfrastructureError
+    from worker_boundary import (
+        diff_file_snapshot,
+        restore_complete_artifact_snapshot,
+        snapshot_python_files,
+    )
+
+    next_v = int(envelope["next_v"])
+    source_v = int(envelope["source_v"])
+    tasks = deepcopy(envelope.get("tasks") or [])
+    reviewer_feedback = str(envelope.get("reviewer_feedback") or "")
+    policy = deepcopy(envelope.get("execution_policy") or {})
+    contract = envelope.get("checkpoint_contract") or {}
+    checkpoint = _matching_checkpoint(next_v, source_v)
+    if not _durable_checkpoint_contract_matches(checkpoint, contract):
+        worker_workflow.abandon("worker_checkpoint_contract_drift_before_claim")
+        return _json_tool_result({
+            "error": "DURABLE_WORKER_CHECKPOINT_CONTRACT_DRIFT",
+            "success": False,
+            "action": "abandon_generation",
+            "next_v": next_v,
+            "source_v": source_v,
+        })
+    source_hash = _complete_artifact_fingerprint(get_bot_dir(source_v))
+    if source_hash != str(envelope.get("source_artifact_hash") or ""):
+        worker_workflow.abandon("worker_source_artifact_drift_before_claim")
+        return _json_tool_result({
+            "error": "DURABLE_WORKER_SOURCE_ARTIFACT_DRIFT",
+            "success": False,
+            "action": "abandon_generation",
+            "next_v": next_v,
+            "source_v": source_v,
+            "expected_source_hash": envelope.get("source_artifact_hash"),
+            "current_source_hash": source_hash,
+        })
+
+    try:
+        lease = worker_workflow.request_or_claim(
+            owner=f"pid:{os.getpid()}",
+            lease_seconds=3600,
+        )
+    except Exception as exc:
+        return _json_tool_result({
+            "error": "DURABLE_WORKER_EFFECT_CLAIM_FAILED",
+            "failure_class": "infrastructure",
+            "action": "retry_same_tool",
+            "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+            "next_v": next_v,
+            "source_v": source_v,
+        })
+
+    workspace = None
+    try:
+        workspace = worker_workflow.artifacts.workspace_for(
+            lease,
+            str(envelope.get("prepared_snapshot_hash") or ""),
+        )
+        task_skipper = None
+        if policy.get("quality_skipper"):
+            task_skipper = _quality_rework_skipper(
+                workspace,
+                get_bot_dir(source_v),
+                next_v,
+                source_v,
+                expected_architecture_policy=policy.get(
+                    "expected_architecture_policy"
+                ),
+                master_plan=deepcopy(envelope.get("projection_plan") or {}),
+            )
+        baseline = snapshot_python_files(workspace)
+        ui = _get_ui()
+        try:
+            success, worker_snapshots, audit_focus_areas = await _execute_workers(
+                tasks,
+                worker_template,
+                workspace,
+                next_v,
+                [],
+                ui,
+                reviewer_feedback=reviewer_feedback,
+                source_v=source_v,
+                force_sequential=bool(policy.get("force_sequential")),
+                task_skipper=task_skipper,
+                worker_execution_context=deepcopy(
+                    envelope.get("worker_execution_context") or {}
+                ),
+            )
+        except BaseException as exc:
+            rollback_error = ""
+            try:
+                restore_complete_artifact_snapshot(workspace, baseline)
+            except BaseException as rollback_exc:
+                rollback_error = (
+                    f"{type(rollback_exc).__name__}: {str(rollback_exc)[:300]}"
+                )
+            if isinstance(exc, WorkerInfrastructureError) and not rollback_error:
+                with worker_workflow.store.command_lock(worker_workflow.run_id):
+                    failed_state = worker_workflow.infrastructure_failed(
+                        lease,
+                        exc.issues,
+                    )
+                exhausted = failed_state.get("status") == "exhausted"
+                if exhausted:
+                    worker_workflow.abandon("worker_infrastructure_exhausted")
+                return _json_tool_result({
+                    "success": False,
+                    "failure_class": "infrastructure",
+                    "action": (
+                        "abandon_generation" if exhausted else "retry_same_tool"
+                    ),
+                    "attempt": lease.attempt,
+                    "max_attempts": lease.max_attempts,
+                    "attempt_key": envelope.get("envelope_digest"),
+                    "effect_id": lease.effect_id,
+                    "lease_epoch": lease.lease_epoch,
+                    "next_v": next_v,
+                    "source_v": source_v,
+                })
+            issues = [
+                f"{type(exc).__name__}: {str(exc)[:500]}",
+                *( [f"rollback: {rollback_error}"] if rollback_error else [] ),
+            ]
+            with worker_workflow.store.command_lock(worker_workflow.run_id):
+                failed_state = worker_workflow.execution_failed(
+                    lease,
+                    issues,
+                    retryable=not bool(rollback_error),
+                )
+            if rollback_error or failed_state.get("status") == "exhausted":
+                worker_workflow.abandon("worker_harness_failure")
+            return _json_tool_result({
+                "error": (
+                    "WORKER_BATCH_EXCEPTION_ROLLBACK_FAILED"
+                    if rollback_error
+                    else "DURABLE_WORKER_HARNESS_FAILED"
+                ),
+                "success": False,
+                "failure_class": "infrastructure",
+                "action": (
+                    "abandon_generation"
+                    if rollback_error or failed_state.get("status") == "exhausted"
+                    else "retry_same_tool"
+                ),
+                "next_v": next_v,
+                "source_v": source_v,
+                "message": "; ".join(issues),
+            })
+
+        boundary_errors = []
+        if success:
+            changed = diff_file_snapshot(workspace, baseline)
+            if not changed:
+                success = False
+                boundary_errors.append({"type": "worker_zero_artifact_changes"})
+        if success:
+            boundary_errors = _validate_worker_boundaries(
+                tasks,
+                source_v,
+                next_v,
+                worker_snapshots=worker_snapshots,
+                candidate_dir=workspace,
+            )
+            success = not boundary_errors
+        if success:
+            try:
+                _clear_compiled_task_context(workspace)
+            except Exception as exc:
+                success = False
+                boundary_errors.append({
+                    "type": "transient_control_artifact_cleanup_failed",
+                    "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                })
+
+        if not success:
+            try:
+                restore_complete_artifact_snapshot(workspace, baseline)
+            except Exception as exc:
+                worker_workflow.execution_failed(
+                    lease,
+                    [f"semantic rollback failed: {type(exc).__name__}: {exc}"],
+                    retryable=False,
+                )
+                worker_workflow.abandon("worker_semantic_rollback_failed")
+                return _json_tool_result({
+                    "error": "WORKER_BATCH_ROLLBACK_FAILED",
+                    "success": False,
+                    "action": "abandon_generation",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                })
+            evidence = {
+                "boundary_errors": boundary_errors,
+                "audit_focus_areas": audit_focus_areas,
+                "worker_reported_success": False,
+            }
+            target_stage = (
+                "repair_planned" if reviewer_feedback else "direction_audited"
+            )
+            next_failure_count = int(envelope.get("worker_failure_count") or 0) + 1
+            audit_context = deepcopy(envelope.get("audit_context") or {})
+            failure_plan = (
+                deepcopy(envelope.get("projection_plan") or {})
+                if reviewer_feedback
+                else {}
+            )
+            if not reviewer_feedback:
+                audit_context["worker_execution_failed_replan"] = {
+                    "failed_tasks": [
+                        {
+                            "worker_id": task.get("worker_id"),
+                            "role": task.get("role"),
+                            "target_files": task.get("target_files", []),
+                        }
+                        for task in tasks[:5]
+                    ],
+                    "worker_failure_count": next_failure_count,
+                }
+            failure_projection = {
+                "schema_version": 1,
+                "stage": target_stage,
+                "checkpoint_contract": deepcopy(contract),
+                "master_plan": failure_plan,
+                "direction_audit": checkpoint.get("direction_audit"),
+                "reviewer_feedback": reviewer_feedback,
+                "worker_failure_count": next_failure_count,
+                "audit_context": audit_context,
+                "precommit_rework_count": int(
+                    envelope.get("precommit_rework_count") or 0
+                ),
+                "official_rework_count": int(
+                    envelope.get("official_rework_count") or 0
+                ),
+                "runtime_contract_ledger_digest": (
+                    _checkpoint_runtime_contract_ledger_digest(checkpoint)
+                    if target_stage == "direction_audited"
+                    and checkpoint.get("runtime_contract_ledger") is not None
+                    else ""
+                ),
+                "evidence": evidence,
+                "durable_worker_failure": {
+                    "envelope_digest": envelope.get("envelope_digest"),
+                    "semantic_attempt": int(
+                        worker_workflow.state().get("semantic_attempt") or 0
+                    ) + 1,
+                },
+            }
+            with worker_workflow.store.command_lock(worker_workflow.run_id):
+                semantic_state = worker_workflow.semantic_failed(
+                    lease,
+                    evidence,
+                    projection=failure_projection,
+                )
+                return await _project_durable_worker_failure(
+                    worker_workflow,
+                    semantic_state,
+                )
+
+        try:
+            artifact_hash = _complete_artifact_fingerprint(workspace)
+            snapshot_hash = worker_workflow.artifacts.capture(workspace)
+            if not artifact_hash or artifact_hash != snapshot_hash:
+                raise RuntimeError("Worker output snapshot mismatch")
+        except Exception as exc:
+            worker_workflow.execution_failed(
+                lease,
+                [f"output capture failed: {type(exc).__name__}: {exc}"],
+                retryable=True,
+            )
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_OUTPUT_CAPTURE_FAILED",
+                "success": False,
+                "failure_class": "infrastructure",
+                "action": "retry_same_tool",
+                "next_v": next_v,
+                "source_v": source_v,
+            })
+        audit_context = deepcopy(envelope.get("audit_context") or {})
+        if audit_focus_areas:
+            audit_context["worker_cot_focus_areas"] = audit_focus_areas
+        projection = {
+            "schema_version": 1,
+            "checkpoint_contract": deepcopy(contract),
+            "master_plan": deepcopy(envelope.get("projection_plan") or {}),
+            "reviewer_feedback": reviewer_feedback,
+            "worker_failure_count": int(envelope.get("worker_failure_count") or 0),
+            "audit_context": audit_context,
+            "precommit_rework_count": int(
+                envelope.get("precommit_rework_count") or 0
+            ),
+            "official_rework_count": int(
+                envelope.get("official_rework_count") or 0
+            ),
+            "durable_worker_output": {
+                "artifact_hash": artifact_hash,
+                "snapshot_hash": snapshot_hash,
+                "envelope_digest": envelope.get("envelope_digest"),
+                "effect_id": lease.effect_id,
+                "lease_epoch": lease.lease_epoch,
+            },
+        }
+        try:
+            with worker_workflow.store.command_lock(worker_workflow.run_id):
+                output_state = worker_workflow.output_ready(
+                    lease,
+                    artifact_hash=artifact_hash,
+                    snapshot_hash=snapshot_hash,
+                    projection=projection,
+                )
+                return await _project_durable_worker_output(
+                    worker_workflow,
+                    next_dir,
+                    output_state,
+                )
+        except Exception as exc:
+            try:
+                worker_workflow.execution_failed(
+                    lease,
+                    [f"output receipt failed: {type(exc).__name__}: {exc}"],
+                    retryable=True,
+                )
+            except Exception:
+                pass
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_OUTPUT_RECEIPT_FAILED",
+                "success": False,
+                "action": "retry_same_tool",
+                "next_v": next_v,
+                "source_v": source_v,
+            })
+    finally:
+        # Lease-outcome invariant: every path after claim must durably complete,
+        # fail, exhaust, or abandon the effect. This guard covers injected
+        # failures in workspace creation, validators, receipt construction, and
+        # future hooks without relying on each branch remembering cleanup.
+        try:
+            effect = worker_workflow.store.effect(lease.effect_id)
+            if (
+                effect.get("status") == "running"
+                and int(effect.get("lease_epoch") or 0) == int(lease.lease_epoch)
+            ):
+                worker_workflow.execution_failed(
+                    lease,
+                    ["Worker activity exited without a durable outcome"],
+                    retryable=True,
+                )
+        except Exception:
+            pass
+        if workspace is not None:
+            try:
+                worker_workflow.artifacts.discard_workspace(workspace)
+            except Exception:
+                pass
+
+
+@dataclass(frozen=True)
+class _DeferredWorkerActivity:
+    workflow: object
+    envelope: dict
+    next_dir: Path
+    worker_template: str
+
+
+async def _execute_workers_command(args, *, actor_lock_owned=False):
     _t0 = time.time()
     tasks = args.get("tasks", [])
     if not isinstance(tasks, list):
@@ -8046,6 +8754,22 @@ async def execute_workers(args):
             next_v,
             source_v,
         )
+    if (
+        not str(ckpt.get("workflow_run_id") or "").strip()
+        or int(ckpt.get("checkpoint_revision") or 0) < 1
+    ):
+        return _json_tool_result({
+            "error": "LEGACY_WORKFLOW_ID_UNSUPPORTED",
+            "failure_class": "state_migration",
+            "action": "abandon_generation",
+            "next_v": next_v,
+            "source_v": source_v,
+            "directive": (
+                "This active checkpoint predates the immutable generation actor "
+                "identity. Abandon it while the runtime is stopped and prepare a "
+                "new generation; do not migrate a half-executed workflow."
+            ),
+        })
     _worker_infra, _worker_infra_error = _owned_infrastructure_failure(
         ckpt,
         "execute_workers",
@@ -8058,13 +8782,169 @@ async def execute_workers(args):
             source_v,
             checkpoint=ckpt,
         )
-    _worker_exhausted = await _execute_exhausted_infrastructure_failure(
-        next_v,
-        source_v,
-        owner_tool="execute_workers",
+    from worker_workflow import (
+        WorkerWorkflow,
+        next_worker_command,
+        validate_worker_envelope,
     )
-    if _worker_exhausted is not None:
-        return _json_tool_result(_worker_exhausted)
+
+    worker_workflow = WorkerWorkflow.for_checkpoint(ckpt)
+    if _worker_infra is not None:
+        return _json_tool_result({
+            "error": "LEGACY_WORKER_INFRASTRUCTURE_STATE_UNSUPPORTED",
+            "failure_class": "state_migration",
+            "action": "abandon_generation",
+            "next_v": next_v,
+            "source_v": source_v,
+            "directive": (
+                "This generation was created by the retired Worker overlay state "
+                "machine. Abandon it from the stopped runtime and start from a new "
+                "baseline; do not translate two authorities into one history."
+            ),
+        })
+    durable_worker_state = worker_workflow.state()
+    durable_worker_status = str(durable_worker_state.get("status") or "idle")
+    if durable_worker_status == "completed":
+        previous_envelope = durable_worker_state.get("envelope") or {}
+        previous_contract = previous_envelope.get("checkpoint_contract") or {}
+        current_revision = int(ckpt.get("checkpoint_revision") or 0)
+        previous_revision = int(previous_contract.get("checkpoint_revision") or 0)
+        worker_entry_stages = {
+            "master_planned",
+            "quality_failed",
+            "quality_passed",
+            "reviewed",
+            "critic_checked",
+            "precommit_failed",
+            "official_failed",
+            "repair_planned",
+            "rework_running",
+        }
+        if (
+            ckpt.get("stage") in worker_entry_stages
+            and current_revision > previous_revision
+            and route_policy(ckpt).get("next_tool") == "execute_workers"
+        ):
+            work_receipt = hashlib.sha256(
+                json.dumps(
+                    {
+                        "workflow_run_id": ckpt.get("workflow_run_id"),
+                        "checkpoint_revision": current_revision,
+                        "stage": ckpt.get("stage"),
+                        "master_plan": ckpt.get("master_plan") or {},
+                        "reviewer_feedback": ckpt.get("reviewer_feedback") or "",
+                    },
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            durable_worker_state = worker_workflow.open_cycle(
+                f"checkpoint_work_receipt:{work_receipt}"
+            )
+            durable_worker_status = "idle"
+    durable_worker_envelope = (
+        durable_worker_state.get("envelope")
+        if isinstance(durable_worker_state.get("envelope"), dict)
+        else {}
+    )
+    worker_command = next_worker_command(durable_worker_state)
+    command_name = str(worker_command.get("command") or "recover")
+    durable_worker_resume = command_name != "prepare"
+    if durable_worker_resume and durable_worker_envelope:
+        envelope_errors = validate_worker_envelope(durable_worker_envelope)
+        if envelope_errors:
+            worker_workflow.abandon("durable_worker_envelope_invalid")
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_ENVELOPE_INVALID",
+                "validation_errors": envelope_errors,
+                "next_v": next_v,
+                "source_v": source_v,
+                "action": "abandon_generation",
+            })
+        if (
+            int(durable_worker_envelope.get("next_v")) != int(next_v)
+            or int(durable_worker_envelope.get("source_v")) != int(source_v)
+        ):
+            worker_workflow.abandon("durable_worker_identity_mismatch")
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_IDENTITY_MISMATCH",
+                "next_v": next_v,
+                "source_v": source_v,
+                "action": "abandon_generation",
+            })
+        current_template_hash = hashlib.sha256(
+            worker_template.encode("utf-8")
+        ).hexdigest()
+        if (
+            durable_worker_envelope.get("worker_template_hash")
+            != current_template_hash
+            or durable_worker_envelope.get("backend_contract")
+            != _worker_backend_contract()
+        ):
+            worker_workflow.abandon("durable_worker_definition_drift")
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_DEFINITION_DRIFT",
+                "next_v": next_v,
+                "source_v": source_v,
+                "action": "abandon_generation",
+            })
+    if command_name == "project_output":
+        if actor_lock_owned:
+            return await _project_durable_worker_output(
+                worker_workflow,
+                next_dir,
+                durable_worker_state,
+            )
+        with worker_workflow.store.command_lock(worker_workflow.run_id):
+            return await _project_durable_worker_output(
+                worker_workflow,
+                next_dir,
+                durable_worker_state,
+            )
+    if command_name == "project_failure":
+        if actor_lock_owned:
+            return await _project_durable_worker_failure(
+                worker_workflow,
+                durable_worker_state,
+            )
+        with worker_workflow.store.command_lock(worker_workflow.run_id):
+            return await _project_durable_worker_failure(
+                worker_workflow,
+                durable_worker_state,
+            )
+    if command_name in {"request_or_claim_worker", "claim_worker"}:
+        if actor_lock_owned:
+            return _DeferredWorkerActivity(
+                workflow=worker_workflow,
+                envelope=durable_worker_envelope,
+                next_dir=next_dir,
+                worker_template=worker_template,
+            )
+        return await _run_durable_worker_effect(
+            worker_workflow,
+            durable_worker_envelope,
+            next_dir,
+            worker_template,
+        )
+    if command_name == "abandon":
+        worker_workflow.abandon("worker_infrastructure_exhausted")
+        return _json_tool_result({
+            "error": "WORKER_INFRASTRUCTURE_EXHAUSTED",
+            "failure_class": "infrastructure",
+            "action": "abandon_generation",
+            "next_v": next_v,
+            "source_v": source_v,
+        })
+    if command_name == "none":
+        return _json_tool_result({
+            "error": "WORKER_CYCLE_HAS_NO_PENDING_COMMAND",
+            "next_v": next_v,
+            "source_v": source_v,
+            "stage": ckpt.get("stage"),
+            "projected_stage": durable_worker_state.get("projected_stage"),
+            "next_tool": route_policy(ckpt).get("next_tool"),
+        })
     if _checkpoint_architecture_policy_identity_errors(ckpt):
         try:
             recovery = _recover_architecture_policy_identity(
@@ -8115,9 +8995,72 @@ async def execute_workers(args):
                 ),
             })
     rework_stages = {"quality_failed", "precommit_failed", "official_failed", "repair_planned", "rework_running"}
+    checkpoint_work_item = (
+        durable_worker_envelope.get("work_item")
+        if durable_worker_resume
+        and isinstance(durable_worker_envelope.get("work_item"), dict)
+        else _checkpoint_master_plan(ckpt).get("work_item")
+        if isinstance(_checkpoint_master_plan(ckpt).get("work_item"), dict)
+        else {}
+    )
+    checkpoint_has_frozen_preparation = bool(
+        isinstance(checkpoint_work_item, dict)
+        and checkpoint_work_item.get("repair_baseline_artifact_hash")
+        and checkpoint_work_item.get("prepared_snapshot_hash")
+    )
+    frozen_rework_resume = bool(
+        durable_worker_resume
+        and durable_worker_envelope.get("kind") != "initial_worker"
+        or (
+            ckpt.get("stage") in {"repair_planned", "rework_running"}
+            and checkpoint_work_item.get("repair_baseline_artifact_hash")
+        )
+    )
+    prepared_repair_resume_dir = None
+    prepared_repair_resume_hash = ""
+    if (
+        durable_worker_status == "idle"
+        and ckpt.get("stage") in {"repair_planned", "rework_running"}
+        and isinstance(checkpoint_work_item, dict)
+    ):
+        prepared_repair_resume_hash = str(
+            checkpoint_work_item.get("prepared_snapshot_hash") or ""
+        )
+        if (
+            checkpoint_work_item.get("repair_baseline_artifact_hash")
+            and not prepared_repair_resume_hash
+        ):
+            return _json_tool_result({
+                "error": "DURABLE_REPAIR_PREPARATION_RECEIPT_MISSING",
+                "failure_class": "state_migration",
+                "action": "abandon_generation",
+                "next_v": next_v,
+                "source_v": source_v,
+                "directive": (
+                    "A repair work item claims a prepared baseline but does not "
+                    "bind its immutable snapshot. Do not reconstruct or rerun "
+                    "one-time preparation from mutable candidate bytes."
+                ),
+            })
+        if prepared_repair_resume_hash:
+            try:
+                prepared_repair_resume_dir = worker_workflow.artifacts.path_for(
+                    prepared_repair_resume_hash
+                )
+            except Exception:
+                prepared_repair_resume_dir = None
     if ckpt.get("stage") in rework_stages:
         expected_repair_baseline = _checkpoint_repair_baseline_fingerprint(ckpt)
-        current_repair_baseline = _complete_artifact_fingerprint(next_dir)
+        # Once repair preparation has been captured and projected into the
+        # checkpoint, that immutable artifact is the recovery authority.  The
+        # canonical candidate intentionally still contains the pre-preparation
+        # bytes, so comparing it here would turn a crash between checkpoint
+        # publication and WorkerPrepared into a false drift/abandon.
+        current_repair_baseline = _complete_artifact_fingerprint(
+            prepared_repair_resume_dir
+            if prepared_repair_resume_dir is not None
+            else next_dir
+        )
         if not expected_repair_baseline:
             return _json_tool_result({
                 "error": "REPAIR_BASELINE_RECEIPT_MISSING",
@@ -8135,6 +9078,14 @@ async def execute_workers(args):
             not current_repair_baseline
             or current_repair_baseline != expected_repair_baseline
         ):
+            abandon_result = {}
+            if frozen_rework_resume:
+                abandon_result = await _force_abandon_frozen_worker_generation(
+                    next_v,
+                    source_v,
+                    "frozen_rework_baseline_drift",
+                    actor_lock_owned=actor_lock_owned,
+                )
             return _json_tool_result({
                 "error": "REPAIR_BASELINE_ARTIFACT_DRIFT",
                 "next_v": next_v,
@@ -8143,13 +9094,18 @@ async def execute_workers(args):
                 "expected_artifact_hash": expected_repair_baseline,
                 "current_artifact_hash": current_repair_baseline,
                 "next_tool": "abandon_generation",
+                **abandon_result,
                 "directive": (
                     "The candidate changed after the gate evidence or repair plan "
                     "was frozen. Abandon; the drift cannot piggyback on a declared "
                     "repair file."
                 ),
             })
-        canonical_feedback = _checkpoint_rework_feedback(ckpt)
+        canonical_feedback = (
+            str(durable_worker_envelope.get("reviewer_feedback") or "")
+            if durable_worker_resume
+            else _checkpoint_rework_feedback(ckpt)
+        )
         if not canonical_feedback:
             return _json_tool_result({
                 "error": "REWORK_FEEDBACK_AUTHORITY_MISSING",
@@ -8196,11 +9152,32 @@ async def execute_workers(args):
             })
         reviewer_feedback = canonical_feedback
 
-        authoritative_rework_tasks, authority_errors = _authoritative_rework_tasks(
-            ckpt,
-            canonical_feedback,
-        )
+        if frozen_rework_resume:
+            authoritative_rework_tasks = deepcopy(
+                durable_worker_envelope.get("tasks")
+                if durable_worker_resume
+                else _checkpoint_master_plan(ckpt).get("tasks") or []
+            )
+            authority_errors = _frozen_rework_task_authority_errors(
+                ckpt,
+                authoritative_rework_tasks,
+            )
+        else:
+            authoritative_rework_tasks, authority_errors = (
+                _authoritative_rework_tasks(
+                    ckpt,
+                    canonical_feedback,
+                )
+            )
         if authority_errors:
+            abandon_result = {}
+            if frozen_rework_resume:
+                abandon_result = await _force_abandon_frozen_worker_generation(
+                    next_v,
+                    source_v,
+                    "frozen_rework_task_authority_invalid",
+                    actor_lock_owned=actor_lock_owned,
+                )
             return _json_tool_result({
                 "error": "REWORK_TASK_AUTHORITY_INVALID",
                 "next_v": next_v,
@@ -8208,6 +9185,7 @@ async def execute_workers(args):
                 "checkpoint_stage": ckpt.get("stage"),
                 "validation_errors": authority_errors,
                 "next_tool": "abandon_generation",
+                **abandon_result,
                 "directive": (
                     "The system could not derive signed, file-scoped repair tasks "
                     "from the checkpoint/gate receipt. Do not execute caller tasks."
@@ -8366,6 +9344,25 @@ async def execute_workers(args):
                     "exact tasks returned by run_master. Do not paraphrase them."
                 ),
             })
+        if durable_worker_resume:
+            durable_tasks = durable_worker_envelope.get("tasks") or []
+            if _canonical_tasks_digest(durable_tasks) != _canonical_tasks_digest(
+                _authoritative_tasks
+            ):
+                abandon_result = await _force_abandon_frozen_worker_generation(
+                    next_v,
+                    source_v,
+                    "durable_initial_worker_task_drift",
+                    actor_lock_owned=actor_lock_owned,
+                )
+                worker_workflow.abandon("durable_initial_worker_task_drift")
+                return _json_tool_result({
+                    "error": "DURABLE_INITIAL_WORKER_TASK_DRIFT",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    **abandon_result,
+                })
+            _authoritative_tasks = durable_tasks
         tasks = deepcopy(_authoritative_tasks)
 
     review_rework_checkpoint = _is_review_rework_checkpoint(ckpt)
@@ -8373,7 +9370,7 @@ async def execute_workers(args):
     official_rework_checkpoint = _is_official_rework_checkpoint(ckpt)
     replace_checkpoint_tasks = ckpt.get("stage") in rework_stages
 
-    if official_rework_checkpoint:
+    if official_rework_checkpoint and not frozen_rework_resume:
         checkpoint_tasks = _checkpoint_master_plan(ckpt).get("tasks", [])
         supplied_tasks = tasks
         tasks = _official_repair_tasks(ckpt, reviewer_feedback)
@@ -8486,7 +9483,8 @@ async def execute_workers(args):
             })
 
     if (
-        tasks
+        not frozen_rework_resume
+        and tasks
         and ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}
         and not _is_precommit_rework_checkpoint(ckpt)
         and not _is_official_rework_checkpoint(ckpt)
@@ -8520,7 +9518,11 @@ async def execute_workers(args):
                     },
                 )
 
-    if tasks and _is_precommit_rework_checkpoint(ckpt):
+    if (
+        not frozen_rework_resume
+        and tasks
+        and _is_precommit_rework_checkpoint(ckpt)
+    ):
         precommit_stale_reason = _precommit_repair_task_refresh_reason(tasks, ckpt, reviewer_feedback)
     else:
         precommit_stale_reason = ""
@@ -8545,7 +9547,7 @@ async def execute_workers(args):
                 },
             )
 
-    if tasks and review_rework_checkpoint:
+    if not frozen_rework_resume and tasks and review_rework_checkpoint:
         review_stale_reason = _review_repair_task_refresh_reason(tasks, ckpt, reviewer_feedback)
     else:
         review_stale_reason = ""
@@ -8571,7 +9573,8 @@ async def execute_workers(args):
             )
 
     if (
-        tasks
+        not frozen_rework_resume
+        and tasks
         and ckpt.get("stage") in rework_stages
         and not _is_precommit_rework_checkpoint(ckpt)
         and not _is_official_rework_checkpoint(ckpt)
@@ -8699,7 +9702,11 @@ async def execute_workers(args):
         from evolution_infra import RESULTS_DIR as _h6_results
         _h6_wf_file = _h6_results / "worker_failures.jsonl"
         _recent = []
-        if _h6_wf_file.exists():
+        # A published preparation receipt proves this breaker already passed
+        # for the frozen work item. Reopening live cross-generation evidence on
+        # recovery would let an unrelated later failure rewrite the same
+        # activity input.
+        if not checkpoint_has_frozen_preparation and _h6_wf_file.exists():
             try:
                 from evolution_infra import locked_file
                 with locked_file(_h6_wf_file, "r", encoding="utf-8") as f:
@@ -8756,13 +9763,172 @@ async def execute_workers(args):
     # Previous claim that code was reset was FALSE — now we actually do it.
     force_sequential_rework = False
     task_skipper = None
+    quality_skipper_config = None
     rework_plan_metadata = None
     precommit_rework_count_for_write = None
     official_rework_count_for_write = None
     mechanical_trim_results = []
-    if reviewer_feedback and ckpt.get("stage") in (
+    rework_preparation_dir = None
+    prepared_candidate_dir = next_dir
+    durable_preparation_resume = False
+
+    def rollback_rework_preparation():
+        if rework_preparation_dir is None:
+            return ""
+        try:
+            worker_workflow.artifacts.discard_workspace(
+                rework_preparation_dir
+            )
+            return ""
+        except Exception as rollback_exc:
+            return f"{type(rollback_exc).__name__}: {str(rollback_exc)[:300]}"
+    existing_prepared_work = (
+        (_checkpoint_master_plan(ckpt).get("work_item") or {})
+        if isinstance(_checkpoint_master_plan(ckpt).get("work_item"), dict)
+        else {}
+    )
+    existing_prepared_snapshot = str(
+        existing_prepared_work.get("prepared_snapshot_hash") or ""
+    )
+    if (
+        durable_worker_status == "idle"
+        and ckpt.get("stage") in {"repair_planned", "rework_running"}
+        and existing_prepared_snapshot
+    ):
+        try:
+            prepared_candidate_dir = worker_workflow.artifacts.path_for(
+                existing_prepared_snapshot
+            )
+            expected_prepared_hash = str(
+                existing_prepared_work.get("repair_baseline_artifact_hash") or ""
+            )
+            if (
+                not expected_prepared_hash
+                or _complete_artifact_fingerprint(prepared_candidate_dir)
+                != expected_prepared_hash
+            ):
+                raise RuntimeError("prepared repair snapshot hash mismatch")
+            durable_preparation_resume = True
+            rework_plan_metadata = deepcopy(existing_prepared_work)
+            frozen_worker_input = rework_plan_metadata.get(
+                "frozen_worker_input"
+            )
+            frozen_worker_input_digest = str(
+                rework_plan_metadata.get("frozen_worker_input_digest") or ""
+            )
+            if not isinstance(frozen_worker_input, dict):
+                raise RuntimeError("frozen Worker preparation input missing")
+            actual_frozen_input_digest = hashlib.sha256(
+                json.dumps(
+                    frozen_worker_input,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            if actual_frozen_input_digest != frozen_worker_input_digest:
+                raise RuntimeError("frozen Worker preparation input digest mismatch")
+            if (
+                frozen_worker_input.get("schema_version") != 1
+                or frozen_worker_input.get("tasks") != tasks
+                or str(frozen_worker_input.get("reviewer_feedback") or "")
+                != reviewer_feedback
+                or frozen_worker_input.get("worker_template_hash")
+                != hashlib.sha256(worker_template.encode("utf-8")).hexdigest()
+                or frozen_worker_input.get("backend_contract")
+                != _worker_backend_contract()
+                or not isinstance(
+                    frozen_worker_input.get("worker_execution_context"), dict
+                )
+                or not isinstance(
+                    frozen_worker_input.get("exhausted_keywords"), list
+                )
+            ):
+                raise RuntimeError("frozen Worker preparation input contract drift")
+            precommit_rework_count_for_write = int(
+                ckpt.get("precommit_rework_count") or 0
+            )
+            official_rework_count_for_write = int(
+                ckpt.get("official_rework_count") or 0
+            )
+            task_kinds = {
+                str(task.get("task_kind") or "")
+                for task in tasks
+                if isinstance(task, dict)
+            }
+            if (
+                "quality_repair" in str(
+                    existing_prepared_work.get("kind") or ""
+                )
+                or any("quality_repair" in kind for kind in task_kinds)
+            ) and not _is_precommit_rework_checkpoint(
+                ckpt
+            ) and not _is_official_rework_checkpoint(ckpt):
+                force_sequential_rework = True
+                quality_skipper_config = {
+                    "source_dir": get_bot_dir(source_v),
+                    "expected_architecture_policy": (
+                        _checkpoint_master_plan(ckpt).get(
+                            "architecture_policy"
+                        )
+                    ),
+                    "master_plan": _checkpoint_master_plan(ckpt),
+                }
+        except Exception as exc:
+            return _json_tool_result({
+                "error": "DURABLE_REPAIR_PREPARATION_UNAVAILABLE",
+                "next_v": next_v,
+                "source_v": source_v,
+                "action": "abandon_generation",
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+            })
+    if (
+        frozen_rework_resume
+        and reviewer_feedback
+        and ckpt.get("stage") in {"repair_planned", "rework_running"}
+    ):
+        frozen_plan = _checkpoint_master_plan(ckpt)
+        frozen_work_item = (
+            frozen_plan.get("work_item")
+            if isinstance(frozen_plan.get("work_item"), dict)
+            else {}
+        )
+        frozen_rework_kind = str(frozen_work_item.get("kind") or "")
+        frozen_task_kinds = {
+            str(task.get("task_kind") or "")
+            for task in tasks or []
+            if isinstance(task, dict)
+        }
+        is_frozen_quality_rework = (
+            "quality_repair" in frozen_rework_kind
+            or any("quality_repair" in kind for kind in frozen_task_kinds)
+        )
+        if (
+            is_frozen_quality_rework
+            and not _is_precommit_rework_checkpoint(ckpt)
+            and not _is_official_rework_checkpoint(ckpt)
+        ):
+            force_sequential_rework = True
+            quality_skipper_config = {
+                "source_dir": get_bot_dir(source_v),
+                "expected_architecture_policy": (
+                    frozen_plan.get("architecture_policy")
+                    if isinstance(frozen_plan.get("architecture_policy"), dict)
+                    else None
+                ),
+                "master_plan": frozen_plan,
+            }
+        if ckpt.get("stage") == "repair_planned":
+            rework_plan_metadata = frozen_work_item
+    if (
+        not frozen_rework_resume
+        and not durable_preparation_resume
+        and reviewer_feedback
+        and ckpt.get("stage") in (
         "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked",
         "precommit_failed", "official_failed", "repair_planned", "rework_running"
+        )
     ):
         rework_kind = "quality_repair" if ckpt.get("stage") == "quality_failed" else "gate_rework"
         if ckpt.get("stage") == "official_failed":
@@ -8859,6 +10025,7 @@ async def execute_workers(args):
                 abandon_result = await _force_abandon_official_rework_generation(
                     next_v,
                     source_v,
+                    actor_lock_owned=actor_lock_owned,
                 )
                 return _json_tool_result({
                     "error": "OFFICIAL_REWORK_CIRCUIT_BREAKER",
@@ -8875,14 +10042,67 @@ async def execute_workers(args):
                     ),
                 })
         source_dir_r = get_bot_dir(source_v)
+        try:
+            preparation_base = worker_workflow.artifacts.capture(next_dir)
+            preparation_digest = hashlib.sha256(
+                json.dumps(
+                    {
+                        "stage": ckpt.get("stage"),
+                        "tasks": tasks,
+                        "reviewer_feedback": reviewer_feedback,
+                        "source_hash": _complete_artifact_fingerprint(source_dir_r),
+                        "precommit_rework_count": precommit_rework_count_for_write,
+                        "official_rework_count": official_rework_count_for_write,
+                    },
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            rework_preparation_dir = worker_workflow.artifacts.preparation_workspace(
+                run_id=worker_workflow.run_id,
+                cycle=int(durable_worker_state.get("cycle") or 0),
+                input_digest=preparation_base,
+                preparation_digest=preparation_digest,
+            )
+            prepared_candidate_dir = rework_preparation_dir
+        except Exception as exc:
+            return _json_tool_result({
+                "error": "REWORK_PREPARATION_SNAPSHOT_FAILED",
+                "next_v": next_v,
+                "source_v": source_v,
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "next_tool": "abandon_generation",
+                "directive": (
+                    "Could not freeze the complete candidate before one-time "
+                    "repair preparation. No reset or hygiene mutation was run."
+                ),
+            })
         reset_before_rework = _should_reset_before_rework(ckpt, tasks)
-        if reset_before_rework and source_dir_r.exists() and next_dir.exists():
+        if reset_before_rework and source_dir_r.exists() and prepared_candidate_dir.exists():
             _log.info(f"Resetting v{next_v} code from source v{source_v} before worker retry (incremental, preserves NEW files)")
             # Incremental reset: overwrite source files (undo worker edits) but
             # PRESERVE worker-created NEW files absent from source. This avoids
             # wiping NEW files on redundant orchestrator re-calls of execute_workers
             # (which would otherwise cause zero-changes wasted retries).
-            preserved = _incremental_reset_next_dir(next_dir, source_dir_r)
+            try:
+                preserved = _incremental_reset_next_dir(
+                    prepared_candidate_dir,
+                    source_dir_r,
+                )
+            except Exception as exc:
+                rollback_error = rollback_rework_preparation()
+                return _json_tool_result({
+                    "error": (
+                        "REWORK_PREPARATION_ROLLBACK_FAILED"
+                        if rollback_error else "REWORK_SOURCE_RESET_FAILED"
+                    ),
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    "rollback_error": rollback_error,
+                    "next_tool": "abandon_generation" if rollback_error else "execute_workers",
+                })
             if preserved:
                 _log.info("Preserved %d worker-created NEW file(s) across reset: %s",
                           len(preserved), preserved)
@@ -8953,22 +10173,55 @@ async def execute_workers(args):
 
         # Re-apply known fixes after resetting from source (source may be older/unfixed)
         from fix_injection import apply_known_fixes, log_fix_application
-        applied, skipped = apply_known_fixes(next_dir)
-        if applied or skipped:
-            log_fix_application(applied, skipped, next_dir, source_v)
+        try:
+            applied, skipped = apply_known_fixes(prepared_candidate_dir)
+            if applied or skipped:
+                log_fix_application(
+                    applied,
+                    skipped,
+                    prepared_candidate_dir,
+                    source_v,
+                )
+        except Exception as exc:
+            rollback_error = rollback_rework_preparation()
+            return _json_tool_result({
+                "error": (
+                    "REWORK_PREPARATION_ROLLBACK_FAILED"
+                    if rollback_error else "REWORK_KNOWN_FIXES_FAILED"
+                ),
+                "next_v": next_v,
+                "source_v": source_v,
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "rollback_error": rollback_error,
+                "next_tool": "abandon_generation" if rollback_error else "execute_workers",
+            })
         try:
             from candidate_hygiene import sanitize_candidate_dir
             from workflow_profiles import get_workflow_profile
             native_tcp = getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp"
-            sanitize_candidate_dir(next_dir, require_native_tcp=native_tcp)
+            sanitize_candidate_dir(
+                prepared_candidate_dir,
+                require_native_tcp=native_tcp,
+            )
         except Exception as exc:
+            rollback_error = rollback_rework_preparation()
             log_system_event(
                 "pipeline.candidate_hygiene_failed",
                 "error",
                 f"Candidate hygiene failed for v{next_v}: {exc}",
                 {"next_v": next_v, "source_v": source_v, "stage": ckpt.get("stage")},
             )
-            return _json_tool_result({"error": f"Candidate hygiene failed: {exc}"})
+            return _json_tool_result({
+                "error": (
+                    "REWORK_PREPARATION_ROLLBACK_FAILED"
+                    if rollback_error else "CANDIDATE_HYGIENE_FAILED"
+                ),
+                "message": f"Candidate hygiene failed: {exc}",
+                "rollback_error": rollback_error,
+                "next_v": next_v,
+                "source_v": source_v,
+                "next_tool": "abandon_generation" if rollback_error else "execute_workers",
+            })
 
         # Write intermediate checkpoint so pipeline state reflects the in-progress retry.
         # Without this, a crash between code reset and worker execution would leave
@@ -9008,25 +10261,36 @@ async def execute_workers(args):
             and ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}
         ):
             force_sequential_rework = True
-            task_skipper = _quality_rework_skipper(
-                next_dir,
-                source_dir_r,
-                next_v,
-                source_v,
-                expected_architecture_policy=(
+            quality_skipper_config = {
+                "source_dir": source_dir_r,
+                "expected_architecture_policy": (
                     (_checkpoint_master_plan(ckpt).get("architecture_policy"))
                     if isinstance(_checkpoint_master_plan(ckpt).get("architecture_policy"), dict)
                     else None
                 ),
-                master_plan=retry_plan,
-            )
-            mechanical_trim_results = _apply_mechanical_file_size_trims(
-                tasks,
-                next_dir,
-                source_dir_r,
-                next_v,
-                source_v,
-            )
+                "master_plan": retry_plan,
+            }
+            try:
+                mechanical_trim_results = _apply_mechanical_file_size_trims(
+                    tasks,
+                    prepared_candidate_dir,
+                    source_dir_r,
+                    next_v,
+                    source_v,
+                )
+            except Exception as exc:
+                rollback_error = rollback_rework_preparation()
+                return _json_tool_result({
+                    "error": (
+                        "REWORK_PREPARATION_ROLLBACK_FAILED"
+                        if rollback_error else "REWORK_MECHANICAL_TRIM_FAILED"
+                    ),
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    "rollback_error": rollback_error,
+                    "next_tool": "abandon_generation" if rollback_error else "execute_workers",
+                })
 
         if reset_before_rework:
             reviewer_feedback += (
@@ -9085,21 +10349,66 @@ async def execute_workers(args):
                 f"large file_size targets: {trim_summary}. Continue only if a blocker remains."
             )
 
-        repair_baseline_artifact_hash = _complete_artifact_fingerprint(next_dir)
+        repair_baseline_artifact_hash = _complete_artifact_fingerprint(
+            prepared_candidate_dir
+        )
         if not repair_baseline_artifact_hash:
+            rollback_error = rollback_rework_preparation()
             return _json_tool_result({
-                "error": "REPAIR_BASELINE_ARTIFACT_UNAVAILABLE",
+                "error": (
+                    "REWORK_PREPARATION_ROLLBACK_FAILED"
+                    if rollback_error else "REPAIR_BASELINE_ARTIFACT_UNAVAILABLE"
+                ),
                 "next_v": next_v,
                 "source_v": source_v,
                 "next_tool": "abandon_generation",
+                "rollback_error": rollback_error,
                 "directive": (
                     "Could not freeze the complete post-reset/post-hygiene repair "
                     "baseline. Do not execute Workers without a content receipt."
                 ),
             })
+        prepared_repair_snapshot_hash = worker_workflow.artifacts.capture(
+            prepared_candidate_dir
+        )
+        if prepared_repair_snapshot_hash != repair_baseline_artifact_hash:
+            rollback_error = rollback_rework_preparation()
+            return _json_tool_result({
+                "error": "REPAIR_PREPARATION_SNAPSHOT_MISMATCH",
+                "next_v": next_v,
+                "source_v": source_v,
+                "rollback_error": rollback_error,
+            })
+        from agent_workers import build_worker_execution_context
+
+        frozen_worker_execution_context = build_worker_execution_context()
+        frozen_exhausted_keywords = _extract_exhausted_keywords()
+        frozen_preparation_input = {
+            "schema_version": 1,
+            "tasks": deepcopy(tasks),
+            "reviewer_feedback": reviewer_feedback,
+            "worker_template_hash": hashlib.sha256(
+                worker_template.encode("utf-8")
+            ).hexdigest(),
+            "backend_contract": _worker_backend_contract(),
+            "worker_execution_context": frozen_worker_execution_context,
+            "exhausted_keywords": list(frozen_exhausted_keywords),
+        }
+        frozen_preparation_input_digest = hashlib.sha256(
+            json.dumps(
+                frozen_preparation_input,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
         rework_plan_metadata = {
             **rework_plan_metadata,
             "repair_baseline_artifact_hash": repair_baseline_artifact_hash,
+            "prepared_snapshot_hash": prepared_repair_snapshot_hash,
+            "frozen_worker_input": frozen_preparation_input,
+            "frozen_worker_input_digest": frozen_preparation_input_digest,
         }
         retry_plan = {
             **retry_plan,
@@ -9121,13 +10430,24 @@ async def execute_workers(args):
             precommit_rework_count=precommit_rework_count_for_write,
             official_rework_count=official_rework_count_for_write,
             repair_baseline_artifact_hash=repair_baseline_artifact_hash,
+            expected_checkpoint_revision=int(
+                ckpt.get("checkpoint_revision") or 0
+            ),
+            expected_checkpoint_stage=str(ckpt.get("stage") or ""),
+            expected_workflow_run_id=str(ckpt.get("workflow_run_id") or ""),
         )
         if not repair_checkpoint_written:
+            rollback_error = rollback_rework_preparation()
             return _json_tool_result({
-                "error": "REPAIR_BASELINE_CHECKPOINT_FAILED",
+                "error": (
+                    "REWORK_PREPARATION_ROLLBACK_FAILED"
+                    if rollback_error else "REPAIR_BASELINE_CHECKPOINT_FAILED"
+                ),
                 "next_v": next_v,
                 "source_v": source_v,
                 "expected_artifact_hash": repair_baseline_artifact_hash,
+                "candidate_restored": not rollback_error,
+                "rollback_error": rollback_error,
                 "directive": (
                     "The system prepared a repair baseline but could not persist its "
                     "content receipt. Do not execute Workers or claim repair authority."
@@ -9137,7 +10457,16 @@ async def execute_workers(args):
     # P2: Validate positive worker intent against EXHAUSTED directions from the
     # experience pool. Negative guardrail prose is ignored to prevent warnings
     # from firing merely because the prompt quotes a forbidden axis.
-    exhausted_keywords = _extract_exhausted_keywords()
+    frozen_worker_input = (
+        rework_plan_metadata.get("frozen_worker_input")
+        if isinstance(rework_plan_metadata, dict)
+        else None
+    )
+    exhausted_keywords = (
+        list(frozen_worker_input.get("exhausted_keywords") or [])
+        if isinstance(frozen_worker_input, dict)
+        else _extract_exhausted_keywords()
+    )
     exhausted_violations = _exhausted_plan_violations(
         {"tasks": tasks},
         next_v=next_v,
@@ -9167,6 +10496,13 @@ async def execute_workers(args):
             reset_runtime_contract_ledger=True,
             expected_runtime_contract_ledger_digest=ledger_digest,
             runtime_contract_ledger_reset_reason="master_plan_rejected_replan",
+            expected_checkpoint_revision=int(
+                ckpt.get("checkpoint_revision") or 0
+            ),
+            expected_checkpoint_stage=str(ckpt.get("stage") or ""),
+            expected_workflow_run_id=str(
+                ckpt.get("workflow_run_id") or ""
+            ),
         )
         if not written:
             log_system_event(
@@ -9224,17 +10560,13 @@ async def execute_workers(args):
         for task in tasks:
             prompt_text = _positive_execution_text_from_task(task)
             if _fuzzy_match_exhausted(prompt_text, exhausted_keywords, require_direction_token=True):
-                original = task.get("worker_prompt", task.get("instruction", ""))
-                task["worker_prompt"] = (
-                    original +
-                    "\n\n⚠️ WARNING: This task may violate an EXHAUSTED direction. "
-                    "Verify carefully — the experience pool marks this area as exhausted "
-                    "with no measurable H2H gain. Consider an alternative approach."
-                )
                 log_system_event(
                     "pipeline.worker_exhausted_warning", "warn",
-                    f"Worker {task.get('worker_id', '?')} prompt matches EXHAUSTED direction",
-                    {"next_v": next_v},
+                    (
+                        f"Worker {task.get('worker_id', '?')} plan matches an "
+                        "EXHAUSTED direction; prompt remains checkpoint-frozen"
+                    ),
+                    {"next_v": next_v, "prompt_mutated": False},
                 )
                 break  # One warning per task is sufficient
 
@@ -9242,7 +10574,9 @@ async def execute_workers(args):
         expected_rework_hash = str(
             rework_plan_metadata.get("repair_baseline_artifact_hash") or ""
         )
-        current_rework_hash = _complete_artifact_fingerprint(next_dir)
+        current_rework_hash = _complete_artifact_fingerprint(
+            prepared_candidate_dir
+        )
         if (
             not expected_rework_hash
             or not current_rework_hash
@@ -9268,6 +10602,13 @@ async def execute_workers(args):
         )
         running_plan = {**running_plan, "work_item": rework_plan_metadata}
         running_plan = _plan_with_accumulated_repair_scope(ckpt, running_plan, tasks, next_v)
+        rework_projection_ckpt = _matching_checkpoint(next_v, source_v)
+        if not rework_projection_ckpt:
+            return _json_tool_result({
+                "error": "REWORK_PROJECTION_CHECKPOINT_MISSING",
+                "next_v": next_v,
+                "source_v": source_v,
+            })
         rework_checkpoint_written = write_pipeline_checkpoint(
             next_v,
             source_v,
@@ -9278,6 +10619,15 @@ async def execute_workers(args):
             precommit_rework_count=precommit_rework_count_for_write,
             official_rework_count=official_rework_count_for_write,
             repair_baseline_artifact_hash=expected_rework_hash,
+            expected_checkpoint_revision=int(
+                rework_projection_ckpt.get("checkpoint_revision") or 0
+            ),
+            expected_checkpoint_stage=str(
+                rework_projection_ckpt.get("stage") or ""
+            ),
+            expected_workflow_run_id=str(
+                rework_projection_ckpt.get("workflow_run_id") or ""
+            ),
         )
         if not rework_checkpoint_written:
             return _json_tool_result({
@@ -9294,7 +10644,9 @@ async def execute_workers(args):
         # Recheck immediately before the Worker batch.  This closes the gap in
         # which a self-modifying test or external process edits an otherwise
         # declared repair file after checkpoint publication.
-        current_rework_hash = _complete_artifact_fingerprint(next_dir)
+        current_rework_hash = _complete_artifact_fingerprint(
+            prepared_candidate_dir
+        )
         if current_rework_hash != expected_rework_hash:
             return _json_tool_result({
                 "error": "REPAIR_BASELINE_ARTIFACT_DRIFT",
@@ -9305,483 +10657,273 @@ async def execute_workers(args):
                 "next_tool": "abandon_generation",
             })
 
-    ui = _get_ui()
-    from worker_boundary import (
-        diff_file_snapshot,
-        restore_complete_artifact_snapshot,
-        snapshot_python_files,
-    )
-
-    worker_batch_snapshot = snapshot_python_files(next_dir)
-    try:
-        success, worker_snapshots, audit_focus_areas = await _execute_workers(
-            tasks, worker_template, next_dir, next_v,
-            [], ui, reviewer_feedback=reviewer_feedback,
-            source_v=source_v,
-            force_sequential=force_sequential_rework,
-            task_skipper=task_skipper,
+    if frozen_rework_resume and ckpt.get("stage") in rework_stages:
+        expected_retry_hash = _checkpoint_repair_baseline_fingerprint(ckpt)
+        current_retry_hash = _complete_artifact_fingerprint(
+            prepared_candidate_dir
         )
-    except BaseException as exc:
-        from agent_workers import WorkerInfrastructureError
-
-        # _execute_workers may have committed earlier task writes before a
-        # later task raises.  RuntimeError, cancellation, KeyboardInterrupt,
-        # and WorkerInfrastructureError all cross this transaction boundary;
-        # restore first, then preserve their original handling semantics.
-        try:
-            restore_complete_artifact_snapshot(next_dir, worker_batch_snapshot)
-        except BaseException as rollback_exc:
-            try:
-                log_system_event(
-                    "pipeline.worker_batch_exception_rollback_failed",
-                    "error",
-                    f"Worker exception rollback failed for v{next_v}",
-                    {
-                        "next_v": next_v,
-                        "source_v": source_v,
-                        "worker_exception": (
-                            f"{type(exc).__name__}: {str(exc)[:300]}"
-                        ),
-                        "rollback_exception": (
-                            f"{type(rollback_exc).__name__}: {str(rollback_exc)[:300]}"
-                        ),
-                    },
-                )
-            except Exception:
-                pass
-            rollback_failure = RuntimeError(
-                "WORKER_BATCH_EXCEPTION_ROLLBACK_FAILED: "
-                f"{type(rollback_exc).__name__}: {str(rollback_exc)[:300]}"
-            )
-            rollback_failure.add_note(
-                "Original Worker exception: "
-                f"{type(exc).__name__}: {str(exc)[:300]}"
-            )
-            raise rollback_failure from exc
-        try:
-            log_system_event(
-                "pipeline.worker_batch_exception_rolled_back",
-                "warn",
-                f"Rolled back Worker batch after {type(exc).__name__} for v{next_v}",
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "exception_type": type(exc).__name__,
-                },
-            )
-        except Exception:
-            pass
-        if not isinstance(exc, WorkerInfrastructureError):
-            raise
-        from pipeline_infrastructure import infrastructure_attempt_key
-
-        current = _matching_checkpoint(next_v, source_v) or ckpt
-        resume_stage = str(current.get("stage") or "master_planned")
-        task_digest = hashlib.sha256(json.dumps({
-            "tasks": tasks,
-            "reviewer_feedback": reviewer_feedback,
-            "worker_template": worker_template,
-        }, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-        backend_contract = {
-            key: os.environ.get(key, "")
-            for key in (
-                "ANTHROPIC_MODEL",
-                "CLAUDE_MODEL",
-                "POK_LLM_MODEL",
-                "ANTHROPIC_BASE_URL",
-            )
-        }
-        attempt_key = infrastructure_attempt_key(
-            component="worker_llm",
-            candidate_fingerprint=_complete_artifact_fingerprint(next_dir),
-            source_fingerprint=_complete_artifact_fingerprint(get_bot_dir(source_v)),
-            harness_identity=task_digest,
-            contract_identity=str(
-                ((current.get("runtime_contract_ledger") or {}).get("ledger_digest") or "")
-            ),
-            extra={"backend_contract": backend_contract, "resume_stage": resume_stage},
-        )
-        infra_result = await _record_infrastructure_failure(
-            next_v,
-            source_v,
-            owner_tool="execute_workers",
-            resume_stage=resume_stage,
-            component="worker_llm",
-            code="worker_llm_unavailable",
-            attempt_key=attempt_key,
-            issues=exc.issues,
-            max_attempts=3,
-            metadata={
-                "task_digest": task_digest,
-                "backend_contract": backend_contract,
-                "worker_id": exc.worker_id,
-                "role": exc.role,
-            },
-            master_plan=current.get("master_plan"),
-            reviewer_feedback=reviewer_feedback,
-        )
-        log_system_event(
-            "pipeline.worker_infrastructure",
-            "error" if infra_result.get("action") == "abandon_generation" else "warn",
-            f"Worker LLM infrastructure unavailable for v{next_v}",
-            {"next_v": next_v, "source_v": source_v, **infra_result},
-        )
-        return _json_tool_result({
-            **infra_result,
-            "success": False,
-            "directive": (
-                "Worker infrastructure exhausted and the generation was abandoned."
-                if infra_result.get("abandoned")
-                else "Retry execute_workers with the same tasks; do not re-plan or edit bot code."
-            ),
-            "logs": ui.get_output(),
-        })
-
-    boundary_errors = []
-    transient_cleanup_failed = False
-    if success:
-        # Pre-gate: require a regular artifact file delta from this Worker batch.
-        # Source->candidate Python diff is only telemetry: crossover preparation
-        # may already differ from source, and a valid worker may update only a
-        # declared packed table/model asset.
-        try:
-            worker_batch_changed_files = diff_file_snapshot(
-                next_dir,
-                worker_batch_snapshot,
-            )
-        except Exception as exc:
-            worker_batch_changed_files = []
-            success = False
-            boundary_errors.append({
-                "type": "worker_artifact_snapshot_invalid",
-                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
-            })
-            log_system_event(
-                "pipeline.worker_artifact_snapshot_invalid",
-                "error",
-                f"Worker batch left an invalid artifact for v{next_v}",
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "error": boundary_errors[-1]["error"],
-                },
-            )
-        src_dir = get_bot_dir(source_v)
-        source_python_changed = []
-        if src_dir.exists() and next_dir.exists():
-            source_python_changed = [
-                p for p in _py_files_changed_between(src_dir, next_dir)
-                if "backup" not in p
-            ]
-        if success and not worker_batch_changed_files:
-            success = False
-            log_system_event(
-                "pipeline.workers_zero_changes",
-                "error",
-                f"Workers reported success but changed no artifact files for v{next_v}",
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "worker_batch_changed_files": [],
-                    "source_python_changed": source_python_changed[:50],
-                },
-            )
-
-    if success:
-        boundary_errors = _validate_worker_boundaries(tasks, source_v, next_v,
-                                                          worker_snapshots=worker_snapshots)
-        if boundary_errors:
-            success = False
-            # Selective reset: only revert files modified by violating workers
-            src_dir = get_bot_dir(source_v)
-            if src_dir.exists() and next_dir.exists():
-                violated_files = set()
-                for err in boundary_errors:
-                    # Only revert files from hyperparameter boundary violations.
-                    # target_file_violation and new_file_violation are logged but should
-                    # not trigger selective reset — they may flag files that the Architect
-                    # correctly modified outside declared targets.
-                    if err.get("type") == "hyperparameter_boundary_violation":
-                        f = err.get("file", "")
-                        if f:
-                            violated_files.add(f)
-                for rel in violated_files:
-                    src_file = src_dir / rel
-                    dst_file = next_dir / rel
-                    if src_file.exists():
-                        dst_file.write_text(src_file.read_text())
-                    elif dst_file.exists():
-                        dst_file.unlink()
-                # After resetting files, check if ANY .py files still differ.
-                # If not, the code is back to source state — revert checkpoint stage
-                # so the orchestrator knows workers need to re-run from scratch.
-                remaining_changes = [p for p in _py_files_changed_between(src_dir, next_dir) if 'backup' not in p]
-                if not remaining_changes:
-                    # All changes were reset — code is identical to source.
-                    # Do NOT advance checkpoint to workers_done.
-                    log_system_event("pipeline.workers_all_reset", "warn",
-                                     f"All worker changes reset for v{next_v} — code identical to v{source_v}",
-                                     {"next_v": next_v, "source_v": source_v})
-
-    if success:
-        try:
-            _clear_compiled_task_context(next_dir)
-        except Exception as exc:
-            success = False
-            transient_cleanup_failed = True
-            boundary_errors.append({
-                "type": "transient_control_artifact_cleanup_failed",
-                "file": ".task_context",
-                "error": f"{type(exc).__name__}: {str(exc)[:200]}",
-            })
-            log_system_event(
-                "pipeline.task_context_cleanup_failed",
-                "error",
-                f"Could not remove compiled Worker context for v{next_v}",
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "error": boundary_errors[-1]["error"],
-                },
-            )
-
-    # A worker batch is one transaction.  This must run after every operation
-    # that can turn a nominally successful batch into a failure, including
-    # system-owned .task_context cleanup.  Complete replacement also removes
-    # symlink/special poison that a diff-based scanner cannot safely traverse.
-    if not success:
-        try:
-            restore_complete_artifact_snapshot(next_dir, worker_batch_snapshot)
-        except Exception as exc:
-            log_system_event(
-                "pipeline.worker_batch_rollback_failed",
-                "error",
-                f"Could not atomically roll back failed Worker batch for v{next_v}",
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "error": f"{type(exc).__name__}: {str(exc)[:300]}",
-                },
+        if (
+            not expected_retry_hash
+            or not current_retry_hash
+            or current_retry_hash != expected_retry_hash
+        ):
+            abandon_result = await _force_abandon_frozen_worker_generation(
+                next_v,
+                source_v,
+                "frozen_rework_pre_worker_drift",
+                actor_lock_owned=actor_lock_owned,
             )
             return _json_tool_result({
-                "error": "WORKER_BATCH_ROLLBACK_FAILED",
-                "success": False,
+                "error": "REPAIR_BASELINE_ARTIFACT_DRIFT",
                 "next_v": next_v,
                 "source_v": source_v,
+                "expected_artifact_hash": expected_retry_hash,
+                "current_artifact_hash": current_retry_hash,
                 "next_tool": "abandon_generation",
-                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                **abandon_result,
                 "directive": (
-                    "A failed multi-worker batch could not be restored to its "
-                    "pre-batch content receipt. Abandon; do not resume from the "
-                    "possibly poisoned candidate."
-                ),
-            })
-        if transient_cleanup_failed:
-            return _json_tool_result({
-                "error": "TRANSIENT_CONTROL_ARTIFACT_CLEANUP_FAILED",
-                "success": False,
-                "next_v": next_v,
-                "source_v": source_v,
-                "next_tool": "abandon_generation",
-                "candidate_restored": True,
-                "directive": (
-                    "The regular bot artifact was restored and transient poison "
-                    "was removed, but the control-artifact cleanup failure is not "
-                    "a resumable Worker error. Abandon this generation."
+                    "The infrastructure retry candidate no longer matches its "
+                    "frozen repair baseline. Abandon without consuming the lease."
                 ),
             })
 
-    if success:
-        # Preserve the master plan structure (with analysis) from checkpoint,
-        # rather than replacing it with the raw tasks list
-        plan = (
-            _checkpoint_plan_with_tasks(
-                ckpt, tasks, replace_existing_tasks=replace_checkpoint_tasks
-            )
-            if ckpt else {"tasks": tasks}
-        )
-        if ckpt and ckpt.get("stage") in {"quality_failed", "precommit_failed", "official_failed", "repair_planned", "rework_running"}:
-            existing_work = rework_plan_metadata or (
-                (ckpt.get("master_plan") or {}).get("work_item")
-                if isinstance(ckpt.get("master_plan"), dict) else None
-            )
-            if existing_work:
-                plan = {**plan, "work_item": existing_work}
-            plan = _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v)
-        # Store audit_focus_areas in audit_context so reviewer can read them
-        _audit_ctx = None
-        if audit_focus_areas:
-            _existing_audit = ckpt.get("audit_context", {}) if ckpt else {}
-            _audit_ctx = {**_existing_audit, "worker_cot_focus_areas": audit_focus_areas}
-        checkpoint_kwargs = {}
-        if _worker_infra is not None:
-            from pipeline_infrastructure import infrastructure_failure_digest
+    from agent_workers import build_worker_execution_context
 
-            checkpoint_kwargs = {
-                "clear_infra_failure": True,
-                "infra_failure_owner": "execute_workers",
-                "expected_infra_failure_digest": infrastructure_failure_digest(_worker_infra),
-            }
-        write_pipeline_checkpoint(next_v, source_v, "workers_done",
-                                  master_plan=plan, reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=failure_count,
-                                  audit_context=_audit_ctx,
-                                  precommit_rework_count=precommit_rework_count_for_write,
-                                  official_rework_count=official_rework_count_for_write,
-                                  **checkpoint_kwargs)
+    if durable_worker_resume:
+        worker_execution_context = deepcopy(
+            durable_worker_envelope.get("worker_execution_context")
+        )
+    elif isinstance(frozen_worker_input, dict):
+        worker_execution_context = deepcopy(
+            frozen_worker_input.get("worker_execution_context") or {}
+        )
     else:
-        # Increment failure count on worker failure; successful batches do not
-        # consume the budget. Initial Master-plan worker failures must not write
-        # back to master_planned: that makes deterministic recovery replay the
-        # same failed task plan until the coarse circuit breaker trips. Roll back
-        # to direction_audited instead, clear the invalid plan, and force Master
-        # to produce a new execution axis. Gate/precommit repairs keep their
-        # repair_planned route because reviewer_feedback is the contract for the
-        # next repair attempt.
-        plan = (
-            _checkpoint_plan_with_tasks(
-                ckpt, tasks, replace_existing_tasks=replace_checkpoint_tasks
-            )
-            if ckpt else {"tasks": tasks}
+        worker_execution_context = build_worker_execution_context()
+
+    task_digest = _worker_execution_task_digest(
+        tasks,
+        reviewer_feedback,
+        worker_template,
+        worker_execution_context,
+    )
+    if durable_worker_resume:
+        durable_input_digest = _worker_execution_task_digest(
+            durable_worker_envelope.get("tasks") or [],
+            str(durable_worker_envelope.get("reviewer_feedback") or ""),
+            worker_template,
+            durable_worker_envelope.get("worker_execution_context") or {},
         )
-        next_failure_count = failure_count + 1
-        if reviewer_feedback:
-            existing_work = rework_plan_metadata or (
-                (ckpt.get("master_plan") or {}).get("work_item")
-                if ckpt and isinstance(ckpt.get("master_plan"), dict) else None
+        if task_digest != durable_input_digest:
+            abandon_result = await _force_abandon_frozen_worker_generation(
+                next_v,
+                source_v,
+                "durable_worker_frozen_input_drift",
+                actor_lock_owned=actor_lock_owned,
             )
-            plan = {
-                **plan,
-                "work_item": existing_work or {
-                    "kind": "worker_retry_after_failure",
-                    "source_stage": ckpt.get("stage") if ckpt else None,
-                    "route": route_policy(ckpt) if ckpt else {},
-                },
-            }
-            plan = _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v)
-            failure_stage = "repair_planned"
-            failure_plan = plan
-            failure_audit_context = None
-        else:
-            failure_stage = "direction_audited"
-            failure_plan = {}
-            existing_audit = ckpt.get("audit_context", {}) if isinstance(ckpt, dict) else {}
-            failure_audit_context = {
-                **(existing_audit if isinstance(existing_audit, dict) else {}),
-                "worker_execution_failed_replan": {
-                    "source_stage": ckpt.get("stage") if isinstance(ckpt, dict) else None,
-                    "failed_tasks": [
-                        {
-                            "worker_id": task.get("worker_id"),
-                            "role": task.get("role"),
-                            "target_files": task.get("target_files", []),
-                        }
-                        for task in tasks or []
-                        if isinstance(task, dict)
-                    ][:5],
-                    "worker_failure_count": next_failure_count,
-                    "directive": (
-                        "Initial worker execution failed. Do not re-run the "
-                        "same saved worker plan; call run_master to produce a "
-                        "different, narrower, boundary-clean plan."
-                    ),
-                },
-            }
-        failure_checkpoint_kwargs = {}
-        if failure_stage == "direction_audited":
-            has_runtime_ledger = bool(
-                isinstance(ckpt, dict)
-                and (
-                    ckpt.get("runtime_contract_ledger") is not None
-                    or isinstance(ckpt.get("master_plan"), dict)
-                    and ckpt["master_plan"].get("runtime_contract_ledger") is not None
-                )
-            )
-            if has_runtime_ledger:
-                ledger_digest = _checkpoint_runtime_contract_ledger_digest(ckpt)
-                failure_checkpoint_kwargs = {
-                    "reset_runtime_contract_ledger": True,
-                    "expected_runtime_contract_ledger_digest": ledger_digest,
-                    "runtime_contract_ledger_reset_reason": "master_plan_rejected_replan",
-                }
-        failure_checkpoint_written = write_pipeline_checkpoint(
-            next_v,
-            source_v,
-            failure_stage,
-            master_plan=failure_plan,
-            direction_audit=ckpt.get("direction_audit") if ckpt else None,
-            reviewer_feedback=reviewer_feedback,
-            worker_failure_count=next_failure_count,
-            audit_context=failure_audit_context,
-            precommit_rework_count=precommit_rework_count_for_write,
-            official_rework_count=official_rework_count_for_write,
-            touch_stage_timestamp=True,
-            **failure_checkpoint_kwargs,
-        )
-        if not failure_checkpoint_written:
-            log_system_event(
-                "pipeline.worker_failure_replan_persist_failed",
-                "error",
-                f"Could not persist worker-failure recovery for v{next_v}",
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "source_stage": ckpt.get("stage") if isinstance(ckpt, dict) else None,
-                    "requested_stage": failure_stage,
-                    "worker_failure_count": next_failure_count,
-                },
-            )
+            worker_workflow.abandon("durable_worker_frozen_input_drift")
             return _json_tool_result({
-                "error": "WORKER_FAILURE_RECOVERY_PERSIST_FAILED",
+                "error": "DURABLE_WORKER_FROZEN_INPUT_DRIFT",
                 "success": False,
                 "next_v": next_v,
                 "source_v": source_v,
-                "message": (
-                    "Workers failed, but the checkpoint recovery transition could "
-                    "not be persisted. The previous checkpoint remains authoritative."
-                ),
-                "directive": (
-                    "Do not report a re-plan/rework route or re-run workers. Repair "
-                    "checkpoint persistence/state synchronization first."
-                ),
-                "logs": ui.get_output(),
+                **abandon_result,
             })
-        if failure_stage == "direction_audited":
-            log_system_event(
-                "pipeline.worker_failure_replan_required",
-                "warn",
-                (
-                    f"Workers failed for v{next_v}; rolled checkpoint back to "
-                    "direction_audited so Master must re-plan instead of "
-                    "re-running the same tasks"
-                ),
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "worker_failure_count": next_failure_count,
-                    "failed_tasks": [
-                        {
-                            "worker_id": task.get("worker_id"),
-                            "role": task.get("role"),
-                            "target_files": task.get("target_files", []),
-                        }
-                        for task in tasks or []
-                        if isinstance(task, dict)
-                    ][:5],
-                },
+
+    if durable_worker_status == "idle":
+        from worker_workflow import build_worker_envelope
+
+        projection_ckpt = _matching_checkpoint(next_v, source_v)
+        if not projection_ckpt:
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_CHECKPOINT_MISSING_BEFORE_PREPARE",
+                "next_v": next_v,
+                "source_v": source_v,
+            })
+        prepared_artifact_hash = _complete_artifact_fingerprint(
+            prepared_candidate_dir
+        )
+        prepared_snapshot_hash = worker_workflow.artifacts.capture(
+            prepared_candidate_dir
+        )
+        if prepared_artifact_hash != prepared_snapshot_hash:
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_PREPARED_SNAPSHOT_MISMATCH",
+                "next_v": next_v,
+                "source_v": source_v,
+                "prepared_artifact_hash": prepared_artifact_hash,
+                "prepared_snapshot_hash": prepared_snapshot_hash,
+                "next_tool": "abandon_generation",
+            })
+        active_work_item = rework_plan_metadata or (
+            (_checkpoint_master_plan(ckpt).get("work_item") or {})
+            if isinstance(_checkpoint_master_plan(ckpt).get("work_item"), dict)
+            else {}
+        )
+        worker_kind = str(active_work_item.get("kind") or "initial_worker")
+        projection_plan = _checkpoint_plan_with_tasks(
+            projection_ckpt,
+            tasks,
+            replace_existing_tasks=replace_checkpoint_tasks,
+        )
+        if active_work_item:
+            projection_plan = {
+                **projection_plan,
+                "work_item": active_work_item,
+            }
+        if reviewer_feedback:
+            projection_plan = _plan_with_accumulated_repair_scope(
+                projection_ckpt,
+                projection_plan,
+                tasks,
+                next_v,
             )
+        checkpoint_contract = {
+            "workflow_run_id": str(
+                projection_ckpt.get("workflow_run_id")
+                or projection_ckpt.get("run_id")
+                or worker_workflow.run_id
+                or ""
+            ),
+            "checkpoint_revision": int(
+                projection_ckpt.get("checkpoint_revision") or 0
+            ),
+            "checkpoint_stage": str(projection_ckpt.get("stage") or ""),
+        }
+        envelope = build_worker_envelope(
+            checkpoint=projection_ckpt,
+            kind=worker_kind,
+            source_stage=str(projection_ckpt.get("stage") or ""),
+            prepared_artifact_hash=prepared_artifact_hash,
+            prepared_snapshot_hash=prepared_snapshot_hash,
+            source_artifact_hash=_complete_artifact_fingerprint(
+                get_bot_dir(source_v)
+            ),
+            tasks=tasks,
+            reviewer_feedback=reviewer_feedback,
+            worker_template_hash=hashlib.sha256(
+                worker_template.encode("utf-8")
+            ).hexdigest(),
+            worker_execution_context=worker_execution_context,
+            work_item=active_work_item,
+            backend_contract=_worker_backend_contract(),
+            precommit_rework_count=(
+                int(precommit_rework_count_for_write)
+                if precommit_rework_count_for_write is not None
+                else int(projection_ckpt.get("precommit_rework_count") or 0)
+            ),
+            official_rework_count=(
+                int(official_rework_count_for_write)
+                if official_rework_count_for_write is not None
+                else int(projection_ckpt.get("official_rework_count") or 0)
+            ),
+            projection_plan=projection_plan,
+            audit_context=deepcopy(projection_ckpt.get("audit_context") or {}),
+            execution_policy={
+                "force_sequential": bool(force_sequential_rework),
+                "quality_skipper": quality_skipper_config is not None,
+                "expected_architecture_policy": (
+                    deepcopy(
+                        quality_skipper_config.get(
+                            "expected_architecture_policy"
+                        )
+                    )
+                    if isinstance(quality_skipper_config, dict)
+                    else None
+                ),
+            },
+            checkpoint_contract=checkpoint_contract,
+            worker_failure_count=int(
+                projection_ckpt.get("worker_failure_count") or 0
+            ),
+        )
+        durable_worker_state = worker_workflow.prepare(envelope)
+        durable_worker_envelope = durable_worker_state["envelope"]
+        durable_worker_status = durable_worker_state["status"]
+        if rework_preparation_dir is not None:
+            worker_workflow.artifacts.discard_workspace(
+                rework_preparation_dir
+            )
+        if actor_lock_owned:
+            return _DeferredWorkerActivity(
+                workflow=worker_workflow,
+                envelope=durable_worker_envelope,
+                next_dir=next_dir,
+                worker_template=worker_template,
+            )
+        return await _run_durable_worker_effect(
+            worker_workflow,
+            durable_worker_envelope,
+            next_dir,
+            worker_template,
+        )
 
-    sev = "success" if success else "error"
-    log_system_event("pipeline.workers_done", sev,
-                     f"Workers {'passed' if success else 'failed'} for v{next_v}",
-                     {"next_v": next_v, "num_workers": len(tasks), "success": success,
-                      "elapsed_sec": round(time.time() - _t0, 2)})
+    return _json_tool_result({
+        "error": "DURABLE_WORKER_COMMAND_DISPATCH_INVARIANT",
+        "workflow_status": durable_worker_status,
+        "next_v": next_v,
+        "source_v": source_v,
+    })
 
-    result = {
-        "success": success,
-        "boundary_errors": boundary_errors,
-        "logs": ui.get_output(),
-        "costs": ui.costs,
-        "audit_focus_areas": audit_focus_areas,
-    }
-    return _json_tool_result(result)
+
+@tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
+async def execute_workers(args):
+    """Serialize deterministic preparation, then run the leased LLM outside it.
+
+    Only idle/completed histories can perform one-time preparation or open a
+    new cycle.  They enter the generation actor before replaying again.  The
+    resulting Worker activity is returned as an internal dispatch token so the
+    expensive model call never holds the actor lock and a central abandon can
+    fence it immediately.
+    """
+    next_v = args.get("next_v") or args.get("version")
+    source_v = args.get("source_v")
+    if next_v is None or source_v is None:
+        next_v, source_v = _resolve_version_args(args)
+    checkpoint = (
+        _matching_checkpoint(next_v, source_v)
+        if next_v is not None and source_v is not None
+        else None
+    )
+    if not isinstance(checkpoint, dict):
+        return await _execute_workers_command(args)
+
+    try:
+        from worker_workflow import WorkerWorkflow
+        from workflow_kernel import WorkflowBusy
+
+        workflow = WorkerWorkflow.for_checkpoint(checkpoint)
+        try:
+            with workflow.store.command_lock(workflow.run_id):
+                result = await _execute_workers_command(
+                    args,
+                    actor_lock_owned=True,
+                )
+        except WorkflowBusy:
+            return _json_tool_result({
+                "error": "WORKER_COMMAND_BUSY",
+                "failure_class": "infrastructure",
+                "action": "retry_same_tool",
+                "next_v": next_v,
+                "source_v": source_v,
+                "directive": (
+                    "Another process is publishing the deterministic Worker "
+                    "preparation for this generation. Retry without editing the "
+                    "candidate or rebuilding the prompt."
+                ),
+            })
+        if isinstance(result, _DeferredWorkerActivity):
+            return await _run_durable_worker_effect(
+                result.workflow,
+                result.envelope,
+                result.next_dir,
+                result.worker_template,
+            )
+        return result
+    except WorkflowBusy:
+        return _json_tool_result({
+            "error": "WORKER_COMMAND_BUSY",
+            "failure_class": "infrastructure",
+            "action": "retry_same_tool",
+            "next_v": next_v,
+            "source_v": source_v,
+        })

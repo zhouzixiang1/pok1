@@ -31,13 +31,15 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 7
+CONTRACT_VERSION = 9
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
 # Guarding the guard itself is non-negotiable: if these files changed on disk,
 # the running process may be making drift decisions with older in-memory code.
 ALWAYS_CRITICAL_EXACT = frozenset({
+    "docs/official-raise-boundary-oracle-2026-07-11.md",
+    "docs/official-terminal-settlement-oracle-2026-07-11.md",
     "web/core/blocking_runtime.py",
     "web/core/bot_artifact.py",
     "web/core/bot_namespace.py",
@@ -79,6 +81,8 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/tool_runtime_guard.py",
     "web/core/runtime_capacity.py",
     "web/core/workflow_profiles.py",
+    "web/core/workflow_kernel.py",
+    "web/core/worker_workflow.py",
 })
 
 EVALUATION_RUNTIME_EXACT = frozenset().union(
@@ -146,6 +150,7 @@ MASTER_STAGE_EXACT = frozenset().union(
         "web/core/llm_query.py",
         "web/core/output_schema.py",
         "web/core/strategy_reference_pack.py",
+        "web/core/poker_assets.py",
         "web/core/plan_compiler.py",
         "web/core/research_governance.py",
         "web/core/skill_library.py",
@@ -181,6 +186,7 @@ WORKER_REPAIR_STAGE_EXACT = frozenset().union(
         "web/core/llm_query.py",
         "web/core/output_schema.py",
         "web/core/strategy_reference_pack.py",
+        "web/core/poker_assets.py",
         "web/core/plan_compiler.py",
         "web/core/tool_helpers.py",
         "web/core/tool_planning.py",
@@ -422,7 +428,7 @@ def critical_exact_for_stage(
     execution_mode = _active_national_execution_mode(national_execution_mode)
     if stage in _STAGE_EXACT:
         return _stage_exact_for_mode(_STAGE_EXACT[stage], execution_mode)
-    return _stage_exact_for_mode(frozenset(CRITICAL_EXACT), execution_mode)
+    return _stage_exact_for_mode(FULL_PIPELINE_EXACT, execution_mode)
 
 
 def build_evaluation_contract(
@@ -477,11 +483,14 @@ def is_contract_path(path: str, contract: dict[str, Any]) -> bool:
     path = normalize_repo_path(path)
     if not path or _is_runtime_path(path, contract.get("runtime_prefixes") or RUNTIME_PREFIXES):
         return False
+    # Explicit exact-file contracts override broad convenience exclusions such
+    # as docs/. The two byte-pinned official oracle documents live there and
+    # must remain restart-critical even though ordinary notes are neutral.
+    if path in set(contract.get("path_exact") or []):
+        return True
     non_contract_prefixes = contract.get("non_contract_prefixes") or NON_CONTRACT_PREFIXES
     if any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in non_contract_prefixes):
         return False
-    if path in set(contract.get("path_exact") or []):
-        return True
     return any(path.startswith(prefix) for prefix in contract.get("path_prefixes") or [])
 
 

@@ -16,11 +16,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
-import subprocess
 import tempfile
 from typing import Any
 
+import collector_systemd_quiescence as systemd_quiescence
 import longrun_collect_oppmodel as collector
 import migrate_oppmodel_collector_concurrency as schema6_migration
 
@@ -28,6 +27,7 @@ import migrate_oppmodel_collector_concurrency as schema6_migration
 MIGRATION_SCHEMA_VERSION = 1
 MIGRATION_MODE = "atomic_collector_capacity_schema6_to_schema7_v1"
 MIGRATION_KEY = "capacity_migration"
+MIGRATION_INTENT_SCHEMA = "collector_capacity_migration_intent_v1"
 SOURCE_SCHEMA_VERSION = schema6_migration.TARGET_SCHEMA_VERSION
 SOURCE_WORKERS = schema6_migration.TARGET_WORKERS
 SOURCE_PROBE_WORKERS = schema6_migration.TARGET_PROBE_WORKERS
@@ -58,11 +58,9 @@ ROW_IDENTITY_FIELDS = (
     "opponent", "deck_seed_base", "bot_seed_base", "hand",
     "hand_decision_index",
 )
-QUIESCENCE_SCHEMA = "systemd_collector_quiescence_v1"
-PROCESS_MARKERS = (
-    "longrun_collect_oppmodel.py", "native_tcp_counterfactual_probe.py",
-)
-UNIT_NAME = re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
+RUNNING_UNIT_SCHEMA = systemd_quiescence.RUNNING_UNIT_SCHEMA
+QUIESCENCE_SCHEMA = systemd_quiescence.QUIESCENCE_SCHEMA
+PROCESS_MARKERS = systemd_quiescence.PROCESS_MARKERS
 TAIL_EXECUTION_STATUS = "unknown_no_published_output"
 
 
@@ -222,136 +220,86 @@ def validate_frozen_row_identity_manifest(
         raise ValueError("role dataset row-identity invariant changed")
 
 
-def _proc_matches(source_dir: Path) -> list[int]:
-    matches = []
-    uid = os.getuid()
-    source = str(source_dir.resolve()).encode()
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            status = (entry / "status").read_text(encoding="utf-8")
-            uid_line = next(
-                line for line in status.splitlines() if line.startswith("Uid:")
-            )
-            if int(uid_line.split()[1]) != uid:
-                continue
-            cmdline = (entry / "cmdline").read_bytes()
-        except (FileNotFoundError, ProcessLookupError):
-            continue
-        except (OSError, StopIteration, ValueError) as exc:
-            raise RuntimeError(f"cannot inspect process {entry.name}") from exc
-        if source in cmdline and any(
-            marker.encode() in cmdline for marker in PROCESS_MARKERS
-        ):
-            matches.append(int(entry.name))
-    return sorted(matches)
+_validate_running_unit_receipt = (
+    systemd_quiescence.validate_running_unit_receipt
+)
+_write_running_unit_receipt = systemd_quiescence.write_running_unit_receipt
+_verify_collector_quiescence = systemd_quiescence.verify_collector_quiescence
+_validate_quiescence_receipt = systemd_quiescence.validate_quiescence_receipt
 
 
-def _verify_collector_quiescence(
-    collector_unit: str, source_dir: Path
+def _migration_intent(
+    source_dir: Path, *, boundary: int, workers: int, probe_workers: int,
+    max_active_native_matches: int, capacity_total_slots: int,
+    capacity_first_slot: int,
 ) -> dict[str, Any]:
-    if not isinstance(collector_unit, str) or not UNIT_NAME.fullmatch(collector_unit):
-        raise RuntimeError("collector unit must be an explicit .service name")
-    properties = (
-        "LoadState", "Transient", "KillMode", "Restart", "MainPID",
-        "ActiveState", "ControlGroup",
-    )
-    command = [
-        "systemctl", "--user", "show", collector_unit,
-        *[f"--property={name}" for name in properties],
-    ]
+    source_dir = source_dir.resolve()
+    manifest_path = source_dir / "collection_manifest.json"
     try:
-        result = subprocess.run(
-            command, check=True, capture_output=True, text=True, timeout=10
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError("cannot verify collector systemd unit") from exc
-    observed = {}
-    for line in result.stdout.splitlines():
-        key, separator, value = line.partition("=")
-        if not separator or key in observed:
-            raise RuntimeError("collector systemd properties are malformed")
-        observed[key] = value
-    if set(observed) != set(properties):
-        raise RuntimeError("collector systemd properties are incomplete")
+        manifest_raw = manifest_path.read_bytes()
+        manifest = json.loads(manifest_raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("migration intent collection manifest is invalid") from exc
     if (
-        observed["LoadState"] != "loaded"
-        or observed["Transient"] != "yes"
-        or observed["KillMode"] != "control-group"
-        or observed["Restart"] != "no"
-        or observed["MainPID"] != "0"
-        or observed["ActiveState"] != "inactive"
+        not isinstance(manifest, dict)
+        or MIGRATION_KEY in manifest
+        or "concurrency_migration" not in manifest
+        or list(source_dir.glob("_tmp*"))
     ):
-        raise RuntimeError("collector systemd unit is not quiescent")
-    control_group = observed["ControlGroup"]
-    cgroup_pids: set[int] = set()
-    cgroup_present = False
-    if control_group:
-        if not control_group.startswith("/") or ".." in Path(control_group).parts:
-            raise RuntimeError("collector control group path is invalid")
-        cgroup = Path("/sys/fs/cgroup") / control_group.lstrip("/")
-        cgroup_present = cgroup.exists()
-        if cgroup_present:
-            try:
-                for path in cgroup.rglob("cgroup.procs"):
-                    cgroup_pids.update(
-                        int(line) for line in path.read_text().splitlines() if line
-                    )
-            except (OSError, ValueError) as exc:
-                raise RuntimeError("cannot inspect collector control group") from exc
-    if cgroup_pids:
-        raise RuntimeError("collector control group still has processes")
-    process_matches = _proc_matches(source_dir)
-    if process_matches:
-        raise RuntimeError("collector or native probe process is still running")
+        raise RuntimeError("migration intent is not an atomic schema-6 prefix")
+    contract = manifest.get("resume_contract")
+    if not isinstance(contract, dict):
+        raise RuntimeError("migration intent collector contract is missing")
+    state_payload, state = schema6_migration._state_prefix(source_dir, boundary)
+    pool = schema6_migration._pool_prefix(
+        source_dir / "pool_snapshots.jsonl", boundary
+    )
+    plans, tail = _plan_prefix(
+        source_dir, boundary=boundary, contract=contract
+    )
+    data, identity = _data_prefix_with_identity(
+        source_dir, state_payload, exact=True
+    )
+    registry, registry_details = _registry_snapshot(source_dir)
+    schema6_migration._verify_completed_opponent_snapshots(
+        source_dir, boundary=boundary, registry=registry
+    )
     return {
-        "schema": QUIESCENCE_SCHEMA,
-        "collector_unit": collector_unit,
-        "source_dir": str(source_dir.resolve()),
-        "load_state": observed["LoadState"],
-        "transient": observed["Transient"],
-        "kill_mode": observed["KillMode"],
-        "restart": observed["Restart"],
-        "main_pid": 0,
-        "active_state": observed["ActiveState"],
-        "control_group": control_group,
-        "control_group_present": cgroup_present,
-        "cgroup_process_count": 0,
-        "process_scan_uid": os.getuid(),
-        "process_markers": list(PROCESS_MARKERS),
-        "matching_process_count": 0,
+        "schema": MIGRATION_INTENT_SCHEMA,
+        "source_dir": str(source_dir),
+        "expected_boundary": boundary,
+        "workers": workers,
+        "probe_workers": probe_workers,
+        "max_active_native_matches": max_active_native_matches,
+        "capacity_total_slots": capacity_total_slots,
+        "capacity_first_slot": capacity_first_slot,
+        "source_collector_sha256": _digest(
+            contract.get("collector_sha256"), field="intent source collector"
+        ),
+        "collection_manifest_sha256": _sha256_bytes(manifest_raw),
+        "collector_state_sha256": state["sha256"],
+        "pool_snapshots_sha256": pool["sha256"],
+        "pool_snapshot_rows": pool["rows"],
+        "pass_plan_prefix_sha256": _canonical_sha256({
+            "plans": plans, "planned_tail": tail,
+        }),
+        "data_prefix_sha256": _canonical_sha256({
+            "data": data, "row_identity": identity,
+        }),
+        "opponent_registry_sha256": registry_details["sha256"],
+        "temporary_outputs_absent": True,
+        "migration_tool_sha256": _sha256(Path(__file__).resolve()),
+        "systemd_quiescence_sha256": _sha256(
+            Path(systemd_quiescence.__file__).resolve()
+        ),
     }
 
 
-def _validate_quiescence_receipt(receipt: Any) -> None:
-    required = {
-        "schema", "collector_unit", "source_dir", "load_state", "transient",
-        "kill_mode", "restart", "main_pid", "active_state", "control_group",
-        "control_group_present", "cgroup_process_count", "process_scan_uid",
-        "process_markers", "matching_process_count",
-    }
-    if not isinstance(receipt, dict) or set(receipt) != required:
-        raise RuntimeError("collector quiescence receipt fields changed")
-    if (
-        receipt.get("schema") != QUIESCENCE_SCHEMA
-        or not UNIT_NAME.fullmatch(str(receipt.get("collector_unit") or ""))
-        or not Path(str(receipt.get("source_dir") or "")).is_absolute()
-        or receipt.get("load_state") != "loaded"
-        or receipt.get("transient") != "yes"
-        or receipt.get("kill_mode") != "control-group"
-        or receipt.get("restart") != "no"
-        or receipt.get("active_state") != "inactive"
-        or receipt.get("process_markers") != list(PROCESS_MARKERS)
-        or not isinstance(receipt.get("control_group_present"), bool)
-    ):
-        raise RuntimeError("collector quiescence receipt is not authoritative")
-    for field in (
-        "main_pid", "cgroup_process_count", "matching_process_count"
-    ):
-        if _integer(receipt.get(field), field=field) != 0:
-            raise RuntimeError("collector quiescence receipt is not zero")
-    _integer(receipt.get("process_scan_uid"), field="process_scan_uid")
+def _validate_migration_intent(
+    running_unit: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    if running_unit.get("migration_intent") != expected:
+        raise RuntimeError("collector migration intent changed")
 
 
 def _current_code_artifacts(old: dict[str, Any]) -> dict[str, str]:
@@ -369,6 +317,9 @@ def _current_code_artifacts(old: dict[str, Any]) -> dict[str, str]:
         "target_probe_sha256": _sha256(PROBE_PATH),
         "target_runtime_capacity_sha256": _sha256(RUNTIME_CAPACITY_PATH),
         "target_national_native_sha256": _sha256(NATIONAL_NATIVE_PATH),
+        "target_systemd_quiescence_sha256": _sha256(
+            Path(systemd_quiescence.__file__).resolve()
+        ),
     }
 
 
@@ -683,7 +634,48 @@ def _registry_snapshot(
         raise RuntimeError("opponent snapshot registry is invalid") from exc
     if not isinstance(registry, dict):
         raise RuntimeError("opponent snapshot registry is invalid")
-    return registry, {"bytes": len(raw), "sha256": _sha256_bytes(raw)}
+    return registry, {
+        "bytes": len(raw),
+        "sha256": _sha256_bytes(raw),
+        "bytes_base64": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def _embedded_registry(details: Any) -> dict[str, Any]:
+    if not isinstance(details, dict) or set(details) != {
+        "bytes", "sha256", "bytes_base64",
+    }:
+        raise RuntimeError("capacity migration registry receipt changed")
+    try:
+        raw = base64.b64decode(details["bytes_base64"], validate=True)
+        registry = json.loads(raw)
+    except (
+        KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError
+    ) as exc:
+        raise RuntimeError("capacity migration registry receipt is invalid") from exc
+    if (
+        len(raw) != _integer(details.get("bytes"), field="registry bytes", minimum=1)
+        or _sha256_bytes(raw)
+        != _digest(details.get("sha256"), field="registry sha256")
+        or not isinstance(registry, dict)
+        or registry.get("schema") != "opponent_execution_snapshot_v1"
+        or not isinstance(registry.get("opponents"), dict)
+    ):
+        raise RuntimeError("capacity migration registry binding changed")
+    return registry
+
+
+def _validate_registry_extension(
+    boundary_registry: dict[str, Any], current_registry: dict[str, Any]
+) -> None:
+    boundary = boundary_registry["opponents"]
+    current = current_registry.get("opponents")
+    if (
+        current_registry.get("schema") != boundary_registry.get("schema")
+        or not isinstance(current, dict)
+        or any(current.get(name) != details for name, details in boundary.items())
+    ):
+        raise RuntimeError("capacity migration opponent registry history changed")
 
 
 def replay_migration(
@@ -972,22 +964,47 @@ def replay_migration(
     identity = prefix.get("row_identity")
     _validate_identity_receipt(identity, expected_rows=expected_identity_rows)
     registry_details = prefix.get("opponent_registry")
-    if (
-        not isinstance(registry_details, dict)
-        or set(registry_details) != {"bytes", "sha256"}
-    ):
-        raise RuntimeError("capacity migration registry receipt changed")
-    _integer(registry_details.get("bytes"), field="registry bytes", minimum=1)
-    _digest(registry_details.get("sha256"), field="registry sha256")
+    boundary_registry = _embedded_registry(registry_details)
+    expected_intent = {
+        "schema": MIGRATION_INTENT_SCHEMA,
+        "source_dir": str(source_dir.resolve()),
+        "expected_boundary": boundary,
+        "workers": current_contract["workers"],
+        "probe_workers": current_contract["probe_workers"],
+        "max_active_native_matches": current_contract[
+            "max_active_native_matches"
+        ],
+        "capacity_total_slots": current_contract["capacity_total_slots"],
+        "capacity_first_slot": current_contract["capacity_first_slot"],
+        "source_collector_sha256": old_contract["collector_sha256"],
+        "collection_manifest_sha256": previous_details["sha256"],
+        "collector_state_sha256": state_details["sha256"],
+        "pool_snapshots_sha256": pool_details["sha256"],
+        "pool_snapshot_rows": pool_details["rows"],
+        "pass_plan_prefix_sha256": _canonical_sha256({
+            "plans": plans, "planned_tail": planned_tail,
+        }),
+        "data_prefix_sha256": _canonical_sha256({
+            "data": data, "row_identity": identity,
+        }),
+        "opponent_registry_sha256": registry_details["sha256"],
+        "temporary_outputs_absent": True,
+        "migration_tool_sha256": _sha256(Path(__file__).resolve()),
+        "systemd_quiescence_sha256": _sha256(
+            Path(systemd_quiescence.__file__).resolve()
+        ),
+    }
+    _validate_migration_intent(
+        receipt["collector_quiescence"]["running_unit"], expected_intent
+    )
     if validate_data_prefix:
         actual_data, actual_identity = _data_prefix_with_identity(
             source_dir, state, exact=False
         )
         if actual_data != data or actual_identity != identity:
             raise RuntimeError("capacity migration data identity prefix changed")
-        registry, actual_registry = _registry_snapshot(source_dir)
-        if actual_registry != registry_details:
-            raise RuntimeError("capacity migration opponent registry changed")
+        registry, _actual_registry = _registry_snapshot(source_dir)
+        _validate_registry_extension(boundary_registry, registry)
         schema6_migration._verify_completed_opponent_snapshots(
             source_dir, boundary=boundary, registry=registry
         )
@@ -1043,6 +1060,16 @@ def build_migration(
     _validate_quiescence_receipt(collector_quiescence)
     if collector_quiescence["source_dir"] != str(source_dir):
         raise RuntimeError("collector quiescence source directory changed")
+    expected_intent = _migration_intent(
+        source_dir, boundary=boundary, workers=workers,
+        probe_workers=probe_workers,
+        max_active_native_matches=max_active_native_matches,
+        capacity_total_slots=capacity_total_slots,
+        capacity_first_slot=capacity_first_slot,
+    )
+    _validate_migration_intent(
+        collector_quiescence["running_unit"], expected_intent
+    )
     state, state_details = schema6_migration._state_prefix(source_dir, boundary)
     pool = schema6_migration._pool_prefix(
         source_dir / "pool_snapshots.jsonl", boundary
@@ -1153,6 +1180,26 @@ def _revalidate_source_evidence(
         raise RuntimeError("capacity migration source receipt is invalid") from exc
     if not isinstance(old_contract, dict):
         raise RuntimeError("capacity migration source contract is invalid")
+    after = receipt.get("after") or {}
+    expected_intent = _migration_intent(
+        source_dir, boundary=boundary,
+        workers=_integer(after.get("workers"), field="intent workers"),
+        probe_workers=_integer(
+            after.get("probe_workers"), field="intent probe_workers"
+        ),
+        max_active_native_matches=_integer(
+            after.get("max_active_native_matches"), field="intent matches"
+        ),
+        capacity_total_slots=_integer(
+            after.get("capacity_total_slots"), field="intent total slots"
+        ),
+        capacity_first_slot=_integer(
+            after.get("capacity_first_slot"), field="intent first slot"
+        ),
+    )
+    _validate_migration_intent(
+        receipt["collector_quiescence"]["running_unit"], expected_intent
+    )
     prefix = receipt.get("completed_prefix") or {}
     state, state_details = schema6_migration._state_prefix(source_dir, boundary)
     if state_details != prefix.get("collector_state"):
@@ -1183,6 +1230,7 @@ def _revalidate_source_evidence(
     quiescence = _verify_collector_quiescence(
         str((receipt.get("collector_quiescence") or {}).get("collector_unit") or ""),
         source_dir,
+        running_unit=(receipt.get("collector_quiescence") or {}).get("running_unit"),
     )
     if quiescence != receipt.get("collector_quiescence"):
         raise RuntimeError("collector quiescence changed before migration publish")
@@ -1231,10 +1279,59 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--capacity-total-slots", required=True, type=int)
     parser.add_argument("--capacity-first-slot", required=True, type=int)
     parser.add_argument("--collector-unit", required=True)
+    parser.add_argument("--capture-running-unit-receipt", type=Path)
+    parser.add_argument("--running-unit-receipt", type=Path)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
 
     source_dir = args.source_dir.resolve()
+    if (
+        args.workers != TARGET_WORKERS
+        or args.probe_workers != TARGET_PROBE_WORKERS
+        or args.max_active_native_matches != TARGET_MAX_ACTIVE_NATIVE_MATCHES
+        or args.capacity_total_slots != TARGET_CAPACITY_TOTAL_SLOTS
+        or args.capacity_first_slot != TARGET_CAPACITY_FIRST_SLOT
+    ):
+        raise SystemExit("capture requires the reviewed schema-7 topology")
+    if args.capture_running_unit_receipt is not None:
+        if args.apply or args.running_unit_receipt is not None:
+            raise SystemExit("running-unit capture cannot publish a migration")
+        running_unit, quiescence = systemd_quiescence.stop_bound_collector(
+            args.collector_unit, source_dir,
+            lambda: _migration_intent(
+                source_dir, boundary=args.expected_boundary,
+                workers=args.workers, probe_workers=args.probe_workers,
+                max_active_native_matches=args.max_active_native_matches,
+                capacity_total_slots=args.capacity_total_slots,
+                capacity_first_slot=args.capacity_first_slot,
+            ),
+            args.capture_running_unit_receipt,
+        )
+        print(json.dumps({
+            "status": "collector_stopped_and_bound",
+            "collector_unit": args.collector_unit,
+            "main_pid": running_unit["main_pid"],
+            "unit_disposition": quiescence["unit_disposition"],
+            "receipt_sha256": running_unit["receipt_sha256"],
+            "strength_evidence": False,
+            "deployment_policy_value": False,
+        }, indent=2, sort_keys=True))
+        return 0
+    intent = _migration_intent(
+        source_dir, boundary=args.expected_boundary, workers=args.workers,
+        probe_workers=args.probe_workers,
+        max_active_native_matches=args.max_active_native_matches,
+        capacity_total_slots=args.capacity_total_slots,
+        capacity_first_slot=args.capacity_first_slot,
+    )
+    if args.running_unit_receipt is None:
+        raise SystemExit("--running-unit-receipt is required after bound stop")
+    try:
+        running_unit = json.loads(args.running_unit_receipt.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit("cannot read the running-unit receipt") from exc
+    _validate_running_unit_receipt(running_unit, require_current_machine=True)
+    _validate_migration_intent(running_unit, intent)
     lock_path = source_dir / ".collector.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock_handle:
@@ -1246,7 +1343,7 @@ def main(argv: list[str] | None = None) -> int:
             ) from exc
         try:
             collector_quiescence = _verify_collector_quiescence(
-                args.collector_unit, source_dir
+                args.collector_unit, source_dir, running_unit=running_unit
             )
             migrated, receipt, previous_raw = build_migration(
                 source_dir,
