@@ -494,8 +494,9 @@ artifact files between the two checkouts.
 
 ## Verification completed in Slice 1
 
-- the complete Web/evolution suite passes (`2634 passed, 7 skipped, 1 deselected`)
-  and the national TCP suite passes (`33 passed`);
+- the complete Web/evolution suite passes (`2758 passed, 12 skipped, 1
+  deselected`) and the national TCP suite passes (`33 passed`);
+- the frontend production build succeeds (`153` modules transformed);
 - identical histories produce byte-identical state and commands;
 - crash injection before/after event commit, outbox dispatch, artifact
   materialization, and completion acceptance converges without duplicate
@@ -511,6 +512,24 @@ artifact files between the two checkouts.
   payload hashes, concurrent build, corruption rejection, and size bounds;
 - official raise and terminal-settlement oracle documents remain byte-identical
   and the formal EXE is not rerun merely for control-plane changes.
+
+## Verification completed in Slice 1b
+
+- official certification, bootstrap, commit, and harness integration passes
+  `180` focused tests; the final doctor reports the v5 managed-executor profile,
+  real namespace/seccomp probe, signer, and ledger healthy with an empty job
+  queue;
+- the wrapper/protocol/quarantine integration passes `139` focused tests;
+- the migration contract passes `121` core tests, `38` Master-adjacent tests,
+  and `8` adversarial boundary tests;
+- three independent real runtime probes report all four migration dimensions
+  behaviorally stable even while unrelated CPU contention changes short-tier
+  deadline telemetry;
+- the signer/ledger suite includes an explicit old-ledger/head rollback test and
+  reports `same_uid_llm_resistance=false` plus
+  `rollback_resistance_without_external_anchor=false`; and
+- both official-oracle hashes match the pinned values, compile/diff checks pass,
+  and no official EXE suite was launched during the control-plane refactor.
 
 ## Future acceptance gates
 
