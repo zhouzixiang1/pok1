@@ -55,7 +55,7 @@
 - **本项目映射**：每个 batch 对两位 traverser 分别执行 external-sampling traversal；机会/对手动作采样，traverser 动作全枚举。
 - **国赛适配**：未来必须使用国赛原生状态树；不能把 ACPC 或 OpenSpiel poker 状态直接当作国赛状态。
 - **忠实度**：核心 traversal 为 `paper-faithful clean-room`；冻结策略的同步 mini-batch shard 是 `functional adaptation`。
-- **可证伪门**：相同冻结策略下 Monte Carlo 更新均值偏离全树 CFR；不同 shard 布局改变合并后状态；增加样本不降低误差/方差。
+- **可证伪门**：相同冻结策略下 Monte Carlo 更新均值偏离全树 CFR；不同 shard 布局改变合并后状态；增加样本不降低误差/方差。M3 复核已用 20,000 samples/player 对 Kuhn uniform full-tree delta 做独立对拍，最大绝对误差 `0.00605`，测试门为 `0.012`。
 
 ### S03 — CFR+
 
@@ -109,10 +109,10 @@
 - **版本/时间**：IJCAI 2017；arXiv 初稿 2017-05-08；2026-07-12 检索。
 - **关键公式/对象**：在 top opponent infoset 保留 blueprint counterfactual best-response value；margin `M(I)=CBV_blueprint(I)-CBV_resolved(I)`，Resolve 至少要求非负安全 margin；nested solving 在后续 off-tree 动作处重新建立子博弈。
 - **官方代码/资产**：未公开完整 Libratus blueprint、实时求解器和模型；论文版权不构成源码许可证。
-- **本项目映射**：M7/M8 的 safe gadget、off-tree 实际尺寸注入；M3 仅提供 exact BR 评价底座。
+- **本项目映射**：M3 现提供 Kuhn `check → bet` 公共子树的 exact-terminal continuation replacement：只允许改变 resolver 的三个 rank-conditioned response，以 top opponent infoset counterfactual best-response value 和完整 exploitability 双重 fail-closed 认证。M7/M8 仍需实现 public-range safe gadget 与 off-tree 实际尺寸注入。
 - **国赛适配**：国赛 `raise-to`、精确最小加注和 60 秒 deadline 必须由 NationalGameState 决定。
-- **忠实度**：未来实现若缺少完整 gadget 证明，必须标 `functional adaptation`，不能称严格 safe。
-- **可证伪门**：在完整小博弈上 resolve 后 exploitability 高于 blueprint 安全上界；off-tree 只做最近邻翻译；搜索越久持续变差。
+- **忠实度**：当前 Kuhn 枚举 resolver 为 `functional adaptation`，只称 exact small-game certificate，不称 Libratus gadget 复刻。未来实现若缺少完整 gadget 证明，仍必须标 `functional adaptation`，不能称严格 HUNL safe。
+- **可证伪门**：任一 top opponent infoset margin 为负却被接受；改变子树外策略未被拒绝；完整小博弈 exploitability 上升却被接受；off-tree 只做最近邻翻译；搜索越久持续变差。
 
 ### S07 — Deep CFR
 
@@ -193,10 +193,10 @@
   - `open_spiel/python/algorithms/best_response.py::BestResponsePolicy`
   - `open_spiel/python/algorithms/exploitability.py::nash_conv` / `exploitability`
   - `open_spiel/games/kuhn_poker`、`open_spiel/games/leduc_poker`
-- **本项目映射**：只用于接口/数值交叉参考；M3 实现保持 stdlib-only 且没有 OpenSpiel import。
+- **本项目映射**：求解与运行时保持 stdlib-only 且没有 OpenSpiel import。隔离审计工具使用官方 wheel `1.6.15`（wheel SHA-256 见 `manifests/m3_audit_dependencies.json`），对拍树规模、均匀策略，以及确定性非均匀 Leduc 策略的 value/NashConv/exploitability。
 - **国赛适配**：OpenSpiel 不是国赛规则 oracle；未来必须与 `sever/engine/validator.py` 和官方边界文档差分。
 - **忠实度**：`source-faithful` 调研，项目实现 `clean-room`。
-- **可证伪门**：若未来与 OpenSpiel 对拍，必须固定同一规则参数；结果不一致不得解释成“国赛差异”而跳过定位。
+- **可证伪门**：与 OpenSpiel 对拍必须固定同一规则参数；结果不一致不得解释成“国赛差异”而跳过定位。当前七项对拍全部通过，但这不把 OpenSpiel 提升为国赛规则 oracle。
 
 ### S13 — ReBeL 相邻边界
 

@@ -426,6 +426,11 @@ def _ordered_samples(state: SolverState, shards: Iterable[ShardDelta]) -> list[S
             raise ValueError("shards disagree on shard_count")
         if shard.samples_per_player != samples_per_player:
             raise ValueError("shards disagree on samples_per_player")
+        if any(
+            sample.sample_id % shard_count != shard.shard_index
+            for sample in shard.samples
+        ):
+            raise ValueError("sample is assigned to the wrong deterministic shard")
 
     ordered = sorted(
         (sample for shard in shard_list for sample in shard.samples),
@@ -707,6 +712,11 @@ def _atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         temporary.unlink(missing_ok=True)
 

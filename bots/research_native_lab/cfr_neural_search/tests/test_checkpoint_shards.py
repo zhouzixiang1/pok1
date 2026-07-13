@@ -48,6 +48,20 @@ class CheckpointShardTest(unittest.TestCase):
         self.assertEqual(one.to_payload(), many.to_payload())
         self.assertEqual(one.digest, many.digest)
 
+    def test_multi_batch_shard_layout_is_digest_invariant(self):
+        game = KuhnPoker()
+        config = SolverConfig(
+            seed=410,
+            samples_per_player=8,
+            update_rule="linear",
+        )
+        one = SolverState(game.name, config)
+        many = SolverState(game.name, config)
+        train_batches(game, one, batches=40, shard_count=1)
+        train_batches(game, many, batches=40, shard_count=4)
+        self.assertEqual(one.to_payload(), many.to_payload())
+        self.assertEqual(one.digest, many.digest)
+
     def test_checkpoint_resume_matches_uninterrupted(self):
         game = KuhnPoker()
         config = SolverConfig(seed=88, samples_per_player=3, update_rule="cfr_plus")
@@ -64,6 +78,27 @@ class CheckpointShardTest(unittest.TestCase):
         train_batches(game, resumed, batches=50, shard_count=3)
         self.assertEqual(uninterrupted.to_payload(), resumed.to_payload())
         self.assertEqual(uninterrupted.digest, resumed.digest)
+
+    def test_resume_across_shard_layouts_for_linear_and_dcfr(self):
+        game = KuhnPoker()
+        for rule in ("linear", "dcfr"):
+            with self.subTest(rule=rule):
+                config = SolverConfig(
+                    seed=881,
+                    samples_per_player=8,
+                    update_rule=rule,
+                )
+                uninterrupted = SolverState(game.name, config)
+                resumed = SolverState(game.name, config)
+                train_batches(game, uninterrupted, batches=50, shard_count=2)
+                train_batches(game, resumed, batches=17, shard_count=1)
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "checkpoint.json"
+                    save_checkpoint(path, resumed)
+                    resumed = load_checkpoint(path)
+                train_batches(game, resumed, batches=33, shard_count=4)
+                self.assertEqual(uninterrupted.to_payload(), resumed.to_payload())
+                self.assertEqual(uninterrupted.digest, resumed.digest)
 
     def test_shard_round_trip_and_hash_tamper_detection(self):
         game = KuhnPoker()
@@ -87,6 +122,21 @@ class CheckpointShardTest(unittest.TestCase):
             apply_shards(game, state, [shard])
         with self.assertRaisesRegex(ValueError, "every unique shard"):
             apply_shards(game, state, [shard, shard])
+
+    def test_sample_moved_to_wrong_deterministic_shard_is_rejected(self):
+        game = KuhnPoker()
+        state = SolverState(game.name, SolverConfig(samples_per_player=4))
+        shards = [build_shard(game, state, index, 2) for index in range(2)]
+        bad_zero = replace(
+            shards[0],
+            samples=(shards[1].samples[0],) + shards[0].samples[1:],
+        )
+        bad_one = replace(
+            shards[1],
+            samples=(shards[0].samples[0],) + shards[1].samples[1:],
+        )
+        with self.assertRaisesRegex(ValueError, "wrong deterministic shard"):
+            apply_shards(game, state, [bad_zero, bad_one])
 
     def test_rejected_action_drift_is_transactional(self):
         game = KuhnPoker()

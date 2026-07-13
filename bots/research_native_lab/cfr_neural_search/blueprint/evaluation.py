@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
@@ -62,6 +63,7 @@ class BestResponseResult:
     player: int
     value: float
     actions: dict[str, Action]
+    counterfactual_values: dict[str, float]
 
 
 def best_response(
@@ -74,6 +76,8 @@ def best_response(
     Information-set states are weighted by opponent-and-chance reach only.
     Best actions are solved lazily from deeper information sets to shallower
     ones, enforcing one action across every history in an information set.
+    The result also exposes each reached information set's unnormalized
+    counterfactual best-response value under that same pure response.
     """
 
     if player not in (0, 1):
@@ -142,7 +146,16 @@ def best_response(
         return selected
 
     root_value = continuation_value(game.new_initial_state())
-    return BestResponseResult(player=player, value=root_value, actions=chosen_actions)
+    counterfactual_values = {
+        key: math.fsum(reach * continuation_value(state) for state, reach in states)
+        for key, states in sorted(infosets.items())
+    }
+    return BestResponseResult(
+        player=player,
+        value=root_value,
+        actions=chosen_actions,
+        counterfactual_values=counterfactual_values,
+    )
 
 
 @dataclass(frozen=True, slots=True)

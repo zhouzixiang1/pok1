@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import itertools
 import unittest
 
-from bots.research_native_lab.cfr_neural_search.blueprint.evaluation import exploitability
+from bots.research_native_lab.cfr_neural_search.blueprint.evaluation import (
+    best_response,
+    expected_returns,
+    exploitability,
+)
 from bots.research_native_lab.cfr_neural_search.blueprint.small_games import (
     BET,
     CALL,
@@ -47,6 +52,63 @@ class EvaluationTest(unittest.TestCase):
         result = exploitability(KuhnPoker(), {})
         self.assertGreater(result.exploitability, 0.2)
         self.assertGreater(result.nash_conv, 0.4)
+
+    def test_best_response_matches_exhaustive_pure_strategy_enumeration(self):
+        game = KuhnPoker()
+        opponent_policy = kuhn_equilibrium_policy()
+
+        for player in (0, 1):
+            action_sets = {}
+
+            def collect(state):
+                actor = state.current_player
+                if actor == -2:
+                    return
+                if actor == -1:
+                    for action, _ in state.chance_outcomes():
+                        collect(state.child(action))
+                    return
+                if actor == player:
+                    action_sets[state.information_state_key(player)] = state.legal_actions()
+                for action in state.legal_actions():
+                    collect(state.child(action))
+
+            collect(game.new_initial_state())
+            keys = tuple(sorted(action_sets))
+            exhaustive_value = float("-inf")
+            for choices in itertools.product(*(action_sets[key] for key in keys)):
+                response_policy = {
+                    key: dict(values) for key, values in opponent_policy.items()
+                }
+                for key, action in zip(keys, choices, strict=True):
+                    response_policy[key] = {
+                        legal: float(legal == action) for legal in action_sets[key]
+                    }
+                exhaustive_value = max(
+                    exhaustive_value,
+                    expected_returns(game, response_policy)[player],
+                )
+
+            result = best_response(game, opponent_policy, player)
+            self.assertAlmostEqual(result.value, exhaustive_value, places=12)
+
+    def test_best_response_counterfactual_top_values_decompose_root_value(self):
+        game = KuhnPoker()
+        for player in (0, 1):
+            result = best_response(game, {}, player)
+            if player == 0:
+                top_keys = [_key(0, rank, ()) for rank in range(3)]
+            else:
+                top_keys = [
+                    _key(1, rank, history)
+                    for rank in range(3)
+                    for history in ((CHECK,), (BET,))
+                ]
+            self.assertAlmostEqual(
+                sum(result.counterfactual_values[key] for key in top_keys),
+                result.value,
+                places=12,
+            )
 
 
 if __name__ == "__main__":

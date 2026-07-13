@@ -26,6 +26,23 @@ class MCCFRTest(unittest.TestCase):
         self.assertEqual(round2, 2.0)
         self.assertEqual(_new_strategy_weight(linear, 3), 3.0)
 
+    def test_linear_recurrence_is_iteration_weighted_regret(self):
+        linear = SolverConfig(update_rule="linear")
+        deltas = (3.0, -2.0, 5.0, -7.0)
+        cumulative = 0.0
+        for iteration, delta in enumerate(deltas, start=1):
+            cumulative = _updated_regret(
+                linear,
+                iteration,
+                cumulative,
+                delta,
+            )
+        expected = sum(
+            iteration * delta
+            for iteration, delta in enumerate(deltas, start=1)
+        ) / (len(deltas) + 1.0)
+        self.assertAlmostEqual(cumulative, expected, places=12)
+
     def test_dcfr_two_round_positive_to_negative_uses_updated_sign(self):
         dcfr = SolverConfig(update_rule="dcfr", dcfr_alpha=1.5, dcfr_beta=0.0)
         round1 = _updated_regret(dcfr, 1, 0.0, 4.0)

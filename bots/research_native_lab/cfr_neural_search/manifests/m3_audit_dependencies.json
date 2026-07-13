@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-07-13",
+  "route_commit_audited": "f70af13aa3f1e168ceb0f31bac1db7417b78ebd8",
+  "source_registry_sha256": "decd4aff03b70577ede9696f7daa091f9bc745446bcc6416c469f5e13807df8f",
+  "python_runtimes": [
+    {
+      "executable": "python",
+      "version": "3.14.4"
+    },
+    {
+      "executable": "/usr/bin/python3",
+      "version": "3.12.3"
+    }
+  ],
+  "audit_only_dependencies": [
+    {
+      "name": "open-spiel",
+      "version": "1.6.15",
+      "distribution": "open_spiel-1.6.15-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "7b2814bf39f2ab9302723af1f3934c842cefa9371ec77b1ebf8400fb917df793",
+      "license": "Apache-2.0",
+      "installation_scope": "/tmp/pok-open-spiel-1.6.15",
+      "runtime_or_delivery_dependency": false,
+      "purpose": "independent Kuhn/Leduc tree, policy value, best-response, NashConv, and exploitability cross-check"
+    }
+  ]
+}
