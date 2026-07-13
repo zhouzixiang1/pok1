@@ -1,0 +1,31 @@
+{
+  "schema": "route-a-leduc-gate-v1",
+  "rules": {
+    "physical_cards": 6,
+    "ranks": 3,
+    "copies_per_rank": 2,
+    "ante": 1,
+    "bet_sizes": [2, 4],
+    "maximum_raises_per_street": 2,
+    "first_actor_by_street": [0, 0]
+  },
+  "algorithm": "alternating_linear_cfr",
+  "iterations": 100,
+  "maximum_exploitability": 0.1,
+  "maximum_fraction_of_uniform_exploitability": 0.1,
+  "expected": {
+    "physical_deals": 120,
+    "infosets": 288,
+    "uniform_value_player0": -0.078125,
+    "uniform_best_response_player0": 2.0875,
+    "uniform_best_response_player1": 2.659722222222222,
+    "uniform_exploitability": 2.373611111111111,
+    "trained_exploitability": 0.03448982882225149,
+    "checkpoint_sha256": "a8c1292ad102be6eaf76488e2a976ac2f1de7ea936240476fae095e73e013405"
+  },
+  "fidelity": {
+    "lcfr": "paper-faithful-clean-room algorithmic kernel",
+    "leduc": "independent exact small-game correctness gate",
+    "decisionholdem_blueprint": "unresolved LCFR-vs-MCCFR and missing-asset gap"
+  }
+}

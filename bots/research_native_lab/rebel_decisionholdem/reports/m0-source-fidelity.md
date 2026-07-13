@@ -2,6 +2,10 @@
 
 Audit time: 2026-07-12 15:55 +08:00
 
+Implementation-status revision: 2026-07-13 (source conclusions unchanged;
+M3 Leduc evidence and the explicitly non-faithful M4 prototype are reflected
+below)
+
 Repository base: `6ee160c93cee8d0afdad111c4c82bc6ddb6012ca`
 
 Scope: A1 ReBeL-like and A2 DecisionHoldem-like only
@@ -106,12 +110,12 @@ are in `../manifests/sources.json`.
 
 | Paper formula/section | Official source symbol or asset | Current implementation | Fidelity label | Verification | Falsifier / next gate |
 |---|---|---|---|---|---|
-| Section 2/Table 1 hand and action abstraction | game-tree headers exist; required cluster binaries mostly external | no HUNL abstraction | unresolved fidelity gap | future bucket/action manifest and collision tests | cannot call a toy solver a blueprint Bot |
-| Section 2 says LCFR; README later says MCCFR; Brown/Sandholm 2019 defines LCFR weight `t` for regret and average-strategy updates | AGPL symbols `blueprint_cfr`, `dfs_discount`, `update_strategy` inspected only; tracked `BlueprintMCCFR.h`/`Multi_Blureprint.h` conflict with LCFR prose | independent alternating full-tree Kuhn `LinearCFR`, with a frozen policy across each chance-complete player update | paper-faithful clean-room **toy LCFR**, but unresolved fidelity gap for the DecisionHoldem blueprint | exact BR/exploitability, deterministic convergence, bit-exact checkpoint/resume payload | toy LCFR can pass while strict reproduction remains blocked; 10,000-iteration exploitability over 0.02 also fails the toy gate |
-| Approximately 200M iterations on abstract HUNL | external `blueprint_strategy.dat` and cluster files | not started | unresolved fidelity gap | later small-to-large scaling gate | no large training until small-game and common national contracts pass |
-| Off-tree online search, 6k/10k iterations | `AlascasiaHoldem.so`; source absent | not implemented | unresolved fidelity gap | future explicit subgame/tree/action tests | binary behavior cannot be inferred and represented as source-faithful |
+| Section 2/Table 1 hand and action abstraction | game-tree headers exist; required cluster binaries mostly external | exact 169 preflop classes; postflop only nine made-hand categories; national action prototype is `F,C,min,0.5P,P,1.5P,A`, not the paper's `F,C,0.5P,P,2P,4P,A` | functional adaptation / unresolved real-cluster gap | 1,326-combination class count, five-to-seven-card category tests, differential national-action validation | nine postflop buckets and the changed sizes cannot be reported as DecisionHoldem abstraction fidelity |
+| Section 2 says LCFR; README later says MCCFR; Brown/Sandholm 2019 defines LCFR weight `t` for regret and average-strategy updates | AGPL symbols `blueprint_cfr`, `dfs_discount`, `update_strategy` inspected only; tracked `BlueprintMCCFR.h`/`Multi_Blureprint.h` conflict with LCFR prose | independent alternating full-tree Kuhn and exact two-round Leduc `LinearCFR`, with a frozen policy across each chance-complete player update | paper-faithful clean-room **toy LCFR**, but unresolved fidelity gap for the DecisionHoldem blueprint | exact BR/exploitability, deterministic convergence, bit-exact checkpoint/resume payloads; Leduc 120 deals/288 infosets | either toy solver can pass while strict reproduction remains blocked; frozen convergence thresholds remain falsifiers |
+| Approximately 200M iterations on abstract HUNL | external `blueprint_strategy.dat` and cluster files | no HUNL training; the package exports only a labelled Leduc-policy seed projection | unresolved fidelity gap; projection is a functional packaging prototype | content-bound export and policy-decision influence tests | the projection cannot satisfy M4 or be called a HUNL blueprint |
+| Off-tree online search, 6k/10k iterations | `AlascasiaHoldem.so`; source absent | nearest-action diagnostic mapping only; no action injection or re-solve | unresolved fidelity gap / explicitly unsafe translation | exact/off-tree mapping tests | binary behavior cannot be inferred; nearest-only mapping fails the online-search requirement |
 | Safe depth-limited solving with diverse opponent ranges | paper defers details; no source found | Coin Toss per-type alternative-payoff constraint from Brown/Sandholm 2017 | functional adaptation | plain resolver adds 0.25 exploitability; constrained resolver has zero per-type margin violation and zero delta | this oracle is not the DecisionHoldem resolver and cannot pass the HUNL safe-solving gate |
-| Blueprint-only interface | `blueprint.so`, but required blueprint asset is external | toy LCFR policy only | unresolved fidelity gap | future complete native match with all search disabled | no claim of a playable DecisionHoldem blueprint yet |
+| Blueprint-only interface | `blueprint.so`, but required blueprint asset is external | content-bound native packaging prototype driven by a coarse Leduc seed projection | functional packaging adaptation, **not M4 complete** | exported source/blueprint hash binding, mixed-policy influence, sticky framing and runout unit tests | no complete 70-hand match, common-state binding, or HUNL-trained asset; no playable-candidate claim |
 
 ## National adaptation delta
 
@@ -158,6 +162,9 @@ milestone:
   strict blockers. The route is explicitly downgraded to clean-room/functional
   adaptation.
 - **Small-game correctness prerequisite:** implemented and reported separately.
-- **Leduc:** not yet implemented; Kuhn plus the published Coin Toss safety
-  example is the current small-game evidence.
-- **HUNL training/native TCP:** prohibited at this milestone.
+- **Leduc M3:** implemented as an independent exact 120-deal/288-infoset tree;
+  full-tree LCFR, exact value/BR/exploitability and bit-exact resume pass the
+  frozen gate. This strengthens the toy algorithm evidence only.
+- **A2 M4 prototype:** coarse Leduc-to-national projection and a native packaging
+  shell exist, but they are explicitly not a HUNL blueprint or complete Bot.
+- **HUNL training/native TCP completion:** not started.
