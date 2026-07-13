@@ -2775,6 +2775,7 @@ class TestWorkerFailureCircuitBreaker:
         attempt_keys = {result["attempt_key"] for result in results}
         assert attempts == [1, 2, 3]
         assert len(attempt_keys) == 1
+        assert results[-1]["error"] == "WORKER_INFRASTRUCTURE_EXHAUSTED"
         assert results[-1]["action"] == "abandon_generation"
         from worker_workflow import WorkerWorkflow
 
@@ -2783,6 +2784,14 @@ class TestWorkerFailureCircuitBreaker:
         )
         assert workflow.state()["status"] == "abandoned"
         abandon.assert_not_awaited()
+
+        # A crash after the durable terminal event but before the outer
+        # checkpoint is cleared must reconcile, not reopen or spin the effect.
+        resumed = asyncio.run(run_once())
+        assert resumed["error"] == "WORKER_WORKFLOW_ABANDONED"
+        assert resumed["action"] == "abandon_generation"
+        assert resumed["worker_abandon_reason"] == "worker_infrastructure_exhausted"
+        assert workflow.state()["status"] == "abandoned"
 
     def test_quality_failed_rework_uses_checkpoint_feedback_and_sequential(self, tmp_path, monkeypatch):
         """quality_failed checkpoints should not depend on LLM-supplied feedback."""

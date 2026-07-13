@@ -8869,6 +8869,11 @@ async def _run_durable_worker_effect(
                 if exhausted:
                     worker_workflow.abandon("worker_infrastructure_exhausted")
                 return _json_tool_result({
+                    **(
+                        {"error": "WORKER_INFRASTRUCTURE_EXHAUSTED"}
+                        if exhausted
+                        else {}
+                    ),
                     "success": False,
                     "failure_class": "infrastructure",
                     "action": (
@@ -9252,6 +9257,24 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
     )
     worker_command = next_worker_command(durable_worker_state)
     command_name = str(worker_command.get("command") or "recover")
+    if command_name == "reconcile_abandon":
+        return _json_tool_result({
+            "error": "WORKER_WORKFLOW_ABANDONED",
+            "success": False,
+            "failure_class": "infrastructure",
+            "action": "abandon_generation",
+            "worker_abandon_reason": str(
+                worker_command.get("reason") or "worker_abandoned"
+            ),
+            "next_v": next_v,
+            "source_v": source_v,
+            "stage": ckpt.get("stage"),
+            "directive": (
+                "The durable Worker journal is terminal while the outer "
+                "checkpoint is still active. Reconcile by centrally abandoning "
+                "this generation; never reopen or recreate the exhausted effect."
+            ),
+        })
     durable_worker_resume = command_name != "prepare"
     if durable_worker_resume and durable_worker_envelope:
         envelope_errors = validate_worker_envelope(durable_worker_envelope)

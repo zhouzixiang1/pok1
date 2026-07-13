@@ -198,6 +198,14 @@ containing external validator evidence. Candidate code is edited only in a
 lease-epoch isolated workspace; the canonical bot directory is a crash-recovered
 materialized projection of an immutable artifact.
 
+`WorkerProjected` and `WorkerAbandoned` are distinct terminal outcomes. A
+completed Worker has no pending command; an abandoned Worker emits the durable
+`reconcile_abandon` command until the compatibility checkpoint is centrally
+cleared. This closes the crash window between recording exhausted Worker retries
+in SQLite and removing the still-active JSON checkpoint. On restart the same
+effect is never recreated, re-leased, or spun as
+`WORKER_CYCLE_HAS_NO_PENDING_COMMAND`.
+
 ### Versioning and migration
 
 Every workflow instance is permanently bound to `definition_version`. Changing
@@ -504,6 +512,9 @@ artifact files between the two checkouts.
 - stale lease epochs and duplicate/out-of-order completions are rejected;
 - an artifact receipt written before a crash is reconciled without a second LLM
   call;
+- an exhausted or already-abandoned Worker journal deterministically triggers
+  one central generation abandon, including recovery of the older terminal
+  result shape that carried `action=abandon_generation` without an `error`;
 - workflow version mismatch fails closed;
 - multiple concurrent commands yield one contiguous event sequence;
 - event payload, envelope, projection, journal, and database schema corruption

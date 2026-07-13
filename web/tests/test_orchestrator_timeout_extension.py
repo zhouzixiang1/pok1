@@ -1338,6 +1338,99 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
     assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
 
 
+@pytest.mark.parametrize(
+    ("worker_result", "expected_reason"),
+    [
+        (
+            {
+                "error": "WORKER_WORKFLOW_ABANDONED",
+                "success": False,
+                "failure_class": "infrastructure",
+                "action": "abandon_generation",
+                "worker_abandon_reason": "worker_infrastructure_exhausted",
+            },
+            "worker_infrastructure_exhausted",
+        ),
+        (
+            {
+                "success": False,
+                "failure_class": "infrastructure",
+                "action": "abandon_generation",
+            },
+            "worker_terminal_abandon",
+        ),
+    ],
+)
+def test_deterministic_route_reconciles_abandoned_worker_journal(
+    monkeypatch,
+    worker_result,
+    expected_reason,
+):
+    """A terminal Worker journal must close the still-active outer checkpoint."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    abandoned = []
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps(worker_result),
+                }]
+            }
+        )
+    )
+
+    async def _fake_abandon(reason="abandon_generation"):
+        abandoned.append(reason)
+        return {"abandoned": True, "reason": reason, "abandoned_v": 152}
+
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_bot_management",
+        SimpleNamespace(_do_abandon_generation=_fake_abandon),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "rework_running",
+            "next_v": 152,
+            "source_v": 142,
+        },
+    }
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    assert handled is True
+    assert abandoned == [expected_reason]
+    assert any(e[0] == "pipeline.deterministic_route_abandoned" for e in events)
+    assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
+
+
 def test_deterministic_route_abandons_after_precommit_rework_circuit_breaker(monkeypatch):
     """Precommit repair loop breaker should force abandon through recovery."""
     from types import SimpleNamespace

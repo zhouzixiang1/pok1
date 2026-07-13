@@ -237,6 +237,24 @@ def test_output_receipt_precedes_projection_and_is_replayable(tmp_path):
     assert next_worker_command(projected) == {"command": "none"}
 
 
+def test_abandoned_worker_requires_outer_checkpoint_reconciliation(tmp_path):
+    workflow = _workflow(tmp_path)
+    candidate = tmp_path / "candidate-abandoned"
+    candidate.mkdir()
+    (candidate / "strategy.py").write_text("value = 1\n")
+    snapshot = workflow.artifacts.capture(candidate)
+    workflow.prepare(_envelope(snapshot))
+
+    abandoned = workflow.abandon("worker_infrastructure_exhausted")
+
+    assert abandoned["status"] == "abandoned"
+    assert abandoned["abandon_reason"] == "worker_infrastructure_exhausted"
+    assert next_worker_command(abandoned) == {
+        "command": "reconcile_abandon",
+        "reason": "worker_infrastructure_exhausted",
+    }
+
+
 @pytest.mark.parametrize("outcome", ["output", "semantic"])
 def test_invalid_projection_schema_is_rejected_before_effect_completion(
     tmp_path, outcome
