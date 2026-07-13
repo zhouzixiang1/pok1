@@ -192,6 +192,7 @@ def initial_worker_state(run_id: str) -> dict[str, Any]:
         "projected_stage": "",
         "projection": None,
         "failure_projection": None,
+        "abandon_reason": "",
         "last_seq": 0,
     }
 
@@ -230,6 +231,7 @@ def reduce_worker_event(
             "projected_stage": "",
             "projection": None,
             "failure_projection": None,
+            "abandon_reason": "",
         })
     elif event.event_type == "WorkerSuperseded":
         result.update({
@@ -282,7 +284,10 @@ def reduce_worker_event(
             "projected_stage": str(payload.get("stage") or "workers_done"),
         })
     elif event.event_type == "WorkerAbandoned":
-        result["status"] = "abandoned"
+        result.update({
+            "status": "abandoned",
+            "abandon_reason": str(payload.get("reason") or "worker_abandoned"),
+        })
     return result
 
 
@@ -315,8 +320,13 @@ def next_worker_command(state: dict[str, Any]) -> dict[str, Any]:
         }
     if status == "exhausted":
         return {"command": "abandon"}
-    if status in {"completed", "abandoned"}:
+    if status == "completed":
         return {"command": "none"}
+    if status == "abandoned":
+        return {
+            "command": "reconcile_abandon",
+            "reason": str(state.get("abandon_reason") or "worker_abandoned"),
+        }
     return {"command": "recover", "status": status}
 
 

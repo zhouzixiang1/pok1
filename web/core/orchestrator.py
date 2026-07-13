@@ -1965,6 +1965,27 @@ def _is_worker_circuit_breaker_result(data):
     )
 
 
+def _is_worker_terminal_abandon_result(data):
+    """Whether execute_workers reached an irreversible durable terminal state."""
+    if not isinstance(data, dict):
+        return False
+    return (
+        data.get("action") == "abandon_generation"
+        and data.get("success") is not True
+    )
+
+
+def _worker_terminal_abandon_reason(data):
+    error = str(data.get("error") or "")
+    if error == "WORKER_INFRASTRUCTURE_EXHAUSTED":
+        return "worker_infrastructure_exhausted"
+    if error == "WORKER_WORKFLOW_ABANDONED":
+        return str(
+            data.get("worker_abandon_reason") or "worker_workflow_abandoned"
+        )[:160]
+    return "worker_terminal_abandon"
+
+
 def _is_precommit_rework_circuit_breaker_result(data):
     if not isinstance(data, dict):
         return False
@@ -2083,6 +2104,10 @@ async def _try_deterministic_checkpoint_route(
     data = _extract_tool_result_json(result)
     error = data.get("error")
     success = data.get("success")
+    worker_terminal_abandon = (
+        next_tool == "execute_workers"
+        and _is_worker_terminal_abandon_result(data)
+    )
     if data.get("pending") and data.get("action") == "poll_commit_bot":
         wait_sec = max(5.0, min(60.0, float(data.get("retry_after_sec", 30) or 30)))
         try:
@@ -2102,18 +2127,21 @@ async def _try_deterministic_checkpoint_route(
             pass
         await asyncio.sleep(wait_sec)
         return True
-    if error:
+    if error or worker_terminal_abandon:
         if next_tool == "execute_workers" and (
             _is_worker_circuit_breaker_result(data)
             or _is_precommit_rework_circuit_breaker_result(data)
             or _is_official_rework_circuit_breaker_result(data)
+            or worker_terminal_abandon
         ):
             if _is_precommit_rework_circuit_breaker_result(data):
                 abandon_reason = "precommit_rework_circuit_breaker"
             elif _is_official_rework_circuit_breaker_result(data):
                 abandon_reason = "official_rework_circuit_breaker"
-            else:
+            elif _is_worker_circuit_breaker_result(data):
                 abandon_reason = "worker_circuit_breaker"
+            else:
+                abandon_reason = _worker_terminal_abandon_reason(data)
             if (
                 _is_official_rework_circuit_breaker_result(data)
                 and data.get("abandoned") is True
