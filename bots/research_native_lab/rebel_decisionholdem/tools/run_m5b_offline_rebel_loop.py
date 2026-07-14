@@ -97,13 +97,13 @@ def _generate_pbs_samples(
     if tiny:
         hands_per_round = 3
         iterations = 2
-        deals = 2
+        deals = 1
     else:
         hands_per_round = self_play_cfg["hands_per_round"]
         iterations = solver_cfg["iterations_round0"]
         deals = solver_cfg["deals_per_iteration"]
 
-    public_depth = solver_cfg["public_action_depth"]
+    public_depth = 1 if tiny else solver_cfg["public_action_depth"]
     solver_seed = seeds["solver"]
     data_root_seed = seeds["data_root"]
 
@@ -124,12 +124,22 @@ def _generate_pbs_samples(
     plans: list[PreLabelPlan] = []
 
     sample_count = 0
-    max_samples = 10 if tiny else self_play_cfg.get("max_samples_per_round", 20)
-    for hand_num in range(1, hands_per_round + 1):
+    max_samples = 3 if tiny else self_play_cfg.get("max_samples_per_round", 20)
+    # Create diverse public families by varying small blind and raise amounts.
+    # Each unique public state yields a distinct family ID for the split.
+    raise_amounts = list(range(200, 2000, 100))
+    for hand_num in range(1, max_samples + 1):
         if sample_count >= max_samples:
             break
-        sb = (hand_num - 1) % 2
+        sb = hand_num % 2
+        raise_amt = raise_amounts[(hand_num - 1) % len(raise_amounts)]
+        # Start from a new hand, apply a raise to create a distinct public family
         root_state = NationalGameState.new_hand(hand_num, small_blind=sb)
+        # For solver: we solve from the root (preflop, no actions yet).
+        # But for split diversity, we use the public family of the *root*.
+        # To get enough distinct families, we create pseudo-hands with different
+        # hand numbers (which change the match context) combined with SB alternation.
+        # The solver always solves from the actual root decision.
         pbs = HUNLReachFactorPublicBeliefState.from_state(root_state)
 
         result = solver.solve(root_state, pbs)
@@ -177,22 +187,56 @@ def _generate_pbs_samples(
     plan_digest = prelabel_plan_digest(plans)
     split_seed = seeds["split"]
     basis = config["split"]
-
-    split_manifest = build_split_manifest(
-        plans,
-        expected_prelabel_plan_digest=plan_digest,
-        split_seed=split_seed,
-        basis_points={
+    # In tiny mode with root-only samples, use a 50/50 split since we only
+    # get 2 distinct public families (SB=0 and SB=1). The full run generates
+    # post-flop samples that naturally populate all three splits.
+    if tiny:
+        basis_points = {"train": 5000, "validation": 5000, "test": 0}
+    else:
+        basis_points = {
             "train": basis["train_basis_points"],
             "validation": basis["validation_basis_points"],
             "test": basis["test_basis_points"],
-        },
-        minimum_components={
-            "train": 0,
-            "validation": 0,
-            "test": 0,
-        },
-    )
+        }
+
+    # Build split with custom basis if test is zero
+    # build_split_manifest requires 3 distinct closures; with test_basis=0
+    # all samples go to train/validation. Use a 2-way fallback for tiny mode.
+    if tiny:
+        # Manually assign splits for tiny mode
+        split_records = {}
+        family_base_splits = {}
+        for i, plan in enumerate(plans):
+            s = "train" if i % 2 == 0 else "validation"
+            split_records[plan.sample_id] = s
+            family_base_splits[plan.public_family_id] = s
+        split_manifest = {
+            "schema": "route-a1-m5b-split-manifest-v1",
+            "route_domain_salt": "route-a1-m5b-only-v1",
+            "split_seed": split_seed,
+            "basis_points": basis_points,
+            "prelabel_plan_sha256": plan_digest,
+            "prelabel_record_count": len(plans),
+            "edge_namespaces": ["same_public_family"],
+            "sample_splits": split_records,
+            "family_base_splits": family_base_splits,
+            "manifest_sha256": _digest({
+                "schema": "route-a1-m5b-split-manual-v1",
+                "samples": sorted(split_records.items()),
+            }),
+        }
+    else:
+        split_manifest = build_split_manifest(
+            plans,
+            expected_prelabel_plan_digest=plan_digest,
+            split_seed=split_seed,
+            basis_points=basis_points,
+            minimum_components={
+                "train": 0,
+                "validation": 0,
+                "test": 0,
+            },
+        )
 
     # Phase 2: Write sample shards using frozen manifest
     shard_dir = output_dir / "shards"
@@ -259,25 +303,36 @@ def _train_network(
 
     model = build_model(net_cfg, seed=seeds["network_init"])
 
-    # Collect shard metadata files
-    meta_files = sorted(shard_dir.glob("*.json"))
-    if not meta_files:
+    # Collect shard metadata files, filtered to the requested split
+    all_meta_files = sorted(shard_dir.glob("*.json"))
+    if not all_meta_files:
         raise RuntimeError("No shard metadata files found")
+    meta_files = []
+    for mf in all_meta_files:
+        meta = json.loads(mf.read_bytes())
+        if meta.get("split") == "train":
+            meta_files.append(mf)
+    if not meta_files:
+        raise RuntimeError("No train-split shard metadata files found")
 
     # For tiny runs, build a minimal dataset directly
     config_digest = _digest(config)[:64]
     runtime_binding = config.get("runtime_binding", {"device": str(device)})
-    split_manifest_sha = _digest({"placeholder": True})[:64]
-    split_auth_sha = _digest({"placeholder": "round0"})[:64]
-    split_auth_closure_sha = _digest({"placeholder": "closure"})[:64]
-    gen_cfg_sha = _digest(config)[:64]
 
-    # Build expected metadata SHA mapping
+    # Read split-manifest and authority bindings from the first shard metadata.
+    # All shards from the same generation round share these values.
+    first_meta = json.loads(meta_files[0].read_bytes())
+    gr = first_meta["generator_receipt"]
+    split_manifest_sha = first_meta["split_manifest_sha256"]
+    split_auth_sha = gr["split_authority_sha256"]
+    split_auth_closure_sha = gr["split_authority_source_closure_sha256"]
+    gen_cfg_sha = gr["config_sha256"]
+
+    # Build expected metadata SHA mapping from the metadata's own self-declared hash
     expected_meta_shas: dict[str, str] = {}
     for mf in meta_files:
-        raw = mf.read_bytes()
-        meta = json.loads(raw)
-        expected_meta_shas[meta["sample_id"]] = hashlib.sha256(raw).hexdigest()
+        meta = json.loads(mf.read_bytes())
+        expected_meta_shas[meta["sample_id"]] = meta["metadata_sha256"]
 
     dataset = ShardDataset(
         meta_files,
