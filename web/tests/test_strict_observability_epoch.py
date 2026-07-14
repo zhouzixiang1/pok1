@@ -264,6 +264,41 @@ def test_strength_snapshot_stops_when_published_pool_is_empty(monkeypatch, tmp_p
     assert snapshot["reason"] == "strict_published_active_pool_empty"
 
 
+def test_strength_snapshot_rejects_singleton_default_rating(monkeypatch, tmp_path):
+    singleton = _current_bundle(active=["national_v143"])
+    monkeypatch.setattr(
+        evaluation_bundle,
+        "load_current_strict_evaluation_bundle",
+        lambda _root: singleton,
+    )
+
+    snapshot = _helpers.load_strict_strength_snapshot(tmp_path)
+
+    assert snapshot == {
+        "available": False,
+        "reason": "active_pool_singleton",
+        "active_bots": ["national_v143"],
+    }
+
+
+def test_strength_snapshot_rejects_two_bot_zero_sample_cycle(monkeypatch, tmp_path):
+    empty = _current_bundle()
+    empty["raw_append_logs"]["match_history"] = b""
+    monkeypatch.setattr(
+        evaluation_bundle,
+        "load_current_strict_evaluation_bundle",
+        lambda _root: empty,
+    )
+
+    snapshot = _helpers.load_strict_strength_snapshot(tmp_path)
+
+    assert snapshot == {
+        "available": False,
+        "reason": "awaiting_first_complete_cycle",
+        "active_bots": ["national_v143", "national_v144"],
+    }
+
+
 def test_strength_snapshot_exposes_only_current_identity_and_active_pool(monkeypatch, tmp_path):
     monkeypatch.setattr(
         evaluation_bundle,

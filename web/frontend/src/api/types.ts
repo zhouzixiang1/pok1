@@ -83,7 +83,7 @@ export interface LogContent {
 }
 
 export interface DaemonStatus {
-  status: "blocked" | "active" | "degraded" | "stopped" | "disabled";
+  status: "blocked" | "idle" | "active" | "degraded" | "stopped" | "disabled";
   reason?: string | null;
   epoch_state?: string;
   /** Age of the currently published strength cycle, not process liveness. */
@@ -93,8 +93,12 @@ export interface DaemonStatus {
   process_alive?: boolean;
   heartbeat_stale?: boolean;
   heartbeat_age_seconds?: number | null;
+  activity_state?: "waiting_for_first_published_bot" | "waiting_for_second_published_bot" | "scheduling_matches" | null;
+  active_bot_count?: number;
+  minimum_rating_pool_bots?: number;
   strength_evidence_available?: boolean;
-  strength_evidence_status?: "current_evaluation_cycle" | "awaiting_first_rating_cycle";
+  strength_evidence_status?: "active_pool_empty" | "active_pool_singleton" | "awaiting_first_complete_cycle" | "current_evaluation_cycle";
+  strength_evidence_reason?: string | null;
 }
 
 export interface RateLimitStatus {

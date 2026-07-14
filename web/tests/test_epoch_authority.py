@@ -130,6 +130,37 @@ def test_abandoned_floor_is_epoch_scoped(tmp_path, monkeypatch):
     assert evolution_infra.find_abandoned_version_floor() == 167
 
 
+def test_failed_reserved_v143_attempt_is_audited_but_does_not_burn_label(
+    tmp_path,
+    monkeypatch,
+):
+    import epoch_authority
+    import evolution_infra
+
+    abandoned = tmp_path / "abandoned_versions.jsonl"
+    abandoned.write_text(
+        '{"v":143,"workflow_run_id":"generation:143:workflow-v1"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(evolution_infra, "ABANDONED_VERSIONS_FILE", abandoned)
+    monkeypatch.setattr(
+        epoch_authority,
+        "policy_epoch_initialization",
+        lambda **_kwargs: {
+            "initialized": True,
+            "state": "fresh_bootstrap_ready",
+            "strict_published": False,
+        },
+    )
+
+    assert evolution_infra.find_abandoned_version_floor() == 0
+    assert evolution_infra.abandoned_version_attempt_count(143) == 1
+
+    with abandoned.open("a", encoding="utf-8") as handle:
+        handle.write('{"v":144,"workflow_run_id":"generation:144:workflow-v1"}\n')
+    assert evolution_infra.find_abandoned_version_floor() == 144
+
+
 def test_reset_command_contains_required_runtime_acknowledgement():
     from epoch_authority import RESET_COMMAND
 

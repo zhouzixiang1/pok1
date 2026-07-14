@@ -610,7 +610,7 @@ def test_first_strict_full_pass_preserves_parked_checkpoint_until_git_publish(mo
 
     assert ok is True
     args, kwargs = writes[0]
-    assert args[:3] == (143, 142, "official_bootstrap_required")
+    assert args[:3] == (143, 142, "verified")
     assert kwargs["gate_results"]["official_full"]["passed"] is True
 
 

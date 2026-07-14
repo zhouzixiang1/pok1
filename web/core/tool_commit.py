@@ -1298,8 +1298,14 @@ def _record_official_full_pass_checkpoint(
             ) or {}).get("spec") or {}).get("bootstrap_control_id")
         )
     )
+    # A parked first-strict candidate is intentionally non-routable until the
+    # external operator ceremony produces a complete signed certificate.  Once
+    # that certificate is validated here, linearize back through ``verified``;
+    # publication can then use the same verified -> publishing CAS as every
+    # later bot.  Keeping the stage parked made the subsequent publishing CAS
+    # an impossible official_bootstrap_required -> publishing transition.
     target_stage = (
-        "official_bootstrap_required"
+        "verified"
         if bootstrap_pass
         and (ckpt or {}).get("stage") == "official_bootstrap_required"
         else "official_certifying"

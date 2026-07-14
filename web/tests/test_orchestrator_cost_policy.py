@@ -637,3 +637,12 @@ def test_web_ui_emits_zero_cost_policy_binding_and_clear(isolated_cost_policy):
         assert json.loads(cleared["data"])["policy"] is None
     finally:
         broadcaster.remove_client(client_id)
+def test_generation_workflow_id_fences_reserved_bootstrap_retries():
+    import orchestrator_cost_policy as policy
+
+    assert policy.generation_workflow_id(143) == "generation:143:workflow-v1"
+    assert policy.generation_workflow_id(143, attempt=2) == (
+        "generation:143:workflow-v2"
+    )
+    with pytest.raises(ValueError, match="attempt must be positive"):
+        policy.generation_workflow_id(143, attempt=0)

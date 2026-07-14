@@ -98,6 +98,8 @@ POLL_TIMEOUT = 0.5
 # Heartbeat freshness for process observability. This exceeds the main-loop
 # iteration cadence (including periodic cycle publication) with ample margin.
 HEARTBEAT_STALE_SEC = 120
+MIN_RATING_POOL_BOTS = 2
+RATING_POOL_IDLE_POLL_SEC = 2.0
 
 running = True
 
@@ -172,7 +174,11 @@ def _single_writer_daemon(func):
     return wrapped
 
 
-def _write_heartbeat():
+def _write_heartbeat(
+    *,
+    activity_state: str = "scheduling_matches",
+    active_bot_count: int | None = None,
+):
     """Refresh the last_heartbeat field in .daemon_pid atomically.
 
     A fresh heartbeat distinguishes a live process from a stalled rating loop.
@@ -190,6 +196,10 @@ def _write_heartbeat():
         except (json.JSONDecodeError, ValueError):
             info = {}
         info["last_heartbeat"] = time.time()
+        info["activity_state"] = str(activity_state)
+        info["minimum_rating_pool_bots"] = MIN_RATING_POOL_BOTS
+        if active_bot_count is not None:
+            info["active_bot_count"] = max(0, int(active_bot_count))
         # C3: use a heartbeat-specific temp name to avoid colliding with
         # start_daemon's ".daemon_pid.tmp" when an orphan-cleanup restart races
         # with a heartbeat write (both used the identical path -> torn JSON ->
@@ -206,6 +216,118 @@ def _write_heartbeat():
     except Exception:
         # Heartbeat is advisory; never let it crash the main loop.
         pass
+
+
+def _reconcile_rating_pool_membership(
+    previous_active_bots,
+    ratings,
+    h2h,
+    bot_stats,
+    *,
+    save_num=0,
+    verbose=False,
+):
+    """Refresh the strict published pool without manufacturing strength data."""
+
+    active_bots = get_active_bots()
+    added = sorted(set(active_bots) - set(previous_active_bots))
+    removed = sorted(set(previous_active_bots) - set(active_bots))
+    for bot in active_bots:
+        if bot not in ratings:
+            ratings[bot] = Glicko2Player(last_play_period=save_num)
+            if verbose:
+                log.info("New bot: %s (r=1500, rd=350)", bot)
+    for bot in list(ratings):
+        if bot not in active_bots:
+            del ratings[bot]
+            bot_stats.pop(bot, None)
+            if verbose:
+                log.info("Retired: %s", bot)
+    active_set = set(active_bots)
+    h2h = {
+        key: value
+        for key, value in h2h.items()
+        if set(key.split(" vs ")).issubset(active_set)
+    }
+    return active_bots, h2h, added, removed
+
+
+def _wait_for_minimum_rating_pool(
+    active_bots,
+    ratings,
+    h2h,
+    bot_stats,
+    *,
+    save_num=0,
+    verbose=False,
+    once=False,
+):
+    """Remain live and observable until two strict bots can form a match.
+
+    Zero/one-bot policy epochs are normal bootstrap states, not daemon exits.
+    The loop intentionally publishes only process heartbeat metadata; ratings
+    stay unavailable until an immutable cycle for the exact published pool is
+    committed by real complete matches.
+    """
+
+    global running
+    announced = None
+    while running and len(active_bots) < MIN_RATING_POOL_BOTS:
+        state = (
+            "waiting_for_first_published_bot"
+            if not active_bots
+            else "waiting_for_second_published_bot"
+        )
+        if state != announced:
+            log.info(
+                "Rating daemon idle: %s (active=%d required=%d)",
+                state,
+                len(active_bots),
+                MIN_RATING_POOL_BOTS,
+            )
+            log_system_event(
+                "daemon.rating_pool_idle",
+                "info",
+                "Rating daemon is waiting for a schedulable strict pool",
+                {
+                    "activity_state": state,
+                    "active_bot_count": len(active_bots),
+                    "minimum_rating_pool_bots": MIN_RATING_POOL_BOTS,
+                },
+            )
+            announced = state
+        _write_heartbeat(
+            activity_state=state,
+            active_bot_count=len(active_bots),
+        )
+        if once:
+            return active_bots, h2h
+        deadline = time.time() + RATING_POOL_IDLE_POLL_SEC
+        while running and time.time() < deadline:
+            time.sleep(min(0.25, max(0.0, deadline - time.time())))
+        if not running:
+            break
+        active_bots, h2h, added, removed = _reconcile_rating_pool_membership(
+            active_bots,
+            ratings,
+            h2h,
+            bot_stats,
+            save_num=save_num,
+            verbose=verbose,
+        )
+        if added or removed:
+            log.info(
+                "Rating pool changed while idle: +%s -%s (total=%d)",
+                added,
+                removed,
+                len(active_bots),
+            )
+    if running:
+        _write_heartbeat(
+            activity_state="scheduling_matches",
+            active_bot_count=len(active_bots),
+        )
+    return active_bots, h2h
 
 
 def start_official_certification_thread():
@@ -1764,13 +1886,13 @@ def main():
         identity_manifest.get("manifest_digest") or ""
     )
     log.info(
-        "Rating backend: profile=%s protocol=%s execution=%s national_hands=%s national_matches=%s strict=%s",
+        "Rating backend: profile=%s protocol=%s execution=%s national_hands=%s national_matches=%s artifact_execution=%s",
         _backend_config["profile_id"],
         _backend_config["protocol"],
         _backend_config["national_execution_mode"],
         _backend_config["national_hands"],
         _backend_config["national_matches"],
-        _backend_config["strict"],
+        _backend_config["artifact_execution_mode"],
     )
     try:
         log_system_event(
@@ -1824,8 +1946,22 @@ def main():
             active_bots,
         )
 
-    if len(active_bots) < 2:
-        log.warning("Less than 2 active bots, exiting.")
+    try:
+        start_official_certification_thread()
+    except Exception as e:
+        log.warning("Official certification job reconciler failed to start (non-fatal): %s", e)
+
+    active_bots, h2h = _wait_for_minimum_rating_pool(
+        active_bots,
+        ratings,
+        h2h,
+        bot_stats,
+        save_num=int(_recovered_save_num),
+        verbose=args.verbose,
+        once=args.once,
+    )
+    if not running or len(active_bots) < MIN_RATING_POOL_BOTS:
+        log.info("Rating daemon stopped while waiting for a schedulable pool.")
         return
 
     # Build initial match queue
@@ -1841,11 +1977,6 @@ def main():
     mp_ctx = _mp.get_context("spawn")
     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
     in_flight = {}  # future -> (bot_a, bot_b)
-
-    try:
-        start_official_certification_thread()
-    except Exception as e:
-        log.warning("Official certification job reconciler failed to start (non-fatal): %s", e)
 
     # The daemon owns only current-pool strength scheduling. Precommit and
     # official certification have their own identity-bound direct runners.
@@ -1924,14 +2055,26 @@ def main():
                             future = executor.submit(run_single_match, m)
                             in_flight[future] = (m[0], m[1])
                         if time.time() - last_heartbeat_time >= 5:
-                            _write_heartbeat()
+                            _write_heartbeat(
+                                activity_state="scheduling_matches",
+                                active_bot_count=len(active_bots),
+                            )
                             last_heartbeat_time = time.time()
                         if not in_flight:
-                            log.warning(
-                                "No valid current-pool match could be scheduled; exiting"
+                            active_bots, h2h = _wait_for_minimum_rating_pool(
+                                active_bots,
+                                ratings,
+                                h2h,
+                                bot_stats,
+                                save_num=save_num,
+                                verbose=args.verbose,
+                                once=args.once,
                             )
-                            running = False
-                            break
+                            if not running:
+                                break
+                            if len(active_bots) < MIN_RATING_POOL_BOTS:
+                                running = False
+                                break
                         continue
 
                     done, _ = wait(in_flight.keys(), timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
@@ -2052,7 +2195,10 @@ def main():
                     # Refresh process health while the rating loop is active.
                     now_hb = time.time()
                     if now_hb - last_heartbeat_time >= 5:
-                        _write_heartbeat()
+                        _write_heartbeat(
+                            activity_state="scheduling_matches",
+                            active_bot_count=len(active_bots),
+                        )
                         last_heartbeat_time = now_hb
 
                     # Eval round finalization check

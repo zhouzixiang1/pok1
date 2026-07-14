@@ -9,7 +9,9 @@ Glicko/H2H strength evidence.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -117,6 +119,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Poll the durable job until it reaches a terminal state.",
     )
+    finalize = sub.add_parser(
+        "finalize-first-strict",
+        help=(
+            "Publish the already-certified parked v143 through the normal "
+            "content-bound commit_bot transaction."
+        ),
+    )
+    finalize.add_argument(
+        "--acknowledge-publish-first-strict",
+        action="store_true",
+        help="Required acknowledgement that the command commits, tags, and pushes v143.",
+    )
     p = sub.add_parser("status", help="Read certification status for a bot.")
     p.add_argument(
         "candidate", help="Strict national_tcp_policy_v1 bot directory/subject."
@@ -148,6 +162,127 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.cmd == "finalize-first-strict":
+        if not args.acknowledge_publish_first_strict:
+            print(json.dumps({
+                "status": "publication-acknowledgement-required",
+                "reason": "acknowledge_publish_first_strict_required",
+                "command": (
+                    "python scripts/official_certify.py finalize-first-strict "
+                    "--acknowledge-publish-first-strict"
+                ),
+            }, ensure_ascii=False, indent=2))
+            return 2
+        if ROOT.name != ".evolution_pok":
+            print(json.dumps({
+                "status": "publication-preflight-blocked",
+                "reason": "finalize_requires_autonomous_evolution_runtime_checkout",
+                "checkout": str(ROOT),
+            }, ensure_ascii=False, indent=2))
+            return 2
+
+        from evolution_infra import git_publish_status, read_pipeline_checkpoint
+        from national_runtime_authority import strict_published_bot_names
+
+        published = list(strict_published_bot_names())
+        if "national_v143" in published:
+            print(json.dumps({
+                "status": "already-published",
+                "committed": True,
+                "version": 143,
+                "bot": "national_v143",
+            }, ensure_ascii=False, indent=2))
+            return 0
+        checkpoint = read_pipeline_checkpoint() or {}
+        if (
+            checkpoint.get("next_v") != 143
+            or checkpoint.get("source_v") != 142
+            or checkpoint.get("stage") not in {
+                "official_bootstrap_required",
+                "verified",
+                "publishing",
+            }
+        ):
+            print(json.dumps({
+                "status": "publication-preflight-blocked",
+                "reason": "first_strict_checkpoint_not_finalizable",
+                "checkpoint": {
+                    "next_v": checkpoint.get("next_v"),
+                    "source_v": checkpoint.get("source_v"),
+                    "stage": checkpoint.get("stage"),
+                    "workflow_run_id": checkpoint.get("workflow_run_id"),
+                },
+            }, ensure_ascii=False, indent=2))
+            return 2
+        publish_state = git_publish_status()
+        if not publish_state.get("ok"):
+            print(json.dumps({
+                "status": "publication-preflight-blocked",
+                "reason": "runtime_git_not_synchronized",
+                "git": publish_state,
+            }, ensure_ascii=False, indent=2))
+            return 2
+
+        candidate = ROOT / "bots" / "national_v143"
+        certificate = status_payload(candidate)
+        from official_certification import official_full_certified
+        from official_bootstrap import (
+            validate_completed_operator_bootstrap_authorization,
+        )
+
+        if not official_full_certified(certificate, candidate):
+            print(json.dumps({
+                "status": "publication-preflight-blocked",
+                "reason": "first_strict_full_certificate_not_valid",
+                "certificate_status": certificate.get("status"),
+                "certificate_digest": certificate.get("certificate_digest"),
+            }, ensure_ascii=False, indent=2))
+            return 2
+        authorization = validate_completed_operator_bootstrap_authorization(
+            certificate,
+            candidate,
+            checkpoint=checkpoint,
+        )
+        if authorization.get("valid") is not True:
+            print(json.dumps({
+                "status": "publication-preflight-blocked",
+                "reason": "first_strict_completed_authorization_invalid",
+                "authorization": authorization,
+            }, ensure_ascii=False, indent=2))
+            return 2
+
+        # The explicit runtime-only command owns remote publication semantics.
+        # These are defaults rather than overrides so an operator can still
+        # make policy stricter, never weaker through CLI arguments.
+        os.environ.setdefault("POK_EVOLUTION_RUNTIME", "1")
+        os.environ.setdefault("POK_REQUIRE_EVOLUTION_PUSH", "1")
+        os.environ.setdefault("EVOLUTION_GIT_PUSH", "1")
+        from tool_commit import commit_bot
+
+        plan = checkpoint.get("master_plan") or {}
+        strategy = (
+            str(plan.get("strategy") or "fresh_policy_bootstrap")
+            if isinstance(plan, dict)
+            else "fresh_policy_bootstrap"
+        )
+        raw = asyncio.run(commit_bot.handler({
+            "version": 143,
+            "source_v": 142,
+            "strategy": strategy,
+            "review_approved": True,
+        }))
+        try:
+            content = raw.get("content") if isinstance(raw, dict) else None
+            first = content[0] if isinstance(content, list) and content else {}
+            payload = json.loads(first.get("text") or "{}")
+        except Exception as exc:
+            payload = {
+                "status": "publication-result-unreadable",
+                "committed": False,
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if payload.get("committed") is True else 1
     if args.cmd == "status":
         print(json.dumps(status_payload(args.candidate), ensure_ascii=False, indent=2))
         return 0

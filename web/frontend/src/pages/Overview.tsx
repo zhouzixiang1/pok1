@@ -207,7 +207,11 @@ export default function Overview() {
             </p>
           </div>
           <span className="text-amber-400/50 text-xs ml-auto">
-            {daemon?.status === "active" ? "评分进程继续运行" : "评分进程当前不可确认运行"}
+            {daemon?.status === "active"
+              ? "评分进程继续运行"
+              : daemon?.status === "idle"
+                ? "评分进程健康空闲，等待可对局池"
+                : "评分进程当前不可确认运行"}
           </span>
         </div>
       )}
@@ -233,13 +237,15 @@ export default function Overview() {
           <Badge
             variant={!controlStatus?.epoch_initialized || daemon?.status === "blocked" || daemon?.status === "disabled" || daemon?.status === "stopped"
               ? "error"
-              : daemon?.status === "active" ? "success" : "warning"}
+              : daemon?.status === "active" || daemon?.status === "idle" ? "success" : "warning"}
             size="sm"
             pulse={Boolean(controlStatus?.epoch_initialized && daemon?.status === "active")}
           >
             {!controlStatus?.epoch_initialized
               ? "未初始化"
               : daemon?.status === "active" ? "评分进程活跃"
+              : daemon?.status === "idle" && daemon?.activity_state === "waiting_for_first_published_bot" ? "等待首个已发布 Bot"
+              : daemon?.status === "idle" ? "等待第二个已发布 Bot"
               : daemon?.status === "degraded" ? "评分进程心跳过期"
               : daemon?.status === "stopped" ? "评分进程已停止"
               : daemon?.status === "disabled" ? "评分进程未启用"
@@ -251,7 +257,13 @@ export default function Overview() {
           <span className="text-[10px] text-gray-400">心跳 {daemonAgeStr}</span>
           {controlStatus?.epoch_initialized && (
             <span className="text-[10px] text-gray-400">
-              {daemon?.strength_evidence_available ? "强度周期已发布" : "等待首个同发布池强度周期"}
+              {daemon?.strength_evidence_available
+                ? "强度周期已发布"
+                : daemon?.strength_evidence_status === "active_pool_empty"
+                  ? "发布池为空，无强度证据"
+                  : daemon?.strength_evidence_status === "active_pool_singleton"
+                    ? "单 Bot 无法形成强度样本"
+                    : "等待首个完整 70 手强度样本"}
             </span>
           )}
         </div>

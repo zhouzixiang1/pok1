@@ -131,7 +131,7 @@ class TestDaemonStatus:
         assert data["daemon_configured"] is True
         assert data["process_alive"] is False
         assert data["strength_evidence_available"] is False
-        assert data["strength_evidence_status"] == "awaiting_first_rating_cycle"
+        assert data["strength_evidence_status"] == "active_pool_empty"
 
     def test_fresh_live_daemon_is_active_before_first_rating_cycle(self, client, monkeypatch):
         import epoch_authority
@@ -166,7 +166,55 @@ class TestDaemonStatus:
         assert data["daemon_enabled"] is True
         assert data["process_alive"] is True
         assert data["heartbeat_age_seconds"] == 2.0
-        assert data["strength_evidence_status"] == "awaiting_first_rating_cycle"
+        assert data["strength_evidence_status"] == "active_pool_empty"
+
+    def test_live_daemon_reports_healthy_singleton_idle_state(self, client, monkeypatch):
+        import epoch_authority
+        import server.routes.control as control
+        import server.routes.ratings as ratings
+        from server.state import app_state
+
+        monkeypatch.setattr(app_state, "daemon_enabled", True)
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda **_kwargs: {
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "state": "strict_published",
+                "initialized": True,
+                "active_bots": ["national_v143"],
+            },
+        )
+        monkeypatch.setattr(
+            ratings,
+            "_snapshot",
+            lambda: {
+                "available": False,
+                "reason": "active_pool_singleton",
+                "active_bots": ["national_v143"],
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {
+                "alive": True,
+                "heartbeat_stale": False,
+                "heartbeat_age_sec": 1.0,
+                "activity_state": "waiting_for_second_published_bot",
+                "active_bot_count": 1,
+                "minimum_rating_pool_bots": 2,
+            },
+        )
+
+        data = client.get("/api/daemon/status").json()
+
+        assert data["status"] == "idle"
+        assert data["reason"] == "waiting_for_second_published_bot"
+        assert data["daemon_enabled"] is True
+        assert data["strength_evidence_available"] is False
+        assert data["strength_evidence_status"] == "active_pool_singleton"
+        assert data["strength_evidence_reason"] == "active_pool_singleton"
 
 
 class TestH2H:

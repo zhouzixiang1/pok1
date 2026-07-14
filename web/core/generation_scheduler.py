@@ -61,7 +61,12 @@ class GenerationContext:
     gen_count: int = 0         # legacy alias for current_v; use next_v for post-generation triggers
 
 
-def _bind_prepare_generation_cost_scope(next_v: int, ui=None) -> str:
+def _bind_prepare_generation_cost_scope(
+    next_v: int,
+    ui=None,
+    *,
+    workflow_attempt: int = 1,
+) -> str:
     """Bind cost accounting before any prepare-stage LLM can run."""
 
     from orchestrator_cost_policy import (
@@ -73,7 +78,10 @@ def _bind_prepare_generation_cost_scope(next_v: int, ui=None) -> str:
         runtime_cost_policy,
     )
 
-    workflow_run_id = generation_workflow_id(next_v)
+    workflow_run_id = generation_workflow_id(
+        next_v,
+        attempt=workflow_attempt,
+    )
     scope = activate_generation_cost_scope(workflow_run_id, runtime_cost_policy())
     status = generation_cost_status(scope)
     receipt = scope.receipt(
@@ -768,9 +776,15 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # analysis.  The selected checkpoint below adopts this exact id, so prepare
     # retries, SDK session replacement, and process restart cannot split or
     # leak one generation's bill into another.
+    _workflow_attempt = 1
+    if _planned_next_v == 143 and _abandoned_floor < 143:
+        from evolution_infra import abandoned_version_attempt_count
+
+        _workflow_attempt = abandoned_version_attempt_count(143) + 1
     _prepare_workflow_run_id = _bind_prepare_generation_cost_scope(
         _planned_next_v,
         ui,
+        workflow_attempt=_workflow_attempt,
     )
     _bind_prepare_log_context(current_v, _planned_next_v - 1)
     try:

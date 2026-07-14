@@ -4,6 +4,71 @@ from pathlib import Path
 from types import ModuleType
 
 
+def test_daemon_waits_through_zero_and_one_bot_without_creating_strength(
+    monkeypatch,
+):
+    import elo_daemon
+
+    pools = [[], ["national_v143"], ["national_v143", "national_v144"]]
+    heartbeats = []
+    events = []
+    monkeypatch.setattr(elo_daemon, "running", True)
+    monkeypatch.setattr(elo_daemon, "RATING_POOL_IDLE_POLL_SEC", 0.0)
+    monkeypatch.setattr(
+        elo_daemon,
+        "get_active_bots",
+        lambda: pools.pop(0) if pools else ["national_v143", "national_v144"],
+    )
+    monkeypatch.setattr(
+        elo_daemon,
+        "_write_heartbeat",
+        lambda **kwargs: heartbeats.append(kwargs),
+    )
+    monkeypatch.setattr(
+        elo_daemon,
+        "log_system_event",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    ratings = {}
+
+    active, h2h = elo_daemon._wait_for_minimum_rating_pool(
+        [],
+        ratings,
+        {},
+        {},
+    )
+
+    assert active == ["national_v143", "national_v144"]
+    assert h2h == {}
+    assert set(ratings) == set(active)
+    assert [row["activity_state"] for row in heartbeats] == [
+        "waiting_for_first_published_bot",
+        "waiting_for_first_published_bot",
+        "waiting_for_second_published_bot",
+        "scheduling_matches",
+    ]
+    assert len([args for args, _ in events if args[0] == "daemon.rating_pool_idle"]) == 2
+
+
+def test_daemon_once_exits_cleanly_when_pool_is_not_schedulable(monkeypatch):
+    import elo_daemon
+
+    monkeypatch.setattr(elo_daemon, "running", True)
+    monkeypatch.setattr(elo_daemon, "_write_heartbeat", lambda **_kwargs: None)
+    monkeypatch.setattr(elo_daemon, "log_system_event", lambda *_a, **_k: None)
+
+    active, h2h = elo_daemon._wait_for_minimum_rating_pool(
+        ["national_v143"],
+        {"national_v143": elo_daemon.Glicko2Player()},
+        {},
+        {},
+        once=True,
+    )
+
+    assert active == ["national_v143"]
+    assert h2h == {}
+
+
 def test_pool_break_during_shutdown_is_info_not_error(monkeypatch, caplog):
     import elo_daemon
 

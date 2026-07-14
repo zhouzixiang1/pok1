@@ -7,6 +7,54 @@ import evolution_infra
 import tool_planning
 
 
+def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
+    tmp_path,
+    monkeypatch,
+):
+    from runtime_architecture_policy import build_prepared_capability_snapshot
+    from system_strict_bootstrap import materialize_fresh_candidate
+
+    bots = tmp_path / "bots"
+    source = bots / "national_v142"
+    candidate = bots / "national_v143"
+    bots.mkdir(parents=True)
+    materialize_fresh_candidate(candidate, version=143, final_policy=True)
+    snapshot = build_prepared_capability_snapshot(source, candidate)
+    monkeypatch.setattr(
+        tool_planning,
+        "get_bot_dir",
+        lambda version: bots / f"national_v{version}",
+    )
+
+    assessment = tool_planning._build_generation_architecture_policy(
+        142,
+        prepared_capability_snapshot=snapshot,
+        prepared_dir=candidate,
+        allow_lineage_only_source=True,
+    )
+
+    assert assessment["outcome"] == "passed"
+    assert assessment["capabilities"]["lineage_only"] is True
+    assert assessment["policy"]["source_bot"] == "national_v142"
+    assert assessment["policy"]["source_epoch_compatible"] is False
+    assert assessment["policy"]["effective_baseline_bot"] == "national_v143"
+
+
+def test_missing_normal_parent_cannot_claim_lineage_only_exception(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        tool_planning,
+        "get_bot_dir",
+        lambda version: tmp_path / f"national_v{version}",
+    )
+
+    assessment = tool_planning._build_generation_architecture_policy(143)
+
+    assert assessment["outcome"] == "source_invalid"
+
+
 def test_master_source_probe_retries_same_tool_then_abandons(tmp_path, monkeypatch):
     from prepared_baseline_contract import build_prepared_artifact_contract
     from system_strict_bootstrap import (

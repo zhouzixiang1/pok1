@@ -399,6 +399,16 @@ def load_strict_strength_snapshot(results_dir: Path) -> dict:
         }
     receipt = bundle.get("epoch_reset_receipt") or {}
     active = list(bundle.get("active_bots") or [])
+    if len(active) < 2:
+        return {
+            "available": False,
+            "reason": (
+                "active_pool_empty"
+                if not active
+                else "active_pool_singleton"
+            ),
+            "active_bots": active,
+        }
     manifest = bundle.get("manifest")
     if not isinstance(manifest, dict):
         return {"available": False, "reason": "evaluation_manifest_missing"}
@@ -442,6 +452,17 @@ def load_strict_strength_snapshot(results_dir: Path) -> dict:
     selection_rows = selection.get("rows") if isinstance(selection, dict) else None
     if not isinstance(selection_rows, list):
         return {"available": False, "reason": "evaluation_selection_rows_missing"}
+    admitted_match_rows = _filter_strict_match_rows(
+        match_rows,
+        active_bots=active_set,
+        evaluation_identity_digest=identity,
+    )
+    if not admitted_match_rows:
+        return {
+            "available": False,
+            "reason": "awaiting_first_complete_cycle",
+            "active_bots": active,
+        }
     return {
         "available": True,
         "epoch": receipt.get("epoch"),
@@ -455,11 +476,7 @@ def load_strict_strength_snapshot(results_dir: Path) -> dict:
         "daemon_stats": bundle.get("daemon_stats") or {},
         "selection_rows": [dict(row) for row in selection_rows if isinstance(row, dict)],
         "rating_history": rating_history,
-        "match_history": _filter_strict_match_rows(
-            match_rows,
-            active_bots=active_set,
-            evaluation_identity_digest=identity,
-        ),
+        "match_history": admitted_match_rows,
     }
 
 

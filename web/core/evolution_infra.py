@@ -2532,16 +2532,28 @@ def find_abandoned_version_floor():
     authority; allowing it to reserve v143..v167 is how stale v155 state made
     status and prepare incorrectly announce v168.
     """
+    initialization = {}
     try:
         from epoch_authority import policy_epoch_initialization
 
-        if not policy_epoch_initialization()["initialized"]:
+        initialization = policy_epoch_initialization()
+        if not initialization["initialized"]:
             return 0
     except Exception as exc:
         # Failure to prove epoch ownership must not promote mutable legacy data.
         log.warning("policy epoch initialization unavailable; abandoned floor ignored: %s", exc)
         return 0
     floor = 0
+    # v143 is a reserved first-publication label, not a published identity.
+    # Before the strict pool exists, failed pre-publication attempts retain
+    # their audit rows but do not burn the only label accepted by the signed
+    # first-strict control.  Every retry receives a distinct durable workflow
+    # identity (see abandoned_version_attempt_count), so fenced effects from a
+    # prior attempt cannot be resumed.
+    retryable_first_strict = (
+        initialization.get("state") == "fresh_bootstrap_ready"
+        and initialization.get("strict_published") is False
+    )
     try:
         if ABANDONED_VERSIONS_FILE.exists():
             with open(ABANDONED_VERSIONS_FILE, "r", encoding="utf-8") as f:
@@ -2552,6 +2564,8 @@ def find_abandoned_version_floor():
                     try:
                         version = json.loads(line).get("v")
                     except (json.JSONDecodeError, TypeError):
+                        continue
+                    if retryable_first_strict and version == 143:
                         continue
                     if isinstance(version, int) and version > floor:
                         floor = version
@@ -2570,6 +2584,31 @@ def find_abandoned_version_floor():
         except Exception:
             pass
     return floor
+
+
+def abandoned_version_attempt_count(version):
+    """Count durable pre-publication attempts for one version label.
+
+    This is intentionally a count, not numbering authority.  It is used only
+    to allocate a fresh workflow/effect fence when the reserved v143 bootstrap
+    label must be retried before any strict bot has been published.
+    """
+
+    target = int(version)
+    count = 0
+    try:
+        if ABANDONED_VERSIONS_FILE.exists():
+            with open(ABANDONED_VERSIONS_FILE, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if isinstance(row, dict) and row.get("v") == target:
+                        count += 1
+    except OSError:
+        return 0
+    return count
 
 
 def compute_next_generation_v(current_v=None, max_committed_v=None, abandoned_floor=None):

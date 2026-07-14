@@ -22,8 +22,7 @@ router = APIRouter(prefix="/api", tags=["ratings"])
 
 
 def _snapshot() -> dict:
-    snapshot = load_strict_strength_snapshot(RESULTS_DIR)
-    return snapshot if snapshot.get("available") is True else {}
+    return load_strict_strength_snapshot(RESULTS_DIR)
 
 
 def strict_daemon_status(snapshot: dict | None = None) -> dict:
@@ -69,7 +68,11 @@ def strict_daemon_status(snapshot: dict | None = None) -> dict:
     process_alive = bool(health.get("alive"))
     heartbeat_stale = bool(health.get("heartbeat_stale"))
     effective_alive = process_alive and not heartbeat_stale
-    if effective_alive:
+    activity_state = str(health.get("activity_state") or "")
+    if effective_alive and activity_state.startswith("waiting_for_"):
+        status = "idle"
+        reason = activity_state
+    elif effective_alive:
         status = "active"
         reason = None
     elif process_alive:
@@ -90,7 +93,16 @@ def strict_daemon_status(snapshot: dict | None = None) -> dict:
             evidence_age = round(time.time() - cycle_manifest.stat().st_mtime, 0)
         except OSError:
             evidence_age = -1
-    evidence_available = bool(snapshot)
+    evidence_available = snapshot.get("available") is True
+    active_count = len(epoch.get("active_bots") or [])
+    if active_count == 0:
+        evidence_status = "active_pool_empty"
+    elif active_count == 1:
+        evidence_status = "active_pool_singleton"
+    elif evidence_available:
+        evidence_status = "current_evaluation_cycle"
+    else:
+        evidence_status = "awaiting_first_complete_cycle"
     payload = {
         "status": status,
         "reason": reason,
@@ -101,11 +113,13 @@ def strict_daemon_status(snapshot: dict | None = None) -> dict:
         "process_alive": process_alive,
         "heartbeat_stale": heartbeat_stale,
         "heartbeat_age_seconds": health.get("heartbeat_age_sec"),
+        "activity_state": activity_state or None,
+        "active_bot_count": active_count,
+        "minimum_rating_pool_bots": health.get("minimum_rating_pool_bots", 2),
         "strength_evidence_available": evidence_available,
-        "strength_evidence_status": (
-            "current_evaluation_cycle"
-            if evidence_available
-            else "awaiting_first_rating_cycle"
+        "strength_evidence_status": evidence_status,
+        "strength_evidence_reason": (
+            None if evidence_available else snapshot.get("reason")
         ),
     }
     return payload
@@ -113,7 +127,8 @@ def strict_daemon_status(snapshot: dict | None = None) -> dict:
 
 @router.get("/ratings")
 async def get_ratings():
-    return list(_snapshot().get("selection_rows") or [])
+    snapshot = _snapshot()
+    return list(snapshot.get("selection_rows") or []) if snapshot.get("available") else []
 
 
 @router.get("/ratings/{bot_name}")

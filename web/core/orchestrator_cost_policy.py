@@ -71,20 +71,22 @@ def _implementation_sha256() -> str:
         return "unavailable"
 
 
-def generation_workflow_id(next_v: int) -> str:
+def generation_workflow_id(next_v: int, *, attempt: int = 1) -> str:
     """Return the one durable identity allocated before prepare-stage LLM work.
 
-    National bot version numbers are never reused: committed, tagged, and
-    centrally abandoned versions all raise the next-version floor.  Binding the
-    workflow identity to that unique version therefore lets prepare analysis,
-    checkpointed work, disposable SDK sessions, and process restarts share the
-    same cost scope without a second mutable identity registry.
+    Normal national bot version numbers are never reused.  The sole exception
+    is the reserved, still-unpublished v143 bootstrap label: a failed attempt
+    must retry v143 because the first-strict control cannot certify v144.  The
+    explicit attempt suffix gives each such retry a new billing/effect fence.
     """
 
     version = int(next_v)
     if version <= 0:
         raise ValueError("next_v must be positive")
-    return f"generation:{version}:workflow-v1"
+    workflow_attempt = int(attempt)
+    if workflow_attempt <= 0:
+        raise ValueError("attempt must be positive")
+    return f"generation:{version}:workflow-v{workflow_attempt}"
 
 
 def sdk_result_event_id(result: object, *, source: str, attempt: int = 0) -> str:

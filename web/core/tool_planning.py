@@ -1543,6 +1543,8 @@ def _build_generation_architecture_policy(
     source_v: int,
     *,
     prepared_capability_snapshot: dict | None = None,
+    prepared_dir: Path | None = None,
+    allow_lineage_only_source: bool = False,
 ) -> dict:
     """Assess and build the system-owned policy for a native source artifact."""
 
@@ -1553,6 +1555,70 @@ def _build_generation_architecture_policy(
         return {"outcome": "skipped", "policy": None, "capabilities": None}
     source_dir = get_bot_dir(source_v)
     if not (source_dir / "national_bot.py").exists():
+        # Fresh v143 deliberately has no executable v142 parent.  Its only
+        # baseline is the just-materialized, digest-bound strict candidate.
+        # Keep this exception explicit and live-validated so a normal missing
+        # parent can never be laundered through an arbitrary snapshot.
+        if allow_lineage_only_source and prepared_capability_snapshot is not None:
+            from runtime_architecture_policy import (
+                build_architecture_policy,
+                validate_prepared_capability_snapshot,
+            )
+
+            target_dir = Path(prepared_dir) if prepared_dir is not None else None
+            snapshot_errors = validate_prepared_capability_snapshot(
+                prepared_capability_snapshot,
+                parent_bot_dir=source_dir,
+                prepared_bot_dir=target_dir,
+            )
+            if prepared_capability_snapshot.get("parent_bot") != source_dir.name:
+                snapshot_errors.append("lineage_only_parent_identity_mismatch")
+            if prepared_capability_snapshot.get("parent_epoch_compatible") is not False:
+                snapshot_errors.append("lineage_only_parent_must_be_incompatible")
+            if target_dir is None or prepared_capability_snapshot.get(
+                "prepared_bot"
+            ) != target_dir.name:
+                snapshot_errors.append("lineage_only_prepared_identity_mismatch")
+            if snapshot_errors:
+                return {
+                    "outcome": "infrastructure_failure",
+                    "policy": None,
+                    "capabilities": None,
+                    "infrastructure_failures": [{
+                        "component": "fresh_bootstrap_architecture_policy",
+                        "failure_class": "internal_infrastructure",
+                        "issues": list(dict.fromkeys(snapshot_errors))[:20],
+                    }],
+                }
+            try:
+                policy = build_architecture_policy(
+                    source_dir,
+                    prepared_capability_snapshot=prepared_capability_snapshot,
+                )
+            except Exception as exc:
+                return {
+                    "outcome": "infrastructure_failure",
+                    "policy": None,
+                    "capabilities": None,
+                    "infrastructure_failures": [{
+                        "component": "fresh_bootstrap_architecture_policy",
+                        "failure_class": "internal_infrastructure",
+                        "issues": [f"{type(exc).__name__}: {str(exc)[:300]}"],
+                    }],
+                }
+            return {
+                "outcome": "passed",
+                "policy": policy,
+                "capabilities": {
+                    "conclusive": True,
+                    "ok": True,
+                    "outcome": "lineage_only",
+                    "lineage_only": True,
+                    "checks": [],
+                    "checks_by_id": {},
+                    "infrastructure_failures": [],
+                },
+            }
         return {
             "outcome": "source_invalid",
             "policy": None,
@@ -2201,6 +2267,11 @@ async def run_master(args):
             architecture_assessment = _build_generation_architecture_policy(
                 source_v,
                 prepared_capability_snapshot=prepared_capability_snapshot,
+                prepared_dir=get_bot_dir(next_v),
+                allow_lineage_only_source=(
+                    protocol_bootstrap_receipt.get("mode")
+                    == "fresh_national_policy_bootstrap"
+                ),
             )
         except Exception as exc:
             architecture_assessment = {

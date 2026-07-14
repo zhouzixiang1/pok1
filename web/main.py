@@ -71,6 +71,15 @@ def main():
     parser.add_argument("--dev", action="store_true", help="Enable auto-reload")
     args = parser.parse_args()
 
+    # The autonomous checkout is publication-authoritative.  Directly using
+    # the documented ``python web/main.py`` entrypoint there must retain the
+    # same push-required semantics as the restart helper; otherwise commit_bot
+    # can create a local-only tag while the dashboard claims publication.
+    if PROJECT_ROOT.name == ".evolution_pok":
+        os.environ.setdefault("POK_EVOLUTION_RUNTIME", "1")
+        os.environ.setdefault("POK_REQUIRE_EVOLUTION_PUSH", "1")
+        os.environ.setdefault("EVOLUTION_GIT_PUSH", "1")
+
     import uvicorn
 
     if args.view_only:
