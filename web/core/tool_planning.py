@@ -1831,6 +1831,13 @@ async def run_master(args):
         else None
     )
     protocol_bootstrap_no_strength = isinstance(protocol_bootstrap_receipt, dict)
+    from prompt_evidence import resolve_prompt_evidence
+
+    prompt_evidence = resolve_prompt_evidence(
+        checkpoint=_master_entry_ckpt,
+        next_v=int(next_v),
+        source_v=int(source_v),
+    )
     _master_infra, _master_infra_error = _owned_infrastructure_failure(
         _master_entry_ckpt,
         "run_master",
@@ -2968,6 +2975,7 @@ async def run_master(args):
                 if isinstance(protocol_bootstrap_receipt, dict)
                 else {}
             ),
+            prompt_evidence=prompt_evidence,
         )
     except Exception as exc:
         from agent_master import MasterInfrastructureError
@@ -3322,6 +3330,7 @@ async def run_master(args):
                         if isinstance(protocol_bootstrap_receipt, dict)
                         else {}
                     ),
+                    prompt_evidence=prompt_evidence,
                 )
             except Exception as exc:
                 from agent_master import MasterInfrastructureError
@@ -9161,6 +9170,19 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             next_v,
             source_v,
         )
+    from prompt_evidence import (
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    prompt_evidence = resolve_prompt_evidence(
+        checkpoint=ckpt,
+        next_v=int(next_v),
+        source_v=int(source_v),
+    )
+    protocol_bootstrap_no_strength = is_protocol_bootstrap_prompt_evidence(
+        prompt_evidence
+    )
     if (
         not str(ckpt.get("workflow_run_id") or "").strip()
         or int(ckpt.get("checkpoint_revision") or 0) < 1
@@ -10131,7 +10153,11 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         # for the frozen work item. Reopening live cross-generation evidence on
         # recovery would let an unrelated later failure rewrite the same
         # activity input.
-        if not checkpoint_has_frozen_preparation and _h6_wf_file.exists():
+        if (
+            not protocol_bootstrap_no_strength
+            and not checkpoint_has_frozen_preparation
+            and _h6_wf_file.exists()
+        ):
             try:
                 from evolution_infra import locked_file
                 with locked_file(_h6_wf_file, "r", encoding="utf-8") as f:
@@ -10806,8 +10832,15 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             })
         from agent_workers import build_worker_execution_context
 
-        frozen_worker_execution_context = build_worker_execution_context()
-        frozen_exhausted_keywords = _extract_exhausted_keywords()
+        frozen_worker_execution_context = build_worker_execution_context(
+            prompt_evidence=prompt_evidence,
+            checkpoint=ckpt,
+        )
+        frozen_exhausted_keywords = (
+            []
+            if protocol_bootstrap_no_strength
+            else _extract_exhausted_keywords()
+        )
         frozen_preparation_input = {
             "schema_version": 1,
             "tasks": deepcopy(tasks),
@@ -10888,7 +10921,9 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         else None
     )
     exhausted_keywords = (
-        list(frozen_worker_input.get("exhausted_keywords") or [])
+        []
+        if protocol_bootstrap_no_strength
+        else list(frozen_worker_input.get("exhausted_keywords") or [])
         if isinstance(frozen_worker_input, dict)
         else _extract_exhausted_keywords()
     )
@@ -11114,7 +11149,12 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
 
     from agent_workers import build_worker_execution_context
 
-    if durable_worker_resume:
+    if protocol_bootstrap_no_strength:
+        worker_execution_context = build_worker_execution_context(
+            prompt_evidence=prompt_evidence,
+            checkpoint=ckpt,
+        )
+    elif durable_worker_resume:
         worker_execution_context = deepcopy(
             durable_worker_envelope.get("worker_execution_context")
         )
@@ -11123,7 +11163,10 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             frozen_worker_input.get("worker_execution_context") or {}
         )
     else:
-        worker_execution_context = build_worker_execution_context()
+        worker_execution_context = build_worker_execution_context(
+            prompt_evidence=prompt_evidence,
+            checkpoint=ckpt,
+        )
 
     task_digest = _worker_execution_task_digest(
         tasks,

@@ -1836,7 +1836,13 @@ async def run_archivist(args):
     experience_touched = False
     try:
         from experience_archivist import _run_archivist_analysis
-        llm_result = await _run_archivist_analysis(v, source_v, snapshot, ui)
+        llm_result = await _run_archivist_analysis(
+            v,
+            source_v,
+            snapshot,
+            ui,
+            prompt_evidence=snapshot.get("prompt_evidence"),
+        )
         # Append LLM notes to archive snapshot
         if llm_result and archive_path.exists():
             snapshot["archivist_notes"] = llm_result

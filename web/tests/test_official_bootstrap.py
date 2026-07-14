@@ -352,7 +352,7 @@ def test_bootstrap_authority_files_are_exact_evaluation_contract_inputs():
     from official_job_envelope import JOB_ENVELOPE_SCHEMA_VERSION
 
     profile = load_execution_profile()
-    assert CONTRACT_VERSION == 11
+    assert CONTRACT_VERSION == 12
     assert JOB_SCHEMA_VERSION == 4
     assert JOB_ENVELOPE_SCHEMA_VERSION == 3
     assert profile["schema_version"] == 3

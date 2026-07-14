@@ -342,7 +342,7 @@ def _extract_exhausted_block():
     return "\n\n".join(blocks) + "\n\n" if blocks else ""
 
 
-def build_worker_execution_context():
+def build_worker_execution_context(*, prompt_evidence=None, checkpoint=None):
     """Freeze live prompt additions for one outer Worker transaction.
 
     Infrastructure retries must replay the prompt that actually reached the
@@ -350,10 +350,32 @@ def build_worker_execution_context():
     The caller persists this bounded object inside the identity-bound
     infrastructure overlay when transport fails.
     """
+    from prompt_evidence import (
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    if checkpoint is None and prompt_evidence is None:
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+
+            checkpoint = read_pipeline_checkpoint()
+        except Exception:
+            checkpoint = None
+    resolved_evidence = resolve_prompt_evidence(
+        envelope=prompt_evidence,
+        checkpoint=checkpoint,
+    )
+    bootstrap = is_protocol_bootstrap_prompt_evidence(resolved_evidence)
     return {
         "schema_version": 1,
-        "exhausted_block": _extract_exhausted_block(),
-        "recent_failures": deepcopy_jsonable(_load_recent_failures(5)),
+        "exhausted_block": "" if bootstrap else _extract_exhausted_block(),
+        "recent_failures": (
+            [] if bootstrap else deepcopy_jsonable(_load_recent_failures(5))
+        ),
+        "prompt_evidence": (
+            deepcopy_jsonable(resolved_evidence) if bootstrap else {}
+        ),
     }
 
 
@@ -1033,12 +1055,27 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     frozen_context = (
         worker_execution_context
         if isinstance(worker_execution_context, dict)
-        else None
+        else build_worker_execution_context()
     )
+    from prompt_evidence import (
+        bootstrap_prompt_policy_text,
+        is_protocol_bootstrap_prompt_evidence,
+    )
+
+    worker_prompt_evidence = frozen_context.get("prompt_evidence") or None
+    protocol_bootstrap_no_strength = is_protocol_bootstrap_prompt_evidence(
+        worker_prompt_evidence
+    )
+    if protocol_bootstrap_no_strength:
+        base_worker_prompt = (
+            bootstrap_prompt_policy_text(worker_prompt_evidence)
+            + "\n\n"
+            + base_worker_prompt
+        )
     exhausted_block = (
         str(frozen_context.get("exhausted_block") or "")
         if frozen_context is not None
-        else _extract_exhausted_block()
+        else ""
     )
     if exhausted_block:
         base_worker_prompt = exhausted_block + base_worker_prompt
@@ -1047,7 +1084,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     recent_failures = (
         deepcopy_jsonable(frozen_context.get("recent_failures") or [])
         if frozen_context is not None
-        else _load_recent_failures(5)
+        else []
     )
     if recent_failures:
         failure_lines = ["# Recent Worker Failures (avoid repeating these mistakes):"]
@@ -1160,6 +1197,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 f"WORKER {w_id} ({role})", worker_log_file,
                 tools=["Bash", "Read", "Edit"],
                 allowed_write_dir=allowed_write_scope,
+                deny_live_prompt_evidence=protocol_bootstrap_no_strength,
             ))
             await asyncio.wait_for(llm_task, timeout=worker_timeout)
         except (asyncio.TimeoutError, Exception) as exc:

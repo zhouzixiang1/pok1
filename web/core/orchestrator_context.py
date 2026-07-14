@@ -472,9 +472,32 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         get_active_bots, load_ratings,
         get_bot_dir, git_has_tag, _load_recent_failures, _git,
         find_current_v, find_max_committed_v, find_abandoned_version_floor,
-        compute_next_generation_v,
+        compute_next_generation_v, read_pipeline_checkpoint,
     )
     from glicko2 import Glicko2Player
+    from prompt_evidence import (
+        bootstrap_prompt_policy_text,
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    try:
+        checkpoint = read_pipeline_checkpoint() or {}
+    except Exception:
+        checkpoint = {}
+    prompt_evidence = resolve_prompt_evidence(
+        envelope=(
+            getattr(gen_ctx, "prompt_evidence", None)
+            if gen_ctx is not None
+            else None
+        ),
+        checkpoint=checkpoint,
+        next_v=(gen_ctx.next_v if gen_ctx is not None else None),
+        source_v=(gen_ctx.source_v if gen_ctx is not None else None),
+    )
+    protocol_bootstrap_no_strength = is_protocol_bootstrap_prompt_evidence(
+        prompt_evidence
+    )
 
     # If GenerationContext is provided, build streamlined context
     if gen_ctx is not None:
@@ -504,27 +527,34 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("  run_crossover(parent_a, parent_b, target_v) — merge two parent bots (alternative to master+workers)")
         lines.append("  run_literature_probe(source_v, next_v, h2h_weakness, stagnation_info) — web-search ONE codable strategy hypothesis for the bot's biggest H2H weakness (governance-gated: auto-skips on cooldown). MANDATORY when stagnation analysis shows is_stagnant:true.")
 
-        if gen_ctx.stagnation_info:
+        if protocol_bootstrap_no_strength:
+            lines.append("\n" + bootstrap_prompt_policy_text(prompt_evidence))
+        elif gen_ctx.stagnation_info:
             lines.append(f"\nStagnation analysis:\n{gen_ctx.stagnation_info}")
-        if gen_ctx.match_analysis:
+        if not protocol_bootstrap_no_strength and gen_ctx.match_analysis:
             lines.append(f"\nMatch analysis:\n{gen_ctx.match_analysis}")
-        if gen_ctx.replay_spotlight:
+        if not protocol_bootstrap_no_strength and gen_ctx.replay_spotlight:
             lines.append(f"\nReplay spotlight:\n{gen_ctx.replay_spotlight}")
-        if gen_ctx.performance_verification:
+        if not protocol_bootstrap_no_strength and gen_ctx.performance_verification:
             lines.append(f"\nPerformance verification:\n{gen_ctx.performance_verification}")
 
         # Eval round summary (deterministic cross-generation performance data)
-        try:
-            from eval_rounds import EvalRoundManager
-            _erm = EvalRoundManager()
-            source_bot_name = bot_name(gen_ctx.source_v)
-            eval_summary = _erm.get_last_round_summary(source_bot_name)
-            if eval_summary:
-                lines.append(f"\n{eval_summary}")
-        except Exception:
-            pass
+        if not protocol_bootstrap_no_strength:
+            try:
+                from eval_rounds import EvalRoundManager
+                _erm = EvalRoundManager()
+                source_bot_name = bot_name(gen_ctx.source_v)
+                eval_summary = _erm.get_last_round_summary(source_bot_name)
+                if eval_summary:
+                    lines.append(f"\n{eval_summary}")
+            except Exception:
+                pass
         # fix-9: inject regression guardian insights into gen_ctx Master context
-        _guardian = _load_guardian_insights(max_entries=3)
+        _guardian = (
+            ""
+            if protocol_bootstrap_no_strength
+            else _load_guardian_insights(max_entries=3)
+        )
         if _guardian:
             lines.append(_guardian)
         if one_gen:
@@ -532,17 +562,12 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         else:
             lines.append("MODE: Execute this generation using the pipeline tools.")
         # Pipeline checkpoint still relevant for resume
-        try:
-            from evolution_core import read_pipeline_checkpoint
-            checkpoint = read_pipeline_checkpoint()
-            if checkpoint:
-                _format_checkpoint_info(checkpoint, lines)
-        except Exception:
-            pass
+        if checkpoint:
+            _format_checkpoint_info(checkpoint, lines)
         return "\n".join(lines)
 
     active_bots = get_active_bots()
-    ratings = load_ratings()
+    ratings = {} if protocol_bootstrap_no_strength else load_ratings()
     current_v = find_current_v()
     max_committed_v = find_max_committed_v()
     abandoned_floor = find_abandoned_version_floor()
@@ -567,7 +592,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
 
     # Current bot action stats (fold/call/raise frequencies by street)
     bot_action_stats_file = RESULTS_DIR / "bot_action_stats.json"
-    if bot_action_stats_file.exists():
+    if not protocol_bootstrap_no_strength and bot_action_stats_file.exists():
         try:
             with locked_file(bot_action_stats_file, "r") as f:
                 action_stats = json.load(f)
@@ -625,50 +650,52 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         )
 
     # Recent completed generations (from git tags)
-    try:
-        tag_output = _git("tag", "-l", bot_tag_glob(), "--sort=-version:refname", check=False)
-        recent_tags = [t.strip() for t in tag_output.splitlines() if t.strip()][:5]
-        if recent_tags:
-            lines.append(f"Recent completed gens: {', '.join(recent_tags)}")
-    except Exception:
-        pass
+    if not protocol_bootstrap_no_strength:
+        try:
+            tag_output = _git("tag", "-l", bot_tag_glob(), "--sort=-version:refname", check=False)
+            recent_tags = [t.strip() for t in tag_output.splitlines() if t.strip()][:5]
+            if recent_tags:
+                lines.append(f"Recent completed gens: {', '.join(recent_tags)}")
+        except Exception:
+            pass
 
     # Recent worker failures
-    try:
-        recent_failures = _load_recent_failures(3)
-        if recent_failures:
-            lines.append("Recent worker failures (last 3):")
-            for f in recent_failures:
-                lines.append(f"  - Gen {f['gen']} Worker {f['worker_id']} ({f.get('role', 'unknown')}): {f['error'][:120]}")
-    except Exception:
-        pass
+    if not protocol_bootstrap_no_strength:
+        try:
+            recent_failures = _load_recent_failures(3)
+            if recent_failures:
+                lines.append("Recent worker failures (last 3):")
+                for f in recent_failures:
+                    lines.append(f"  - Gen {f['gen']} Worker {f['worker_id']} ({f.get('role', 'unknown')}): {f['error'][:120]}")
+        except Exception:
+            pass
 
     # Pipeline checkpoint — tell Orchestrator exactly where a killed cycle left off
-    try:
-        from evolution_core import read_pipeline_checkpoint
-        checkpoint = read_pipeline_checkpoint()
-        if checkpoint:
-            _format_checkpoint_info(checkpoint, lines)
-    except Exception:
-        pass
+    if checkpoint:
+        _format_checkpoint_info(checkpoint, lines)
 
     # Environment anomaly detection
     anomalies = []
     if next_dir.exists() and not (next_dir / ".completed").exists():
         anomalies.append("incomplete bot directory")
-    try:
-        from evolution_core import _load_recent_failures
-        if _load_recent_failures(1):
-            anomalies.append("recent worker failures")
-    except Exception:
-        pass
+    if not protocol_bootstrap_no_strength:
+        try:
+            from evolution_core import _load_recent_failures
+            if _load_recent_failures(1):
+                anomalies.append("recent worker failures")
+        except Exception:
+            pass
     if anomalies:
         lines.append(
             f"ENVIRONMENT ANOMALIES DETECTED: {', '.join(anomalies)}."
         )
 
     # fix-9: inject regression guardian insights into non-gen_ctx Master context
-    _guardian = _load_guardian_insights(max_entries=3)
+    _guardian = (
+        ""
+        if protocol_bootstrap_no_strength
+        else _load_guardian_insights(max_entries=3)
+    )
     if _guardian:
         lines.append(_guardian)
 

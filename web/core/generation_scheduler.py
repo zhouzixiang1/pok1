@@ -38,6 +38,11 @@ POST_CLEANUP_EXPERIENCE_TIMEOUT = int(os.environ.get("POK_POST_CLEANUP_EXPERIENC
 _probe_running = threading.Event()
 
 
+def _archive_version_sort_key(path: Path) -> int:
+    """Return the numeric vN archive identity (never lexicographic order)."""
+    return parse_bot_version(Path(path).stem) or -1
+
+
 def _save_committed_bot_fingerprint(committed_v: int) -> str:
     """Compute and persist the behavior fingerprint for a committed bot."""
     from behavior_diversity import compute_decision_fingerprint, save_fingerprint
@@ -87,6 +92,9 @@ class GenerationContext:
     replay_spotlight: str = ""
     gen_count: int = 0         # legacy alias for current_v; use next_v for post-generation triggers
     battle_experience: str = ""
+    # Digest-bound system evidence policy.  Empty for ordinary generations;
+    # protocol bootstrap carries the no-history envelope through post-cleanup.
+    prompt_evidence: dict = field(default_factory=dict)
 
 
 def _bind_prepare_generation_cost_scope(next_v: int, ui=None) -> str:
@@ -523,6 +531,7 @@ def _prepare_protocol_bootstrap_generation(
     from evolution_infra import write_pipeline_checkpoint
     from master_context_contract import build_master_context
     from national_protocol_quarantine import select_protocol_bootstrap_source
+    from prompt_evidence import build_protocol_bootstrap_prompt_evidence
 
     selection = select_protocol_bootstrap_source(active_bots, force_refresh=True)
     if not selection.get("available"):
@@ -574,12 +583,18 @@ def _prepare_protocol_bootstrap_generation(
             f"receipt={receipt['receipt_digest']}"
         ),
     )
+    prompt_evidence = build_protocol_bootstrap_prompt_evidence(
+        next_v=next_v,
+        source_v=source_v,
+        protocol_bootstrap_receipt=receipt,
+    )
     ok = write_pipeline_checkpoint(
         next_v,
         source_v,
         "selected",
         audit_context={
             "protocol_bootstrap": receipt,
+            "prompt_evidence": prompt_evidence,
             "selection": {
                 "strategy": strategy,
                 "current_v": current_v,
@@ -628,6 +643,7 @@ def _prepare_protocol_bootstrap_generation(
         replay_spotlight="",
         gen_count=current_v,
         battle_experience="",
+        prompt_evidence=prompt_evidence,
     )
 
 
@@ -961,7 +977,11 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         from evolution_infra import RESULTS_DIR
         archive_dir = RESULTS_DIR / "archive"
         if archive_dir.exists():
-            archives = sorted(archive_dir.glob("v*.json"), reverse=True)
+            archives = sorted(
+                archive_dir.glob("v*.json"),
+                key=_archive_version_sort_key,
+                reverse=True,
+            )
             if archives:
                 latest = json.loads(archives[0].read_text())
                 critic_data = latest.get("critic_data", {})
@@ -2811,6 +2831,12 @@ def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[
 async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     """Phase 3: Idempotent post-generation cleanup."""
     from evolution_infra import MAX_ACTIVE_BOTS, get_active_bots, git_has_tag
+    from prompt_evidence import is_protocol_bootstrap_prompt_evidence
+
+    prompt_evidence = getattr(ctx, "prompt_evidence", None) or None
+    protocol_bootstrap_no_strength = is_protocol_bootstrap_prompt_evidence(
+        prompt_evidence
+    )
 
     cleanup_started = time.time()
 
@@ -2901,9 +2927,13 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         return
 
     # Experience pool consolidation (every 3 generations, or when too many unconsolidated entries)
-    should_consolidate = ctx.next_v > 0 and ctx.next_v % 3 == 0
+    should_consolidate = (
+        not protocol_bootstrap_no_strength
+        and ctx.next_v > 0
+        and ctx.next_v % 3 == 0
+    )
     consolidation_reason = "multiple_of_3" if should_consolidate else ""
-    if not should_consolidate:
+    if not should_consolidate and not protocol_bootstrap_no_strength:
         # Also trigger when RECENT_LESSONS has too many entries (prevents stale/contradictory data)
         from evolution_infra import EXPERIENCE_FILE
         if EXPERIENCE_FILE.exists():
@@ -2963,7 +2993,11 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
                 },
             )
             await asyncio.wait_for(
-                _consolidate_experience_pool(ui, exhausted_directions=exhausted_dirs),
+                _consolidate_experience_pool(
+                    ui,
+                    exhausted_directions=exhausted_dirs,
+                    prompt_evidence=prompt_evidence,
+                ),
                 timeout=POST_CLEANUP_EXPERIENCE_TIMEOUT,
             )
             log_system_event(

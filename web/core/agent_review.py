@@ -23,7 +23,14 @@ from evolution_infra import (
 )
 
 
-async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=None):
+async def _run_critic(
+    next_v,
+    source_v,
+    master_plan_str,
+    ui,
+    prev_critic_result=None,
+    prompt_evidence=None,
+):
     """Poker Strategy Critic — independently scores the strategic value of worker changes.
 
     Separate from the Reviewer (which checks code correctness and role boundaries).
@@ -33,6 +40,31 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
     Returns ``llm_failed`` on role/tooling failure so the caller can retry the
     same gate without fabricating a strategic rejection.
     """
+    from prompt_evidence import (
+        bootstrap_prompt_policy_text,
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    if prompt_evidence is None:
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+
+            checkpoint = read_pipeline_checkpoint()
+        except Exception:
+            checkpoint = None
+    else:
+        checkpoint = None
+    prompt_evidence = resolve_prompt_evidence(
+        envelope=prompt_evidence,
+        checkpoint=checkpoint,
+        next_v=int(next_v),
+        source_v=int(source_v),
+    )
+    protocol_bootstrap_no_strength = is_protocol_bootstrap_prompt_evidence(
+        prompt_evidence
+    )
+
     critic_prompt_path = PROMPTS_DIR / "critic_prompt.md"
     if not critic_prompt_path.exists():
         ui.log_history("Critic prompt not found; critic verdict is unavailable.", "error")
@@ -48,21 +80,46 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
         "version": str(next_v),
         "parent_version": str(source_v),
     })
-    try:
-        from evidence_snapshot import h2h_snapshot_contract_text
-
-        critic_prompt += "\n\n" + h2h_snapshot_contract_text(
-            next_v,
-            source_v=source_v,
-            include_json=True,
-            max_chars=12000,
+    if protocol_bootstrap_no_strength:
+        critic_prompt = (
+            bootstrap_prompt_policy_text(prompt_evidence)
+            + "\n\nBOOTSTRAP SCORING OVERRIDE: judge the current candidate diff and "
+            "typed protocol/runtime contracts only. Historical H2H, replay, "
+            "experience, calibration, and certification prose cannot be required "
+            "or cited. Keep h2h_weaknesses and experience_pool_refs empty; diff "
+            "evidence is sufficient for an advisory score. Do not inspect git "
+            "history or web/core/experience_pool.md.\n\n"
+            + critic_prompt
         )
-    except Exception as exc:
+        critic_prompt = critic_prompt.replace(
+            f"4. Check recent history: `git log --oneline --max-count=20 national-bot-v{source_v}..HEAD`",
+            "4. Protocol bootstrap: do not inspect historical git commits.",
+        ).replace(
+            "5. Read `web/core/experience_pool.md` for `[POSSIBLY EXHAUSTED]` tags",
+            "5. Protocol bootstrap: the experience pool is intentionally unavailable.",
+        )
+    if protocol_bootstrap_no_strength:
         critic_prompt += (
             "\n\n# Stable H2H Snapshot Contract\n"
-            "The generation snapshot is unavailable. Treat all matchup strength "
-            f"claims as unknown; do not read live H2H files. ({type(exc).__name__})\n"
+            "Protocol bootstrap intentionally has no strength snapshot. Treat "
+            "all matchup claims as unknown and do not read live H2H files.\n"
         )
+    else:
+        try:
+            from evidence_snapshot import h2h_snapshot_contract_text
+
+            critic_prompt += "\n\n" + h2h_snapshot_contract_text(
+                next_v,
+                source_v=source_v,
+                include_json=True,
+                max_chars=12000,
+            )
+        except Exception as exc:
+            critic_prompt += (
+                "\n\n# Stable H2H Snapshot Contract\n"
+                "The generation snapshot is unavailable. Treat all matchup strength "
+                f"claims as unknown; do not read live H2H files. ({type(exc).__name__})\n"
+            )
 
     if prev_critic_result:
         prev_score = prev_critic_result.get("score", 0)
@@ -79,8 +136,11 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
 
     # --- Meta-3: Critic Bias Calibration ---
     try:
-        calibration_file = RESULTS_DIR / "critic_calibration.jsonl"
-        if calibration_file.exists():
+        if protocol_bootstrap_no_strength:
+            calibration_file = None
+        else:
+            calibration_file = RESULTS_DIR / "critic_calibration.jsonl"
+        if calibration_file is not None and calibration_file.exists():
             lines = calibration_file.read_text().strip().split('\n')
             all_rows = [json.loads(l) for l in lines[-10:] if l.strip()]
             # fix-2: skip rows where rating_delta is None (unreconciled).
@@ -118,6 +178,7 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
         output, _, _ = await run_claude_query(
             critic_prompt, [], ui, "STRATEGY CRITIC", log_file,
             tools=["Bash", "Read"],
+            deny_live_prompt_evidence=protocol_bootstrap_no_strength,
         )
         from llm_query import parse_json_output_with_mode
         data, failure_mode = parse_json_output_with_mode(output)

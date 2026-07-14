@@ -1043,6 +1043,17 @@ _MASTER_LIVE_EVIDENCE_FILENAMES = (
     "behavior_archive.json",
     "bot_action_stats.json",
     "bot_action_stats_per_opp.json",
+    "experience_pool.md",
+    "worker_failures.jsonl",
+    "regression_guardian.jsonl",
+    "spotlight_manifest.json",
+    "battle_evidence.jsonl",
+    "battle_pending_summaries.jsonl",
+    "battle_lessons.jsonl",
+    "battle_experience.md",
+    "exploitability.json",
+    "critic_calibration.jsonl",
+    "cross_gen_exhausted_history.jsonl",
 )
 
 
@@ -1050,6 +1061,7 @@ def _master_live_evidence_read_violation(
     tool_name,
     tool_input,
     allowed_evidence_snapshot_dir=None,
+    deny_all_prompt_evidence=False,
 ):
     """Return a forbidden live-evidence path read by a Master role, if any."""
     if not isinstance(tool_input, dict):
@@ -1081,15 +1093,37 @@ def _master_live_evidence_read_violation(
                 return str(resolved)
             if "results" in resolved.parts:
                 return str(resolved)
+            if "official_certificates" in resolved.parts:
+                return str(resolved)
             return None
         except Exception:
             normalized = raw_text.replace("\\", "/")
             if (
                 any(name in normalized for name in _MASTER_LIVE_EVIDENCE_FILENAMES)
                 or "/results/" in f"/{normalized.lstrip('/')}"
+                or "/official_certificates/" in f"/{normalized.lstrip('/')}"
             ):
                 return raw_text[:500]
             return None
+
+    if deny_all_prompt_evidence:
+        raw_target = (
+            str(tool_input.get("file_path", ""))
+            if tool_name == "Read"
+            else str(tool_input.get("command", ""))
+            if tool_name == "Bash"
+            else ""
+        )
+        normalized_target = raw_target.replace("\\", "/")
+        if (
+            any(
+                filename in normalized_target
+                for filename in _MASTER_LIVE_EVIDENCE_FILENAMES
+            )
+            or "/results/" in f"/{normalized_target.lstrip('/')}"
+            or "/official_certificates/" in f"/{normalized_target.lstrip('/')}"
+        ):
+            return raw_target[:500]
 
     if tool_name == "Read":
         return _path_violation(tool_input.get("file_path", ""))
@@ -1105,15 +1139,25 @@ def _master_live_evidence_read_violation(
         return None
     for candidate in candidates:
         normalized = str(candidate).replace("\\", "/").strip("'\";,()[]{}")
-        if any(filename in normalized for filename in _MASTER_LIVE_EVIDENCE_FILENAMES):
+        if (
+            any(filename in normalized for filename in _MASTER_LIVE_EVIDENCE_FILENAMES)
+            or "/results/" in f"/{normalized.lstrip('/')}"
+            or normalized.rstrip("/").endswith("/results")
+            or "/official_certificates/" in f"/{normalized.lstrip('/')}"
+        ):
             violation = _path_violation(normalized)
             if violation:
                 return violation[:500]
     return None
 
 
-def _make_master_evidence_read_guard(role_name, allowed_evidence_snapshot_dir=None):
-    """Prevent a weak Master from bypassing its digest-bound snapshot."""
+def _make_master_evidence_read_guard(
+    role_name,
+    allowed_evidence_snapshot_dir=None,
+    *,
+    deny_all_prompt_evidence=False,
+):
+    """Prevent an LLM role from bypassing its digest-bound prompt evidence."""
     async def handler(hook_input, tool_use_id, context):
         from claude_agent_sdk.types import SyncHookJSONOutput
 
@@ -1124,12 +1168,13 @@ def _make_master_evidence_read_guard(role_name, allowed_evidence_snapshot_dir=No
                 tool_name,
                 tool_input,
                 allowed_evidence_snapshot_dir,
+                deny_all_prompt_evidence,
             )
             if not violation:
                 return SyncHookJSONOutput()
             reason = (
-                "Master live evaluation evidence read denied. Use only the "
-                "generation's vN/evidence_snapshot files supplied in the prompt; "
+                "Live/global prompt evidence read denied. Use only the "
+                "system-owned evidence supplied in this role's prompt; "
                 f"forbidden target: {violation}"
             )
             try:
@@ -2468,6 +2513,7 @@ async def run_claude_query(
     tools=None,
     allowed_write_dir=None,
     allowed_evidence_snapshot_dir=None,
+    deny_live_prompt_evidence=False,
 ):
     """Run a Claude query via the Agent SDK with cost tracking and typed streaming.
 
@@ -2479,6 +2525,9 @@ async def run_claude_query(
            Workers/crossover pass their target bot dir so a rogue worker prompt
            cannot edit web/core/*.py, other bot dirs, or pipeline state (the
            orchestrator-level guard does not cover sub-agents).
+    deny_live_prompt_evidence: install a read guard for mutable/global ratings,
+           lessons, failures, replay manifests, official status prose, and
+           other results sidecars. Bootstrap roles set this unconditionally.
     """
     call_started_at = time.time()
     from evolution_infra import (
@@ -2585,10 +2634,11 @@ async def run_claude_query(
         t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
     ):
         _readonly_hooks = _make_subagent_readonly_guard(role_name)
-    if str(role_name).upper().startswith("MASTER"):
+    if deny_live_prompt_evidence or str(role_name).upper().startswith("MASTER"):
         _master_evidence_hooks = _make_master_evidence_read_guard(
             role_name,
             allowed_evidence_snapshot_dir,
+            deny_all_prompt_evidence=bool(deny_live_prompt_evidence),
         )
     _sub_hooks = _merge_hooks(
         _cost_hooks,

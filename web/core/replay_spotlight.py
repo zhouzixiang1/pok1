@@ -32,8 +32,37 @@ single-hand swing.
 
 import json
 import os
+import threading
 from glob import glob
 from typing import Iterator, List
+
+
+def _publish_spotlight_manifest(bot_name, citations):
+    """Atomically publish the latest citation set, including an empty set.
+
+    Publishing an empty manifest is important: otherwise a generation with no
+    admitted replay silently inherits the previous generation's citation IDs.
+    """
+    try:
+        core_dir = os.path.dirname(os.path.abspath(__file__))
+        results_dir = os.path.join(core_dir, "results")
+        os.makedirs(results_dir, exist_ok=True)
+        manifest_path = os.path.join(results_dir, "spotlight_manifest.json")
+        tmp_path = manifest_path + f".{os.getpid()}.{threading.get_ident()}.tmp"
+        manifest = {"bot": bot_name, "citations": list(citations or [])}
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, manifest_path)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+    except Exception:
+        pass  # spotlight is advisory and must never block generation preparation
 
 
 def _card_str(card_int):
@@ -401,6 +430,7 @@ def find_critical_hands(
         Compact structured summary string (under 2000 chars) suitable for prompt injection.
     """
     if not os.path.isdir(replays_dir):
+        _publish_spotlight_manifest(bot_name, [])
         return f"No replays directory: {replays_dir}"
 
     # Find recent replay files
@@ -410,6 +440,7 @@ def find_critical_hands(
         allowed = {str(value) for value in allowed_replay_ids}
         files = [path for path in files if os.path.basename(path) in allowed]
     if not files:
+        _publish_spotlight_manifest(bot_name, [])
         return "No replay files found."
 
     # Sort by mtime descending, take recent_n_files
@@ -455,6 +486,7 @@ def find_critical_hands(
                     all_swings.append(_summarize_hand(hand, game_num, replay_file=path))
 
     if not all_swings:
+        _publish_spotlight_manifest(bot_name, [])
         return f"No hands with chip swings found for {bot_name}."
 
     # Sort by swing descending, take top max_hands
@@ -496,21 +528,7 @@ def find_critical_hands(
 
     # Persist manifest (best-effort; overwrites the latest). Read by
     # tool_planning._verify_cited_replays during _validate_master_plan.
-    try:
-        _core_dir = os.path.dirname(os.path.abspath(__file__))
-        _results_dir = os.path.join(_core_dir, "results")
-        os.makedirs(_results_dir, exist_ok=True)
-        _manifest_path = os.path.join(_results_dir, "spotlight_manifest.json")
-        _manifest = {"bot": bot_name, "citations": manifest_citations}
-        import fcntl as _fcntl
-        with open(_manifest_path, "w", encoding="utf-8") as _mf:
-            _fcntl.flock(_mf, _fcntl.LOCK_EX)
-            try:
-                json.dump(_manifest, _mf, ensure_ascii=False)
-            finally:
-                _fcntl.flock(_mf, _fcntl.LOCK_UN)
-    except Exception:
-        pass  # manifest is best-effort; never block spotlight generation
+    _publish_spotlight_manifest(bot_name, manifest_citations)
 
     # Build compact summary
     lines = [f"Critical hands for {bot_name} (top {len(top)} by swing):"]

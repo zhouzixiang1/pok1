@@ -31,7 +31,7 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 11
+CONTRACT_VERSION = 12
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
@@ -83,6 +83,7 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/pipeline_recovery.py",
     "web/core/pipeline_infrastructure.py",
     "web/core/pipeline_state.py",
+    "web/core/prompt_evidence.py",
     "web/core/publish_reconcile.py",
     "web/core/repo_state.py",
     "web/core/tool_runtime_guard.py",

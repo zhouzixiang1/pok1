@@ -688,6 +688,7 @@ async def _run_master_proposal_ensemble(
     allowed_evidence_snapshot_dir: str,
     baseline_v: int | None = None,
     protocol_bootstrap_prepared_only: bool = False,
+    deny_live_prompt_evidence: bool = False,
 ) -> str:
     """Three proposals, two anonymous criterion critics, deterministic ordering.
 
@@ -768,6 +769,7 @@ async def _run_master_proposal_ensemble(
             ),
             tools=["Read"],
             allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+            deny_live_prompt_evidence=deny_live_prompt_evidence,
         )
 
     proposal_results = await asyncio.gather(
@@ -1055,10 +1057,33 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                                opponent_profiles="", research_proposals="",
                                architecture_policy=None,
                                prepared_baseline=None,
-                               protocol_bootstrap=None):
+                               protocol_bootstrap=None,
+                               prompt_evidence=None):
     """Run Master analysis — can run concurrently with daemon evaluation."""
+    from prompt_evidence import (
+        bootstrap_prompt_policy_text,
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
-    protocol_bootstrap_active = isinstance(protocol_bootstrap, dict)
+    prompt_evidence = resolve_prompt_evidence(
+        envelope=prompt_evidence,
+        next_v=int(next_v),
+        source_v=int(source_v),
+        protocol_bootstrap_receipt=(
+            protocol_bootstrap if isinstance(protocol_bootstrap, dict) else None
+        ),
+    )
+    protocol_bootstrap_active = is_protocol_bootstrap_prompt_evidence(
+        prompt_evidence
+    )
+    if protocol_bootstrap_active:
+        master_prompt = (
+            bootstrap_prompt_policy_text(prompt_evidence)
+            + "\n\n"
+            + master_prompt
+        )
     # Apply section budgets to avoid experience_pool crowding out match_analysis.
     # C-class: render the sentinel (returned when the analyst LLM crashed on an
     # infrastructure error) into an explicit warning BEFORE trimming, so the
@@ -1339,6 +1364,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
             baseline_v=int(planning_baseline_v),
             protocol_bootstrap_prepared_only=protocol_bootstrap_active,
+            deny_live_prompt_evidence=protocol_bootstrap_active,
         )
     except Exception as exc:
         raise MasterInfrastructureError(
@@ -1396,6 +1422,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 f"MASTER (Try {attempt+1})", master_log_file,
                 tools=["Read"],
                 allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+                deny_live_prompt_evidence=protocol_bootstrap_active,
             )
         except Exception as exc:
             _final_mode = f"LLM_EXCEPTION:{type(exc).__name__}"

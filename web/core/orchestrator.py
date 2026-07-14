@@ -2921,6 +2921,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     await asyncio.sleep(1)
                     continue
                 from generation_scheduler import GenerationContext
+                from prompt_evidence import prompt_evidence_from_checkpoint
                 ckpt = recovery["checkpoint"]
                 parent2_v = ckpt.get("parent2_v")
                 strategy = "crossover" if parent2_v else "master"
@@ -2931,6 +2932,9 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     source_v=ckpt["source_v"],
                     crossover_parents=(ckpt["source_v"], parent2_v) if parent2_v else (),
                     gen_count=gen_count,
+                    prompt_evidence=(
+                        prompt_evidence_from_checkpoint(ckpt) or {}
+                    ),
                 )
                 recovery = None  # consume recovery, only used once
             else:

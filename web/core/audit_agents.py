@@ -58,7 +58,13 @@ def _emit_audit_parse_failure(role, failure_mode, fields=None):
 # P0-1: Post-Master Plan Verification Audit
 # ──────────────────────────────────────────────
 
-async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
+async def _run_master_plan_audit(
+    master_plan,
+    source_v,
+    ui,
+    next_v=None,
+    prompt_evidence=None,
+):
     """Verify Master plan coherence and alignment before Workers execute.
 
     Returns MasterPlanAuditResult dict.
@@ -74,6 +80,35 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
         "feedback": "",
         "retry_recommended": False,
     }
+
+    from prompt_evidence import (
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    if prompt_evidence is None:
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+
+            checkpoint = read_pipeline_checkpoint()
+        except Exception:
+            checkpoint = None
+    else:
+        checkpoint = None
+    prompt_evidence = resolve_prompt_evidence(
+        envelope=prompt_evidence,
+        checkpoint=checkpoint,
+        next_v=(int(next_v) if next_v is not None else None),
+        source_v=int(source_v),
+    )
+    if is_protocol_bootstrap_prompt_evidence(prompt_evidence):
+        return {
+            **safe_default,
+            "experience_alignment": "not_applicable",
+            "direction_novelty": "not_applicable",
+            "protocol_bootstrap_no_strength": True,
+            "prompt_evidence_digest": prompt_evidence.get("envelope_digest"),
+        }
 
     try:
         template = (PROMPTS_DIR / "master_plan_audit.md").read_text()
@@ -749,7 +784,12 @@ async def _run_crossover_compatibility_audit(
 # P1-4: Experience Pool Quality Audit
 # ──────────────────────────────────────────────
 
-async def _run_experience_pool_audit(pool_content, current_ratings, ui):
+async def _run_experience_pool_audit(
+    pool_content,
+    current_ratings,
+    ui,
+    prompt_evidence=None,
+):
     """Audit experience pool for stale/contradictory entries.
 
     Returns ExperiencePoolAuditResult dict.
@@ -763,6 +803,31 @@ async def _run_experience_pool_audit(pool_content, current_ratings, ui):
         "recommended_additions": [],
         "overall_health": "healthy",
     }
+
+    from prompt_evidence import (
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    if prompt_evidence is None:
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+
+            checkpoint = read_pipeline_checkpoint()
+        except Exception:
+            checkpoint = None
+    else:
+        checkpoint = None
+    prompt_evidence = resolve_prompt_evidence(
+        envelope=prompt_evidence,
+        checkpoint=checkpoint,
+    )
+    if is_protocol_bootstrap_prompt_evidence(prompt_evidence):
+        return {
+            **safe_default,
+            "protocol_bootstrap_no_strength": True,
+            "prompt_evidence_digest": prompt_evidence.get("envelope_digest"),
+        }
 
     try:
         template = (PROMPTS_DIR / "experience_pool_audit.md").read_text()
@@ -830,7 +895,14 @@ async def _run_experience_pool_audit(pool_content, current_ratings, ui):
 # Meta-2: Regression Guardian
 # ──────────────────────────────────────────────
 
-async def _run_regression_guardian(v, source_v, pipeline_history, trigger_reason, ui):
+async def _run_regression_guardian(
+    v,
+    source_v,
+    pipeline_history,
+    trigger_reason,
+    ui,
+    prompt_evidence=None,
+):
     """Independent deep analysis when regression signals are detected.
 
     Returns dict with diagnosis and recommendations.
@@ -845,6 +917,33 @@ async def _run_regression_guardian(v, source_v, pipeline_history, trigger_reason
         "severity": "minor",
         "confidence": "low",
     }
+
+    from prompt_evidence import (
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    if prompt_evidence is None:
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+
+            checkpoint = read_pipeline_checkpoint()
+        except Exception:
+            checkpoint = None
+    else:
+        checkpoint = None
+    prompt_evidence = resolve_prompt_evidence(
+        envelope=prompt_evidence,
+        checkpoint=checkpoint,
+        next_v=int(v),
+        source_v=int(source_v),
+    )
+    if is_protocol_bootstrap_prompt_evidence(prompt_evidence):
+        return {
+            **safe_default,
+            "protocol_bootstrap_no_strength": True,
+            "prompt_evidence_digest": prompt_evidence.get("envelope_digest"),
+        }
 
     try:
         template = (PROMPTS_DIR / "regression_guardian.md").read_text()

@@ -2652,23 +2652,35 @@ def archive_generation(version, source_v, ckpt):
         "evaluation_epoch": EVALUATION_EPOCH,
         "bot_name": bot_name(version),
     }
+    from prompt_evidence import (
+        is_protocol_bootstrap_prompt_evidence,
+        prompt_evidence_from_checkpoint,
+    )
+
+    prompt_evidence = prompt_evidence_from_checkpoint(ckpt)
+    protocol_bootstrap_no_strength = is_protocol_bootstrap_prompt_evidence(
+        prompt_evidence
+    )
+    if protocol_bootstrap_no_strength:
+        snapshot["prompt_evidence"] = prompt_evidence
 
     try:
         snapshot["git_commit"] = _git("rev-parse", "--short", bot_tag(version), check=False)
     except Exception:
         pass
 
-    ratings = load_ratings()
-    p = ratings.get(bot_name(version))
-    if p:
-        snapshot["rating"] = {"r": round(p.r, 1), "rd": round(p.rd, 1)}
+    if not protocol_bootstrap_no_strength:
+        ratings = load_ratings()
+        p = ratings.get(bot_name(version))
+        if p:
+            snapshot["rating"] = {"r": round(p.r, 1), "rd": round(p.rd, 1)}
 
-    try:
-        from tool_helpers import compute_h2h_avg_winrate, _load_h2h_data
-        h2h_wr = compute_h2h_avg_winrate(bot_name(version), _load_h2h_data())
-        snapshot["h2h_avg_wr"] = round(h2h_wr, 4)
-    except Exception:
-        pass
+        try:
+            from tool_helpers import compute_h2h_avg_winrate, _load_h2h_data
+            h2h_wr = compute_h2h_avg_winrate(bot_name(version), _load_h2h_data())
+            snapshot["h2h_avg_wr"] = round(h2h_wr, 4)
+        except Exception:
+            pass
 
     if ckpt:
         gate_results = ckpt.get("gate_results", {})
@@ -2679,13 +2691,13 @@ def archive_generation(version, source_v, ckpt):
                 snapshot["reviewer_change_summary"] = review_data["change_summary"]
             if review_data.get("risk_areas"):
                 snapshot["reviewer_risk_areas"] = review_data["risk_areas"]
-        if gate_results.get("critic"):
+        if gate_results.get("critic") and not protocol_bootstrap_no_strength:
             critic_data = gate_results["critic"]
             snapshot["critic_score"] = critic_data.get("score", 0)
             if critic_data.get("strategic_assessment"):
                 snapshot["critic_data"] = critic_data
         precommit = gate_results.get("precommit_eval", {})
-        if precommit:
+        if precommit and not protocol_bootstrap_no_strength:
             snapshot["precommit_eval"] = {"passed": precommit.get("passed", False)}
 
     try:
@@ -2697,7 +2709,8 @@ def archive_generation(version, source_v, ckpt):
     except Exception:
         pass
 
-    snapshot["pool_size"] = len(get_active_bots())
+    if not protocol_bootstrap_no_strength:
+        snapshot["pool_size"] = len(get_active_bots())
 
     # commit_bot clears the active checkpoint before the advisory Archivist
     # runs. Issue one content-bound, single-use handoff so a weak controller
@@ -2706,7 +2719,7 @@ def archive_generation(version, source_v, ckpt):
         from bot_artifact import canonical_digest, hash_path
 
         receipt_payload = {
-            "schema_version": "post-commit-archivist-v1",
+            "schema_version": "post-commit-archivist-v2",
             "version": int(version),
             "source_v": int(source_v),
             "bot_tag": bot_tag(version),
@@ -2716,6 +2729,9 @@ def archive_generation(version, source_v, ckpt):
                 check=False,
             ).strip(),
             "artifact_hash": hash_path(get_bot_dir(version)),
+            "prompt_evidence_digest": str(
+                (prompt_evidence or {}).get("envelope_digest") or ""
+            ),
             "issued_at": time.time(),
         }
         snapshot["post_commit_archivist_receipt"] = {
@@ -2750,7 +2766,7 @@ def _post_commit_archivist_receipt_validation(
     receipt = snapshot.get("post_commit_archivist_receipt")
     if not isinstance(receipt, dict):
         return False, "post_commit_archivist_receipt_missing", None
-    if receipt.get("schema_version") != "post-commit-archivist-v1":
+    if receipt.get("schema_version") != "post-commit-archivist-v2":
         return False, "post_commit_archivist_receipt_schema", receipt
     try:
         if int(receipt.get("version")) != int(version):
@@ -2768,6 +2784,7 @@ def _post_commit_archivist_receipt_validation(
             "bot_tag",
             "git_commit",
             "artifact_hash",
+            "prompt_evidence_digest",
             "issued_at",
         )
     }
@@ -2785,6 +2802,25 @@ def _post_commit_archivist_receipt_validation(
             return False, "post_commit_archivist_artifact_mismatch", receipt
     except Exception as exc:
         return False, f"post_commit_archivist_artifact_error:{type(exc).__name__}", receipt
+    archived_prompt_evidence = snapshot.get("prompt_evidence")
+    archived_prompt_evidence_digest = str(
+        (archived_prompt_evidence or {}).get("envelope_digest") or ""
+    )
+    if receipt.get("prompt_evidence_digest") != archived_prompt_evidence_digest:
+        return False, "post_commit_archivist_prompt_evidence_mismatch", receipt
+    if archived_prompt_evidence_digest:
+        try:
+            from prompt_evidence import validate_prompt_evidence_envelope
+
+            prompt_errors = validate_prompt_evidence_envelope(
+                archived_prompt_evidence,
+                next_v=int(version),
+                source_v=int(source_v),
+            )
+        except Exception as exc:
+            return False, f"post_commit_archivist_prompt_evidence_error:{type(exc).__name__}", receipt
+        if prompt_errors:
+            return False, "post_commit_archivist_prompt_evidence_invalid", receipt
     return True, "", receipt
 
 

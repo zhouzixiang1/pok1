@@ -3157,6 +3157,19 @@ async def run_critic(args):
     _set_pipeline_status(f"Critic evaluating v{v}")
 
     ckpt = _matching_checkpoint(v, source_v)
+    from prompt_evidence import (
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    prompt_evidence = resolve_prompt_evidence(
+        checkpoint=ckpt,
+        next_v=v,
+        source_v=source_v,
+    )
+    protocol_bootstrap_no_strength = is_protocol_bootstrap_prompt_evidence(
+        prompt_evidence
+    )
     _critic_infra, _critic_infra_error = _owned_infrastructure_failure(
         ckpt,
         "run_critic",
@@ -3213,6 +3226,11 @@ async def run_critic(args):
     critic_prompt_identity += "\n" + master_plan_str + "\n" + json.dumps(
         prev_critic or {}, sort_keys=True, ensure_ascii=False
     )
+    if protocol_bootstrap_no_strength:
+        critic_prompt_identity += (
+            "\nprompt_evidence="
+            + str(prompt_evidence.get("envelope_digest") or "")
+        )
     _critic_attempt_key, _critic_infra_metadata = _llm_gate_infrastructure_identity(
         component="critic_llm",
         role="STRATEGY CRITIC",
@@ -3222,7 +3240,14 @@ async def run_critic(args):
         checkpoint=ckpt,
     )
     ui = _get_ui()
-    data = await _run_critic(v, source_v, master_plan_str, ui, prev_critic_result=prev_critic)
+    data = await _run_critic(
+        v,
+        source_v,
+        master_plan_str,
+        ui,
+        prev_critic_result=prev_critic,
+        prompt_evidence=prompt_evidence,
+    )
 
     # No strategic verdict exists when the role call or its schema collapses.
     # Persist an infrastructure overlay instead of manufacturing score=0 debt.
@@ -3323,7 +3348,7 @@ async def run_critic(args):
         # Meta-2: Trigger Regression Guardian on very low critic score.
         # Run synchronously so the diagnosis is visible to the Orchestrator.
         # _run_regression_guardian has a safe_default so it never throws.
-        if score_num < 4:
+        if score_num < 4 and not protocol_bootstrap_no_strength:
             try:
                 import audit_agents as _aa
                 _c = _matching_checkpoint(v, source_v)
@@ -3367,7 +3392,7 @@ async def run_critic(args):
 
     # Extract Critic evidence and append to experience pool
     evidence = data.get("evidence") if isinstance(data, dict) else None
-    if evidence:
+    if evidence and not protocol_bootstrap_no_strength:
         try:
             from tool_commit import _append_experience_updates
             ev_parts = []
@@ -3395,7 +3420,7 @@ async def run_critic(args):
     critic_citation_errors = []
     try:
         from tool_planning import _check_citations, _load_replay_anchor_map
-        if evidence:
+        if evidence and not protocol_bootstrap_no_strength:
             critic_texts = evidence.get("h2h_weaknesses", []) + evidence.get("diff_refs", [])
             critic_citation_errors = _check_citations(
                 [str(t) for t in critic_texts], _load_replay_anchor_map()

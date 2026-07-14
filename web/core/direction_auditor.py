@@ -16,7 +16,7 @@ from evolution_infra import (
 from output_schema import validate_agent_output
 
 
-async def _run_direction_audit(source_v, ui):
+async def _run_direction_audit(source_v, ui, prompt_evidence=None):
     """Run Direction Auditor to detect repetitive evolution directions.
 
     Reads recent generation history (git tags, commit messages, critic rejections)
@@ -26,6 +26,37 @@ async def _run_direction_audit(source_v, ui):
                      suggested_direction, confidence, last_directions}.
     Returns a safe no-repetition default on failure.
     """
+    from prompt_evidence import (
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    if prompt_evidence is None:
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+
+            checkpoint = read_pipeline_checkpoint()
+        except Exception:
+            checkpoint = None
+    else:
+        checkpoint = None
+    prompt_evidence = resolve_prompt_evidence(
+        envelope=prompt_evidence,
+        checkpoint=checkpoint,
+        source_v=int(source_v),
+    )
+    if is_protocol_bootstrap_prompt_evidence(prompt_evidence):
+        return {
+            "repetition_detected": False,
+            "exhausted_directions": [],
+            "mandatory_constraints": None,
+            "suggested_direction": None,
+            "confidence": "not_applicable",
+            "last_directions": [],
+            "protocol_bootstrap_no_strength": True,
+            "prompt_evidence_digest": prompt_evidence.get("envelope_digest"),
+        }
+
     audit_prompt_path = PROMPTS_DIR / "direction_auditor_prompt.md"
     if not audit_prompt_path.exists():
         ui.log_history("Direction Auditor prompt not found — skipping audit.", "warn")

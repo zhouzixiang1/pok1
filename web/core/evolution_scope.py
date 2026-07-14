@@ -157,6 +157,7 @@ CRITICAL_GENERATION_EXACT = frozenset({
     "web/core/pipeline_schema.py",
     "web/core/pipeline_state.py",
     "web/core/plan_compiler.py",
+    "web/core/prompt_evidence.py",
     "web/core/publish_reconcile.py",
     "web/core/repo_state.py",
     "web/core/research_governance.py",

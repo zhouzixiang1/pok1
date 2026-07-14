@@ -39,7 +39,11 @@ def _tag_identity(text):
     return tags
 
 
-async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
+async def _consolidate_experience_pool(
+    ui,
+    exhausted_directions: str = "",
+    prompt_evidence=None,
+):
     """Use LLM to deduplicate and consolidate the experience pool.
 
     Reads the current experience_pool.md, asks LLM to merge redundant entries,
@@ -49,6 +53,29 @@ async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
     then write it back here as a guaranteed fallback. The LLM's text output is the
     source of truth — no dependency on the agent using Edit tool.
     """
+    from prompt_evidence import (
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    if prompt_evidence is None:
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+
+            checkpoint = read_pipeline_checkpoint()
+        except Exception:
+            checkpoint = None
+    else:
+        checkpoint = None
+    prompt_evidence = resolve_prompt_evidence(
+        envelope=prompt_evidence,
+        checkpoint=checkpoint,
+    )
+    if is_protocol_bootstrap_prompt_evidence(prompt_evidence):
+        # Consolidation is itself a historical-lesson consumer.  A bootstrap
+        # generation must neither read nor rewrite the legacy pool.
+        return
+
     if not EXPERIENCE_FILE.exists():
         return
 
@@ -248,12 +275,55 @@ async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
         ui.log_history(f"Experience pool consolidation failed: {e}", "warn")
 
 
-async def _run_archivist_analysis(version, source_v, snapshot, ui):
+async def _run_archivist_analysis(
+    version,
+    source_v,
+    snapshot,
+    ui,
+    prompt_evidence=None,
+):
     """Run Cycle Archivist LLM analysis on a completed generation.
 
     Called conditionally (rating decline, experience pool growth, or forced).
     Returns a JSON dict with assessment and strategic advice.
     """
+    from prompt_evidence import (
+        bootstrap_prompt_policy_text,
+        is_protocol_bootstrap_prompt_evidence,
+        resolve_prompt_evidence,
+    )
+
+    prompt_evidence = resolve_prompt_evidence(
+        envelope=(prompt_evidence or (snapshot or {}).get("prompt_evidence")),
+        next_v=int(version),
+        source_v=int(source_v),
+    )
+    protocol_bootstrap_no_strength = is_protocol_bootstrap_prompt_evidence(
+        prompt_evidence
+    )
+    if protocol_bootstrap_no_strength:
+        allowed_snapshot_fields = {
+            "version",
+            "source_v",
+            "timestamp",
+            "git_tag",
+            "evaluation_epoch",
+            "bot_name",
+            "git_commit",
+            "review_score",
+            "reviewer_change_summary",
+            "reviewer_risk_areas",
+            "diff_stats_raw",
+            "reviewer_context",
+            "post_commit_archivist_receipt",
+            "prompt_evidence",
+        }
+        snapshot = {
+            key: value
+            for key, value in (snapshot or {}).items()
+            if key in allowed_snapshot_fields
+        }
+
     prompt_file = PROMPTS_DIR / "archivist.md"
     if prompt_file.exists():
         prompt = prompt_file.read_text()
@@ -272,10 +342,16 @@ async def _run_archivist_analysis(version, source_v, snapshot, ui):
         )
 
     prompt = prompt.replace("{snapshot}", json.dumps(snapshot, indent=2, ensure_ascii=False))
+    if protocol_bootstrap_no_strength:
+        prompt = bootstrap_prompt_policy_text(prompt_evidence) + "\n\n" + prompt
 
     # Build recent rating trend context
     trend_lines = []
-    for check_v in range(max(1, version - 4), version + 1):
+    for check_v in (
+        []
+        if protocol_bootstrap_no_strength
+        else range(max(1, version - 4), version + 1)
+    ):
         check_archive = ARCHIVE_DIR / f"v{check_v}.json"
         if check_archive.exists():
             try:
@@ -295,6 +371,7 @@ async def _run_archivist_analysis(version, source_v, snapshot, ui):
             prompt, [], ui,
             "CYCLE ARCHIVIST", log_file,
             tools=["Bash", "Read"],
+            deny_live_prompt_evidence=protocol_bootstrap_no_strength,
         )
         from llm_query import parse_json_output_with_mode
         data, failure_mode = parse_json_output_with_mode(output)
