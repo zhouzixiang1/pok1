@@ -83,7 +83,7 @@
       "artifact_url": "https://arxiv.org/pdf/1705.02955v3",
       "artifact_sha256": "f70b5cf6be537a6b010052a4c6b3581ed4777e0194a7a4548b82f4c88a62fbfb",
       "license": "academic publication; no software license inferred",
-      "role": "A2 public safe-resolving reference and Coin Toss falsifier"
+      "role": "A2 source-shaped Coin Toss unsafe-reach and simplified safety-constraint falsifier; not a full Resolve implementation"
     },
     {
       "id": "open-spiel-reference",

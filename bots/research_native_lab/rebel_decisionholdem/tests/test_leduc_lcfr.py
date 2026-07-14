@@ -17,6 +17,7 @@ from ..common_runtime.leduc import (
     ordered_deals,
     terminal_utility,
     uniform_strategy,
+    validate_strategy,
 )
 from ..common_runtime.leduc_evaluation import (
     best_response_policy,
@@ -180,3 +181,20 @@ def test_leduc_checkpoint_rejects_noncanonical_duplicate_infoset_key(tmp_path) -
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="not canonical"):
         LeducLinearCFR.load_checkpoint(path)
+
+
+@pytest.mark.parametrize("bad_value", (float("nan"), float("inf"), -1e-15, True))
+def test_exact_leduc_strategy_validation_rejects_nonprobabilities(bad_value) -> None:
+    profile = uniform_strategy()
+    key = next(iter(profile))
+    action = next(iter(profile[key]))
+    profile[key][action] = bad_value
+    with pytest.raises(ValueError, match="invalid probability"):
+        validate_strategy(profile)
+
+
+def test_exact_leduc_strategy_validation_rejects_extra_action() -> None:
+    profile = uniform_strategy()
+    next(iter(profile.values()))["unknown"] = 0.0
+    with pytest.raises(ValueError, match="actions differ"):
+        validate_strategy(profile)

@@ -102,3 +102,56 @@ def test_on_policy_pbs_values_preserve_zero_sum_in_expectation() -> None:
             sum(marginal[card] * values[player][card] for card in CARDS)
         )
     assert expectations[0] == pytest.approx(-expectations[1])
+
+
+def test_both_marginal_ranges_update_when_each_player_publicly_acts() -> None:
+    profile = fixture_policy()
+    pbs = KuhnMarginalPublicBeliefState.initial()
+    player0_before = pbs.range_for(0)
+    player1_before = pbs.range_for(1)
+    pbs = pbs.observe(
+        "bet",
+        {card: profile[(0, card, "")] for card in CARDS},
+    )
+    assert pbs.range_for(0) != pytest.approx(player0_before)
+    assert pbs.range_for(1) == pytest.approx(player1_before)
+
+    player0_after_bet = pbs.range_for(0)
+    pbs = pbs.observe(
+        "call",
+        {card: profile[(1, card, "bet")] for card in CARDS},
+    )
+    assert pbs.range_for(0) == pytest.approx(player0_after_bet)
+    assert pbs.range_for(1) != pytest.approx(player1_before)
+
+
+def test_counterfactual_action_labels_mix_back_to_on_policy_value() -> None:
+    pbs = KuhnPublicBeliefState.initial()
+    profile = fixture_policy()
+    action_values = pbs.conditional_deviation_action_values(profile)
+    on_policy = pbs.on_policy_infostate_values(profile)[0]
+    for card in CARDS:
+        policy = profile[(0, card, "")]
+        mixed = sum(
+            policy[action] * value
+            for action, value in action_values[card].items()
+        )
+        assert mixed == pytest.approx(on_policy[card], abs=1e-12)
+
+    with pytest.raises(ValueError, match="terminal"):
+        pbs.observe(
+            "bet", {card: profile[(0, card, "")] for card in CARDS}
+        ).observe(
+            "call", {card: profile[(1, card, "bet")] for card in CARDS}
+        ).conditional_deviation_action_values(profile)
+
+
+def test_standard_cfv_rejects_a_pbs_from_another_profile() -> None:
+    fixture = fixture_policy()
+    pbs = KuhnPublicBeliefState.initial().observe(
+        "bet", {card: fixture[(0, card, "")] for card in CARDS}
+    )
+    from ..common_runtime.kuhn import uniform_strategy
+
+    with pytest.raises(ValueError, match="posterior does not match"):
+        pbs.cfr_counterfactual_action_values(uniform_strategy())

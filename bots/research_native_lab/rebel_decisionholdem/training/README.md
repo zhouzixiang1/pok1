@@ -13,8 +13,10 @@ projection from Leduc, and no HUNL regrets were trained. It therefore does not
 satisfy M4 blueprint-only completion.
 
 No HUNL blueprint training, ReBeL self-play data generation, value network,
-policy network, or long-running job has been started. Large-scale training may
-begin only after the common national-rule gates are integrated and M4's real
+policy network, or long-running job has been started. The Common M0--M2 policy
+entry is integrated and content-bound at M3, but it is not yet a complete
+socket/deadline product. Large-scale training may begin only after the parent
+comparison accepts both routes' M3 evidence and M4's real
 abstraction/checkpoint contract passes small-scale validation.
 
 The toy LCFR solvers validate the iteration-weighted algorithm stated in the

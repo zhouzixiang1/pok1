@@ -480,6 +480,8 @@ class BlueprintDecision:
     action: ActionSpec
     lookup: BlueprintLookup
     used_legality_fallback: bool = False
+    available_policy_mass: float = 1.0
+    dropped_policy_mass: float = 0.0
 
 
 def choose_blueprint_action(
@@ -489,6 +491,7 @@ def choose_blueprint_action(
     private_cards: Sequence[int],
     board: Sequence[int],
     random_unit: float,
+    legal_specs_override: Sequence[ActionSpec] | None = None,
 ) -> BlueprintDecision:
     if type(random_unit) not in (int, float) or not 0.0 <= random_unit < 1.0:
         raise ValueError("random_unit must lie in [0, 1)")
@@ -507,16 +510,39 @@ def choose_blueprint_action(
         facing=facing,
         raises="2plus" if raise_count >= 2 else str(raise_count),
     )
-    legal = {spec.action_id: spec for spec in legal_action_specs(context)}
+    generated_specs = legal_action_specs(context)
+    if legal_specs_override is None:
+        selected_specs = generated_specs
+    else:
+        selected_specs = tuple(legal_specs_override)
+        generated = {
+            (spec.action_id, spec.wire_action, spec.raise_to) for spec in generated_specs
+        }
+        if (
+            not selected_specs
+            or len({spec.action_id for spec in selected_specs}) != len(selected_specs)
+            or any(
+                (spec.action_id, spec.wire_action, spec.raise_to) not in generated
+                for spec in selected_specs
+            )
+        ):
+            raise ValueError("legal action override is not a non-empty canonical subset")
+    legal = {spec.action_id: spec for spec in selected_specs}
     available = [
         (action, probability)
         for action, probability in lookup.probabilities.items()
         if action in legal and probability > 0.0
     ]
     total = sum(probability for _, probability in available)
+    dropped = sum(
+        probability
+        for action, probability in lookup.probabilities.items()
+        if action not in legal and probability > 0.0
+    )
     if total <= 0.0:
-        fallback = legal["fold"] if context.to_call > 0 else legal["check_call"]
-        return BlueprintDecision(fallback, lookup, True)
+        preferred = "fold" if context.to_call > 0 else "check_call"
+        fallback = legal.get(preferred, next(iter(legal.values())))
+        return BlueprintDecision(fallback, lookup, True, total, dropped)
     threshold = float(random_unit) * total
     cumulative = 0.0
     for action_id in ACTION_IDS:
@@ -526,6 +552,6 @@ def choose_blueprint_action(
         )
         cumulative += probability
         if threshold < cumulative:
-            return BlueprintDecision(legal[action_id], lookup)
+            return BlueprintDecision(legal[action_id], lookup, False, total, dropped)
     action_id = available[-1][0]
-    return BlueprintDecision(legal[action_id], lookup)
+    return BlueprintDecision(legal[action_id], lookup, False, total, dropped)

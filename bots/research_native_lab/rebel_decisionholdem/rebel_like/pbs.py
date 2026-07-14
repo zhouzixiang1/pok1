@@ -24,6 +24,7 @@ from ..common_runtime.kuhn import (
     legal_actions,
     next_history,
     ordered_deals,
+    validate_strategy,
 )
 
 CardPolicy = Mapping[int, Mapping[str, float]]
@@ -157,6 +158,113 @@ class KuhnPublicBeliefState:
                             )
                         )
                 result[player][card] = value
+        return result
+
+    def conditional_deviation_action_values(
+        self, profile: StrategyProfile
+    ) -> dict[int, dict[str, float]]:
+        """Return posterior-normalized deviation values for every private card.
+
+        The action at the current public node is forced, so its probability in
+        ``profile`` is deliberately omitted.  Chance/blocker and opponent
+        uncertainty are conditioned from the exact joint PBS; all later play
+        follows ``profile``.  These are conditional action-continuation values,
+        not standard CFR counterfactual values (which omit own reach and remain
+        unnormalized).  It is not a learned ReBeL value target.
+        """
+
+        if is_terminal(self.history):
+            raise ValueError("terminal PBS has no counterfactual actions")
+        actor = current_player(self.history)
+        actions = legal_actions(self.history)
+        result: dict[int, dict[str, float]] = {}
+        for card, mass in self.range_for(actor).items():
+            if mass <= 0.0:
+                continue
+            values: dict[str, float] = {}
+            for action in actions:
+                continuation = next_history(self.history, action)
+                values[action] = sum(
+                    probability
+                    / mass
+                    * deal_expected_utility(
+                        deal,
+                        continuation,
+                        profile,
+                        player=actor,
+                    )
+                    for deal, probability in self.deal_probabilities.items()
+                    if deal[actor] == card
+                )
+            result[card] = values
+        return result
+
+    def cfr_counterfactual_action_values(
+        self, profile: StrategyProfile
+    ) -> dict[int, dict[str, float]]:
+        """Return standard unnormalized CFR action values at this public node.
+
+        For actor ``i`` and private card ``c`` this computes
+        ``sum_h chance(h) * pi_-i(h) * v_i(h, a)`` over deals in the infoset.
+        The actor's reach to the node is omitted and the result is not divided
+        by posterior mass, matching the regret update equation.
+        """
+
+        validate_strategy(profile)
+        if is_terminal(self.history):
+            raise ValueError("terminal PBS has no counterfactual actions")
+        actor = current_player(self.history)
+        actions = legal_actions(self.history)
+        chance = 1.0 / len(ordered_deals())
+
+        def reaches(deal: Deal) -> tuple[float, float]:
+            result = [1.0, 1.0]
+            history = ""
+            if not self.history:
+                return 1.0, 1.0
+            for observed in self.history.split("-"):
+                player = current_player(history)
+                result[player] *= profile[(player, deal[player], history)][observed]
+                history = next_history(history, observed)
+            if history != self.history:
+                raise AssertionError("Kuhn public history reach reconstruction diverged")
+            return result[0], result[1]
+
+        profile_weights = {
+            deal: chance * reaches(deal)[0] * reaches(deal)[1]
+            for deal in ordered_deals()
+        }
+        profile_reach = sum(profile_weights.values())
+        if profile_reach <= 0.0:
+            raise ValueError("profile has zero reach to the PBS history")
+        if any(
+            abs(
+                self.deal_probabilities[deal]
+                - profile_weights[deal] / profile_reach
+            )
+            > 1e-10
+            for deal in ordered_deals()
+        ):
+            raise ValueError("PBS posterior does not match the supplied profile reach")
+
+        result: dict[int, dict[str, float]] = {}
+        for card in CARDS:
+            values: dict[str, float] = {}
+            for action in actions:
+                continuation = next_history(self.history, action)
+                values[action] = sum(
+                    chance
+                    * reaches(deal)[1 - actor]
+                    * deal_expected_utility(
+                        deal,
+                        continuation,
+                        profile,
+                        player=actor,
+                    )
+                    for deal in ordered_deals()
+                    if deal[actor] == card
+                )
+            result[card] = values
         return result
 
     def snapshot(self) -> dict[str, object]:

@@ -9,6 +9,7 @@ failure reports readable.
 from __future__ import annotations
 
 from itertools import permutations
+from math import isfinite
 from typing import TypeAlias
 
 CARDS: tuple[int, ...] = (0, 1, 2)  # J, Q, K
@@ -129,16 +130,22 @@ def uniform_strategy() -> StrategyProfile:
 
 
 def validate_strategy(profile: StrategyProfile, tolerance: float = 1e-12) -> None:
+    expected = set(all_infosets())
+    if set(profile) != expected:
+        raise ValueError("strategy infosets do not match the exact Kuhn tree")
     for key in all_infosets():
-        if key not in profile:
-            raise ValueError(f"strategy is missing infoset {key}")
         actions = legal_actions(key[2])
         probabilities = profile[key]
         if set(probabilities) != set(actions):
             raise ValueError(
                 f"strategy actions for {key} are {sorted(probabilities)}, expected {actions}"
             )
-        if any(probability < -tolerance for probability in probabilities.values()):
-            raise ValueError(f"negative action probability at {key}: {probabilities}")
+        if any(
+            type(probability) not in (int, float)
+            or not isfinite(probability)
+            or probability < 0.0
+            for probability in probabilities.values()
+        ):
+            raise ValueError(f"invalid action probability at {key}: {probabilities}")
         if abs(sum(probabilities.values()) - 1.0) > tolerance:
             raise ValueError(f"action probabilities do not sum to one at {key}")

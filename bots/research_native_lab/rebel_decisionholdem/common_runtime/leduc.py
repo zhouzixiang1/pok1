@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from itertools import permutations
+from math import isfinite
 from typing import TypeAlias
 
 
@@ -262,7 +263,9 @@ def validate_strategy(profile: LeducStrategy, tolerance: float = 1e-12) -> None:
         if set(probabilities) != set(actions):
             raise ValueError(f"Leduc strategy actions differ at {key}")
         if any(
-            not isinstance(value, (int, float)) or value < -tolerance
+            type(value) not in (int, float)
+            or not isfinite(value)
+            or value < 0.0
             for value in probabilities.values()
         ):
             raise ValueError(f"Leduc strategy has invalid probability at {key}")

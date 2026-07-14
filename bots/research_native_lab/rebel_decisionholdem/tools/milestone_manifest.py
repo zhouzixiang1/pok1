@@ -20,13 +20,29 @@ from ..decisionholdem_like.leduc_linear_cfr import LeducLinearCFR
 from ..decisionholdem_like.linear_cfr import LinearCFR
 from ..decisionholdem_like.native_entry import NATIONAL_STREAM_DECODER_VERSION
 from ..decisionholdem_like.resolving import CoinTossResolveGame
+from ..decisionholdem_like.common_adapter import (
+    COMMON_ADAPTER_VERSION,
+    COMMON_CONTRACT_VERSION,
+)
 from ..rebel_like.toy_loop import run_toy_selfplay
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_RELATIVE_PATH = Path("manifests/milestone_m0_m3.json")
 MANIFEST_PATH = PACKAGE_ROOT / MANIFEST_RELATIVE_PATH
-MANIFEST_SCHEMA = "route-a-milestone-manifest-v3"
-MANIFEST_STAGE = "M0-M3 route-A small-game gate; M4 projection prototype incomplete"
+MANIFEST_SCHEMA = "route-a-milestone-manifest-v4"
+MANIFEST_STAGE = (
+    "M0-M3 route-A small-game/Common-integration gate; "
+    "M4 projection prototype incomplete"
+)
+COMMON_ROOT = PACKAGE_ROOT.parent / "common_contracts"
+COMMON_INTERFACE_FILES = (
+    "actions.py",
+    "cards.py",
+    "constants.py",
+    "contracts/national_game_v1.json",
+    "national_state.py",
+    "protocol.py",
+)
 IGNORED_DIRECTORIES = frozenset(
     {"__pycache__", ".pytest_cache", "checkpoints", "data", "results"}
 )
@@ -73,6 +89,34 @@ def build_tree_snapshot(root: Path = PACKAGE_ROOT) -> dict[str, object]:
         "file_count": len(files),
         "tree_sha256": _sha256_bytes(_canonical_bytes(files)),
         "files": files,
+    }
+
+
+def build_common_interface_snapshot() -> dict[str, object]:
+    files = {
+        name: _sha256_file(COMMON_ROOT / name) for name in COMMON_INTERFACE_FILES
+    }
+    package_files = {
+        path.relative_to(COMMON_ROOT).as_posix(): _sha256_file(path)
+        for path in sorted(COMMON_ROOT.rglob("*"))
+        if path.is_file()
+        and not path.is_symlink()
+        and path.suffix != ".pyc"
+        and not any(
+            part in IGNORED_DIRECTORIES
+            for part in path.relative_to(COMMON_ROOT).parts
+        )
+    }
+    return {
+        "contract_version": COMMON_CONTRACT_VERSION,
+        "adapter_version": COMMON_ADAPTER_VERSION,
+        "merged_commit": "cc8beed256024fadd1cf89b0e40dcdea6a5c959d",
+        "files": files,
+        "tree_sha256": _sha256_bytes(_canonical_bytes(files)),
+        "package_file_count": len(package_files),
+        "package_tree_sha256": _sha256_bytes(_canonical_bytes(package_files)),
+        "policy_entry": "decisionholdem_like.common_native_entry.CommonA2StrategyRuntime",
+        "forbidden_policy_context": ["observation_id", "match_context_id"],
     }
 
 
@@ -126,6 +170,16 @@ def build_validation_snapshot(root: Path = PACKAGE_ROOT) -> dict[str, object]:
         "safe_resolve_exploitability_delta": (
             coin_toss.safe_resolve().exploitability_delta
         ),
+        "plain_resolve_guess_heads_probability": (
+            coin_toss.plain_resolve().guess_heads_probability
+        ),
+        "safe_resolve_guess_heads_probability": (
+            coin_toss.safe_resolve().guess_heads_probability
+        ),
+        "safe_resolve_claim": (
+            "source-shaped-functional-constraint-falsifier-not-full-resolve"
+        ),
+        "lcfr_reference": "independent-equation-oriented-kuhn-reference-v1",
         "leduc_physical_deals": len(leduc_deals()),
         "leduc_infosets": len(leduc_infosets()),
         "leduc_lcfr_iterations": leduc_solver.iterations_completed,
@@ -145,6 +199,7 @@ def build_dynamic_snapshot(root: Path = PACKAGE_ROOT) -> dict[str, object]:
     return {
         "validation": build_validation_snapshot(root),
         "tree": build_tree_snapshot(root),
+        "common_interface": build_common_interface_snapshot(),
     }
 
 
@@ -157,7 +212,7 @@ def render_current_manifest(path: Path = MANIFEST_PATH) -> dict[str, object]:
     fixed = {
         key: value
         for key, value in existing.items()
-        if key not in {"file_sha256", "validation", "tree"}
+        if key not in {"file_sha256", "validation", "tree", "common_interface"}
     }
     fixed.update(
         {
@@ -183,7 +238,7 @@ def verify_manifest(path: Path = MANIFEST_PATH) -> list[str]:
         errors.append("M3 manifest must deny a HUNL bot claim")
     if recorded.get("m4_blueprint_complete") is not False:
         errors.append("M3 manifest must deny M4 blueprint completion")
-    for field in ("validation", "tree"):
+    for field in ("validation", "tree", "common_interface"):
         if recorded.get(field) != actual[field]:
             errors.append(f"{field} snapshot differs from current package")
     return errors

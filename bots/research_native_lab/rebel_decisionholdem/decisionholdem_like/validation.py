@@ -25,7 +25,10 @@ def run_validation(iterations: int = 10_000) -> dict[str, object]:
                 "paper-faithful clean-room toy LCFR; unresolved DecisionHoldem "
                 "LCFR-vs-MCCFR blueprint conflict"
             ),
-            "safe_resolve": "functional adaptation from NIPS 2017 Coin Toss; not DecisionHoldem implementation",
+            "safe_resolve": (
+                "source-shaped Coin Toss unsafe-reach plus simplified Sell-payoff "
+                "constraint; not full Resolve and not DecisionHoldem"
+            ),
         },
         "iterations": solver.iterations_completed,
         "checkpoint_sha256": solver.checkpoint_digest(),

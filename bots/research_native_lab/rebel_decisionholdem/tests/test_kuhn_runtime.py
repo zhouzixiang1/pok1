@@ -8,7 +8,7 @@ from ..common_runtime.evaluation import (
     exploitability,
     nash_conv,
 )
-from ..common_runtime.kuhn import terminal_utility, uniform_strategy
+from ..common_runtime.kuhn import terminal_utility, uniform_strategy, validate_strategy
 
 
 def test_terminal_utilities_are_zero_sum_and_use_net_stakes() -> None:
@@ -55,3 +55,24 @@ def test_known_kuhn_equilibrium_has_game_value_and_zero_exploitability() -> None
 
     assert expected_utility(profile, player=0) == pytest.approx(-1.0 / 18.0)
     assert exploitability(profile) == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("bad_value", (float("nan"), float("inf"), -1e-15, True))
+def test_exact_kuhn_strategy_validation_rejects_nonprobabilities(bad_value) -> None:
+    profile = uniform_strategy()
+    key = next(iter(profile))
+    action = next(iter(profile[key]))
+    profile[key][action] = bad_value
+    with pytest.raises(ValueError, match="invalid action probability"):
+        validate_strategy(profile)
+
+
+def test_exact_kuhn_strategy_validation_rejects_extra_infoset_or_action() -> None:
+    profile = uniform_strategy()
+    profile[(0, 0, "unknown")] = {"check": 1.0}
+    with pytest.raises(ValueError, match="infosets do not match"):
+        validate_strategy(profile)
+    profile = uniform_strategy()
+    next(iter(profile.values()))["unknown"] = 0.0
+    with pytest.raises(ValueError, match="actions"):
+        validate_strategy(profile)

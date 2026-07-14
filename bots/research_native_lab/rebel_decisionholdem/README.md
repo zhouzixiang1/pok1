@@ -7,13 +7,33 @@ This directory is the isolated research area for two separate candidates:
 
 The current deliverable is the M0--M3 small-game correctness package. It contains
 exact Kuhn and two-round limit-Leduc trees, exact best-response/exploitability
-evaluation, an A1 paper-shaped marginal-range PBS update loop backed by a
-separate exact joint toy oracle, A2 alternating Linear CFR, and a Coin Toss
-plain/safe-resolving falsifier. It also contains a deliberately labelled M4
-prototype that projects the Leduc policy into a coarse national abstraction and
-packages a native TCP entry. That projection is **not** a trained HUNL blueprint,
-not a safe resolver, and not a complete A2 candidate. There is no neural model,
-and nothing here may enter the `national_v*` lifecycle.
+evaluation, A1 Kuhn/Leduc public-belief and two-player range updates, both
+posterior-normalized labels and standard unnormalized CFR action values, and A2
+alternating Linear CFR checked against a structurally independent equation
+reference. The source-shaped Coin Toss fixture proves that blueprint-reach
+isolated solving can choose the paper's unsafe always-Heads strategy; its
+alternative-payoff constraint is a **functional falsifier**, not a reproduction
+of the paper's full Resolve augmented game or DecisionHoldem's resolver.
+
+The A2 policy entry `CommonA2StrategyRuntime` now depends on the frozen Common
+M0--M2 `NationalProtocolSession`, `NationalGameState`, `Action`, and
+`LegalActionSet`. Route action candidates must all agree with Common; unavailable
+blueprint probability mass and zero-valid-mass fallbacks fail closed rather than
+being silently renormalized. Policy lookup uses within-hand information only;
+`full_state_id` is retained solely for stale-send rejection. The exact Common
+commit, critical files, and complete package tree are content-bound in the M3
+manifest.
+
+The retained coarse Leduc projection fails this strict entry because it assigns
+some mass to an unavailable/aliased action. That tested rejection is an M4
+blocker, not a reason to sanitize the policy into a playable claim.
+
+The package also retains a deliberately labelled M4 prototype that projects the
+Leduc policy into a coarse national abstraction and packages the older standalone
+TCP shell. That projection is **not** a trained HUNL blueprint, not a safe
+resolver, not the Common-authoritative policy entry, and not a complete A2
+candidate. There is no neural model, and nothing here may enter the
+`national_v*` lifecycle.
 
 No DecisionHoldem AGPL source code was copied. The public repository was used
 only to audit availability, symbol names, binary-only boundaries, assets, and
@@ -54,16 +74,17 @@ data and checkpoints must not be committed.
 ## Route boundary
 
 `common_runtime/` contains only strategy-neutral toy games and exact evaluation.
-A1 and A2 do not import each other's strategy code. The provisional
-`decisionholdem_like/native_entry.py` exercises packaging, sticky framing,
-street-order and all-in-runout behavior, but it is not the authoritative national
-state implementation. M4 must replace or bind that shell to the separately owned
-and frozen `common_contracts/` state/rule oracle before a complete-match claim.
+A1 and A2 do not import each other's strategy code. The Common-authoritative M3
+policy seam is `decisionholdem_like/common_native_entry.py`; it reconstructs
+state and consumes one-shot decision leases through the separately owned
+`common_contracts/` package. It is not yet a socket/deadline product. The older
+`decisionholdem_like/native_entry.py` remains only an explicitly non-authoritative
+packaging prototype and cannot support a complete-match claim.
 
 The next work is M4: train a real HUNL abstraction rather than the Leduc seed
-projection, preserve regrets separately from average strategy, integrate the
-shared national contracts, run complete 70-hand blueprint-only matches, and
+projection, preserve regrets separately from average strategy, productize the
+Common-authoritative entry, run complete 70-hand blueprint-only matches, and
 freeze abstraction/asset hashes. Plain and safe online resolving, off-tree
-action injection and multi-range leaves remain later A2 work. Large training
-must not begin until the shared national contracts and their differential gates
-are integrated.
+action injection and multi-range leaves remain later A2 work. This M3 gate does
+not itself authorize large HUNL training; the parent comparison plan must first
+accept both routes' integration evidence.

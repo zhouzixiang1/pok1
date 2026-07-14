@@ -212,21 +212,44 @@ class LinearCFR:
                 f"checkpoint uses another algorithm: {payload.get('algorithm')}"
             )
         solver = cls()
-        solver.iterations_completed = int(payload["iterations_completed"])
-        if solver.iterations_completed < 0:
+        completed = payload.get("iterations_completed")
+        if type(completed) is not int or completed < 0:
             raise ValueError("checkpoint iteration count must be non-negative")
+        solver.iterations_completed = completed
+        expected = set(all_infosets())
         for field in ("regrets", "strategy_sums"):
-            decoded = {
-                cls._decode_key(key): [float(value) for value in values]
-                for key, values in payload[field].items()
-            }
-            expected = set(all_infosets())
+            raw = payload.get(field)
+            if not isinstance(raw, dict):
+                raise ValueError(f"checkpoint {field} must be an object")
+            decoded: dict[InfoSet, list[float]] = {}
+            for encoded, values in raw.items():
+                try:
+                    key = cls._decode_key(encoded)
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"checkpoint {field} key is invalid: {encoded!r}"
+                    ) from exc
+                if cls._encode_key(key) != encoded:
+                    raise ValueError(f"checkpoint {field} key is not canonical")
+                if key in decoded:
+                    raise ValueError(f"checkpoint {field} repeats decoded infoset {key}")
+                if not isinstance(values, list) or any(
+                    type(value) not in (int, float) for value in values
+                ):
+                    raise ValueError(f"checkpoint {field} row is not numeric at {key}")
+                normalized = [float(value) for value in values]
+                if (
+                    key not in expected
+                    or len(normalized) != len(legal_actions(key[2]))
+                    or any(not isfinite(value) for value in normalized)
+                    or (
+                        field == "strategy_sums"
+                        and any(value < 0.0 for value in normalized)
+                    )
+                ):
+                    raise ValueError(f"checkpoint {field} row is invalid at {key}")
+                decoded[key] = normalized
             if set(decoded) != expected:
                 raise ValueError(f"checkpoint {field} infosets do not match Kuhn")
-            for key, values in decoded.items():
-                if len(values) != len(legal_actions(key[2])):
-                    raise ValueError(f"checkpoint {field} action count is wrong at {key}")
-                if any(not isfinite(value) for value in values):
-                    raise ValueError(f"checkpoint {field} contains non-finite values")
             setattr(solver, field, decoded)
         return solver
