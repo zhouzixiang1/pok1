@@ -1,0 +1,85 @@
+{
+  "authority": {
+    "label_generation_authorized": false,
+    "online_tcp_authorized": false,
+    "training_authorized": false
+  },
+  "cfv": {
+    "combo_count": 1326,
+    "mask_false_output": 0.0,
+    "omit_own_reach": true,
+    "players": 2,
+    "query_common_replay_required": true,
+    "shape": [2, 1326]
+  },
+  "hunl": {
+    "common_replay_defines_terminal_node_kind": true,
+    "exact_zero_sum_abs_tolerance_bb": 1e-10,
+    "payoff_unit": "big_blind_including_past_contributions",
+    "required_micro_oracles": [
+      "fold",
+      "showdown",
+      "river_one_decision",
+      "turn_allin_exact_runout"
+    ],
+    "turn_conditioned_river_count": 44
+  },
+  "leaf_consumer": {
+    "formal_fallback_allowed": false,
+    "formal_model_requires_neural_provider_kind": true,
+    "formal_primary_requires_external_contract_digest": true,
+    "input": "public_state_plus_two_complete_reach_ranges",
+    "known_exact_providers": {
+      "route-b-m5-hunl-fold-oracle-v1": {
+        "callable": {
+          "module": "bots.research_native_lab.cfr_neural_search_m5.cfv.hunl_micro_oracle",
+          "qualified_name": "exact_fold_cfv"
+        },
+        "runtime_dependencies_sha256": "6f50a78ddf1bca18ed85fbb860507700221dcea091c8efcf74d8dc94e3861c56"
+      },
+      "route-b-m5-hunl-river-one-decision-oracle-v1": {
+        "callable": {
+          "module": "bots.research_native_lab.cfr_neural_search_m5.cfv.hunl_micro_oracle",
+          "qualified_name": "exact_river_call_or_fold_cfv"
+        },
+        "runtime_dependencies_sha256": "4de12fc4702b8dcf77188a4f48dc6f3def97c2b7f92e84f58e5e557d3fb61c0c"
+      },
+      "route-b-m5-hunl-showdown-oracle-v1": {
+        "callable": {
+          "module": "bots.research_native_lab.cfr_neural_search_m5.cfv.hunl_micro_oracle",
+          "qualified_name": "exact_showdown_cfv"
+        },
+        "runtime_dependencies_sha256": "bc871f79a2375746aa78fa67e619dadd693ab38de81f805ebdab6706fe271225"
+      },
+      "route-b-m5-hunl-turn-allin-runout-oracle-v1": {
+        "callable": {
+          "module": "bots.research_native_lab.cfr_neural_search_m5.cfv.hunl_micro_oracle",
+          "qualified_name": "exact_turn_allin_runout_cfv"
+        },
+        "runtime_dependencies_sha256": "fe13616e676a440668cb3a31352c1d7924505e9e18b962d87c9ec96f82ffc99f"
+      }
+    },
+    "old_private_state_scalar_leaf_allowed": false,
+    "provider_must_be_content_bound_and_sealed": true,
+    "provider_source_closure_system_owned": true,
+    "runtime_helper_binding_required": true,
+    "runtime_tamper_boundary": "provider_and_recursive_dependencies_with_contract_held_pinned_manifest_builder_not_arbitrary_interpreter_or_consumer_rewrite",
+    "verifier_runtime_manifest_builder": {
+      "callable": {
+        "module": "bots.research_native_lab.cfr_neural_search_m5.solver.range_cfv_contract",
+        "qualified_name": "_runtime_dependency_manifest"
+      },
+      "code_sha256": "31fc63253b3a2df29507faf42990058bf98cb46a8156f19c448fd3edcda945c8",
+      "runtime_dependencies_sha256": "ba459ea89695350d88ef3e395a340d110f1670e77124f0596b83da53f2470b43"
+    }
+  },
+  "schema": "route-b-m5-oracle-gate-contract-v1",
+  "toy": {
+    "finite_difference_epsilon": 1e-7,
+    "finite_difference_max_abs_error": 1e-7,
+    "games": ["kuhn", "leduc"],
+    "one_step_regret_abs_tolerance": 1e-10,
+    "root_value_abs_tolerance": 1e-10,
+    "zero_sum_abs_tolerance": 1e-10
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "m4_manifest": {
+    "payload_sha256": "c90e32ab79d5ad742f2e3af95966db4aa2b55a7cd29fb978c08a160ba9cc7351",
+    "raw_sha256": "1060961a1e5ad2ea0775b62439c74db7273f7e5d5f5fd3ea332ed544dfe469c7",
+    "relative_path": "manifests/m4_gate_20260714.json"
+  },
+  "published_outputs": {
+    "artifacts/m4/blueprint.rbbp": "db4c812fb1dce21c735b5e8cd04f318ef423fbedde0ecdaf1d81a9fcb51c6cac",
+    "artifacts/m4/local_native_evidence.json": "fd9034b8f662d2c7e7376d542ea1f7d2b66085fb0458ced6be0af8fb686f8771",
+    "artifacts/m4/selector_events.jsonl": "ea3274737d4c2583585e095d0a0f5a22ed62c258f78fa04b630614c7b5305082",
+    "artifacts/m4/selector_heartbeat.json": "549b5d162958f3f0cd93ebfdb8ae32d376ebf44bf4c3f164fc0d5b20f1840072",
+    "artifacts/m4/training_scale_selection.json": "fb8e642103625b31fc47ff260f5964c1f8aaa80b890840c90e0c1770468376ed"
+  },
+  "release_commit": "c44dd1eb3379b6749dc88c07cc8a79d6d4f6408c",
+  "release_root_git_tree": "181838ab9cca62aff3193379a5b11b09482ed1e8",
+  "repository_relative_root": "bots/research_native_lab/cfr_neural_search",
+  "schema": "route-b-m5-m4-dependency-v1",
+  "selector_event_tree_sha256": "081c919a4d3f86780f7d137865ded1332cbf02cdc989a585bd6179183bc3c84e",
+  "source_snapshot_sha256": "d9f2067866e27a74766fb5cc5b1edabedd880b22efd48e8869e695853287d312",
+  "tracked_file_count": 117,
+  "tracked_files_payload_sha256": "90db03adb0b6f8a4b9cae621729f0ffb0f75d2bc96e851e6f5e1a68d103bba71",
+  "tracked_paths_payload_sha256": "206dd1d6d13ece7b0e401ef8826eecd0719049aa4cb75ec89ab5cbe8cdf8abeb",
+  "verifier_source_sha256": "b3f59dc873de70f507cf51ed76c078ef4b590c41a6a2871821cad6026a99a398"
+}
+

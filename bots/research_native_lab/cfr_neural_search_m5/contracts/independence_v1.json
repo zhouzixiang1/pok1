@@ -1,0 +1,54 @@
+{
+  "allowed_external_import_roots": [
+    "numpy",
+    "psutil",
+    "safetensors",
+    "torch"
+  ],
+  "allowed_m4_import_modules": [
+    "bots.research_native_lab.cfr_neural_search.blueprint.artifact",
+    "bots.research_native_lab.cfr_neural_search.blueprint.evaluation",
+    "bots.research_native_lab.cfr_neural_search.blueprint.hunl_abstraction",
+    "bots.research_native_lab.cfr_neural_search.blueprint.hunl_game",
+    "bots.research_native_lab.cfr_neural_search.blueprint.hunl_training",
+    "bots.research_native_lab.cfr_neural_search.blueprint.small_games",
+    "bots.research_native_lab.cfr_neural_search.core.game",
+    "bots.research_native_lab.cfr_neural_search.core.identity",
+    "bots.research_native_lab.cfr_neural_search.core.run_journal",
+    "bots.research_native_lab.cfr_neural_search.core.strict_io",
+    "bots.research_native_lab.cfr_neural_search.tools.verify_m4_gate"
+  ],
+  "allowed_native_sever_import_modules": [
+    "sever.engine.validator"
+  ],
+  "allowed_runtime_roots": [
+    "bots/research_native_lab/cfr_neural_search_m5",
+    "bots/research_native_lab/common_contracts"
+  ],
+  "allowed_runtime_m4_files": [
+    "bots/research_native_lab/cfr_neural_search/artifacts/m4/blueprint.rbbp",
+    "bots/research_native_lab/cfr_neural_search/configs/hunl_m4_blueprint.json",
+    "bots/research_native_lab/cfr_neural_search/manifests/m4_gate_20260714.json"
+  ],
+  "allowed_runtime_native_sever_files": [
+    "sever/engine/validator.py"
+  ],
+  "forbidden_dynamic_import_modules": [
+    "importlib",
+    "pkgutil",
+    "runpy",
+    "zipimport"
+  ],
+  "forbidden_import_modules": [
+    "sever.bot_adapter"
+  ],
+  "forbidden_dependency_tokens": [
+    "a1",
+    "decisionholdem",
+    "national_v",
+    "rebel",
+    "route_a"
+  ],
+  "m5_absolute_package": "bots.research_native_lab.cfr_neural_search_m5",
+  "schema": "route-b-m5-independence-v1"
+}

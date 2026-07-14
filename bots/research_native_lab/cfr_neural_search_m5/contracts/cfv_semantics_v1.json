@@ -1,0 +1,68 @@
+{
+  "action_slots": [
+    "fold",
+    "check",
+    "call",
+    "min_raise",
+    "half_pot",
+    "pot",
+    "one_and_half_pot",
+    "all_in"
+  ],
+  "chance_weighting": {
+    "future_cards": "uniform_without_replacement_conditioned_on_public_board_and_both_private_combos",
+    "public_prefix_chance": "already_conditioned_and_must_not_be_multiplied_again"
+  },
+  "forbidden_targets": [
+    "sampled_private_deal_scalar",
+    "scalar_equity_broadcast",
+    "posterior_normalized_conditional_value",
+    "bucket_value_expanded_to_physical_combos",
+    "per_hand_opposite_player_negation"
+  ],
+  "input": {
+    "legal_action_mask_shape": [8],
+    "private_ranges_shape": [2, 1326],
+    "public_state_fields": [
+      "street",
+      "board_card_ids",
+      "small_blind_player",
+      "actor",
+      "pot_bb",
+      "stacks_bb",
+      "street_commitments_bb",
+      "to_call_bb",
+      "min_raise_to_bb",
+      "public_action_history",
+      "legal_action_mask"
+    ],
+    "range_normalization": "each_player_board_legal_nonnegative_sum_one"
+  },
+  "mask": {
+    "false_output": 0.0,
+    "valid_when": "hero_combo_is_board_legal_and_has_positive_compatible_opponent_reach_mass",
+    "zero_own_reach_remains_evaluable": true
+  },
+  "players": 2,
+  "private_combo_index": {
+    "card_ids": "0_through_51",
+    "combo_count": 1326,
+    "registry_payload_sha256": "4534e13c4bd7a32ebb621433f5b08344b2bb81a04f3c78c2840cd9362bddf89a",
+    "registry_reference": "bots.research_native_lab.common_contracts.cards.all_hole_combinations",
+    "ordering": "lexicographic_first_card_then_second_card",
+    "pair_constraint": "first_card_less_than_second_card"
+  },
+  "schema": "route-b-range-cfv-semantics-v1",
+  "target": {
+    "equation": "C_i(h_i)=sum_h_minus_i K(h_i,h_minus_i)*beta_minus_i(h_minus_i)*E[u_i_div_big_blind]",
+    "omit_own_reach": true,
+    "payoff_origin": "net_chips_from_current_hand_including_past_contributions",
+    "payoff_unit": "big_blind",
+    "shape": [2, 1326]
+  },
+  "zero_sum": {
+    "equation": "dot(beta_0,C_0)+dot(beta_1,C_1)=0",
+    "raw_and_deployed_residuals_required": true,
+    "tolerance_bb": 1e-06
+  }
+}
