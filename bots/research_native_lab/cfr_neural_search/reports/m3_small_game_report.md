@@ -2,6 +2,8 @@
 
 日期：2026-07-12（Asia/Shanghai）
 
+> 2026-07-14 状态说明：本文保留初始 M3 历史数字。Common `cc8beed2` 已在随后合入，当前测试数、严格输入门、Common 内容绑定和当前文件 SHA 以 `m3_common_integration_gate_2026-07-14.md` / `manifests/m3_gate_20260714.json` 为准；下文“Common 尚未合入”和旧文件 SHA 只描述当时提交。
+
 base：`6ee160c93cee8d0afdad111c4c82bc6ddb6012ca`
 
 分支：`codex/research-cfr-neural-search`
@@ -11,7 +13,7 @@ base：`6ee160c93cee8d0afdad111c4c82bc6ddb6012ca`
 - **M0 来源/许可证门：通过。** 原论文、官方页面、OpenSpiel 固定 commit 与许可证已进入可审计矩阵。
 - 来源 registry SHA-256：`decd4aff03b70577ede9696f7daa091f9bc745446bcc6416c469f5e13807df8f`。
 - **M3 小型博弈算法门：通过。** Kuhn 解析均衡、Leduc 完整树、exact best response、External-Sampling MCCFR、Linear/CFR+/DCFR、checkpoint/resume 和 deterministic shard 均有自动测试与实测证据。2026-07-13 的独立复核又补入 full-tree sampling 对拍、OpenSpiel 非均匀策略对拍、depth-limited leaf 合同和 exact Kuhn safe-replacement 证书。
-- **M1/M2 国赛共同合同门：不在本分支所有权内，仍为后续硬前置。** 本结论不授权 HUNL 大训练，不代表 NationalGameState/TCP oracle 已通过。
+- **当时 M1/M2 尚未合入；2026-07-14 已由 `cc8beed2` 取代此状态。** 当前 B 路线通过内容绑定的 adapter 消费 Common NationalGameState/Action/LegalActionSet；这仍不授权 HUNL 大训练。
 - **未实现**：HUNL blueprint、神经反事实叶值、可扩展 HUNL safe/continual solving、动态 sizing、对手后验、70 手控制器和 native TCP Bot。新增的小型 safe resolver 不能冒充这些模块。
 
 ## 2. P0 DCFR 审核与纠正
@@ -141,7 +143,7 @@ python -m bots.research_native_lab.cfr_neural_search.tools.train_small_game \
   --config bots/research_native_lab/cfr_neural_search/configs/leduc_m3_dcfr.json
 ```
 
-初次提交结果：默认 Python 3.14.4 为 21/21 tests passed（7.936s）；系统 Python 3.12.3 为 21/21 passed（10.629s）。2026-07-13 严格复核扩展为 38 tests，准确命令、数值和依赖哈希见 `m3_audit_2026-07-13.md`；旧 18-test 运行不作为最终证据。
+初次提交结果：默认 Python 3.14.4 为 21/21 tests passed（7.936s）；系统 Python 3.12.3 为 21/21 passed（10.629s）。2026-07-13 严格复核扩展为 38 tests；2026-07-14 Common 集成与 fail-closed 加固后为 57 tests + 44 subtests。准确当前命令、数值和依赖哈希见最终 Common 集成报告；旧运行只作历史证据。
 
 ## 8. 已知限制与下一门
 
@@ -150,7 +152,7 @@ python -m bots.research_native_lab.cfr_neural_search.tools.train_small_game \
 3. Leduc 已用隔离安装的 OpenSpiel 1.6.15 对拍树、均匀策略和确定性非均匀策略；该依赖仍不进入运行时，且官方 wheel 与 source registry 固定 commit 是两份分别记录的证据。
 4. exact best response 只适合小型树，不是未来 HUNL exploitability oracle。
 5. 没有创建、训练或提交任何 HUNL 大资产。
-6. 下一步必须等待共同 M1/M2 的 NationalGameState、合法动作和 TCP 状态合同冻结，然后才能实现 B blueprint-only Bot；不能直接跳到神经网络。
+6. Common M1/M2 已内容绑定合入；下一步仍须在 M4 实现 blueprint-only vertical slice、decision lease/deadline/resource/wire 接线，不能直接跳到神经网络。
 7. 当前 depth-limited leaf 是完整私有状态上的 tabular correctness interface；当前 safe certificate 依赖 Kuhn 完整 exact BR。二者都不是 range-conditioned HUNL leaf/gadget，M7 前必须重新证明。
 
 ## 9. 阶段门判定

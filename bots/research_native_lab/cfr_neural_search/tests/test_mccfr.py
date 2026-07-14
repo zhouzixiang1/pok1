@@ -92,14 +92,19 @@ class MCCFRTest(unittest.TestCase):
             any(state.regrets[key] != state.strategy_sum[key] for key in state.actions)
         )
 
-    def test_leduc_exploitability_improves_over_uniform(self):
+    def test_all_update_rules_improve_leduc_over_uniform(self):
         game = LeducPoker()
         uniform = exploitability(game, {}).exploitability
-        state = SolverState(game.name, SolverConfig(update_rule="linear", seed=23))
-        train_batches(game, state, batches=1500)
-        trained = exploitability(game, average_policy(state)).exploitability
-        self.assertLess(trained, uniform * 0.35)
-        self.assertLess(trained, 0.75)
+        for rule in ("linear", "cfr_plus", "dcfr"):
+            with self.subTest(rule=rule):
+                state = SolverState(
+                    game.name,
+                    SolverConfig(update_rule=rule, seed=23),
+                )
+                train_batches(game, state, batches=1000)
+                trained = exploitability(game, average_policy(state)).exploitability
+                self.assertLess(trained, uniform * 0.35)
+                self.assertLess(trained, 0.75)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import itertools
+import math
 import unittest
+from unittest.mock import patch
 
 from bots.research_native_lab.cfr_neural_search.blueprint.evaluation import (
+    BestResponseResult,
     best_response,
     expected_returns,
     exploitability,
@@ -41,6 +44,58 @@ def kuhn_equilibrium_policy():
 
 
 class EvaluationTest(unittest.TestCase):
+    def test_absent_policy_rows_are_the_only_uniform_fallback(self):
+        self.assertEqual(expected_returns(KuhnPoker(), {}), (0.12500000000000003, -0.12500000000000003))
+        malformed_rows = (
+            {_key(0, 0, ()): {CHECK: -0.1, BET: 1.1}},
+            {_key(0, 0, ()): {CHECK: math.nan, BET: math.nan}},
+            {_key(0, 0, ()): {}},
+            {_key(0, 0, ()): {CHECK: 1.0}},
+            {_key(0, 0, ()): {CHECK: 0.4, BET: 0.4}},
+            {_key(0, 0, ()): {CHECK: True, BET: False}},
+            {_key(0, 0, ()): {CHECK: "0.5", BET: "0.5"}},
+            {_key(0, 0, ()): {CHECK: 0.5, BET: 0.5, "unknown": 0.0}},
+            {_key(0, 0, ()): {CHECK: 0.5, BET: 0.5}},
+        )
+        for policy in malformed_rows:
+            with self.subTest(policy=policy):
+                with self.assertRaises(ValueError):
+                    expected_returns(KuhnPoker(), policy)
+                with self.assertRaises(ValueError):
+                    exploitability(KuhnPoker(), policy)
+
+        complete_with_garbage = kuhn_equilibrium_policy()
+        complete_with_garbage["garbage:unreachable"] = {CHECK: 0.5, BET: 0.5}
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            expected_returns(KuhnPoker(), complete_with_garbage)
+
+    def test_materially_negative_nashconv_fails_and_tiny_noise_is_recorded(self):
+        on_policy = expected_returns(KuhnPoker(), {})
+        material = (
+            BestResponseResult(0, on_policy[0] - 1e-4, {}, {}),
+            BestResponseResult(1, on_policy[1], {}, {}),
+        )
+        with patch(
+            "bots.research_native_lab.cfr_neural_search.blueprint.evaluation.best_response",
+            side_effect=material,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "materially negative"):
+                exploitability(KuhnPoker(), {})
+
+        tiny = (
+            BestResponseResult(0, on_policy[0] - 5e-13, {}, {}),
+            BestResponseResult(1, on_policy[1], {}, {}),
+        )
+        with patch(
+            "bots.research_native_lab.cfr_neural_search.blueprint.evaluation.best_response",
+            side_effect=tiny,
+        ):
+            result = exploitability(KuhnPoker(), {})
+        self.assertEqual(result.player_improvements, (0.0, 0.0))
+        self.assertAlmostEqual(result.raw_player_improvements[0], -5e-13, places=16)
+        self.assertEqual(result.raw_player_improvements[1], 0.0)
+        self.assertTrue(result.numerical_tolerance_clamped)
+
     def test_exact_kuhn_equilibrium(self):
         result = exploitability(KuhnPoker(), kuhn_equilibrium_policy())
         self.assertAlmostEqual(result.on_policy_returns[0], -1 / 18, places=12)

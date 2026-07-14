@@ -16,6 +16,12 @@ from bots.research_native_lab.cfr_neural_search.blueprint.evaluation import (
     expected_returns,
     exploitability,
 )
+from bots.research_native_lab.cfr_neural_search.blueprint.mccfr import (
+    SolverConfig,
+    SolverState,
+    average_policy,
+    train_batches,
+)
 from bots.research_native_lab.cfr_neural_search.blueprint.small_games import (
     CALL,
     CHECK,
@@ -225,6 +231,53 @@ def _nonuniform_leduc_crosscheck(game) -> dict[str, object]:
     }
 
 
+def _trained_leduc_crosscheck(game) -> dict[str, object]:
+    """Evaluate one frozen MCCFR result with OpenSpiel's independent BR code."""
+
+    from open_spiel.python.algorithms import expected_game_score
+    from open_spiel.python.algorithms import exploitability as spiel_exploitability
+
+    route_game = LeducPoker()
+    config = SolverConfig(
+        update_rule="linear",
+        averaging_mode="sampled",
+        seed=23,
+        samples_per_player=1,
+    )
+    state = SolverState(route_game.name, config)
+    train_batches(route_game, state, batches=500, shard_count=1)
+    route_policy = average_policy(state)
+    if len(route_policy) != 288:
+        raise ValueError(
+            "frozen trained cross-check did not discover all 288 route infosets"
+        )
+    spiel_policy = _open_spiel_leduc_policy(game, route_policy)
+    route_value = expected_returns(route_game, route_policy)
+    route_result = exploitability(route_game, route_policy)
+    spiel_value = expected_game_score.policy_value(
+        game.new_initial_state(),
+        [spiel_policy, spiel_policy],
+    )
+    spiel_nash_conv = float(spiel_exploitability.nash_conv(game, spiel_policy))
+    return {
+        "algorithm": "synchronous_external_sampling_mccfr",
+        "update_rule": config.update_rule,
+        "seed": config.seed,
+        "batches": 500,
+        "samples_per_player": config.samples_per_player,
+        "shards": 1,
+        "trajectories": state.trajectories,
+        "information_states": len(route_policy),
+        "state_sha256": state.digest,
+        "route_value": list(route_value),
+        "open_spiel_value": [float(item) for item in spiel_value],
+        "route_nash_conv": route_result.nash_conv,
+        "open_spiel_nash_conv": spiel_nash_conv,
+        "route_exploitability": route_result.exploitability,
+        "open_spiel_exploitability": spiel_nash_conv / 2.0,
+    }
+
+
 def _close(first: float, second: float) -> bool:
     return abs(first - second) <= 1e-12
 
@@ -255,6 +308,9 @@ def main(argv: list[str] | None = None) -> int:
         pyspiel.load_game("leduc_poker", {"suit_isomorphism": True})
     )
     nonuniform_leduc = _nonuniform_leduc_crosscheck(
+        pyspiel.load_game("leduc_poker", {"suit_isomorphism": False})
+    )
+    trained_leduc = _trained_leduc_crosscheck(
         pyspiel.load_game("leduc_poker", {"suit_isomorphism": False})
     )
 
@@ -305,6 +361,25 @@ def main(argv: list[str] | None = None) -> int:
             float(nonuniform_leduc["route_exploitability"]),
             float(nonuniform_leduc["open_spiel_exploitability"]),
         ),
+        "leduc_trained_policy_value": all(
+            _close(
+                float(trained_leduc["route_value"][index]),
+                float(trained_leduc["open_spiel_value"][index]),
+            )
+            for index in (0, 1)
+        ),
+        "leduc_trained_policy_br_exploitability": _close(
+            float(trained_leduc["route_nash_conv"]),
+            float(trained_leduc["open_spiel_nash_conv"]),
+        )
+        and _close(
+            float(trained_leduc["route_exploitability"]),
+            float(trained_leduc["open_spiel_exploitability"]),
+        ),
+        "leduc_trained_policy_improves_uniform": (
+            float(trained_leduc["open_spiel_exploitability"])
+            < float(spiel_leduc_physical["uniform_exploitability"])
+        ),
     }
     payload = {
         "open_spiel_version": version,
@@ -315,6 +390,7 @@ def main(argv: list[str] | None = None) -> int:
             "leduc_suit_isomorphic": spiel_leduc_isomorphic,
         },
         "nonuniform_leduc": nonuniform_leduc,
+        "trained_leduc": trained_leduc,
         "checks": checks,
         "passed": all(checks.values()),
     }

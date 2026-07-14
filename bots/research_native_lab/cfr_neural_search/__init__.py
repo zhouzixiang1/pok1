@@ -1,8 +1,8 @@
 """Project-native CFR, neural leaf value, and online-search research route.
 
-The current milestone intentionally exposes only the small-game correctness
-foundation.  National HUNL assets and production runtime code are deferred
-until the exact-rule and small-game gates pass.
+The current milestone exposes the small-game correctness foundation plus a
+Common-typed policy entry seam.  National HUNL assets, a policy implementation,
+and production TCP runtime code remain deferred.
 """
 
-__all__ = ["blueprint", "core"]
+__all__ = ["blueprint", "core", "native_runtime"]

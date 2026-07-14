@@ -1,16 +1,19 @@
-"""Exact small-game safety certificate for a Kuhn public-history resolve.
+"""Exact oracle-certified replacement for a Kuhn public-history resolve.
 
 The resolver changes only player 0's continuation after ``check, bet``.  It
-preserves every strategy outside that public subtree and certifies that player
+preserves every strategy outside that public subtree and checks that player
 1's counterfactual best-response value at each top information set does not
-increase.  Because the game is small, the certificate also recomputes global
-exploitability.  This is a clean-room, exact-terminal correctness scaffold;
-it is not a scalable HUNL resolving gadget.
+increase.  Independently, a complete-game exploitability oracle is used as a
+falsifier and is part of acceptance.  This is a clean-room, exact-terminal
+functional adaptation; it neither proves that the local constraints alone are
+sufficient in another game nor implements a scalable HUNL resolving gadget.
 """
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 import math
 from dataclasses import dataclass
 from typing import Iterable
@@ -74,13 +77,41 @@ def _canonical_policy(policy: BehaviorPolicy) -> dict[str, dict[Action, float]]:
         unknown_actions = set(raw) - set(legal)
         if unknown_actions:
             raise ValueError(f"policy contains illegal actions at {key}: {unknown_actions!r}")
+        if any(type(value) not in (int, float) for value in raw.values()):
+            raise TypeError(
+                f"policy probabilities at {key} must be numeric, not bool/string"
+            )
         if any(
             not math.isfinite(float(value)) or float(value) < 0.0
             for value in raw.values()
         ):
             raise ValueError(f"policy contains invalid probabilities at {key}")
-        result[key] = action_probabilities(policy, key, legal)
+        # The safe-resolve convenience API explicitly expands omitted rows to
+        # uniform before handing a complete profile to the strict evaluator.
+        source: BehaviorPolicy = {key: raw} if key in policy else {}
+        result[key] = action_probabilities(source, key, legal)
     return result
+
+
+def _policy_sha256(policy: BehaviorPolicy) -> str:
+    """Hash a complete normalized Kuhn policy for certificate attachment."""
+
+    canonical = _canonical_policy(policy)
+    payload: dict[str, dict[str, float]] = {}
+    for key, vector in sorted(canonical.items()):
+        if not all(isinstance(action, str) for action in vector):
+            raise TypeError("Kuhn safety certificate requires string actions")
+        payload[key] = {
+            str(action): vector[action]
+            for action in sorted(vector, key=str)
+        }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def kuhn_check_replacement_policy(
@@ -89,7 +120,10 @@ def kuhn_check_replacement_policy(
 ) -> dict[str, dict[Action, float]]:
     """Return a complete policy with only the three check-bet responses changed."""
 
-    probabilities = tuple(float(value) for value in call_probabilities)
+    raw_probabilities = tuple(call_probabilities)
+    if any(type(value) not in (int, float) for value in raw_probabilities):
+        raise TypeError("call probabilities must be numeric, not bool/string")
+    probabilities = tuple(float(value) for value in raw_probabilities)
     if len(probabilities) != 3:
         raise ValueError("exactly three rank-conditioned call probabilities are required")
     if any(not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in probabilities):
@@ -109,8 +143,101 @@ class CounterfactualSafetyMargin:
 
 
 @dataclass(frozen=True, slots=True)
-class SafeResolveCertificate:
+class KuhnSafetyConstraint:
+    """Exact opponent opt-out bounds for the replaced public subtree.
+
+    A scalable safe resolver normally realizes these bounds with a resolving
+    gadget.  This M3 small-game implementation enforces the equivalent three
+    top-infoset inequalities by exhaustive filtering.  Naming the constraint
+    explicitly prevents the exact Kuhn filter from being mistaken for a HUNL
+    gadget implementation.
+    """
+
+    blueprint_policy_sha256: str
+    opponent_player: int
+    information_states: tuple[str, ...]
+    maximum_counterfactual_values: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.blueprint_policy_sha256) is not str
+            or len(self.blueprint_policy_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.blueprint_policy_sha256
+            )
+        ):
+            raise ValueError("blueprint policy binding must be lowercase SHA-256")
+        if type(self.opponent_player) is not int or self.opponent_player != 1:
+            raise ValueError("Kuhn check-response constraint protects player 1")
+        if type(self.information_states) is not tuple or any(
+            type(key) is not str for key in self.information_states
+        ):
+            raise TypeError("safety constraint information states must be strings")
+        if type(self.maximum_counterfactual_values) is not tuple:
+            raise TypeError("safety constraint values must be a tuple")
+        if len(self.information_states) != len(self.maximum_counterfactual_values):
+            raise ValueError("safety constraint keys and values must align")
+        if not self.information_states or len(set(self.information_states)) != len(
+            self.information_states
+        ):
+            raise ValueError("safety constraint information states must be unique")
+        if self.information_states != KUHN_CHECK_TOP_KEYS:
+            raise ValueError("safety constraint must bind the three Kuhn top infosets")
+        if any(
+            type(value) not in (int, float)
+            for value in self.maximum_counterfactual_values
+        ):
+            raise TypeError("safety constraint values must be numeric, not bool/string")
+        if any(not math.isfinite(value) for value in self.maximum_counterfactual_values):
+            raise ValueError("safety constraint values must be finite")
+
+    @property
+    def sha256(self) -> str:
+        encoded = json.dumps(
+            {
+                "blueprint_policy_sha256": self.blueprint_policy_sha256,
+                "opponent_player": self.opponent_player,
+                "information_states": list(self.information_states),
+                "maximum_counterfactual_values": list(
+                    self.maximum_counterfactual_values
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
+def build_kuhn_check_safety_constraint(
+    blueprint: BehaviorPolicy,
+) -> KuhnSafetyConstraint:
+    """Freeze the baseline opponent CBV bounds used by the exact filter."""
+
+    baseline_policy = _canonical_policy(blueprint)
+    response = best_response(KuhnPoker(), baseline_policy, 1)
+    return KuhnSafetyConstraint(
+        blueprint_policy_sha256=_policy_sha256(baseline_policy),
+        opponent_player=1,
+        information_states=KUHN_CHECK_TOP_KEYS,
+        maximum_counterfactual_values=tuple(
+            response.counterfactual_values[key] for key in KUHN_CHECK_TOP_KEYS
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class OracleCertifiedKuhnResolveCertificate:
+    """Toy certificate requiring both local constraints and a global oracle."""
+
     accepted: bool
+    local_cbv_constraints_satisfied: bool
+    global_exploitability_oracle_satisfied: bool
+    resolver_best_response_invariant: bool
+    constraint: KuhnSafetyConstraint
+    candidate_policy_sha256: str
+    tolerance: float
     margins: tuple[CounterfactualSafetyMargin, ...]
     baseline_exploitability: float
     candidate_exploitability: float
@@ -122,18 +249,27 @@ class SafeResolveCertificate:
         return min(item.margin for item in self.margins)
 
 
+# Backward-compatible spelling for the already published M3 API.  The actual
+# class name deliberately exposes that this is an oracle-certified Kuhn toy,
+# not a transferable safe-solving proof.
+SafeResolveCertificate = OracleCertifiedKuhnResolveCertificate
+
+
 def certify_kuhn_check_replacement(
     blueprint: BehaviorPolicy,
     candidate: BehaviorPolicy,
     *,
     tolerance: float = 1e-12,
 ) -> SafeResolveCertificate:
-    """Certify a continuation replacement against exact top-infoset CBVs."""
+    """Oracle-certify a continuation against exact top-infoset CBVs."""
 
+    if type(tolerance) not in (int, float):
+        raise TypeError("tolerance must be numeric, not bool/string")
     if not math.isfinite(tolerance) or tolerance < 0.0:
         raise ValueError("tolerance must be finite and nonnegative")
     baseline_policy = _canonical_policy(blueprint)
     candidate_policy = _canonical_policy(candidate)
+    constraint = build_kuhn_check_safety_constraint(baseline_policy)
 
     for key, baseline_distribution in baseline_policy.items():
         if key in KUHN_CHECK_RESPONSE_KEYS:
@@ -157,27 +293,44 @@ def certify_kuhn_check_replacement(
     margins = tuple(
         CounterfactualSafetyMargin(
             information_state=key,
-            baseline_value=baseline_responses[1].counterfactual_values[key],
+            baseline_value=maximum,
             candidate_value=candidate_responses[1].counterfactual_values[key],
             margin=(
-                baseline_responses[1].counterfactual_values[key]
-                - candidate_responses[1].counterfactual_values[key]
+                maximum - candidate_responses[1].counterfactual_values[key]
             ),
         )
-        for key in KUHN_CHECK_TOP_KEYS
+        for key, maximum in zip(
+            constraint.information_states,
+            constraint.maximum_counterfactual_values,
+            strict=True,
+        )
     )
     baseline_exploitability = exploitability(game, baseline_policy).exploitability
     candidate_exploitability = exploitability(game, candidate_policy).exploitability
     player_zero_unchanged = (
         abs(candidate_responses[0].value - baseline_responses[0].value) <= tolerance
     )
+    local_cbv_constraints_satisfied = all(
+        item.margin >= -tolerance for item in margins
+    )
+    global_exploitability_oracle_satisfied = (
+        candidate_exploitability <= baseline_exploitability + tolerance
+    )
     accepted = (
         player_zero_unchanged
-        and all(item.margin >= -tolerance for item in margins)
-        and candidate_exploitability <= baseline_exploitability + tolerance
+        and local_cbv_constraints_satisfied
+        and global_exploitability_oracle_satisfied
     )
     return SafeResolveCertificate(
         accepted=accepted,
+        local_cbv_constraints_satisfied=local_cbv_constraints_satisfied,
+        global_exploitability_oracle_satisfied=(
+            global_exploitability_oracle_satisfied
+        ),
+        resolver_best_response_invariant=player_zero_unchanged,
+        constraint=constraint,
+        candidate_policy_sha256=_policy_sha256(candidate_policy),
+        tolerance=tolerance,
         margins=margins,
         baseline_exploitability=baseline_exploitability,
         candidate_exploitability=candidate_exploitability,
@@ -197,7 +350,7 @@ class KuhnResolveResult:
     mode: str
     call_probabilities: tuple[float, float, float]
     policy: dict[str, dict[Action, float]]
-    certificate: SafeResolveCertificate
+    certificate: OracleCertifiedKuhnResolveCertificate
     resolver_value: float
     candidates_considered: int
     safe_candidates: int
@@ -219,7 +372,10 @@ def resolve_kuhn_check_subgame(
 
     if mode not in {"plain", "safe"}:
         raise ValueError("mode must be 'plain' or 'safe'")
-    grid = tuple(sorted(set(float(value) for value in probability_grid)))
+    raw_grid = tuple(probability_grid)
+    if any(type(value) not in (int, float) for value in raw_grid):
+        raise TypeError("probability_grid values must be numeric, not bool/string")
+    grid = tuple(sorted(set(float(value) for value in raw_grid)))
     if not grid or any(
         not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in grid
     ):

@@ -1,0 +1,246 @@
+{
+  "schema_version": 2,
+  "gate": "route_b_m3_common_integration",
+  "audit_date": "2026-07-14",
+  "status": "passed_local_m3_only",
+  "route": {
+    "branch": "codex/research-cfr-neural-search",
+    "working_tree_base_head": "042272193bca620e25decf8850fc726edf2e6fb9",
+    "implementation_policy": "clean-room; no external solver source copied",
+    "m4_or_hunl_started": false
+  },
+  "common_dependency": {
+    "commit": "cc8beed256024fadd1cf89b0e40dcdea6a5c959d",
+    "git_tree": "9cfa297b8c61024154990c775962d67aa3f0543b",
+    "contract_version": "national-research-contract-v1",
+    "critical_files": {
+      "__init__.py": "5b843901602df8299f3fd845b346385fa6ff87c9aa807ef0023abf55ff8ff384",
+      "actions.py": "69d1f5667f35ef7db3092f8afc358d8fa14f26f430246983caac8d1ac43dacaa",
+      "cards.py": "492e89baf3b1db4f9b87f62d5f63964e22fdc998e27928c8bcb75bec6df52bce",
+      "constants.py": "8f7116becae35ccbdf6d1ff5004a7b07dec7b6ac793ecb6d55bd05ffc8818783",
+      "national_state.py": "6bdb467fcedf114948843419ffdf58abd8c5e545243fb6b63a15d6be6d02dbc4",
+      "protocol.py": "ec325068ebf905b7dcd30f180e4b6dc941b1260bba788800b48ca7ba798c5a0c",
+      "contracts/national_game_v1.json": "e23831c0e83349a576658938b450b044cf527a1c4452284b6efa21445c09ffab"
+    },
+    "enforcement": "generator and verifier hash every critical file and the complete Common Git tree; byte drift reopens the M3 integration gate"
+  },
+  "test_runs": [
+    {
+      "runtime": "Python 3.12 venv /home/zzx/.cache/pok-research-py312/bin/python",
+      "command": "PYTHONDONTWRITEBYTECODE=1 /home/zzx/.cache/pok-research-py312/bin/python -m pytest -p no:cacheprovider bots/research_native_lab/cfr_neural_search/tests -q",
+      "result": "72 passed, 80 subtests passed",
+      "pytest_seconds": 173.9,
+      "wall_seconds": 174.02,
+      "max_rss_kib": 49500
+    },
+    {
+      "runtime": "Python 3.14.4",
+      "command": "PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider bots/research_native_lab/cfr_neural_search/tests -q",
+      "result": "72 passed, 80 subtests passed",
+      "pytest_seconds": 156.77,
+      "wall_seconds": 156.93,
+      "max_rss_kib": 81928
+    },
+    {
+      "runtime": "Python 3.12 venv",
+      "command": "PYTHONDONTWRITEBYTECODE=1 /home/zzx/.cache/pok-research-py312/bin/python -m pytest -p no:cacheprovider bots/research_native_lab/common_contracts/tests/test_national_state.py bots/research_native_lab/common_contracts/tests/test_protocol.py bots/research_native_lab/cfr_neural_search/tests/test_common_adapter.py -q",
+      "result": "35 passed, 16 subtests passed",
+      "pytest_seconds": 0.21,
+      "wall_seconds": 0.32,
+      "max_rss_kib": 33912
+    }
+  ],
+  "frozen_training_runs": [
+    {
+      "batches": 5000,
+      "config": "configs/kuhn_m3_linear.json",
+      "config_sha256": "751782b57eefec23cf84ae38e143402c6e2e557efba9a8761c0f8249e8374b76",
+      "exploitability": 0.0076135008838882495,
+      "infosets_seen": 12,
+      "node_touches": 291457,
+      "shards": 4,
+      "state_sha256": "9d8a7b3178b7b76f022b62938636452863960e9edd657b52b82bf631b5957f3c",
+      "trajectories": 40000
+    },
+    {
+      "batches": 5000,
+      "config": "configs/leduc_m3_linear.json",
+      "config_sha256": "a8a0a3a4c17595cb714536cec37c9e3095b511df5da5b92a4c7dc2505997c6a6",
+      "exploitability": 0.09552601297147507,
+      "infosets_seen": 288,
+      "node_touches": 898403,
+      "shards": 4,
+      "state_sha256": "91a74660c1118a7523331efbe873bd20a76b8589fbbfc8eef97db41cc2b1bb28",
+      "trajectories": 40000
+    },
+    {
+      "batches": 5000,
+      "config": "configs/leduc_m3_dcfr.json",
+      "config_sha256": "bff9f7d9ba3a19201be6c1b56a17cd13445232e3860cd481960ced34ca514fff",
+      "exploitability": 0.15524020236904076,
+      "infosets_seen": 288,
+      "node_touches": 892964,
+      "shards": 4,
+      "state_sha256": "effd5fe427db657d0ff50b1c91b4d91ba69780bc2246fb7769caec1f6964ff14",
+      "trajectories": 40000
+    }
+  ],
+  "independent_reference": {
+    "name": "open-spiel",
+    "version": "1.6.15",
+    "license": "Apache-2.0",
+    "runtime_or_delivery_dependency": false,
+    "wheel_sha256": "7b2814bf39f2ab9302723af1f3934c842cefa9371ec77b1ebf8400fb917df793",
+    "command": "PYTHONPATH=/tmp/pok-open-spiel-1.6.15 PYTHONDONTWRITEBYTECODE=1 /home/zzx/.cache/pok-research-py312/bin/python -m bots.research_native_lab.cfr_neural_search.tools.crosscheck_open_spiel --expected-version 1.6.15",
+    "checks_passed": 10,
+    "checks_total": 10,
+    "trained_leduc": {
+      "batches": 500,
+      "trajectories": 1000,
+      "information_states": 288,
+      "state_sha256": "0b5f2d6094a43cae5104657828b1572a8208328744f0fbdfd7fd0ba4274370a8",
+      "route_value": [
+        -0.08158124598773397,
+        0.08158124598773397
+      ],
+      "open_spiel_value": [
+        -0.08158124598773397,
+        0.08158124598773397
+      ],
+      "route_nash_conv": 1.9753252933862577,
+      "open_spiel_nash_conv": 1.9753252933862577,
+      "route_exploitability": 0.9876626466931289,
+      "open_spiel_exploitability": 0.9876626466931289,
+      "interpretation": "correctness cross-check only; not a strength claim",
+      "algorithm": "synchronous_external_sampling_mccfr",
+      "samples_per_player": 1,
+      "seed": 23,
+      "shards": 1,
+      "update_rule": "linear"
+    },
+    "resolved_audit_environment": {
+      "absl-py": "2.5.0",
+      "attrs": "26.1.0",
+      "ml_collections": "1.1.0",
+      "numpy": "2.5.1",
+      "open-spiel": "1.6.15",
+      "PyYAML": "6.0.3",
+      "scipy": "1.18.0"
+    }
+  },
+  "artifact_scope": {
+    "root": "bots/research_native_lab/cfr_neural_search",
+    "excluded": [
+      "manifests/m3_gate_20260714.json"
+    ],
+    "reason_for_exclusion": "manifest cannot contain its own SHA-256",
+    "files": {
+      "README.md": "89fb4f9f5ed22a918f43d981e38adb8d45814977d8addf64b26d57f0539fccc1",
+      "__init__.py": "d7a8d1dd8a6488e30957427e5bea63c04ebaf7fc6c944b691649a66423a86114",
+      "blueprint/__init__.py": "82c0be20f7ec20aeac56e318d82b06fcca4fd8838508275170078c9d27479f72",
+      "blueprint/evaluation.py": "e21109e0afcda70f51ce054b41c75cad63f88a737a6c9885385f72f3030fba28",
+      "blueprint/mccfr.py": "4755aaabd31612e886492f8b9fa1224df825339d5ef7307450dd5e595cd22588",
+      "blueprint/small_games.py": "c5117c9d1d34538dff49d7212cbd0dfc6f100fb8cad6d7ab48cf45c2d7bf0b34",
+      "configs/kuhn_m3_linear.json": "751782b57eefec23cf84ae38e143402c6e2e557efba9a8761c0f8249e8374b76",
+      "configs/leduc_m3_dcfr.json": "bff9f7d9ba3a19201be6c1b56a17cd13445232e3860cd481960ced34ca514fff",
+      "configs/leduc_m3_linear.json": "a8a0a3a4c17595cb714536cec37c9e3095b511df5da5b92a4c7dc2505997c6a6",
+      "core/__init__.py": "08f7cea84d9624cc7b4a323c640405d301b09b1e451fdbc30f14f1d96cd24d5e",
+      "core/game.py": "e51c6987afd476aa98f2c0b39c857bb3841b9946f3e69bec5f48a56f57fabc1e",
+      "leaf_value/__init__.py": "4e348bfb367c3fca58df61bc866ea7b191d31dfdbd6240ba271e7f51f36fde26",
+      "manifests/m3_audit_dependencies.json": "a8e7b6d371acd1273055e33374860b96156dd25bbaeba02225b731e2819c5a55",
+      "manifests/source_registry.json": "decd4aff03b70577ede9696f7daa091f9bc745446bcc6416c469f5e13807df8f",
+      "match_controller/__init__.py": "7d8dd0d3a4725d00bf79ad200c5ac914a4e6d7ebc28bd7f5acd0b055d4cf0053",
+      "native_runtime/__init__.py": "7b94986bb5e1793b843fb947c672fe92e9c4eae1822f873e9a27e5133bb84b4f",
+      "native_runtime/common_adapter.py": "a435962ae2c7299b691e689f93048362c59926190b9daa522ef24e933663756f",
+      "online_solver/__init__.py": "8c227c97f6e054a92b848d2ce2f99c20cc54dcde5ef0d356a703b87deaa77a78",
+      "online_solver/depth_limited.py": "0ff8e999ba421fd90829c7f51c804aa6b2e6f49fb0c3f057ea302435a9695446",
+      "online_solver/safe_resolve.py": "7e385e3bb3603c3c6d0650c8dc366844536dd6fb6fcad4f4259c6107c2b224e5",
+      "opponent_model/__init__.py": "12aa3214e64e66fb9a019ae7b9246ecb7645f88bcc37a937f138b0d498f8b75b",
+      "reports/m0_environment_audit.md": "4400ac37bb272c9250f21efdad6a80064430f5c9108e12a7747f7aced85fa504",
+      "reports/m0_research_license_matrix.md": "243981dbb1bcbc20ea9a4ee95b75ae6075dc06c187c03a3ab8e80894e059ffa0",
+      "reports/m3_audit_2026-07-13.md": "c031a08dbf8442b14d3a63ac0a2a56e86899bf8cdeebf6e456fb7519937ca677",
+      "reports/m3_common_integration_gate_2026-07-14.md": "a66f9fe51a3649bfd05464fef34ae8edf1f9416bf2fdf274e7b1b3ead3d06c21",
+      "reports/m3_small_game_report.md": "40843d758149cd9ffc10fd37d33bdee6f634bb5cdc612ea6580dcd095e2c8de6",
+      "tests/__init__.py": "a5cbe9292a45ccc59c758e0e2fb0f2d7ccc36f618b3ea39f2070e6369922b565",
+      "tests/test_checkpoint_shards.py": "0bed69802f379864c855ffea61b384539f077df0e66d00a1bd08881adb0364e9",
+      "tests/test_common_adapter.py": "d945b15249ab274d77fafdeb8c81f2d7fd0e3dbb03505cb0f6b67e674306cd10",
+      "tests/test_depth_limited.py": "2212917c9921d9f93c5579068f2cf687ac0c7b512739649112696659609844f3",
+      "tests/test_evaluation.py": "4285b1c602e498c3421f8c3dd60a0010c9c48e4a6248f9ed51befa5d70f92ed4",
+      "tests/test_gate_manifest.py": "1b3d1903afc48542a4c684110904a7d3ac81188d4ca940246d95180d467e7066",
+      "tests/test_mccfr.py": "ed29b22266ebd5ca030b99f884deba8556ffd8cee87ffbd446aa6b2403ecbd66",
+      "tests/test_mccfr_reference.py": "7e2ea5dedef187c5f40af4b5fc6dc08352380a7a539be67cb85334b8d0d2c9aa",
+      "tests/test_safe_resolve.py": "68ba5437cf7fb4ddcba68835df43d3fd8c42fc341c41cd1850cfb9ae3d352ed6",
+      "tests/test_small_games.py": "941a366904eb84cbd36dfbf03a8439e30d1da34c426277d781934d4a49c1aaa9",
+      "tests/test_update_rules_reference.py": "e3755a84af04f887d129cdc8452b5d8a7f5147f6f7108526da6b2ea6274fee4f",
+      "tools/__init__.py": "bb8eaba05f69369da5972f91f53e5ae210ec2fdae2fc7339924aa426b8110b17",
+      "tools/crosscheck_open_spiel.py": "cce0e2fb6ea395e881feb3cc48b94a8cedec484db542b6ebcf786dd30125b626",
+      "tools/train_small_game.py": "1a6956f46e3ff9d5584922ee551cb3f6189289c86506b1432e493dc59e07d04a",
+      "tools/verify_m3_gate.py": "8dc7a88664f0df6c99cf5ae8e1339b44b97739e58e61e93a6cb7416d98b9d36b",
+      "training/__init__.py": "32a6e746ec3ef79b4d22005ad359c20ce41ee1755158e6101357e3d2c10cc7e4"
+    }
+  },
+  "known_limits": [
+    "trained 500-batch Leduc cross-check is correctness evidence, not strength evidence",
+    "synchronous batch MCCFR is not bit-identical to per-trajectory sequential MCCFR",
+    "per-sample JSON shard format is not a scalable HUNL backend",
+    "exact Kuhn oracle-filter is not a transferable public-range resolving gadget",
+    "exact rollout leaf is not a neural counterfactual-value artifact interface",
+    "Common adapter is not connected to decision lease, deadline/resource receipt, supervisor, or TCP wire capture",
+    "no HUNL blueprint, neural training, native bot, official certification, or strength comparison exists",
+    "M4 and all match evaluation must use sever national TCP/raw sockets or Common native_harness over sever/engine; top-level engine/, engine/battle.py, and Botzone JSON stdin/stdout are forbidden"
+  ],
+  "deterministic_state_fixtures": [
+    {
+      "id": "kuhn_dcfr_40x4",
+      "game": "kuhn",
+      "batches": 40,
+      "shards": 2,
+      "config": {
+        "update_rule": "dcfr",
+        "averaging_mode": "sampled",
+        "seed": 20260714,
+        "samples_per_player": 4,
+        "cfr_plus_delay": 0,
+        "dcfr_alpha": 1.5,
+        "dcfr_beta": 0.0,
+        "dcfr_gamma": 2.0
+      },
+      "state_sha256": "9bfcbfd8b192bd081b559769787fdf05dea8cad95c83ce471e1024c7fbdd9aa0",
+      "trajectories": 320,
+      "node_touches": 2320,
+      "infosets_seen": 12
+    },
+    {
+      "id": "leduc_linear_20x2",
+      "game": "leduc",
+      "batches": 20,
+      "shards": 2,
+      "config": {
+        "update_rule": "linear",
+        "averaging_mode": "sampled",
+        "seed": 20260714,
+        "samples_per_player": 2,
+        "cfr_plus_delay": 0,
+        "dcfr_alpha": 1.5,
+        "dcfr_beta": 0.0,
+        "dcfr_gamma": 2.0
+      },
+      "state_sha256": "8b288589b198ad7bbd3192e65ba9c9377f6b6c7eded0c918db139556f5612ed1",
+      "trajectories": 80,
+      "node_touches": 1575,
+      "infosets_seen": 209
+    }
+  ],
+  "generator": {
+    "tool": "tools/verify_m3_gate.py",
+    "write_command": "PYTHONDONTWRITEBYTECODE=1 python -m bots.research_native_lab.cfr_neural_search.tools.verify_m3_gate --write",
+    "generated_fields": [
+      "common_dependency",
+      "frozen_training_runs",
+      "independent_reference.trained_leduc.route_*",
+      "deterministic_state_fixtures",
+      "artifact_scope"
+    ],
+    "atomic_replace": true
+  }
+}

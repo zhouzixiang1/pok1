@@ -9,6 +9,8 @@ from bots.research_native_lab.cfr_neural_search.blueprint.small_games import (
     FOLD,
 )
 from bots.research_native_lab.cfr_neural_search.online_solver.safe_resolve import (
+    KuhnSafetyConstraint,
+    build_kuhn_check_safety_constraint,
     certify_kuhn_check_replacement,
     kuhn_check_replacement_policy,
     resolve_kuhn_check_subgame,
@@ -20,6 +22,20 @@ def _response_key(rank: int) -> str:
 
 
 class SafeResolveTest(unittest.TestCase):
+    def test_constraint_is_digest_bound_to_normalized_blueprint(self):
+        first = build_kuhn_check_safety_constraint({})
+        second = build_kuhn_check_safety_constraint(
+            {_response_key(1): {CALL: 2.0 / 3.0, FOLD: 1.0 / 3.0}}
+        )
+        repeated = build_kuhn_check_safety_constraint({})
+        self.assertEqual(first.sha256, repeated.sha256)
+        self.assertNotEqual(first.sha256, second.sha256)
+        self.assertEqual(first.information_states, (
+            "kuhn:p1:r0:h=check",
+            "kuhn:p1:r1:h=check",
+            "kuhn:p1:r2:h=check",
+        ))
+
     def test_uniform_blueprint_has_certified_improving_replacement(self):
         result = resolve_kuhn_check_subgame(
             {},
@@ -28,6 +44,21 @@ class SafeResolveTest(unittest.TestCase):
         )
         self.assertEqual(result.call_probabilities, (0.0, 1.0, 1.0))
         self.assertTrue(result.certificate.accepted)
+        self.assertTrue(result.certificate.local_cbv_constraints_satisfied)
+        self.assertTrue(result.certificate.global_exploitability_oracle_satisfied)
+        self.assertTrue(result.certificate.resolver_best_response_invariant)
+        self.assertEqual(
+            type(result.certificate).__name__,
+            "OracleCertifiedKuhnResolveCertificate",
+        )
+        self.assertEqual(
+            result.certificate.constraint.blueprint_policy_sha256,
+            build_kuhn_check_safety_constraint({}).blueprint_policy_sha256,
+        )
+        self.assertNotEqual(
+            result.certificate.candidate_policy_sha256,
+            result.certificate.constraint.blueprint_policy_sha256,
+        )
         self.assertGreaterEqual(result.certificate.minimum_margin, 0.0)
         self.assertLess(
             result.certificate.candidate_exploitability,
@@ -54,6 +85,8 @@ class SafeResolveTest(unittest.TestCase):
         )
         self.assertEqual(plain.call_probabilities, (0.0, 1.0, 1.0))
         self.assertFalse(plain.certificate.accepted)
+        self.assertFalse(plain.certificate.local_cbv_constraints_satisfied)
+        self.assertFalse(plain.certificate.global_exploitability_oracle_satisfied)
         self.assertLess(plain.certificate.minimum_margin, 0.0)
         self.assertGreater(
             plain.certificate.candidate_exploitability,
@@ -61,6 +94,8 @@ class SafeResolveTest(unittest.TestCase):
         )
         self.assertEqual(safe.call_probabilities, (0.0, 2.0 / 3.0, 1.0))
         self.assertTrue(safe.certificate.accepted)
+        self.assertTrue(safe.certificate.local_cbv_constraints_satisfied)
+        self.assertTrue(safe.certificate.global_exploitability_oracle_satisfied)
         self.assertAlmostEqual(
             safe.certificate.candidate_exploitability,
             safe.certificate.baseline_exploitability,
@@ -82,6 +117,45 @@ class SafeResolveTest(unittest.TestCase):
     def test_invalid_probability_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "in \\[0, 1\\]"):
             kuhn_check_replacement_policy({}, (-0.1, 0.5, 1.0))
+
+    def test_bool_and_numeric_string_inputs_are_not_coerced(self):
+        invalid_profiles = (
+            {_response_key(0): {CALL: True, FOLD: False}},
+            {_response_key(0): {CALL: "0.5", FOLD: "0.5"}},
+        )
+        for profile in invalid_profiles:
+            with self.subTest(profile=profile):
+                with self.assertRaisesRegex(TypeError, "bool/string"):
+                    build_kuhn_check_safety_constraint(profile)  # type: ignore[arg-type]
+        for calls in ((True, 0.5, 1.0), ("0.0", 0.5, 1.0)):
+            with self.subTest(calls=calls):
+                with self.assertRaisesRegex(TypeError, "bool/string"):
+                    kuhn_check_replacement_policy({}, calls)  # type: ignore[arg-type]
+        for grid in ((False, 0.5, 1.0), ("0.0", 0.5, 1.0)):
+            with self.subTest(grid=grid):
+                with self.assertRaisesRegex(TypeError, "bool/string"):
+                    resolve_kuhn_check_subgame({}, probability_grid=grid)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "bool/string"):
+            certify_kuhn_check_replacement({}, {}, tolerance=True)
+
+    def test_direct_safety_constraint_cannot_forge_identity_schema(self):
+        valid = build_kuhn_check_safety_constraint({})
+        baseline = {
+            "blueprint_policy_sha256": valid.blueprint_policy_sha256,
+            "opponent_player": valid.opponent_player,
+            "information_states": valid.information_states,
+            "maximum_counterfactual_values": valid.maximum_counterfactual_values,
+        }
+        attacks = (
+            {**baseline, "opponent_player": True},
+            {**baseline, "blueprint_policy_sha256": "0" * 63},
+            {**baseline, "information_states": ("forged",)},
+            {**baseline, "maximum_counterfactual_values": (True,) * 3},
+        )
+        for attack in attacks:
+            with self.subTest(attack=attack):
+                with self.assertRaises((TypeError, ValueError)):
+                    KuhnSafetyConstraint(**attack)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

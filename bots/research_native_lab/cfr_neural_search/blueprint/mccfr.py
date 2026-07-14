@@ -27,6 +27,84 @@ UPDATE_RULES = frozenset({"vanilla", "linear", "cfr_plus", "dcfr"})
 AVERAGING_MODES = frozenset({"sampled", "full"})
 
 
+def _require_keys(
+    payload: Mapping[str, Any],
+    expected: frozenset[str],
+    context: str,
+) -> None:
+    if not isinstance(payload, Mapping):
+        raise TypeError(f"{context} must be a JSON object")
+    if set(payload) != expected:
+        missing = expected - set(payload)
+        extra = set(payload) - expected
+        raise ValueError(
+            f"{context} keys mismatch: missing={sorted(missing)!r}, "
+            f"extra={sorted(extra)!r}"
+        )
+
+
+def _json_string(value: Any, context: str) -> str:
+    if type(value) is not str:
+        raise TypeError(f"{context} must be a JSON string")
+    return value
+
+
+def _json_integer(value: Any, context: str) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{context} must be a JSON integer, not bool/float/string")
+    return value
+
+
+def _json_number(value: Any, context: str) -> float:
+    if type(value) not in (int, float):
+        raise TypeError(f"{context} must be a finite JSON number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{context} must be finite")
+    return result
+
+
+def _json_object(value: Any, context: str) -> dict[str, Any]:
+    if type(value) is not dict:
+        raise TypeError(f"{context} must be a JSON object")
+    return value
+
+
+def _json_array(value: Any, context: str) -> list[Any]:
+    if type(value) is not list:
+        raise TypeError(f"{context} must be a JSON array")
+    return value
+
+
+def _parse_action_table(value: Any, context: str) -> ActionTable:
+    payload = _json_object(value, context)
+    result: ActionTable = {}
+    for raw_key, raw_actions in payload.items():
+        key = _json_string(raw_key, f"{context} key")
+        actions = _json_array(raw_actions, f"{context}[{key!r}]")
+        result[key] = tuple(
+            _json_string(action, f"{context}[{key!r}] action")
+            for action in actions
+        )
+    return result
+
+
+def _parse_vector_table(value: Any, context: str) -> VectorTable:
+    payload = _json_object(value, context)
+    result: VectorTable = {}
+    for raw_key, raw_vector in payload.items():
+        key = _json_string(raw_key, f"{context} key")
+        vector = _json_object(raw_vector, f"{context}[{key!r}]")
+        result[key] = {
+            _json_string(action, f"{context}[{key!r}] action"): _json_number(
+                number,
+                f"{context}[{key!r}][{action!r}]",
+            )
+            for action, number in vector.items()
+        }
+    return result
+
+
 def _canonical_json(payload: Mapping[str, Any]) -> str:
     return json.dumps(
         payload,
@@ -55,16 +133,27 @@ class SolverConfig:
     dcfr_gamma: float = 2.0
 
     def __post_init__(self) -> None:
+        if type(self.update_rule) is not str or type(self.averaging_mode) is not str:
+            raise TypeError("solver update/averaging modes must be strings")
         if self.update_rule not in UPDATE_RULES:
             raise ValueError(f"unknown update rule: {self.update_rule!r}")
         if self.averaging_mode not in AVERAGING_MODES:
             raise ValueError(f"unknown averaging mode: {self.averaging_mode!r}")
+        if type(self.seed) is not int:
+            raise TypeError("solver seed must be an integer, not bool/float/string")
+        if type(self.samples_per_player) is not int:
+            raise TypeError("samples_per_player must be an integer")
+        if type(self.cfr_plus_delay) is not int:
+            raise TypeError("cfr_plus_delay must be an integer")
         if self.samples_per_player <= 0:
             raise ValueError("samples_per_player must be positive")
         if self.cfr_plus_delay < 0:
             raise ValueError("cfr_plus_delay must be nonnegative")
-        if not all(
-            math.isfinite(value)
+        if any(
+            type(value) not in (int, float)
+            for value in (self.dcfr_alpha, self.dcfr_beta, self.dcfr_gamma)
+        ) or not all(
+            math.isfinite(float(value))
             for value in (self.dcfr_alpha, self.dcfr_beta, self.dcfr_gamma)
         ):
             raise ValueError("DCFR exponents must be finite")
@@ -83,15 +172,37 @@ class SolverConfig:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "SolverConfig":
+        _require_keys(
+            payload,
+            frozenset(
+                {
+                    "update_rule",
+                    "averaging_mode",
+                    "seed",
+                    "samples_per_player",
+                    "cfr_plus_delay",
+                    "dcfr_alpha",
+                    "dcfr_beta",
+                    "dcfr_gamma",
+                }
+            ),
+            "solver config",
+        )
         return cls(
-            update_rule=str(payload["update_rule"]),
-            averaging_mode=str(payload["averaging_mode"]),
-            seed=int(payload["seed"]),
-            samples_per_player=int(payload["samples_per_player"]),
-            cfr_plus_delay=int(payload["cfr_plus_delay"]),
-            dcfr_alpha=float(payload["dcfr_alpha"]),
-            dcfr_beta=float(payload["dcfr_beta"]),
-            dcfr_gamma=float(payload["dcfr_gamma"]),
+            update_rule=_json_string(payload["update_rule"], "config.update_rule"),
+            averaging_mode=_json_string(
+                payload["averaging_mode"], "config.averaging_mode"
+            ),
+            seed=_json_integer(payload["seed"], "config.seed"),
+            samples_per_player=_json_integer(
+                payload["samples_per_player"], "config.samples_per_player"
+            ),
+            cfr_plus_delay=_json_integer(
+                payload["cfr_plus_delay"], "config.cfr_plus_delay"
+            ),
+            dcfr_alpha=_json_number(payload["dcfr_alpha"], "config.dcfr_alpha"),
+            dcfr_beta=_json_number(payload["dcfr_beta"], "config.dcfr_beta"),
+            dcfr_gamma=_json_number(payload["dcfr_gamma"], "config.dcfr_gamma"),
         )
 
 
@@ -133,37 +244,64 @@ class SolverState:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "SolverState":
-        if int(payload["format_version"]) != FORMAT_VERSION:
+        _require_keys(
+            payload,
+            frozenset(
+                {
+                    "format_version",
+                    "game_name",
+                    "config",
+                    "batch_index",
+                    "actions",
+                    "regrets",
+                    "strategy_sum",
+                    "trajectories",
+                    "node_touches",
+                }
+            ),
+            "solver checkpoint payload",
+        )
+        if _json_integer(payload["format_version"], "format_version") != FORMAT_VERSION:
             raise ValueError(f"unsupported checkpoint format: {payload['format_version']}")
         state = cls(
-            game_name=str(payload["game_name"]),
-            config=SolverConfig.from_payload(payload["config"]),
-            batch_index=int(payload["batch_index"]),
-            actions={
-                str(key): tuple(str(action) for action in actions)
-                for key, actions in payload["actions"].items()
-            },
-            regrets={
-                str(key): {str(action): float(value) for action, value in values.items()}
-                for key, values in payload["regrets"].items()
-            },
-            strategy_sum={
-                str(key): {str(action): float(value) for action, value in values.items()}
-                for key, values in payload["strategy_sum"].items()
-            },
-            trajectories=int(payload.get("trajectories", 0)),
-            node_touches=int(payload.get("node_touches", 0)),
+            game_name=_json_string(payload["game_name"], "game_name"),
+            config=SolverConfig.from_payload(
+                _json_object(payload["config"], "config")
+            ),
+            batch_index=_json_integer(payload["batch_index"], "batch_index"),
+            actions=_parse_action_table(payload["actions"], "actions"),
+            regrets=_parse_vector_table(payload["regrets"], "regrets"),
+            strategy_sum=_parse_vector_table(
+                payload["strategy_sum"], "strategy_sum"
+            ),
+            trajectories=_json_integer(payload["trajectories"], "trajectories"),
+            node_touches=_json_integer(payload["node_touches"], "node_touches"),
         )
         state.validate()
         return state
 
     def validate(self) -> None:
+        if type(self.game_name) is not str or not self.game_name:
+            raise ValueError("game_name must be a nonempty string")
+        if not isinstance(self.config, SolverConfig):
+            raise TypeError("config must be SolverConfig")
+        for name, value in (
+            ("batch_index", self.batch_index),
+            ("trajectories", self.trajectories),
+            ("node_touches", self.node_touches),
+        ):
+            if type(value) is not int:
+                raise TypeError(f"{name} must be an integer")
         if self.batch_index < 0 or self.trajectories < 0 or self.node_touches < 0:
             raise ValueError("solver counters must be nonnegative")
+        if type(self.actions) is not dict:
+            raise TypeError("actions must be a dictionary")
         for table_name, table in (
             ("regrets", self.regrets),
             ("strategy_sum", self.strategy_sum),
         ):
+            if type(table) is not dict:
+                raise TypeError(f"{table_name} must be a dictionary")
             orphan_keys = set(table) - set(self.actions)
             if orphan_keys:
                 raise ValueError(
@@ -171,17 +309,37 @@ class SolverState:
                     f"{sorted(orphan_keys)!r}"
                 )
         for key, actions in self.actions.items():
-            if not actions or len(actions) != len(set(actions)):
+            if type(key) is not str or type(actions) is not tuple:
+                raise TypeError("action table requires string keys and tuple rows")
+            if (
+                not actions
+                or any(type(action) is not str for action in actions)
+                or len(actions) != len(set(actions))
+            ):
                 raise ValueError(f"invalid action set for {key}: {actions!r}")
             for table_name, table in (
                 ("regrets", self.regrets),
                 ("strategy_sum", self.strategy_sum),
             ):
                 values = table.get(key, {})
-                if set(values) - set(actions):
-                    raise ValueError(f"{table_name} has unknown actions for {key}")
-                if any(not math.isfinite(value) for value in values.values()):
+                if type(values) is not dict or any(
+                    type(action) is not str for action in values
+                ):
+                    raise TypeError(f"{table_name} vectors require string action keys")
+                if values and set(values) != set(actions):
+                    raise ValueError(
+                        f"{table_name} must contain the complete action set for {key}"
+                    )
+                if any(
+                    type(value) not in (int, float)
+                    or not math.isfinite(float(value))
+                    for value in values.values()
+                ):
                     raise ValueError(f"{table_name} has non-finite values for {key}")
+                if table_name == "strategy_sum" and any(
+                    value < 0.0 for value in values.values()
+                ):
+                    raise ValueError(f"strategy_sum has negative values for {key}")
 
     @property
     def digest(self) -> str:
@@ -268,22 +426,35 @@ class SampleDelta:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "SampleDelta":
+        _require_keys(
+            payload,
+            frozenset(
+                {
+                    "traverser",
+                    "sample_id",
+                    "action_sets",
+                    "regret_delta",
+                    "strategy_delta",
+                    "node_touches",
+                }
+            ),
+            "sample delta",
+        )
         return cls(
-            traverser=int(payload["traverser"]),
-            sample_id=int(payload["sample_id"]),
-            action_sets={
-                str(key): tuple(str(action) for action in actions)
-                for key, actions in payload["action_sets"].items()
-            },
-            regret_delta={
-                str(key): {str(action): float(value) for action, value in values.items()}
-                for key, values in payload["regret_delta"].items()
-            },
-            strategy_delta={
-                str(key): {str(action): float(value) for action, value in values.items()}
-                for key, values in payload["strategy_delta"].items()
-            },
-            node_touches=int(payload["node_touches"]),
+            traverser=_json_integer(payload["traverser"], "sample.traverser"),
+            sample_id=_json_integer(payload["sample_id"], "sample.sample_id"),
+            action_sets=_parse_action_table(
+                payload["action_sets"], "sample.action_sets"
+            ),
+            regret_delta=_parse_vector_table(
+                payload["regret_delta"], "sample.regret_delta"
+            ),
+            strategy_delta=_parse_vector_table(
+                payload["strategy_delta"], "sample.strategy_delta"
+            ),
+            node_touches=_json_integer(
+                payload["node_touches"], "sample.node_touches"
+            ),
         )
 
 
@@ -309,15 +480,36 @@ class ShardDelta:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "ShardDelta":
-        if int(payload["format_version"]) != FORMAT_VERSION:
+        _require_keys(
+            payload,
+            frozenset(
+                {
+                    "format_version",
+                    "base_digest",
+                    "batch_index",
+                    "shard_index",
+                    "shard_count",
+                    "samples_per_player",
+                    "samples",
+                }
+            ),
+            "shard payload",
+        )
+        if _json_integer(payload["format_version"], "format_version") != FORMAT_VERSION:
             raise ValueError("unsupported shard format")
+        samples = _json_array(payload["samples"], "shard.samples")
         return cls(
-            base_digest=str(payload["base_digest"]),
-            batch_index=int(payload["batch_index"]),
-            shard_index=int(payload["shard_index"]),
-            shard_count=int(payload["shard_count"]),
-            samples_per_player=int(payload["samples_per_player"]),
-            samples=tuple(SampleDelta.from_payload(item) for item in payload["samples"]),
+            base_digest=_json_string(payload["base_digest"], "shard.base_digest"),
+            batch_index=_json_integer(payload["batch_index"], "shard.batch_index"),
+            shard_index=_json_integer(payload["shard_index"], "shard.shard_index"),
+            shard_count=_json_integer(payload["shard_count"], "shard.shard_count"),
+            samples_per_player=_json_integer(
+                payload["samples_per_player"], "shard.samples_per_player"
+            ),
+            samples=tuple(
+                SampleDelta.from_payload(_json_object(item, "shard sample"))
+                for item in samples
+            ),
         )
 
 
@@ -389,8 +581,11 @@ def build_shard(
 ) -> ShardDelta:
     """Build one deterministic shard from a frozen solver state."""
 
+    if type(shard_index) is not int or type(shard_count) is not int:
+        raise TypeError("shard index/count must be exact integers")
     if shard_count <= 0 or not 0 <= shard_index < shard_count:
         raise ValueError("invalid shard index/count")
+    state.validate()
     samples: list[SampleDelta] = []
     for traverser in (0, 1):
         for sample_id in range(shard_index, state.config.samples_per_player, shard_count):
@@ -407,10 +602,98 @@ def build_shard(
     )
 
 
+def _validate_in_memory_sample(sample: SampleDelta) -> None:
+    if type(sample) is not SampleDelta:
+        raise TypeError("shard samples must be exact SampleDelta objects")
+    for name, value in (
+        ("traverser", sample.traverser),
+        ("sample_id", sample.sample_id),
+        ("node_touches", sample.node_touches),
+    ):
+        if type(value) is not int:
+            raise TypeError(f"sample {name} must be an exact integer")
+    if sample.traverser not in (0, 1):
+        raise ValueError("sample traverser must be 0 or 1")
+    if sample.sample_id < 0 or sample.node_touches <= 0:
+        raise ValueError("sample counters must be positive")
+    if type(sample.action_sets) is not dict:
+        raise TypeError("sample action_sets must be a dictionary")
+    for key, actions in sample.action_sets.items():
+        if type(key) is not str or type(actions) is not tuple:
+            raise TypeError("sample action sets require string keys and tuple rows")
+        if (
+            not actions
+            or any(type(action) is not str for action in actions)
+            or len(actions) != len(set(actions))
+        ):
+            raise ValueError(f"invalid sample action set for {key}")
+    for table_name, table in (
+        ("regret_delta", sample.regret_delta),
+        ("strategy_delta", sample.strategy_delta),
+    ):
+        if type(table) is not dict:
+            raise TypeError(f"sample {table_name} must be a dictionary")
+        orphan_keys = set(table) - set(sample.action_sets)
+        if orphan_keys:
+            raise ValueError(
+                f"{table_name} has information states without action sets: "
+                f"{sorted(orphan_keys)!r}"
+            )
+        for key, vector in table.items():
+            if type(key) is not str or type(vector) is not dict:
+                raise TypeError(f"sample {table_name} vectors must be dictionaries")
+            if any(type(action) is not str for action in vector):
+                raise TypeError(f"sample {table_name} action keys must be strings")
+            if set(vector) != set(sample.action_sets[key]):
+                raise ValueError(
+                    f"{table_name} must contain the complete action set for {key}"
+                )
+            for value in vector.values():
+                if type(value) not in (int, float):
+                    raise TypeError(
+                        f"sample {table_name} values must be exact numeric types"
+                    )
+                if not math.isfinite(float(value)):
+                    raise ValueError(f"{table_name} has non-finite values for {key}")
+                if table_name == "strategy_delta" and value < 0.0:
+                    raise ValueError(f"strategy_delta has negative values for {key}")
+
+
+def _validate_in_memory_shard(shard: ShardDelta) -> None:
+    if type(shard) is not ShardDelta:
+        raise TypeError("apply_shards requires exact ShardDelta objects")
+    if (
+        type(shard.base_digest) is not str
+        or len(shard.base_digest) != 64
+        or any(character not in "0123456789abcdef" for character in shard.base_digest)
+    ):
+        raise ValueError("shard base digest must be lowercase SHA-256")
+    for name, value in (
+        ("batch_index", shard.batch_index),
+        ("shard_index", shard.shard_index),
+        ("shard_count", shard.shard_count),
+        ("samples_per_player", shard.samples_per_player),
+    ):
+        if type(value) is not int:
+            raise TypeError(f"shard {name} must be an exact integer")
+    if shard.batch_index < 0:
+        raise ValueError("shard batch_index must be nonnegative")
+    if shard.shard_count <= 0 or not 0 <= shard.shard_index < shard.shard_count:
+        raise ValueError("invalid in-memory shard index/count")
+    if shard.samples_per_player <= 0:
+        raise ValueError("shard samples_per_player must be positive")
+    if type(shard.samples) is not tuple:
+        raise TypeError("shard samples must be a tuple")
+    for sample in shard.samples:
+        _validate_in_memory_sample(sample)
+
+
 def _ordered_samples(state: SolverState, shards: Iterable[ShardDelta]) -> list[SampleDelta]:
     shard_list = list(shards)
     if not shard_list:
         raise ValueError("at least one shard is required")
+    for shard in shard_list:
+        _validate_in_memory_shard(shard)
     shard_count = shard_list[0].shard_count
     samples_per_player = state.config.samples_per_player
     expected_indices = set(range(shard_count))
@@ -454,10 +737,7 @@ def _validate_sample_deltas(state: SolverState, samples: Iterable[SampleDelta]) 
 
     known_actions = dict(state.actions)
     for sample in samples:
-        if sample.traverser not in (0, 1):
-            raise ValueError("sample traverser must be 0 or 1")
-        if sample.sample_id < 0 or sample.node_touches <= 0:
-            raise ValueError("sample counters must be positive")
+        _validate_in_memory_sample(sample)
         for key, actions in sample.action_sets.items():
             if not actions or len(actions) != len(set(actions)):
                 raise ValueError(f"invalid sample action set for {key}")
@@ -476,18 +756,13 @@ def _validate_sample_deltas(state: SolverState, samples: Iterable[SampleDelta]) 
                     f"{sorted(orphan_keys)!r}"
                 )
             for key, vector in table.items():
-                unknown_actions = set(vector) - set(sample.action_sets[key])
-                if unknown_actions:
+                expected_actions = set(sample.action_sets[key])
+                if set(vector) != expected_actions:
                     raise ValueError(
-                        f"{table_name} has unknown actions for {key}: "
-                        f"{sorted(unknown_actions)!r}"
+                        f"{table_name} must contain the complete action set for {key}"
                     )
-                if any(not math.isfinite(value) for value in vector.values()):
-                    raise ValueError(f"{table_name} has non-finite values for {key}")
-                if table_name == "strategy_delta" and any(
-                    value < 0.0 for value in vector.values()
-                ):
-                    raise ValueError(f"strategy_delta has negative values for {key}")
+                # Exact types, finiteness, and strategy nonnegativity were
+                # checked before shard identity/order logic.
 
 
 def _merge_action_sets(state: SolverState, samples: Iterable[SampleDelta]) -> None:
@@ -663,8 +938,12 @@ def train_batches(
 
     if state.game_name != game.name:
         raise ValueError(f"state is for {state.game_name}, game is {game.name}")
+    if type(batches) is not int or type(shard_count) is not int:
+        raise TypeError("batches/shard_count must be exact integers")
     if batches < 0:
         raise ValueError("batches must be nonnegative")
+    if shard_count <= 0:
+        raise ValueError("shard_count must be positive")
     for _ in range(batches):
         shards = [build_shard(game, state, index, shard_count) for index in range(shard_count)]
         apply_shards(game, state, shards)
@@ -672,6 +951,7 @@ def train_batches(
 
 
 def current_policy(state: SolverState) -> dict[str, dict[str, float]]:
+    state.validate()
     return {
         key: regret_matching(state.regrets, key, actions)
         for key, actions in sorted(state.actions.items())
@@ -679,14 +959,17 @@ def current_policy(state: SolverState) -> dict[str, dict[str, float]]:
 
 
 def average_policy(state: SolverState) -> dict[str, dict[str, float]]:
+    state.validate()
     result: dict[str, dict[str, float]] = {}
     fallback = current_policy(state)
     for key, actions in sorted(state.actions.items()):
-        values = {
-            action: max(0.0, state.strategy_sum.get(key, {}).get(action, 0.0))
-            for action in actions
-        }
-        total = sum(values.values())
+        stored = state.strategy_sum.get(key, {})
+        values = (
+            {action: stored[action] for action in actions}
+            if stored
+            else {action: 0.0 for action in actions}
+        )
+        total = math.fsum(values.values())
         if total <= 0.0:
             result[key] = fallback[key]
         else:
@@ -721,7 +1004,41 @@ def _atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _strict_json_read(path: Path) -> dict[str, Any]:
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-standard JSON numeric constant {value!r} is forbidden")
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON object key {key!r}")
+            result[key] = value
+        return result
+
+    payload = json.loads(
+        path.read_text(encoding="utf-8"),
+        parse_constant=reject_constant,
+        object_pairs_hook=unique_object,
+    )
+    return _json_object(payload, "checkpoint envelope")
+
+
+def _envelope_payload(path: Path) -> Mapping[str, Any]:
+    envelope = _strict_json_read(path)
+    _require_keys(envelope, frozenset({"payload", "sha256"}), "checkpoint envelope")
+    payload = _json_object(envelope["payload"], "checkpoint payload")
+    expected = _json_string(envelope["sha256"], "checkpoint sha256")
+    if len(expected) != 64 or any(character not in "0123456789abcdef" for character in expected):
+        raise ValueError("checkpoint SHA-256 must be 64 lowercase hexadecimal digits")
+    actual = _sha256(payload)
+    if actual != expected:
+        raise ValueError("checkpoint SHA-256 mismatch")
+    return payload
+
+
 def save_checkpoint(path: str | Path, state: SolverState) -> str:
+    state.validate()
     payload = state.to_payload()
     digest = _sha256(payload)
     envelope = {"payload": payload, "sha256": digest}
@@ -730,15 +1047,11 @@ def save_checkpoint(path: str | Path, state: SolverState) -> str:
 
 
 def load_checkpoint(path: str | Path) -> SolverState:
-    envelope = json.loads(Path(path).read_text(encoding="utf-8"))
-    payload = envelope["payload"]
-    actual = _sha256(payload)
-    if actual != envelope["sha256"]:
-        raise ValueError("checkpoint SHA-256 mismatch")
-    return SolverState.from_payload(payload)
+    return SolverState.from_payload(_envelope_payload(Path(path)))
 
 
 def save_shard(path: str | Path, shard: ShardDelta) -> str:
+    _validate_in_memory_shard(shard)
     payload = shard.to_payload()
     digest = _sha256(payload)
     _atomic_json_write(Path(path), {"payload": payload, "sha256": digest})
@@ -746,8 +1059,4 @@ def save_shard(path: str | Path, shard: ShardDelta) -> str:
 
 
 def load_shard(path: str | Path) -> ShardDelta:
-    envelope = json.loads(Path(path).read_text(encoding="utf-8"))
-    payload = envelope["payload"]
-    if _sha256(payload) != envelope["sha256"]:
-        raise ValueError("shard SHA-256 mismatch")
-    return ShardDelta.from_payload(payload)
+    return ShardDelta.from_payload(_envelope_payload(Path(path)))

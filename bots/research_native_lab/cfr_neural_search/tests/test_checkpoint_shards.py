@@ -9,7 +9,9 @@ from pathlib import Path
 from bots.research_native_lab.cfr_neural_search.blueprint.mccfr import (
     SolverConfig,
     SolverState,
+    _sha256,
     apply_shards,
+    average_policy,
     build_shard,
     load_checkpoint,
     load_shard,
@@ -34,6 +36,200 @@ def _payload_bytes(state: SolverState) -> bytes:
 
 
 class CheckpointShardTest(unittest.TestCase):
+    def test_direct_in_memory_type_confusion_is_rejected_transactionally(self):
+        game = KuhnPoker()
+        state = SolverState(
+            game.name,
+            SolverConfig(seed=908, samples_per_player=2),
+        )
+        train_batches(game, state, batches=1)
+        shard = build_shard(game, state, 0, 1)
+        samples = list(shard.samples)
+        sample_index = next(
+            index for index, sample in enumerate(samples) if sample.regret_delta
+        )
+        sample = samples[sample_index]
+        key = next(iter(sample.regret_delta))
+        action = next(iter(sample.regret_delta[key]))
+
+        bad_regret = {
+            row_key: dict(vector)
+            for row_key, vector in sample.regret_delta.items()
+        }
+        bad_regret[key][action] = True
+        bad_strategy = {
+            row_key: dict(vector)
+            for row_key, vector in sample.strategy_delta.items()
+        }
+        strategy_key = next(iter(bad_strategy))
+        strategy_action = next(iter(bad_strategy[strategy_key]))
+        bad_strategy[strategy_key][strategy_action] = "1.0"
+
+        sample_mutations = (
+            replace(sample, regret_delta=bad_regret),
+            replace(sample, strategy_delta=bad_strategy),
+            replace(sample, traverser=False),
+            replace(sample, sample_id=False),
+            replace(sample, node_touches=True),
+        )
+        shard_mutations = (
+            replace(shard, shard_index=False),
+            replace(shard, shard_count=True),
+            replace(shard, samples_per_player=True),
+        )
+        attacks = []
+        for bad_sample in sample_mutations:
+            bad_samples = list(samples)
+            bad_samples[sample_index] = bad_sample
+            attacks.append(replace(shard, samples=tuple(bad_samples)))
+        attacks.extend(shard_mutations)
+
+        for index, bad_shard in enumerate(attacks):
+            with self.subTest(attack=index):
+                before = _payload_bytes(state)
+                with self.assertRaises(TypeError):
+                    apply_shards(game, state, [bad_shard])
+                self.assertEqual(_payload_bytes(state), before)
+
+    def test_public_training_boundaries_reject_bool_integer_aliases(self):
+        game = KuhnPoker()
+        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        with self.assertRaisesRegex(TypeError, "exact integers"):
+            build_shard(game, state, False, 1)
+        with self.assertRaisesRegex(TypeError, "exact integers"):
+            build_shard(game, state, 0, True)
+        with self.assertRaisesRegex(TypeError, "exact integers"):
+            train_batches(game, state, batches=False)
+        with self.assertRaisesRegex(TypeError, "exact integers"):
+            train_batches(game, state, batches=1, shard_count=True)
+
+    def test_rehashed_checkpoint_rejects_coerced_json_types_and_schema_drift(self):
+        game = KuhnPoker()
+        state = SolverState(game.name, SolverConfig(seed=88))
+        train_batches(game, state, batches=1)
+        base = state.to_payload()
+        first_key = next(iter(base["actions"]))
+        first_action = base["actions"][first_key][0]
+
+        def mutate_batch_string(payload):
+            payload["batch_index"] = "1"
+
+        def mutate_trajectory_bool(payload):
+            payload["trajectories"] = True
+
+        def mutate_seed_string(payload):
+            payload["config"]["seed"] = "88"
+
+        def mutate_sample_float(payload):
+            payload["config"]["samples_per_player"] = 1.0
+
+        def mutate_action_number(payload):
+            payload["actions"][first_key][0] = 7
+
+        def mutate_regret_string(payload):
+            payload["regrets"][first_key][first_action] = "0.0"
+
+        def mutate_strategy_bool(payload):
+            payload["strategy_sum"][first_key][first_action] = False
+
+        def mutate_extra_key(payload):
+            payload["unexpected"] = 1
+
+        mutations = (
+            mutate_batch_string,
+            mutate_trajectory_bool,
+            mutate_seed_string,
+            mutate_sample_float,
+            mutate_action_number,
+            mutate_regret_string,
+            mutate_strategy_bool,
+            mutate_extra_key,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "strict-checkpoint.json"
+            for mutation in mutations:
+                with self.subTest(mutation=mutation.__name__):
+                    payload = json.loads(json.dumps(base))
+                    mutation(payload)
+                    envelope = {"payload": payload, "sha256": _sha256(payload)}
+                    path.write_text(json.dumps(envelope), encoding="utf-8")
+                    with self.assertRaises((TypeError, ValueError)):
+                        load_checkpoint(path)
+
+    def test_rehashed_shard_rejects_bool_sample_identity(self):
+        game = KuhnPoker()
+        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        shard = build_shard(game, state, 0, 1)
+        payload = shard.to_payload()
+        payload["samples"][0]["sample_id"] = False
+        envelope = {"payload": payload, "sha256": _sha256(payload)}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "strict-shard.json"
+            path.write_text(json.dumps(envelope), encoding="utf-8")
+            with self.assertRaisesRegex(TypeError, "JSON integer"):
+                load_shard(path)
+
+    def test_rehashed_shard_cannot_drop_one_present_action_delta(self):
+        game = KuhnPoker()
+        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        shard = build_shard(game, state, 0, 1)
+        payload = shard.to_payload()
+        sample_payload = next(
+            sample for sample in payload["samples"] if sample["regret_delta"]
+        )
+        key = next(iter(sample_payload["regret_delta"]))
+        action = next(iter(sample_payload["regret_delta"][key]))
+        del sample_payload["regret_delta"][key][action]
+        envelope = {"payload": payload, "sha256": _sha256(payload)}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "incomplete-vector-shard.json"
+            path.write_text(json.dumps(envelope), encoding="utf-8")
+            loaded = load_shard(path)
+            with self.assertRaisesRegex(ValueError, "complete action set"):
+                apply_shards(game, state, [loaded])
+
+    def test_negative_strategy_sum_is_never_clipped_or_exported(self):
+        game = KuhnPoker()
+        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        train_batches(game, state, batches=1)
+        before = _payload_bytes(state)
+        key = next(iter(state.strategy_sum))
+        action = next(iter(state.strategy_sum[key]))
+        state.strategy_sum[key][action] = -1.0
+        corrupted_bytes = _payload_bytes(state)
+
+        with self.assertRaisesRegex(ValueError, "strategy_sum has negative"):
+            state.validate()
+        with self.assertRaisesRegex(ValueError, "strategy_sum has negative"):
+            average_policy(state)
+        shard = build_shard(
+            game,
+            SolverState(game.name, SolverConfig(samples_per_player=2)),
+            0,
+            1,
+        )
+        with self.assertRaisesRegex(ValueError, "strategy_sum has negative"):
+            apply_shards(game, state, [shard])
+        # Failure must not mutate anything beyond the injected fault.
+        self.assertNotEqual(_payload_bytes(state), before)
+        self.assertEqual(_payload_bytes(state), corrupted_bytes)
+        self.assertEqual(state.strategy_sum[key][action], -1.0)
+
+    def test_rehashed_checkpoint_with_negative_strategy_sum_is_rejected(self):
+        game = KuhnPoker()
+        state = SolverState(game.name, SolverConfig())
+        train_batches(game, state, batches=1)
+        payload = state.to_payload()
+        key = next(iter(payload["strategy_sum"]))
+        action = next(iter(payload["strategy_sum"][key]))
+        payload["strategy_sum"][key][action] = -0.01
+        envelope = {"payload": payload, "sha256": _sha256(payload)}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "negative-checkpoint.json"
+            path.write_text(json.dumps(envelope), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "strategy_sum has negative"):
+                load_checkpoint(path)
+
     def test_shard_layout_is_digest_invariant(self):
         game = KuhnPoker()
         base = SolverState(
