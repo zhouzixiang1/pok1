@@ -1,0 +1,43 @@
+{
+  "adapter": {
+    "path": "verify_drand_beacon.mjs",
+    "sha256": "4ef1cfbbd60299cf5d3e284a2a2743c6a9554bf161c33d6b3ce2f60858c370e1"
+  },
+  "chain": {
+    "beacon_id": "default",
+    "chain_hash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
+    "endpoints": [
+      "https://api.drand.sh/v2/",
+      "https://api2.drand.sh/v2/",
+      "https://api3.drand.sh/v2/"
+    ],
+    "genesis_seed": "176f93498eac9ca337150b46d21dd58673ea4e3581185f869672e59fa4cb390a",
+    "genesis_time": 1595431050,
+    "period_sec": 30,
+    "public_key": "868f005eb8e6e4ca0a47c8a77ceaa5309a47978a7c71bc5cce96366b5d7a569937c529eeda66c7293784a9402801af31",
+    "scheme": "pedersen-bls-chained"
+  },
+  "fetch_tool": {
+    "path": "verify_drand_beacon.py",
+    "sha256": "58e6402fce17f206ebb2922186ba4967cfac2eb00965c3d9f98f005974a006fd"
+  },
+  "official_verifier": {
+    "license": "(Apache-2.0 OR MIT)",
+    "module_sha256": "c5f6eff0d5692efd8f2e19953a49713d17554739016f9d0f3235380aab9ea904",
+    "module_tar_member": "package/build/esm/index.mjs",
+    "name": "drand-client",
+    "npm_integrity": "sha512-jeNJmrVplfgIA/GVndxxJ5mo8y63BS2pEdNhk1siU4pQ+z/BnxsqRnxjH9ag1ip887s12SEgo0MTZPbQNz27NA==",
+    "repository": "https://github.com/drand/drand-client",
+    "source_commit": "ef8c9260294f8699b5e8c27a6b764f8f0d768bea",
+    "tarball_sha256": "81de34afba38520b461152bf032cfb5139bb6ced205bf9f50bc8216fdc394eef",
+    "tarball_sha512": "8de3499ab56995f80803f1959ddc712799a8f32eb7052da911d361935b22538a50fb3fc19f1b2a467c631fd6a0d62a7cf3bb35d92120a3431364f6d0373dbb34",
+    "tarball_url": "https://registry.npmjs.org/drand-client/-/drand-client-1.4.2.tgz",
+    "version": "1.4.2"
+  },
+  "runtime": {
+    "node_path": "/usr/bin/node",
+    "node_sha256": "93956de2e59480474a7b46571da1651180b1a050cdf32641ebec4ce6e478e068",
+    "node_version": "v22.23.1"
+  },
+  "schema": "drand-verifier-lock-v1"
+}

@@ -1,0 +1,77 @@
+{
+  "adapter": {
+    "path": "verify_candidate_freeze.py",
+    "sha256": "b840a59798afd9ab4be7ed67f4d1973a2605e124753cbcd0c8edbbbcf4a56b09"
+  },
+  "official_verifier": {
+    "cli_version": "v0.7.2",
+    "license": "LGPL-3.0-or-later",
+    "name": "opentimestamps-client",
+    "pypi_sdist_sha256": "083a08f59c3123682d6742cc57d3e229ed7b3397807638836efe3a949517accb",
+    "pypi_wheel_sha256": "84e604d7f76534da4bab61ab62b211a6559aa988da51438408ae7947b0e8b7ba",
+    "repository": "https://github.com/opentimestamps/opentimestamps-client",
+    "source_commit": "6d711ab86e00dbb4c5160c2c2b703c551b438856",
+    "source_tag": "opentimestamps-client-v0.7.2",
+    "version": "0.7.2"
+  },
+  "requirements": {
+    "path": "verify_candidate_freeze.requirements.txt",
+    "sha256": "d1d64b8e1138a42d93812d8049a7da8052071080c654407eecf787e93d3095bc"
+  },
+  "schema": "candidate-freeze-verifier-lock-v1",
+  "verification_policy": {
+    "bitcoin_network": "mainnet",
+    "default_minimum_confirmations": 6,
+    "remote_calendars": "disabled",
+    "timestamp_cache": "disabled",
+    "trusted_time_source": "loopback_bitcoin_core_active_chain_block_header"
+  },
+  "wheelhouse_platform": "linux-x86_64-python-abi3-and-py3",
+  "wheels": [
+    {
+      "filename": "PySocks-1.7.1-py3-none-any.whl",
+      "license": "BSD",
+      "sha256": "2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5"
+    },
+    {
+      "filename": "appdirs-1.4.4-py2.py3-none-any.whl",
+      "license": "MIT",
+      "sha256": "a841dacd6b99318a741b166adb07e19ee71a274450e68237b4650ca1055ab128"
+    },
+    {
+      "filename": "gitdb-4.0.12-py3-none-any.whl",
+      "license": "BSD-3-Clause",
+      "sha256": "67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf"
+    },
+    {
+      "filename": "gitpython-3.1.50-py3-none-any.whl",
+      "license": "BSD-3-Clause",
+      "sha256": "d352abe2908d07355014abdd21ddf798c2a961469239afec4962e9da884858f9"
+    },
+    {
+      "filename": "opentimestamps-0.4.5-py3-none-any.whl",
+      "license": "LGPL-3.0-or-later",
+      "sha256": "a4912b3bd1b612a3ef5fac925b9137889e6c5cb91cc9e76c8202a2bf8abe26b5"
+    },
+    {
+      "filename": "opentimestamps_client-0.7.2-py3-none-any.whl",
+      "license": "LGPL-3.0-or-later",
+      "sha256": "84e604d7f76534da4bab61ab62b211a6559aa988da51438408ae7947b0e8b7ba"
+    },
+    {
+      "filename": "pycryptodomex-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "license": "BSD-2-Clause-and-Public-Domain",
+      "sha256": "f489c4765093fb60e2edafdf223397bc716491b2b69fe74367b70d6999257a5c"
+    },
+    {
+      "filename": "python_bitcoinlib-0.12.2-py3-none-any.whl",
+      "license": "LGPL-3.0-or-later",
+      "sha256": "2f29a9f475f21c12169b3a6cc8820f34f11362d7ff1200a5703dce3e4e903a44"
+    },
+    {
+      "filename": "smmap-5.0.3-py3-none-any.whl",
+      "license": "BSD-3-Clause",
+      "sha256": "c106e05d5a61449cf6ba9a1e650227ecfb141590d2a98412103ff35d89fc7b2f"
+    }
+  ]
+}
