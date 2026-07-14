@@ -17,9 +17,14 @@ from pathlib import Path
 
 from bots.research_native_lab.common_contracts.constants import OFFICIAL_ACTION_DELAY_SEC
 
-from ..blueprint.artifact import BlueprintPolicy, load_blueprint_artifact
-from ..blueprint.hunl_game import HUNLTrainingGame
-from .socket_client import NativeBlueprintClient
+try:
+    from ..blueprint.artifact import BlueprintPolicy, load_blueprint_artifact
+    from ..blueprint.hunl_game import HUNLTrainingGame
+    from .socket_client import NativeBlueprintClient
+except ImportError:
+    from bots.research_native_lab.cfr_neural_search.blueprint.artifact import BlueprintPolicy, load_blueprint_artifact
+    from bots.research_native_lab.cfr_neural_search.blueprint.hunl_game import HUNLTrainingGame
+    from bots.research_native_lab.cfr_neural_search.native_runtime.socket_client import NativeBlueprintClient
 
 
 def _official_delay() -> float:
@@ -33,7 +38,7 @@ def _official_delay() -> float:
     return value
 
 
-class NeuralBlueprintPolicy:
+class NeuralBlueprintPolicy(BlueprintPolicy):
     """Blueprint policy with optional CFV network enhancement.
 
     For the initial version, this delegates entirely to the blueprint
@@ -44,7 +49,7 @@ class NeuralBlueprintPolicy:
     """
 
     def __init__(self, artifact, cfv_model_path=None, seed=42):
-        self.blueprint_policy = BlueprintPolicy(artifact)
+        super().__init__(artifact)
         self.cfv_model = None
         self.seed = seed
         self._decision_count = 0
@@ -72,7 +77,7 @@ class NeuralBlueprintPolicy:
     def decide(self, state, player, policy_seed, decision_counter):
         """Delegate to blueprint; CFV model used for diagnostics."""
         self._decision_count = decision_counter
-        return self.blueprint_policy.decide(
+        return super().decide(
             state, player,
             policy_seed=policy_seed,
             decision_counter=decision_counter,
@@ -121,11 +126,26 @@ def main(argv: list[str] | None = None) -> int:
         root=args.artifact.parent,
     )
 
-    policy = NeuralBlueprintPolicy(
-        artifact,
-        cfv_model_path=args.cfv_model,
-        seed=args.policy_seed,
-    )
+    policy = BlueprintPolicy(artifact)
+    # Load CFV model for potential future use (not yet wired into decisions)
+    if args.cfv_model:
+        try:
+            import torch
+            from bots.research_native_lab.cfr_neural_search_m5.cfv.range_cfv_network import (
+                RangeCFVNetConfig, build_cfv_model,
+            )
+            ckpt = torch.load(args.cfv_model, map_location="cpu")
+            cfg = ckpt.get("config", {})
+            net_cfg = RangeCFVNetConfig(
+                trunk_hidden=cfg.get("hidden_dim", 128),
+                trunk_layers=cfg.get("layers", 3),
+            )
+            model = build_cfv_model(net_cfg, seed=cfg.get("seed", 42))
+            model.load_state_dict(ckpt["model_state_dict"])
+            model.eval()
+            print(f"[B-neural] CFV model loaded (loss={ckpt.get('loss_history',['?'])[-1]})", file=sys.stderr)
+        except Exception as exc:
+            print(f"[B-neural] CFV model load skipped: {exc}", file=sys.stderr)
 
     client = NativeBlueprintClient(
         bot_name=args.name,
