@@ -1,0 +1,1085 @@
+{
+  "timestamp": "20260606_133512",
+  "bot0": ".\\bots\\experiments\\anti_lock_v1.py",
+  "bot1": ".\\bots\\bot5.py",
+  "n_games": 1,
+  "bot0_wins": 1,
+  "bot1_wins": 0,
+  "draws": 0,
+  "seed": 2026060698,
+  "hands_per_game": 3,
+  "in_process": true,
+  "hl_trace": true,
+  "games": [
+    {
+      "game": 0,
+      "winner": 0,
+      "bot0_chips": 149.0,
+      "bot1_chips": -149.0,
+      "logs": [
+        {
+          "output": {
+            "command": "request",
+            "content": {
+              "0": {
+                "num_players": 2,
+                "dealer_id": 1,
+                "my_id": 0,
+                "my_chips": 19950,
+                "my_cards": [
+                  26,
+                  30
+                ],
+                "public_cards": [],
+                "history": [],
+                "hand": 0,
+                "max_hand": 3,
+                "total_win_chips": [
+                  0,
+                  0
+                ],
+                "total_win_games": [
+                  0,
+                  0
+                ]
+              }
+            },
+            "display": {
+              "matchdata": {
+                "hand": 0,
+                "max_hand": 3,
+                "total_win_chips": [
+                  0,
+                  0
+                ],
+                "total_win_games": [
+                  0,
+                  0
+                ]
+              },
+              "round": 0,
+              "round_idx": 0,
+              "round_bet": 100,
+              "round_raise": 100,
+              "round_player_bet": [
+                50,
+                100
+              ],
+              "pot": 150,
+              "player_chips": [
+                19950,
+                19900
+              ],
+              "public_cards": [],
+              "player_cards": [
+                [
+                  26,
+                  30
+                ],
+                [
+                  9,
+                  31
+                ]
+              ]
+            },
+            "initdata": {
+              "max_hand": 3,
+              "dealer": 1,
+              "decks": [
+                [
+                  35,
+                  12,
+                  25,
+                  17,
+                  11,
+                  49,
+                  3,
+                  29,
+                  18,
+                  1,
+                  41,
+                  0,
+                  36,
+                  5,
+                  33,
+                  40,
+                  2,
+                  10,
+                  37,
+                  28,
+                  16,
+                  20,
+                  8,
+                  15,
+                  4,
+                  6,
+                  47,
+                  21,
+                  44,
+                  32,
+                  13,
+                  23,
+                  19,
+                  27,
+                  42,
+                  48,
+                  7,
+                  24,
+                  22,
+                  43,
+                  46,
+                  45,
+                  38,
+                  39,
+                  14,
+                  34,
+                  51,
+                  50,
+                  31,
+                  9,
+                  30,
+                  26
+                ],
+                [
+                  36,
+                  0,
+                  48,
+                  18,
+                  43,
+                  26,
+                  49,
+                  1,
+                  14,
+                  28,
+                  44,
+                  12,
+                  25,
+                  22,
+                  3,
+                  47,
+                  30,
+                  4,
+                  29,
+                  16,
+                  11,
+                  5,
+                  33,
+                  35,
+                  27,
+                  38,
+                  21,
+                  20,
+                  40,
+                  41,
+                  19,
+                  37,
+                  13,
+                  17,
+                  34,
+                  15,
+                  10,
+                  2,
+                  39,
+                  46,
+                  32,
+                  7,
+                  45,
+                  42,
+                  23,
+                  50,
+                  24,
+                  31,
+                  51,
+                  8,
+                  9,
+                  6
+                ],
+                [
+                  38,
+                  12,
+                  7,
+                  40,
+                  4,
+                  26,
+                  39,
+                  46,
+                  35,
+                  14,
+                  50,
+                  30,
+                  43,
+                  29,
+                  45,
+                  18,
+                  48,
+                  2,
+                  25,
+                  11,
+                  41,
+                  23,
+                  33,
+                  13,
+                  0,
+                  22,
+                  36,
+                  5,
+                  15,
+                  28,
+                  16,
+                  32,
+                  19,
+                  47,
+                  20,
+                  27,
+                  31,
+                  6,
+                  17,
+                  49,
+                  51,
+                  44,
+                  21,
+                  8,
+                  24,
+                  9,
+                  1,
+                  42,
+                  37,
+                  34,
+                  3,
+                  10
+                ]
+              ]
+            }
+          }
+        },
+        {
+          "0": {
+            "response": "249",
+            "verdict": "OK",
+            "hl_trace": {
+              "hl_seed": "2026066776182094",
+              "my_id": 0,
+              "my_chips": 19950,
+              "my_cards": [
+                26,
+                30
+              ],
+              "public_cards": [],
+              "round": 0,
+              "to_call": 50,
+              "pot": 150,
+              "my_round_bet": 50,
+              "round_bet": 100,
+              "round_raise": 100,
+              "opponent_allin": false,
+              "remaining_hands": 3,
+              "anti_lock_pressure": false,
+              "match_chase": 0.0,
+              "match_protect": 0.0,
+              "preflop_spot": "sb_open",
+              "has_position": false,
+              "last_opp_action_type": null,
+              "opponent_confidence": 0.0,
+              "opponent_aggression": 0.3,
+              "opponent_fold_to_raise": 0.44,
+              "win_rate": 0.4407,
+              "simulations": 500,
+              "extra_simulations": 200,
+              "critical_spot": true,
+              "preflop_strength": 0.7718,
+              "preflop_3bet_candidate": false,
+              "decision_branch": "preflop_spot_action",
+              "raw_action": 249,
+              "final_action": 249,
+              "sanitized": false
+            }
+          },
+          "output": null
+        },
+        {
+          "output": {
+            "command": "request",
+            "content": {
+              "1": {
+                "num_players": 2,
+                "dealer_id": 1,
+                "my_id": 1,
+                "my_chips": 19900,
+                "my_cards": [
+                  9,
+                  31
+                ],
+                "public_cards": [],
+                "history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 249,
+                    "action_type": "raise"
+                  }
+                ],
+                "hand": 0,
+                "max_hand": 3,
+                "total_win_chips": [
+                  0,
+                  0
+                ],
+                "total_win_games": [
+                  0,
+                  0
+                ]
+              }
+            },
+            "display": {
+              "matchdata": {
+                "hand": 0,
+                "max_hand": 3,
+                "total_win_chips": [
+                  0,
+                  0
+                ],
+                "total_win_games": [
+                  0,
+                  0
+                ]
+              },
+              "round": 0,
+              "round_idx": 1,
+              "round_bet": 299,
+              "round_raise": 249,
+              "round_player_bet": [
+                299,
+                100
+              ],
+              "pot": 399,
+              "player_chips": [
+                19701,
+                19900
+              ],
+              "public_cards": [],
+              "player_cards": [
+                [
+                  26,
+                  30
+                ],
+                [
+                  9,
+                  31
+                ]
+              ],
+              "last_public_cards": [],
+              "last_action": {
+                "round": 0,
+                "player_id": 0,
+                "action": 249,
+                "action_type": "raise"
+              }
+            }
+          }
+        },
+        {
+          "1": {
+            "response": "0",
+            "verdict": "OK",
+            "hl_trace": {
+              "hl_seed": "2026066776182114",
+              "raw_action": 0,
+              "final_action": 0,
+              "sanitized": false
+            }
+          },
+          "output": null
+        },
+        {
+          "output": {
+            "command": "request",
+            "content": {
+              "0": {
+                "num_players": 2,
+                "dealer_id": 1,
+                "my_id": 0,
+                "my_chips": 19701,
+                "my_cards": [
+                  26,
+                  30
+                ],
+                "public_cards": [
+                  50,
+                  51,
+                  34
+                ],
+                "history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 249,
+                    "action_type": "raise"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "call"
+                  }
+                ],
+                "hand": 0,
+                "max_hand": 3,
+                "total_win_chips": [
+                  0,
+                  0
+                ],
+                "total_win_games": [
+                  0,
+                  0
+                ]
+              }
+            },
+            "display": {
+              "matchdata": {
+                "hand": 0,
+                "max_hand": 3,
+                "total_win_chips": [
+                  0,
+                  0
+                ],
+                "total_win_games": [
+                  0,
+                  0
+                ]
+              },
+              "round": 1,
+              "round_idx": 0,
+              "round_bet": 0,
+              "round_raise": 50,
+              "round_player_bet": [
+                0,
+                0
+              ],
+              "pot": 598,
+              "player_chips": [
+                19701,
+                19701
+              ],
+              "public_cards": [
+                50,
+                51,
+                34
+              ],
+              "player_cards": [
+                [
+                  26,
+                  30
+                ],
+                [
+                  9,
+                  31
+                ]
+              ],
+              "last_public_cards": [
+                50,
+                51,
+                34
+              ],
+              "last_action": {
+                "round": 0,
+                "player_id": 1,
+                "action": 0,
+                "action_type": "call"
+              }
+            }
+          }
+        },
+        {
+          "0": {
+            "response": "418",
+            "verdict": "OK",
+            "hl_trace": {
+              "hl_seed": "2026066776182128",
+              "my_id": 0,
+              "my_chips": 19701,
+              "my_cards": [
+                26,
+                30
+              ],
+              "public_cards": [
+                50,
+                51,
+                34
+              ],
+              "round": 1,
+              "to_call": 0,
+              "pot": 598,
+              "my_round_bet": 0,
+              "round_bet": 0,
+              "round_raise": 50,
+              "opponent_allin": false,
+              "remaining_hands": 3,
+              "anti_lock_pressure": true,
+              "match_chase": 0.72,
+              "match_protect": 0.0,
+              "preflop_spot": "other",
+              "has_position": false,
+              "last_opp_action_type": "call",
+              "opponent_confidence": 0.0,
+              "opponent_aggression": 0.2571,
+              "opponent_fold_to_raise": 0.352,
+              "win_rate": 0.4657,
+              "simulations": 700,
+              "extra_simulations": 0,
+              "critical_spot": false,
+              "preflop_strength": null,
+              "preflop_3bet_candidate": false,
+              "pot_odds": 0.0,
+              "made_strength": 0.2306,
+              "draw_strength": 0.115,
+              "value_tier": "none",
+              "board_wetness": 0.0,
+              "board_dynamic": false,
+              "nutted_risk": 0.0,
+              "raw_action": 418,
+              "final_action": 418,
+              "sanitized": false,
+              "decision_branch": "anti_lock_pressure"
+            }
+          },
+          "output": null
+        },
+        {
+          "output": {
+            "command": "request",
+            "content": {
+              "1": {
+                "num_players": 2,
+                "dealer_id": 1,
+                "my_id": 1,
+                "my_chips": 19701,
+                "my_cards": [
+                  9,
+                  31
+                ],
+                "public_cards": [
+                  50,
+                  51,
+                  34
+                ],
+                "history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 249,
+                    "action_type": "raise"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 0,
+                    "action": 418,
+                    "action_type": "raise"
+                  }
+                ],
+                "hand": 0,
+                "max_hand": 3,
+                "total_win_chips": [
+                  0,
+                  0
+                ],
+                "total_win_games": [
+                  0,
+                  0
+                ]
+              }
+            },
+            "display": {
+              "matchdata": {
+                "hand": 0,
+                "max_hand": 3,
+                "total_win_chips": [
+                  0,
+                  0
+                ],
+                "total_win_games": [
+                  0,
+                  0
+                ]
+              },
+              "round": 1,
+              "round_idx": 1,
+              "round_bet": 418,
+              "round_raise": 418,
+              "round_player_bet": [
+                418,
+                0
+              ],
+              "pot": 1016,
+              "player_chips": [
+                19283,
+                19701
+              ],
+              "public_cards": [
+                50,
+                51,
+                34
+              ],
+              "player_cards": [
+                [
+                  26,
+                  30
+                ],
+                [
+                  9,
+                  31
+                ]
+              ],
+              "last_public_cards": [
+                50,
+                51,
+                34
+              ],
+              "last_action": {
+                "round": 1,
+                "player_id": 0,
+                "action": 418,
+                "action_type": "raise"
+              }
+            }
+          }
+        },
+        {
+          "1": {
+            "response": "-1",
+            "verdict": "OK",
+            "hl_trace": {
+              "hl_seed": "2026066776182148",
+              "raw_action": -1,
+              "final_action": -1,
+              "sanitized": false
+            }
+          },
+          "output": null
+        },
+        {
+          "output": {
+            "command": "request",
+            "content": {
+              "1": {
+                "num_players": 2,
+                "dealer_id": 0,
+                "my_id": 1,
+                "my_chips": 19950,
+                "my_cards": [
+                  8,
+                  51
+                ],
+                "public_cards": [],
+                "history": [],
+                "hand": 1,
+                "max_hand": 3,
+                "total_win_chips": [
+                  299.0,
+                  -299.0
+                ],
+                "total_win_games": [
+                  1,
+                  0
+                ]
+              }
+            },
+            "display": {
+              "matchdata": {
+                "hand": 1,
+                "max_hand": 3,
+                "total_win_chips": [
+                  299.0,
+                  -299.0
+                ],
+                "total_win_games": [
+                  1,
+                  0
+                ]
+              },
+              "round": 0,
+              "round_idx": 1,
+              "round_bet": 100,
+              "round_raise": 100,
+              "round_player_bet": [
+                100,
+                50
+              ],
+              "pot": 150,
+              "player_chips": [
+                19900,
+                19950
+              ],
+              "public_cards": [],
+              "player_cards": [
+                [
+                  6,
+                  9
+                ],
+                [
+                  8,
+                  51
+                ]
+              ],
+              "last_public_cards": [
+                50,
+                51,
+                34
+              ],
+              "last_action": {
+                "player_id": 1,
+                "action": -1,
+                "action_type": "fold"
+              },
+              "temp_result": [
+                {
+                  "win_chips": 299.0,
+                  "max_hand_type": 2,
+                  "max_cards": [
+                    50,
+                    51,
+                    34,
+                    30,
+                    26
+                  ]
+                },
+                {
+                  "win_chips": -299.0,
+                  "max_hand_type": 2,
+                  "max_cards": [
+                    50,
+                    51,
+                    34,
+                    31,
+                    9
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "1": {
+            "response": "258",
+            "verdict": "OK",
+            "hl_trace": {
+              "hl_seed": "2026066776182165",
+              "raw_action": 258,
+              "final_action": 258,
+              "sanitized": false
+            }
+          },
+          "output": null
+        },
+        {
+          "output": {
+            "command": "request",
+            "content": {
+              "0": {
+                "num_players": 2,
+                "dealer_id": 0,
+                "my_id": 0,
+                "my_chips": 19900,
+                "my_cards": [
+                  6,
+                  9
+                ],
+                "public_cards": [],
+                "history": [
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 258,
+                    "action_type": "raise"
+                  }
+                ],
+                "hand": 1,
+                "max_hand": 3,
+                "total_win_chips": [
+                  299.0,
+                  -299.0
+                ],
+                "total_win_games": [
+                  1,
+                  0
+                ]
+              }
+            },
+            "display": {
+              "matchdata": {
+                "hand": 1,
+                "max_hand": 3,
+                "total_win_chips": [
+                  299.0,
+                  -299.0
+                ],
+                "total_win_games": [
+                  1,
+                  0
+                ]
+              },
+              "round": 0,
+              "round_idx": 0,
+              "round_bet": 308,
+              "round_raise": 258,
+              "round_player_bet": [
+                100,
+                308
+              ],
+              "pot": 408,
+              "player_chips": [
+                19900,
+                19692
+              ],
+              "public_cards": [],
+              "player_cards": [
+                [
+                  6,
+                  9
+                ],
+                [
+                  8,
+                  51
+                ]
+              ],
+              "last_public_cards": [],
+              "last_action": {
+                "round": 0,
+                "player_id": 1,
+                "action": 258,
+                "action_type": "raise"
+              }
+            }
+          }
+        },
+        {
+          "0": {
+            "response": "-1",
+            "verdict": "OK",
+            "hl_trace": {
+              "hl_seed": "2026066776182179",
+              "my_id": 0,
+              "my_chips": 19900,
+              "my_cards": [
+                6,
+                9
+              ],
+              "public_cards": [],
+              "round": 0,
+              "to_call": 208,
+              "pot": 408,
+              "my_round_bet": 100,
+              "round_bet": 308,
+              "round_raise": 258,
+              "opponent_allin": false,
+              "decision_branch": "lock_win_fold",
+              "raw_action": -1,
+              "final_action": -1,
+              "sanitized": false
+            }
+          },
+          "output": null
+        },
+        {
+          "output": {
+            "command": "request",
+            "content": {
+              "0": {
+                "num_players": 2,
+                "dealer_id": 1,
+                "my_id": 0,
+                "my_chips": 19950,
+                "my_cards": [
+                  10,
+                  3
+                ],
+                "public_cards": [],
+                "history": [],
+                "hand": 2,
+                "max_hand": 3,
+                "total_win_chips": [
+                  199.0,
+                  -199.0
+                ],
+                "total_win_games": [
+                  1,
+                  1
+                ]
+              }
+            },
+            "display": {
+              "matchdata": {
+                "hand": 2,
+                "max_hand": 3,
+                "total_win_chips": [
+                  199.0,
+                  -199.0
+                ],
+                "total_win_games": [
+                  1,
+                  1
+                ]
+              },
+              "round": 0,
+              "round_idx": 0,
+              "round_bet": 100,
+              "round_raise": 100,
+              "round_player_bet": [
+                50,
+                100
+              ],
+              "pot": 150,
+              "player_chips": [
+                19950,
+                19900
+              ],
+              "public_cards": [],
+              "player_cards": [
+                [
+                  10,
+                  3
+                ],
+                [
+                  34,
+                  37
+                ]
+              ],
+              "last_public_cards": [],
+              "last_action": {
+                "player_id": 0,
+                "action": -1,
+                "action_type": "fold"
+              },
+              "temp_result": [
+                {
+                  "win_chips": -100.0,
+                  "max_hand_type": 1,
+                  "max_cards": [
+                    6,
+                    9
+                  ]
+                },
+                {
+                  "win_chips": 100.0,
+                  "max_hand_type": 1,
+                  "max_cards": [
+                    8,
+                    51
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "0": {
+            "response": "-1",
+            "verdict": "OK",
+            "hl_trace": {
+              "hl_seed": "2026066776182196",
+              "my_id": 0,
+              "my_chips": 19950,
+              "my_cards": [
+                10,
+                3
+              ],
+              "public_cards": [],
+              "round": 0,
+              "to_call": 50,
+              "pot": 150,
+              "my_round_bet": 50,
+              "round_bet": 100,
+              "round_raise": 100,
+              "opponent_allin": false,
+              "decision_branch": "lock_win_fold",
+              "raw_action": -1,
+              "final_action": -1,
+              "sanitized": false
+            }
+          },
+          "output": null
+        },
+        {
+          "output": {
+            "command": "finish",
+            "content": {
+              "0": 1.0,
+              "1": -1.0
+            },
+            "display": {
+              "matchdata": {
+                "hand": 2,
+                "max_hand": 3,
+                "total_win_chips": [
+                  149.0,
+                  -149.0
+                ],
+                "total_win_games": [
+                  1,
+                  2
+                ]
+              },
+              "round": 0,
+              "round_idx": 0,
+              "round_bet": 100,
+              "round_raise": 100,
+              "round_player_bet": [
+                -1,
+                100
+              ],
+              "pot": 150,
+              "player_chips": [
+                19950,
+                19900
+              ],
+              "public_cards": [],
+              "player_cards": [
+                [
+                  10,
+                  3
+                ],
+                [
+                  34,
+                  37
+                ]
+              ],
+              "temp_result": [
+                {
+                  "win_chips": -50.0,
+                  "max_hand_type": 1,
+                  "max_cards": [
+                    10,
+                    3
+                  ]
+                },
+                {
+                  "win_chips": 50.0,
+                  "max_hand_type": 1,
+                  "max_cards": [
+                    34,
+                    37
+                  ]
+                }
+              ],
+              "final_result": [
+                {
+                  "win_chips": 149.0,
+                  "win_games": 1
+                },
+                {
+                  "win_chips": -149.0,
+                  "win_games": 2
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

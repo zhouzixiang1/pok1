@@ -1,0 +1,15 @@
+{
+  "hand_id": 1,
+  "street": "preflop",
+  "hero_hole_cards": "AsKh",
+  "board_cards": "",
+  "pot": 1.5,
+  "total_pot": 1.5,
+  "hero_stack": 199.5,
+  "villain_stack": 199.0,
+  "hero_position": "BTN",
+  "legal_actions": ["f", "c", "b"],
+  "raise_min": 2.0,
+  "raise_max": 200.0,
+  "action_history": []
+}

@@ -1,0 +1,15 @@
+{
+  "hand_id": 42,
+  "street": "flop",
+  "hero_hole_cards": "AhKd",
+  "board_cards": "Ts9h2c",
+  "pot": 18.0,
+  "total_pot": 18.0,
+  "hero_stack": 191.0,
+  "villain_stack": 191.0,
+  "hero_position": "BTN",
+  "legal_actions": ["k", "b"],
+  "raise_min": 1.0,
+  "raise_max": 191.0,
+  "action_history": ["b2.5", "b9", "c", "_"]
+}

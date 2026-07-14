@@ -1,0 +1,236 @@
+{
+  "baseline_runs": [
+    {
+      "run_dir": "D:\\codex\\bot\\hl_runs\\20260606_142816_deterministic_baseline_bot123",
+      "candidate": {
+        "path": "1.py",
+        "label": "当前 bot",
+        "sha256": "0cb51d72cafd6dad2f7cab7127604638129dd1f62565153e299bef84ca700b0f"
+      },
+      "config": {
+        "games": 5,
+        "physical_games_per_baseline": 10,
+        "hands_per_game": 70,
+        "seed": 2026360601,
+        "hl_trace": true,
+        "mirror": true,
+        "bidirectional": false,
+        "in_process": true
+      }
+    },
+    {
+      "run_dir": "D:\\codex\\bot\\hl_runs\\20260606_133529_deterministic_baseline_screen",
+      "candidate": {
+        "path": "1.py",
+        "label": "当前 bot",
+        "sha256": "0cb51d72cafd6dad2f7cab7127604638129dd1f62565153e299bef84ca700b0f"
+      },
+      "config": {
+        "games": 5,
+        "physical_games_per_baseline": 10,
+        "hands_per_game": 70,
+        "seed": 2026360601,
+        "hl_trace": true,
+        "mirror": true,
+        "bidirectional": false,
+        "in_process": true
+      }
+    }
+  ],
+  "candidate_runs": [
+    {
+      "run_dir": "D:\\codex\\bot\\hl_runs\\20260606_153825_deterministic_anti_lock_minimal_bot123",
+      "candidate": {
+        "path": "bots\\experiments\\anti_lock_minimal_v1.py",
+        "label": "当前 bot",
+        "sha256": "56de93bceab5037c2c3151515a1255c108aa44a713923b91e4bfe608a8e1e441"
+      },
+      "config": {
+        "games": 5,
+        "physical_games_per_baseline": 10,
+        "hands_per_game": 70,
+        "seed": 2026360601,
+        "hl_trace": true,
+        "mirror": true,
+        "bidirectional": false,
+        "in_process": true
+      }
+    },
+    {
+      "run_dir": "D:\\codex\\bot\\hl_runs\\20260606_152533_deterministic_anti_lock_minimal_bot45",
+      "candidate": {
+        "path": "bots\\experiments\\anti_lock_minimal_v1.py",
+        "label": "当前 bot",
+        "sha256": "56de93bceab5037c2c3151515a1255c108aa44a713923b91e4bfe608a8e1e441"
+      },
+      "config": {
+        "games": 5,
+        "physical_games_per_baseline": 10,
+        "hands_per_game": 70,
+        "seed": 2026360601,
+        "hl_trace": true,
+        "mirror": true,
+        "bidirectional": false,
+        "in_process": true
+      }
+    }
+  ],
+  "opponents": [
+    {
+      "opponent": "bot1",
+      "baseline_total": 25000.0,
+      "candidate_total": 25000.0,
+      "deltas": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "summary": {
+        "count": 5,
+        "positive": 0,
+        "negative": 0,
+        "zero": 5,
+        "sum": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "bootstrap_mean_ci95": [
+          0.0,
+          0.0
+        ],
+        "sign_flip_p_value": 1.0,
+        "sign_test_p_value": 1.0,
+        "verdict": "证据不足"
+      }
+    },
+    {
+      "opponent": "bot2",
+      "baseline_total": -1809.0,
+      "candidate_total": 10649.0,
+      "deltas": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        12458.0
+      ],
+      "summary": {
+        "count": 5,
+        "positive": 1,
+        "negative": 0,
+        "zero": 4,
+        "sum": 12458.0,
+        "mean": 2491.6,
+        "median": 0.0,
+        "bootstrap_mean_ci95": [
+          0.0,
+          7474.8
+        ],
+        "sign_flip_p_value": 1.0,
+        "sign_test_p_value": 1.0,
+        "verdict": "提升趋势"
+      }
+    },
+    {
+      "opponent": "bot3",
+      "baseline_total": 11065.0,
+      "candidate_total": 11065.0,
+      "deltas": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "summary": {
+        "count": 5,
+        "positive": 0,
+        "negative": 0,
+        "zero": 5,
+        "sum": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "bootstrap_mean_ci95": [
+          0.0,
+          0.0
+        ],
+        "sign_flip_p_value": 1.0,
+        "sign_test_p_value": 1.0,
+        "verdict": "证据不足"
+      }
+    },
+    {
+      "opponent": "bot4",
+      "baseline_total": -4301.0,
+      "candidate_total": 13764.0,
+      "deltas": [
+        0.0,
+        0.0,
+        0.0,
+        18005.0,
+        60.0
+      ],
+      "summary": {
+        "count": 5,
+        "positive": 2,
+        "negative": 0,
+        "zero": 3,
+        "sum": 18065.0,
+        "mean": 3613.0,
+        "median": 0.0,
+        "bootstrap_mean_ci95": [
+          0.0,
+          10815.0
+        ],
+        "sign_flip_p_value": 0.50227,
+        "sign_test_p_value": 0.5,
+        "verdict": "提升趋势"
+      }
+    },
+    {
+      "opponent": "bot5",
+      "baseline_total": 16909.0,
+      "candidate_total": 2651.0,
+      "deltas": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -14258.0
+      ],
+      "summary": {
+        "count": 5,
+        "positive": 0,
+        "negative": 1,
+        "zero": 4,
+        "sum": -14258.0,
+        "mean": -2851.6,
+        "median": 0.0,
+        "bootstrap_mean_ci95": [
+          -8554.8,
+          0.0
+        ],
+        "sign_flip_p_value": 1.0,
+        "sign_test_p_value": 1.0,
+        "verdict": "退化趋势"
+      }
+    }
+  ],
+  "overall": {
+    "count": 25,
+    "positive": 3,
+    "negative": 1,
+    "zero": 21,
+    "sum": 16265.0,
+    "mean": 650.6,
+    "median": 0.0,
+    "bootstrap_mean_ci95": [
+      -1210.24,
+      2808.8
+    ],
+    "sign_flip_p_value": 0.626147,
+    "sign_test_p_value": 0.625,
+    "verdict": "提升趋势"
+  }
+}
