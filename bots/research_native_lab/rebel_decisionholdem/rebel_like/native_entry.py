@@ -314,7 +314,9 @@ class A1NetworkClient:
             self.opponent_bet += committed
             self.pot += committed
             self.stage_actions.append(("call", None))
-            return False
+            # After opponent calls, hero may need to act (preflop BB option, postflop response)
+            self.responding_to_check = True
+            return True
         if msg == "allin":
             committed = self.opponent_chips
             self.opponent_chips = 0
@@ -363,41 +365,54 @@ class A1NetworkClient:
         self.hero_action_count += 1
 
     def run(self, host, port, match_timeout=180):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(match_timeout)
-        sock.connect((host, port))
+        sock = socket.create_connection((host, port), timeout=15.0)
+        sock.setblocking(False)
         self._log(f"connected host={host} port={port}")
 
-        # Send name
-        time.sleep(self.action_delay)
-        sock.sendall(self.name.encode("ascii"))
-
+        numeric_pending_since = None
         start_time = time.monotonic()
-        sock.settimeout(1.0)
 
         while True:
             if time.monotonic() - start_time > match_timeout:
                 break
-            try:
-                data = sock.recv(4096)
-                if not data:
+            readable, _, _ = select.select([sock], [], [], 0.01)
+            if readable:
+                try:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    messages = self.decoder.feed(chunk.decode("ascii", errors="replace"))
+                    numeric_pending_since = (
+                        time.monotonic() if self.decoder.has_pending_numeric else None
+                    )
+                except (BlockingIOError, ConnectionError, OSError):
                     break
-                chunk = data.decode("ascii", errors="replace")
-                messages = self.decoder.feed(chunk)
-                messages.extend(self.decoder.flush_idle())
+            else:
+                ready = (
+                    self.decoder.has_pending_numeric
+                    and numeric_pending_since is not None
+                    and time.monotonic() - numeric_pending_since >= 0.05
+                )
+                messages = self.decoder.flush_idle() if ready else []
+                if ready:
+                    numeric_pending_since = None
 
-                for msg in messages:
-                    self._log(f"recv: {msg[:80]}")
-                    needs_decision = self._process_message(msg)
-                    if needs_decision:
-                        action = self.decide()
-                        self._apply_hero(action)
-                        self._send_action(sock, action)
-                        self._log(f"send: {action}")
-            except socket.timeout:
-                continue
-            except (ConnectionError, OSError):
-                break
+            for msg in messages:
+                self._log(f"recv: {msg[:80]}")
+                # Handle name request
+                if msg == "name":
+                    time.sleep(self.action_delay)
+                    sock.sendall(self.name.encode("ascii"))
+                    self._log(f"send: {self.name}")
+                    continue
+
+                needs_decision = self._process_message(msg)
+                if needs_decision:
+                    action = self.decide()
+                    self._apply_hero(action)
+                    time.sleep(self.action_delay)
+                    sock.sendall(action.encode("ascii"))
+                    self._log(f"send: {action}")
 
         sock.close()
         self._log("disconnected")
