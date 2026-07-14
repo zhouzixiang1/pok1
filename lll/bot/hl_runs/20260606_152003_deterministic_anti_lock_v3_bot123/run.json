@@ -1,0 +1,92 @@
+{
+  "type": "pool_eval",
+  "timestamp": "20260606_152003",
+  "candidate": {
+    "path": "bots\\experiments\\anti_lock_v3.py",
+    "label": "当前 bot",
+    "sha256": "ececd8d5698dc4dd4bb212f5b4e8ab533bda7fb9e1190f44d038374a61c9f5e3"
+  },
+  "baselines": [
+    {
+      "name": "bot1",
+      "path": "bots\\bot1.py",
+      "sha256": "6b8cc7b02d8841015c0994b62b5f221b9c2554cca71473477ba209ec7d2dc6dc",
+      "label": "bot1",
+      "role": "opponent"
+    },
+    {
+      "name": "bot2",
+      "path": "bots\\bot2.py",
+      "sha256": "068fed6672f4a0b564b6cc94635bfc1b47c655723108c562dc0f964e2815377c",
+      "label": "bot2",
+      "role": "opponent"
+    },
+    {
+      "name": "bot3",
+      "path": "bots\\bot3.py",
+      "sha256": "bf6fbf5a2bcb36aa3d19902bf9bc187e8a7f06871f7b0326ca9da90fc42430d0",
+      "label": "bot3",
+      "role": "opponent"
+    }
+  ],
+  "config": {
+    "games": 5,
+    "physical_games_per_baseline": 10,
+    "hands_per_game": 70,
+    "seed": 2026360601,
+    "hl_trace": true,
+    "mirror": true,
+    "bidirectional": false,
+    "in_process": true
+  },
+  "status": "complete",
+  "result": {
+    "verdict": "GREEN",
+    "avg_mirror_chip_diff": 3166.6,
+    "illegal_or_crash_count": 0,
+    "sanitized_action_count": 0,
+    "interesting_count": 453,
+    "control_run": false
+  },
+  "matchups": [
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 5,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 5,
+      "logged_games": 10,
+      "chip_sum": 25153.0,
+      "avg_logged_chip_diff": 2515.3,
+      "avg_mirror_chip_diff": 5030.6,
+      "baseline": "bots\\bot1.py",
+      "result_file": "matchups\\current_mirror_bot1.json"
+    },
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 3,
+      "baseline_wins": 2,
+      "draws": 0,
+      "mirror_pairs": 5,
+      "logged_games": 10,
+      "chip_sum": 8188.0,
+      "avg_logged_chip_diff": 818.8,
+      "avg_mirror_chip_diff": 1637.6,
+      "baseline": "bots\\bot2.py",
+      "result_file": "matchups\\current_mirror_bot2.json"
+    },
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 4,
+      "baseline_wins": 1,
+      "draws": 0,
+      "mirror_pairs": 5,
+      "logged_games": 10,
+      "chip_sum": 14158.0,
+      "avg_logged_chip_diff": 1415.8,
+      "avg_mirror_chip_diff": 2831.6,
+      "baseline": "bots\\bot3.py",
+      "result_file": "matchups\\current_mirror_bot3.json"
+    }
+  ]
+}

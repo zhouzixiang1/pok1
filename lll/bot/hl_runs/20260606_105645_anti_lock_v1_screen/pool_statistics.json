@@ -1,0 +1,879 @@
+{
+  "matchups": [
+    {
+      "opponent": "bot4",
+      "source_file": "current_mirror_bot4.json",
+      "mirror_wld": [
+        3,
+        2,
+        0
+      ],
+      "physical_wld": [
+        6,
+        4,
+        0
+      ],
+      "physical_chips": [
+        -15066.0,
+        -3936.0,
+        -10136.0,
+        10339.0,
+        15982.0,
+        6929.0,
+        -19869.0,
+        17996.0,
+        320.0,
+        15278.0
+      ],
+      "pair_chips": [
+        -19002.0,
+        203.0,
+        22911.0,
+        -1873.0,
+        15598.0
+      ],
+      "total_chips": 17837.0,
+      "avg_physical_chips": 1783.7,
+      "median_physical_chips": 3624.5,
+      "stddev_physical_chips": 13645.8,
+      "min_physical_chips": -19869.0,
+      "max_physical_chips": 17996.0,
+      "candidate_verdicts": {
+        "OK": 929
+      },
+      "opponent_verdicts": {
+        "OK": 906
+      },
+      "candidate_actions": {
+        "过牌/跟注": 285,
+        "下注/加注": 274,
+        "弃牌": 369,
+        "全下": 1
+      },
+      "opponent_actions": {
+        "下注/加注": 319,
+        "过牌/跟注": 280,
+        "弃牌": 306,
+        "全下": 1
+      },
+      "branch_counts": {
+        "call_defense": 86,
+        "check_or_pot_control": 116,
+        "probe_raise": 41,
+        "preflop_spot_action": 212,
+        "value_or_pressure_raise": 63,
+        "fold_defense": 111,
+        "anti_lock_pressure": 24,
+        "anti_lock_preflop_attack": 28,
+        "lock_win_fold": 248
+      },
+      "round_counts": {
+        "翻前": 613,
+        "翻牌": 188,
+        "转牌": 86,
+        "河牌": 42
+      },
+      "flag_counts": {
+        "check_probe_signal": 52,
+        "anti_lock_pressure": 112
+      },
+      "terminal_branches": [
+        {
+          "branch": "fold_defense",
+          "count": 111,
+          "total_chips": -29847.0,
+          "avg_chips": -268.9,
+          "win_count": 0,
+          "loss_count": 111,
+          "positive_chips": 0.0,
+          "negative_chips": -29847.0
+        },
+        {
+          "branch": "lock_win_fold",
+          "count": 248,
+          "total_chips": -18300.0,
+          "avg_chips": -73.8,
+          "win_count": 0,
+          "loss_count": 248,
+          "positive_chips": 0.0,
+          "negative_chips": -18300.0
+        },
+        {
+          "branch": "value_or_pressure_raise",
+          "count": 39,
+          "total_chips": -1732.0,
+          "avg_chips": -44.4,
+          "win_count": 38,
+          "loss_count": 1,
+          "positive_chips": 13368.0,
+          "negative_chips": -15100.0
+        },
+        {
+          "branch": "check_or_pot_control",
+          "count": 15,
+          "total_chips": 289.0,
+          "avg_chips": 19.3,
+          "win_count": 10,
+          "loss_count": 5,
+          "positive_chips": 2798.0,
+          "negative_chips": -2509.0
+        },
+        {
+          "branch": "anti_lock_preflop_attack",
+          "count": 28,
+          "total_chips": 2800.0,
+          "avg_chips": 100.0,
+          "win_count": 28,
+          "loss_count": 0,
+          "positive_chips": 2800.0,
+          "negative_chips": 0.0
+        },
+        {
+          "branch": "无候选终局动作",
+          "count": 113,
+          "total_chips": 5650.0,
+          "avg_chips": 50.0,
+          "win_count": 113,
+          "loss_count": 0,
+          "positive_chips": 5650.0,
+          "negative_chips": 0.0
+        },
+        {
+          "branch": "probe_raise",
+          "count": 31,
+          "total_chips": 8383.0,
+          "avg_chips": 270.4,
+          "win_count": 30,
+          "loss_count": 1,
+          "positive_chips": 8842.0,
+          "negative_chips": -459.0
+        },
+        {
+          "branch": "preflop_spot_action",
+          "count": 102,
+          "total_chips": 8700.0,
+          "avg_chips": 85.3,
+          "win_count": 92,
+          "loss_count": 10,
+          "positive_chips": 9200.0,
+          "negative_chips": -500.0
+        },
+        {
+          "branch": "call_defense",
+          "count": 1,
+          "total_chips": 13842.0,
+          "avg_chips": 13842.0,
+          "win_count": 1,
+          "loss_count": 0,
+          "positive_chips": 13842.0,
+          "negative_chips": 0.0
+        },
+        {
+          "branch": "anti_lock_pressure",
+          "count": 12,
+          "total_chips": 28052.0,
+          "avg_chips": 2337.7,
+          "win_count": 9,
+          "loss_count": 3,
+          "positive_chips": 72134.0,
+          "negative_chips": -44082.0
+        }
+      ]
+    },
+    {
+      "opponent": "bot5",
+      "source_file": "current_mirror_bot5.json",
+      "mirror_wld": [
+        2,
+        3,
+        0
+      ],
+      "physical_wld": [
+        7,
+        3,
+        0
+      ],
+      "physical_chips": [
+        -20023.0,
+        8889.0,
+        292.0,
+        192.0,
+        394.0,
+        -5115.0,
+        916.0,
+        -18032.0,
+        17275.0,
+        19.0
+      ],
+      "pair_chips": [
+        -11134.0,
+        484.0,
+        -4721.0,
+        -17116.0,
+        17294.0
+      ],
+      "total_chips": -15193.0,
+      "avg_physical_chips": -1519.3,
+      "median_physical_chips": 242.0,
+      "stddev_physical_chips": 11094.1,
+      "min_physical_chips": -20023.0,
+      "max_physical_chips": 17275.0,
+      "candidate_verdicts": {
+        "OK": 1089,
+        "TIMEOUT": 1
+      },
+      "opponent_verdicts": {
+        "OK": 1078
+      },
+      "candidate_actions": {
+        "弃牌": 354,
+        "下注/加注": 342,
+        "过牌/跟注": 393,
+        "全下": 1
+      },
+      "opponent_actions": {
+        "弃牌": 312,
+        "下注/加注": 372,
+        "过牌/跟注": 393,
+        "全下": 1
+      },
+      "branch_counts": {
+        "preflop_spot_action": 258,
+        "fold_defense": 144,
+        "check_or_pot_control": 179,
+        "value_or_pressure_raise": 87,
+        "probe_raise": 63,
+        "call_defense": 134,
+        "anti_lock_pressure": 19,
+        "anti_lock_preflop_attack": 25,
+        "lock_win_fold": 180
+      },
+      "round_counts": {
+        "翻前": 632,
+        "翻牌": 271,
+        "转牌": 126,
+        "河牌": 60
+      },
+      "flag_counts": {
+        "check_probe_signal": 71,
+        "anti_lock_pressure": 81
+      },
+      "terminal_branches": [
+        {
+          "branch": "fold_defense",
+          "count": 144,
+          "total_chips": -46854.0,
+          "avg_chips": -325.4,
+          "win_count": 0,
+          "loss_count": 144,
+          "positive_chips": 0.0,
+          "negative_chips": -46854.0
+        },
+        {
+          "branch": "anti_lock_pressure",
+          "count": 10,
+          "total_chips": -19387.0,
+          "avg_chips": -1938.7,
+          "win_count": 6,
+          "loss_count": 3,
+          "positive_chips": 25894.0,
+          "negative_chips": -45281.0
+        },
+        {
+          "branch": "lock_win_fold",
+          "count": 180,
+          "total_chips": -13250.0,
+          "avg_chips": -73.6,
+          "win_count": 0,
+          "loss_count": 180,
+          "positive_chips": 0.0,
+          "negative_chips": -13250.0
+        },
+        {
+          "branch": "anti_lock_preflop_attack",
+          "count": 25,
+          "total_chips": 2500.0,
+          "avg_chips": 100.0,
+          "win_count": 25,
+          "loss_count": 0,
+          "positive_chips": 2500.0,
+          "negative_chips": 0.0
+        },
+        {
+          "branch": "check_or_pot_control",
+          "count": 28,
+          "total_chips": 2998.0,
+          "avg_chips": 107.1,
+          "win_count": 18,
+          "loss_count": 9,
+          "positive_chips": 6759.0,
+          "negative_chips": -3761.0
+        },
+        {
+          "branch": "无候选终局动作",
+          "count": 100,
+          "total_chips": 4609.0,
+          "avg_chips": 46.1,
+          "win_count": 99,
+          "loss_count": 1,
+          "positive_chips": 4950.0,
+          "negative_chips": -341.0
+        },
+        {
+          "branch": "preflop_spot_action",
+          "count": 112,
+          "total_chips": 6850.0,
+          "avg_chips": 61.2,
+          "win_count": 83,
+          "loss_count": 29,
+          "positive_chips": 8300.0,
+          "negative_chips": -1450.0
+        },
+        {
+          "branch": "probe_raise",
+          "count": 46,
+          "total_chips": 12718.0,
+          "avg_chips": 276.5,
+          "win_count": 46,
+          "loss_count": 0,
+          "positive_chips": 12718.0,
+          "negative_chips": 0.0
+        },
+        {
+          "branch": "value_or_pressure_raise",
+          "count": 55,
+          "total_chips": 34623.0,
+          "avg_chips": 629.5,
+          "win_count": 55,
+          "loss_count": 0,
+          "positive_chips": 34623.0,
+          "negative_chips": 0.0
+        }
+      ]
+    }
+  ],
+  "high_loss_count": 15,
+  "high_losses": [
+    {
+      "opponent": "bot5",
+      "game": 8,
+      "mirror": true,
+      "hand": 26,
+      "chips": -20000.0,
+      "action": "-2",
+      "action_kind": "全下",
+      "branch": "anti_lock_pressure",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.6807,
+      "to_call": 0,
+      "pot": 21446,
+      "my_cards": [
+        23,
+        20
+      ],
+      "public_cards": [
+        9,
+        7,
+        18,
+        4,
+        0
+      ],
+      "made_strength": 0.405,
+      "value_tier": "strong",
+      "opponent_confidence": 1.0,
+      "opponent_aggression": 0.387,
+      "opponent_fold_to_raise": 0.11,
+      "board_wetness": 0.223,
+      "anti_lock_pressure": true,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot4",
+      "game": 1,
+      "mirror": false,
+      "hand": 15,
+      "chips": -19999.0,
+      "action": "0",
+      "action_kind": "过牌/跟注",
+      "branch": "anti_lock_pressure",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.5036,
+      "to_call": 0,
+      "pot": 39998,
+      "my_cards": [
+        47,
+        40
+      ],
+      "public_cards": [
+        24,
+        14,
+        41,
+        31,
+        38
+      ],
+      "made_strength": 0.2306,
+      "value_tier": "strong",
+      "opponent_confidence": 0.6571,
+      "opponent_aggression": 0.5235,
+      "opponent_fold_to_raise": 0.1956,
+      "board_wetness": 0.353,
+      "anti_lock_pressure": true,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot4",
+      "game": 7,
+      "mirror": false,
+      "hand": 27,
+      "chips": -19999.0,
+      "action": "0",
+      "action_kind": "过牌/跟注",
+      "branch": "anti_lock_pressure",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.1987,
+      "to_call": 5896,
+      "pot": 34102,
+      "my_cards": [
+        5,
+        50
+      ],
+      "public_cards": [
+        11,
+        36,
+        30,
+        10,
+        22
+      ],
+      "made_strength": 0.2269,
+      "value_tier": "none",
+      "opponent_confidence": 1.0,
+      "opponent_aggression": 0.5321,
+      "opponent_fold_to_raise": 0.11,
+      "board_wetness": 0.218,
+      "anti_lock_pressure": true,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot5",
+      "game": 1,
+      "mirror": false,
+      "hand": 33,
+      "chips": -19999.0,
+      "action": "0",
+      "action_kind": "过牌/跟注",
+      "branch": "anti_lock_pressure",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.7433,
+      "to_call": 12802,
+      "pot": 27196,
+      "my_cards": [
+        37,
+        48
+      ],
+      "public_cards": [
+        16,
+        21,
+        10,
+        20,
+        51
+      ],
+      "made_strength": 0.4101,
+      "value_tier": "strong",
+      "opponent_confidence": 1.0,
+      "opponent_aggression": 0.4448,
+      "opponent_fold_to_raise": 0.1035,
+      "board_wetness": 0.176,
+      "anti_lock_pressure": true,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot4",
+      "game": 3,
+      "mirror": false,
+      "hand": 10,
+      "chips": -15100.0,
+      "action": "11228",
+      "action_kind": "下注/加注",
+      "branch": "value_or_pressure_raise",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.7699,
+      "to_call": 0,
+      "pot": 7744,
+      "my_cards": [
+        14,
+        12
+      ],
+      "public_cards": [
+        15,
+        9,
+        24,
+        3,
+        22
+      ],
+      "made_strength": 0.5854,
+      "value_tier": "nut",
+      "opponent_confidence": 0.4,
+      "opponent_aggression": 0.272,
+      "opponent_fold_to_raise": 0.1956,
+      "board_wetness": 0.323,
+      "anti_lock_pressure": false,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot5",
+      "game": 6,
+      "mirror": true,
+      "hand": 24,
+      "chips": -5282.0,
+      "action": "0",
+      "action_kind": "过牌/跟注",
+      "branch": "anti_lock_pressure",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.0037,
+      "to_call": 3798,
+      "pot": 6766,
+      "my_cards": [
+        25,
+        5
+      ],
+      "public_cards": [
+        22,
+        47,
+        30,
+        40,
+        21
+      ],
+      "made_strength": 0.2283,
+      "value_tier": "none",
+      "opponent_confidence": 1.0,
+      "opponent_aggression": 0.4351,
+      "opponent_fold_to_raise": 0.11,
+      "board_wetness": 0.176,
+      "anti_lock_pressure": true,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot4",
+      "game": 2,
+      "mirror": true,
+      "hand": 48,
+      "chips": -4084.0,
+      "action": "2599",
+      "action_kind": "下注/加注",
+      "branch": "anti_lock_pressure",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.1955,
+      "to_call": 0,
+      "pot": 2970,
+      "my_cards": [
+        47,
+        22
+      ],
+      "public_cards": [
+        28,
+        50,
+        13,
+        16,
+        32
+      ],
+      "made_strength": 0.0915,
+      "value_tier": "none",
+      "opponent_confidence": 1.0,
+      "opponent_aggression": 0.4326,
+      "opponent_fold_to_raise": 0.0652,
+      "board_wetness": 0.348,
+      "anti_lock_pressure": true,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot5",
+      "game": 6,
+      "mirror": true,
+      "hand": 5,
+      "chips": -2119.0,
+      "action": "-1",
+      "action_kind": "弃牌",
+      "branch": "fold_defense",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.3278,
+      "to_call": 3721,
+      "pot": 7959,
+      "my_cards": [
+        43,
+        28
+      ],
+      "public_cards": [
+        4,
+        45,
+        31,
+        6,
+        48
+      ],
+      "made_strength": 0.407,
+      "value_tier": "thin",
+      "opponent_confidence": 0.1714,
+      "opponent_aggression": 0.5176,
+      "opponent_fold_to_raise": 0.2514,
+      "board_wetness": 0.0946,
+      "anti_lock_pressure": false,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot4",
+      "game": 6,
+      "mirror": true,
+      "hand": 20,
+      "chips": -2099.0,
+      "action": "-1",
+      "action_kind": "弃牌",
+      "branch": "fold_defense",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.1003,
+      "to_call": 6087,
+      "pot": 10285,
+      "my_cards": [
+        17,
+        47
+      ],
+      "public_cards": [
+        36,
+        23,
+        46,
+        29,
+        35
+      ],
+      "made_strength": 0.2305,
+      "value_tier": "thin",
+      "opponent_confidence": 0.9714,
+      "opponent_aggression": 0.4178,
+      "opponent_fold_to_raise": 0.1257,
+      "board_wetness": 0.353,
+      "anti_lock_pressure": false,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot5",
+      "game": 9,
+      "mirror": false,
+      "hand": 11,
+      "chips": -1890.0,
+      "action": "-1",
+      "action_kind": "弃牌",
+      "branch": "fold_defense",
+      "round": 2,
+      "round_name": "转牌",
+      "win_rate": 0.5153,
+      "to_call": 2905,
+      "pot": 6685,
+      "my_cards": [
+        20,
+        49
+      ],
+      "public_cards": [
+        41,
+        21,
+        9,
+        46
+      ],
+      "made_strength": 0.2286,
+      "value_tier": "none",
+      "opponent_confidence": 0.4571,
+      "opponent_aggression": 0.5111,
+      "opponent_fold_to_raise": 0.22,
+      "board_wetness": 0.2666,
+      "anti_lock_pressure": false,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot4",
+      "game": 5,
+      "mirror": false,
+      "hand": 20,
+      "chips": -1421.0,
+      "action": "-1",
+      "action_kind": "弃牌",
+      "branch": "fold_defense",
+      "round": 2,
+      "round_name": "转牌",
+      "win_rate": 0.5144,
+      "to_call": 2351,
+      "pot": 5193,
+      "my_cards": [
+        40,
+        43
+      ],
+      "public_cards": [
+        36,
+        23,
+        46,
+        29
+      ],
+      "made_strength": 0.2306,
+      "value_tier": "none",
+      "opponent_confidence": 0.9429,
+      "opponent_aggression": 0.4045,
+      "opponent_fold_to_raise": 0.1467,
+      "board_wetness": 0.213,
+      "anti_lock_pressure": false,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot5",
+      "game": 3,
+      "mirror": false,
+      "hand": 7,
+      "chips": -1290.0,
+      "action": "0",
+      "action_kind": "过牌/跟注",
+      "branch": "check_or_pot_control",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.0897,
+      "to_call": 0,
+      "pot": 2580,
+      "my_cards": [
+        19,
+        35
+      ],
+      "public_cards": [
+        40,
+        27,
+        49,
+        39,
+        1
+      ],
+      "made_strength": 0.0914,
+      "value_tier": "none",
+      "opponent_confidence": 0.3143,
+      "opponent_aggression": 0.3091,
+      "opponent_fold_to_raise": 0.22,
+      "board_wetness": 0.276,
+      "anti_lock_pressure": false,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot5",
+      "game": 1,
+      "mirror": false,
+      "hand": 20,
+      "chips": -1195.0,
+      "action": "-1",
+      "action_kind": "弃牌",
+      "branch": "fold_defense",
+      "round": 2,
+      "round_name": "转牌",
+      "win_rate": 0.5593,
+      "to_call": 2720,
+      "pot": 5110,
+      "my_cards": [
+        35,
+        19
+      ],
+      "public_cards": [
+        33,
+        4,
+        22,
+        46
+      ],
+      "made_strength": 0.2291,
+      "value_tier": "none",
+      "opponent_confidence": 0.7714,
+      "opponent_aggression": 0.3895,
+      "opponent_fold_to_raise": 0.1354,
+      "board_wetness": 0.1946,
+      "anti_lock_pressure": false,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot4",
+      "game": 7,
+      "mirror": false,
+      "hand": 2,
+      "chips": -1035.0,
+      "action": "-1",
+      "action_kind": "弃牌",
+      "branch": "fold_defense",
+      "round": 3,
+      "round_name": "河牌",
+      "win_rate": 0.1725,
+      "to_call": 2800,
+      "pot": 4870,
+      "my_cards": [
+        23,
+        44
+      ],
+      "public_cards": [
+        5,
+        15,
+        16,
+        27,
+        14
+      ],
+      "made_strength": 0.2268,
+      "value_tier": "none",
+      "opponent_confidence": 0.0286,
+      "opponent_aggression": 0.4833,
+      "opponent_fold_to_raise": 0.352,
+      "board_wetness": 0.146,
+      "anti_lock_pressure": false,
+      "check_probe_signal": false,
+      "sanitized": false
+    },
+    {
+      "opponent": "bot5",
+      "game": 4,
+      "mirror": true,
+      "hand": 33,
+      "chips": -1001.0,
+      "action": "-1",
+      "action_kind": "弃牌",
+      "branch": "fold_defense",
+      "round": 2,
+      "round_name": "转牌",
+      "win_rate": 0.4315,
+      "to_call": 2669,
+      "pot": 4671,
+      "my_cards": [
+        48,
+        15
+      ],
+      "public_cards": [
+        26,
+        22,
+        9,
+        3
+      ],
+      "made_strength": 0.0899,
+      "value_tier": "none",
+      "opponent_confidence": 1.0,
+      "opponent_aggression": 0.3861,
+      "opponent_fold_to_raise": 0.0926,
+      "board_wetness": 0.246,
+      "anti_lock_pressure": false,
+      "check_probe_signal": false,
+      "sanitized": false
+    }
+  ]
+}

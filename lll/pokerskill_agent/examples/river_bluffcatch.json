@@ -1,0 +1,15 @@
+{
+  "hand_id": 99,
+  "street": "river",
+  "hero_hole_cards": "Jh9h",
+  "board_cards": "Ks7d3c5hQs",
+  "pot": 85.0,
+  "total_pot": 127.5,
+  "hero_stack": 115.5,
+  "villain_stack": 157.0,
+  "hero_position": "BB",
+  "legal_actions": ["f", "c", "b"],
+  "raise_min": 85.0,
+  "raise_max": 115.5,
+  "action_history": ["b2.5", "b9", "c", "_", "k", "b12", "c", "_", "k", "b28", "c", "_", "b42.5"]
+}

@@ -1,0 +1,72 @@
+{
+  "type": "pool_eval",
+  "timestamp": "20260606_152533",
+  "candidate": {
+    "path": "bots\\experiments\\anti_lock_minimal_v1.py",
+    "label": "当前 bot",
+    "sha256": "56de93bceab5037c2c3151515a1255c108aa44a713923b91e4bfe608a8e1e441"
+  },
+  "baselines": [
+    {
+      "name": "bot4",
+      "path": "bots\\bot4.py",
+      "sha256": "ccc71136a70d351b0658add769851c08e51b9314449e17be67a3a1b36a051b1d",
+      "label": "bot4",
+      "role": "opponent"
+    },
+    {
+      "name": "bot5",
+      "path": "bots\\bot5.py",
+      "sha256": "753987e4e5ba7910b5ec30ae7b2cb1737a69ae9746fce385da7aed6c42b71a80",
+      "label": "bot5",
+      "role": "opponent"
+    }
+  ],
+  "config": {
+    "games": 5,
+    "physical_games_per_baseline": 10,
+    "hands_per_game": 70,
+    "seed": 2026360601,
+    "hl_trace": true,
+    "mirror": true,
+    "bidirectional": false,
+    "in_process": true
+  },
+  "status": "complete",
+  "result": {
+    "verdict": "GREEN",
+    "avg_mirror_chip_diff": 1641.5,
+    "illegal_or_crash_count": 0,
+    "sanitized_action_count": 0,
+    "interesting_count": 340,
+    "control_run": false
+  },
+  "matchups": [
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 4,
+      "baseline_wins": 1,
+      "draws": 0,
+      "mirror_pairs": 5,
+      "logged_games": 10,
+      "chip_sum": 13764.0,
+      "avg_logged_chip_diff": 1376.4,
+      "avg_mirror_chip_diff": 2752.8,
+      "baseline": "bots\\bot4.py",
+      "result_file": "matchups\\current_mirror_bot4.json"
+    },
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 2,
+      "baseline_wins": 3,
+      "draws": 0,
+      "mirror_pairs": 5,
+      "logged_games": 10,
+      "chip_sum": 2651.0,
+      "avg_logged_chip_diff": 265.1,
+      "avg_mirror_chip_diff": 530.2,
+      "baseline": "bots\\bot5.py",
+      "result_file": "matchups\\current_mirror_bot5.json"
+    }
+  ]
+}

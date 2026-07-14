@@ -1,0 +1,89 @@
+{
+  "type": "hl_run",
+  "timestamp": "20260527_223931",
+  "candidate": {
+    "path": "1.py",
+    "label": "current",
+    "sha256": "0cb51d72cafd6dad2f7cab7127604638129dd1f62565153e299bef84ca700b0f"
+  },
+  "baselines": [
+    {
+      "name": "main",
+      "path": "bots\\bot002\\main.py",
+      "sha256": "dcb2cf50cea463488a23fffa33c3a39b4e1d886e08b245c624749f0f74e948bf",
+      "label": ".\\bots\\bot002\\main.py",
+      "role": "baseline"
+    },
+    {
+      "name": "main",
+      "path": "bots\\bot003\\main.py",
+      "sha256": "35d5a65fb6d727278e776acb7c8fde71f4cf6e8e85d2d49f8deefa8072565438",
+      "label": ".\\bots\\bot003\\main.py",
+      "role": "baseline"
+    },
+    {
+      "name": "main",
+      "path": "bots\\bot004\\main.py",
+      "sha256": "1d229c74490bd1e9ff3f2419a3e4347c0dcf455df42afb1e2dd3fec617f8a7e4",
+      "label": ".\\bots\\bot004\\main.py",
+      "role": "baseline"
+    },
+    {
+      "name": "main",
+      "path": "bots\\bot005\\main.py",
+      "sha256": "86b526f188f9ff6e6d48b38eff5f21382a3e63ee1d4651a8788f53af9076979b",
+      "label": ".\\bots\\bot005\\main.py",
+      "role": "baseline"
+    },
+    {
+      "name": "main",
+      "path": "bots\\bot006\\main.py",
+      "sha256": "3344bf2f83d061a851e75186264edc542b709c7f2712e13c9c16e75895c757ed",
+      "label": ".\\bots\\bot006\\main.py",
+      "role": "baseline"
+    }
+  ],
+  "config": {
+    "games": 3,
+    "seed": 2026052703,
+    "hl_trace": true,
+    "bidirectional": true
+  },
+  "status": "complete",
+  "result": {
+    "verdict": "GREEN",
+    "avg_mirror_chip_diff": 1281.7,
+    "illegal_or_crash_count": 0,
+    "sanitized_action_count": 0,
+    "interesting_count": 95,
+    "control_run": false
+  },
+  "matchups": [
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 3,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 3,
+      "logged_games": 6,
+      "chip_sum": 5043.0,
+      "avg_logged_chip_diff": 840.5,
+      "avg_mirror_chip_diff": 1681.0,
+      "baseline": "bots\\bot006\\main.py",
+      "result_file": "matchups\\current_forward_main.json"
+    },
+    {
+      "candidate_slot": 1,
+      "candidate_wins": 3,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 3,
+      "logged_games": 6,
+      "chip_sum": 2647.0,
+      "avg_logged_chip_diff": 441.2,
+      "avg_mirror_chip_diff": 882.3,
+      "baseline": "bots\\bot006\\main.py",
+      "result_file": "matchups\\current_reverse_main.json"
+    }
+  ]
+}

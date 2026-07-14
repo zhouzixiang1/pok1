@@ -1,0 +1,48 @@
+{
+  "type": "hl_run",
+  "timestamp": "20260527_214848",
+  "candidate": {
+    "path": "1.py",
+    "label": "current"
+  },
+  "baselines": [
+    {
+      "number": 1,
+      "name": "bot001",
+      "path": "bots\\bot001\\main.py",
+      "source": "1.py",
+      "label": "baseline",
+      "role": "baseline",
+      "notes": "initial HL baseline",
+      "created_at": "2026-05-27T21:40:21"
+    }
+  ],
+  "config": {
+    "games": 10,
+    "seed": 20260527,
+    "hl_trace": true
+  },
+  "status": "complete",
+  "result": {
+    "verdict": "RED",
+    "avg_mirror_chip_diff": -1919.5,
+    "illegal_or_crash_count": 0,
+    "sanitized_action_count": 0,
+    "interesting_count": 237
+  },
+  "matchups": [
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 3,
+      "baseline_wins": 5,
+      "draws": 2,
+      "mirror_pairs": 10,
+      "logged_games": 20,
+      "chip_sum": -19195.0,
+      "avg_logged_chip_diff": -959.8,
+      "avg_mirror_chip_diff": -1919.5,
+      "baseline": "bots\\bot001\\main.py",
+      "result_file": "matchups\\current_vs_bot001.json"
+    }
+  ]
+}

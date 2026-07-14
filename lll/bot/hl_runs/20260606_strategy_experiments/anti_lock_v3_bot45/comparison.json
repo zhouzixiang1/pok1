@@ -1,0 +1,116 @@
+{
+  "baseline_runs": [
+    {
+      "run_dir": "D:\\codex\\bot\\hl_runs\\20260606_133529_deterministic_baseline_screen",
+      "candidate": {
+        "path": "1.py",
+        "label": "当前 bot",
+        "sha256": "0cb51d72cafd6dad2f7cab7127604638129dd1f62565153e299bef84ca700b0f"
+      },
+      "config": {
+        "games": 5,
+        "physical_games_per_baseline": 10,
+        "hands_per_game": 70,
+        "seed": 2026360601,
+        "hl_trace": true,
+        "mirror": true,
+        "bidirectional": false,
+        "in_process": true
+      }
+    }
+  ],
+  "candidate_runs": [
+    {
+      "run_dir": "D:\\codex\\bot\\hl_runs\\20260606_150907_deterministic_anti_lock_v3_bot45",
+      "candidate": {
+        "path": "bots\\experiments\\anti_lock_v3.py",
+        "label": "当前 bot",
+        "sha256": "ececd8d5698dc4dd4bb212f5b4e8ab533bda7fb9e1190f44d038374a61c9f5e3"
+      },
+      "config": {
+        "games": 5,
+        "physical_games_per_baseline": 10,
+        "hands_per_game": 70,
+        "seed": 2026360601,
+        "hl_trace": true,
+        "mirror": true,
+        "bidirectional": false,
+        "in_process": true
+      }
+    }
+  ],
+  "opponents": [
+    {
+      "opponent": "bot4",
+      "baseline_total": -4301.0,
+      "candidate_total": 52182.0,
+      "deltas": [
+        37471.0,
+        0.0,
+        947.0,
+        18005.0,
+        60.0
+      ],
+      "summary": {
+        "count": 5,
+        "positive": 4,
+        "negative": 0,
+        "zero": 1,
+        "sum": 56483.0,
+        "mean": 11296.6,
+        "median": 947.0,
+        "bootstrap_mean_ci95": [
+          213.4,
+          26083.6
+        ],
+        "sign_flip_p_value": 0.127337,
+        "sign_test_p_value": 0.125,
+        "verdict": "提升趋势"
+      }
+    },
+    {
+      "opponent": "bot5",
+      "baseline_total": 16909.0,
+      "candidate_total": 16407.0,
+      "deltas": [
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        -503.0
+      ],
+      "summary": {
+        "count": 5,
+        "positive": 1,
+        "negative": 1,
+        "zero": 3,
+        "sum": -502.0,
+        "mean": -100.4,
+        "median": 0.0,
+        "bootstrap_mean_ci95": [
+          -301.8,
+          0.6
+        ],
+        "sign_flip_p_value": 1.0,
+        "sign_test_p_value": 1.0,
+        "verdict": "证据不足"
+      }
+    }
+  ],
+  "overall": {
+    "count": 10,
+    "positive": 5,
+    "negative": 1,
+    "zero": 4,
+    "sum": 55981.0,
+    "mean": 5598.1,
+    "median": 0.5,
+    "bootstrap_mean_ci95": [
+      -37.9,
+      13237.3
+    ],
+    "sign_flip_p_value": 0.153997,
+    "sign_test_p_value": 0.21875,
+    "verdict": "提升趋势"
+  }
+}

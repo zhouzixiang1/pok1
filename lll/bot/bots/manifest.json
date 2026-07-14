@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "bots": [
+    {
+      "number": 1,
+      "name": "bot001",
+      "path": "bots\\bot001\\main.py",
+      "source": "1.py",
+      "sha256": "0cb51d72cafd6dad2f7cab7127604638129dd1f62565153e299bef84ca700b0f",
+      "label": "baseline",
+      "role": "baseline",
+      "notes": "初始 HL baseline",
+      "created_at": "2026-05-27T21:40:21"
+    },
+    {
+      "number": 2,
+      "name": "bot002",
+      "path": "bots\\bot002\\main.py",
+      "source": "bots\\style_bot_common.py:tight_value",
+      "sha256": "dcb2cf50cea463488a23fffa33c3a39b4e1d886e08b245c624749f0f74e948bf",
+      "label": "tight_value",
+      "role": "opponent",
+      "notes": "紧凶价值型：边缘承压时偏向弃牌，强成牌和强翻前牌主动加注。",
+      "created_at": "2026-05-27T22:35:00"
+    },
+    {
+      "number": 3,
+      "name": "bot003",
+      "path": "bots\\bot003\\main.py",
+      "source": "bots\\style_bot_common.py:loose_aggressive",
+      "sha256": "35d5a65fb6d727278e776acb7c8fde71f4cf6e8e85d2d49f8deefa8072565438",
+      "label": "loose_aggressive",
+      "role": "opponent",
+      "notes": "松凶压迫型：高频压力加注，进攻范围较宽。",
+      "created_at": "2026-05-27T22:35:00"
+    },
+    {
+      "number": 4,
+      "name": "bot004",
+      "path": "bots\\bot004\\main.py",
+      "source": "bots\\style_bot_common.py:calling_station",
+      "sha256": "1d229c74490bd1e9ff3f2419a3e4347c0dcf455df42afb1e2dd3fec617f8a7e4",
+      "label": "calling_station",
+      "role": "opponent",
+      "notes": "跟注站型：跟注范围很宽，除非很强很少主动加注。",
+      "created_at": "2026-05-27T22:35:00"
+    },
+    {
+      "number": 5,
+      "name": "bot005",
+      "path": "bots\\bot005\\main.py",
+      "source": "bots\\style_bot_common.py:probe_bluffer",
+      "sha256": "86b526f188f9ff6e6d48b38eff5f21382a3e63ee1d4651a8788f53af9076979b",
+      "label": "probe_bluffer",
+      "role": "opponent",
+      "notes": "小探测偷池型：在干燥且被过牌到自己的牌面用小注偷池。",
+      "created_at": "2026-05-27T22:35:00"
+    },
+    {
+      "number": 6,
+      "name": "bot006",
+      "path": "bots\\bot006\\main.py",
+      "source": "bots\\style_bot_common.py:pressure_jammer",
+      "sha256": "3344bf2f83d061a851e75186264edc542b709c7f2712e13c9c16e75895c757ed",
+      "label": "pressure_jammer",
+      "role": "opponent",
+      "notes": "压力全下型：落后或比赛后段更倾向用 all-in 施压。",
+      "created_at": "2026-05-27T22:35:00"
+    }
+  ]
+}

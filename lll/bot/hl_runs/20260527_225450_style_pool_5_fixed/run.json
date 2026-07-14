@@ -1,0 +1,193 @@
+{
+  "type": "hl_run",
+  "timestamp": "20260527_225450",
+  "candidate": {
+    "path": "1.py",
+    "label": "current",
+    "sha256": "0cb51d72cafd6dad2f7cab7127604638129dd1f62565153e299bef84ca700b0f"
+  },
+  "baselines": [
+    {
+      "name": "bot002",
+      "path": "bots\\bot002\\main.py",
+      "sha256": "dcb2cf50cea463488a23fffa33c3a39b4e1d886e08b245c624749f0f74e948bf",
+      "label": ".\\bots\\bot002\\main.py",
+      "role": "baseline"
+    },
+    {
+      "name": "bot003",
+      "path": "bots\\bot003\\main.py",
+      "sha256": "35d5a65fb6d727278e776acb7c8fde71f4cf6e8e85d2d49f8deefa8072565438",
+      "label": ".\\bots\\bot003\\main.py",
+      "role": "baseline"
+    },
+    {
+      "name": "bot004",
+      "path": "bots\\bot004\\main.py",
+      "sha256": "1d229c74490bd1e9ff3f2419a3e4347c0dcf455df42afb1e2dd3fec617f8a7e4",
+      "label": ".\\bots\\bot004\\main.py",
+      "role": "baseline"
+    },
+    {
+      "name": "bot005",
+      "path": "bots\\bot005\\main.py",
+      "sha256": "86b526f188f9ff6e6d48b38eff5f21382a3e63ee1d4651a8788f53af9076979b",
+      "label": ".\\bots\\bot005\\main.py",
+      "role": "baseline"
+    },
+    {
+      "name": "bot006",
+      "path": "bots\\bot006\\main.py",
+      "sha256": "3344bf2f83d061a851e75186264edc542b709c7f2712e13c9c16e75895c757ed",
+      "label": ".\\bots\\bot006\\main.py",
+      "role": "baseline"
+    }
+  ],
+  "config": {
+    "games": 2,
+    "seed": 2026052704,
+    "hl_trace": true,
+    "bidirectional": true
+  },
+  "status": "complete",
+  "result": {
+    "verdict": "GREEN",
+    "avg_mirror_chip_diff": 7726.6,
+    "illegal_or_crash_count": 0,
+    "sanitized_action_count": 0,
+    "interesting_count": 292,
+    "control_run": false
+  },
+  "matchups": [
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 2246.0,
+      "avg_logged_chip_diff": 561.5,
+      "avg_mirror_chip_diff": 1123.0,
+      "baseline": "bots\\bot002\\main.py",
+      "result_file": "matchups\\current_forward_bot002.json"
+    },
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 34703.0,
+      "avg_logged_chip_diff": 8675.8,
+      "avg_mirror_chip_diff": 17351.5,
+      "baseline": "bots\\bot003\\main.py",
+      "result_file": "matchups\\current_forward_bot003.json"
+    },
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 21809.0,
+      "avg_logged_chip_diff": 5452.2,
+      "avg_mirror_chip_diff": 10904.5,
+      "baseline": "bots\\bot004\\main.py",
+      "result_file": "matchups\\current_forward_bot004.json"
+    },
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 33909.0,
+      "avg_logged_chip_diff": 8477.2,
+      "avg_mirror_chip_diff": 16954.5,
+      "baseline": "bots\\bot005\\main.py",
+      "result_file": "matchups\\current_forward_bot005.json"
+    },
+    {
+      "candidate_slot": 0,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 2728.0,
+      "avg_logged_chip_diff": 682.0,
+      "avg_mirror_chip_diff": 1364.0,
+      "baseline": "bots\\bot006\\main.py",
+      "result_file": "matchups\\current_forward_bot006.json"
+    },
+    {
+      "candidate_slot": 1,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 2466.0,
+      "avg_logged_chip_diff": 616.5,
+      "avg_mirror_chip_diff": 1233.0,
+      "baseline": "bots\\bot002\\main.py",
+      "result_file": "matchups\\current_reverse_bot002.json"
+    },
+    {
+      "candidate_slot": 1,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 20495.0,
+      "avg_logged_chip_diff": 5123.8,
+      "avg_mirror_chip_diff": 10247.5,
+      "baseline": "bots\\bot003\\main.py",
+      "result_file": "matchups\\current_reverse_bot003.json"
+    },
+    {
+      "candidate_slot": 1,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 14879.0,
+      "avg_logged_chip_diff": 3719.8,
+      "avg_mirror_chip_diff": 7439.5,
+      "baseline": "bots\\bot004\\main.py",
+      "result_file": "matchups\\current_reverse_bot004.json"
+    },
+    {
+      "candidate_slot": 1,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 19482.0,
+      "avg_logged_chip_diff": 4870.5,
+      "avg_mirror_chip_diff": 9741.0,
+      "baseline": "bots\\bot005\\main.py",
+      "result_file": "matchups\\current_reverse_bot005.json"
+    },
+    {
+      "candidate_slot": 1,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "draws": 0,
+      "mirror_pairs": 2,
+      "logged_games": 4,
+      "chip_sum": 1816.0,
+      "avg_logged_chip_diff": 454.0,
+      "avg_mirror_chip_diff": 908.0,
+      "baseline": "bots\\bot006\\main.py",
+      "result_file": "matchups\\current_reverse_bot006.json"
+    }
+  ]
+}
