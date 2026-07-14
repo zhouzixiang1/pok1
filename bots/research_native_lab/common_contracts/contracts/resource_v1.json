@@ -1,0 +1,159 @@
+{
+  "artifact_execution_contract": {
+    "actual_executable_hash_required": true,
+    "exact_regular_file_manifest_required": true,
+    "formal_materialization_authority": "external_signed_privileged_supervisor_only",
+    "local_python_materialization_is_formal": false,
+    "no_symlinks_or_special_files": true,
+    "readonly_cas_mount_attestation_required": true,
+    "runtime_config_model_action_set_and_dependencies_content_bound": true
+  },
+  "cleanup_contract": {
+    "durable_exclusive_receipt_required": true,
+    "fail_closed_on_any_cleanup_error": true,
+    "ordered_paths": [
+      "connection-0",
+      "connection-1",
+      "leg-root"
+    ],
+    "receipt_directory_fsync_required": true,
+    "signed_leg_receipt_binds_cleanup_digest": true
+  },
+  "decision_enforcement_contract": {
+    "action_sent_monotonic_ns_semantics": "parser_committed_client_token_ingress_only_never_timeout_adjudication",
+    "candidate_fault_owner": "acting_connection_only",
+    "compute_hard_stop_ms_max": 54000,
+    "decision_close_boundary": "mandatory_server_to_peer_relay_raw_record_and_monotonic_timestamp",
+    "decision_event_schema": "pok-supervisor-decision-enforcement-event-v3",
+    "decision_identity_binds": [
+      "capture_and_actor_location",
+      "request_raw_record_seq",
+      "nullable_action_raw_record_seq",
+      "nullable_action_token_digest",
+      "decision_close_raw_record_seq"
+    ],
+    "decision_identity_schema": "pok-supervisor-decision-identity-v3",
+    "fallback_complete_before_request": true,
+    "infrastructure_fault_charged_to_candidate": false,
+    "fault_free_action_evidence": "action_raw_record_seq_action_token_digest_action_sent_monotonic_ns_all_required_and_strictly_between_open_and_close",
+    "no_opponent_time_pondering": true,
+    "platform_timeout_ms": 60000,
+    "signed_leg_receipt_schema": "pok-trusted-resource-supervisor-leg-receipt-v3",
+    "tokenless_fault_action_evidence": "crash_timeout_resource_protocol_or_infrastructure_requires_all_three_client_token_fields_explicit_null_and_exact_peer_fold_close; non_timeout_fault_close_must_precede_the_platform_deadline_and_timeout_has_precedence_at_or_after_it; kind_owner_hand_and_raw_boundaries_are_replay_cross_checked",
+    "timeout_action_evidence": "action_raw_record_seq_action_token_digest_action_sent_monotonic_ns_all_explicit_null_peer_fold_is_close_not_client_token",
+    "trusted_shim_sends_last_complete_snapshot": true
+  },
+  "deployment_envelope": {
+    "cpu_backend_required": true,
+    "gpu_online_optional_only": true,
+    "hard_compute_stop_sec": 54.0,
+    "no_swap_as_capacity_strategy": true,
+    "official_send_delay_sec": 0.3,
+    "worker_processes_max": 1
+  },
+  "diagnostic_same_uid_cgroup_probe": {
+    "available_controllers": [],
+    "delegated_root": "/sys/fs/cgroup/pok-formal",
+    "diagnostic_cgroup_ready": false,
+    "formal_available": false,
+    "mode": "read_only_no_cgroup_creation_no_process_launch",
+    "observed_at": "2026-07-14T00:10:50+08:00",
+    "reasons": [
+      "delegated root is absent, a symlink, or not a directory",
+      "direct same-UID writable cgroup delegation is permanently diagnostic-only"
+    ]
+  },
+  "formal_authority_contract": {
+    "attempt_journal": "externally_signed_contiguous_terminal_rows_for_every_launch_plus_closed_scope_head",
+    "attempt_journal_root": "/var/lib/pok-formal/attempt-journal-v1",
+    "bot_isolation": "two_distinct_low_privilege_uids_plus_private_proc_and_peer_signal_denial",
+    "consumption_ledger": "root_owned_read_only_no_clobber_rows_bound_by_signed_leg_receipts",
+    "consumption_ledger_root": "/var/lib/pok-formal/receipt-ledger-v1",
+    "contract_path": "/etc/pok/formal-resource-supervisor-v1.json",
+    "control_channel": "preopened_connected_unix_seqpacket_with_peer_credentials_and_peer_cgroup_auth",
+    "external_signature_verifier_required": true,
+    "fixed_global_lock_path": "/run/lock/pok-formal-evaluation.lock",
+    "formal_available": false,
+    "formal_result_authority": "unavailable",
+    "local_same_uid_launcher_can_mint_formal_receipts": false,
+    "missing_components": [
+      "root-owned fixed supervisor contract",
+      "pinned privileged supervisor executable",
+      "pinned external signature verifier and public key",
+      "pre-opened authenticated supervisor control channel",
+      "two isolated low-privilege candidate UIDs",
+      "root-owned read-only artifact CAS mount",
+      "supervisor-owned cgroup-v2 subtree and fixed global lease",
+      "root-owned durable receipt-consumption ledger",
+      "root-owned signed append-only attempt journal and closed-head seal",
+      "downstream durable result ledger that rejects repeated receipt consumption keys"
+    ],
+    "probe_reason": "/etc/pok is unavailable: FileNotFoundError",
+    "protocol": "pok-trusted-resource-supervisor-v1",
+    "service_uid": 0,
+    "status": "formal_unavailable_fail_closed",
+    "supervisor_attestation_path": "/run/pok-formal/supervisor-attestation-v1.json"
+  },
+  "hardware_observed_at": "2026-07-14T00:10:50+08:00",
+  "host": {
+    "boot_id": "01027c8d-478d-49c1-82f0-fec12afa9824",
+    "cpu": "13th Gen Intel(R) Core(TM) i9-13900HX",
+    "disk_available_gib": 715.0,
+    "disk_total_gib": 936.8,
+    "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "logical_cpus": 32,
+    "memory_available_gib": 53.6,
+    "physical_cores": 24,
+    "ram_gib": 62,
+    "swap_gib": 0,
+    "vram_mib": 8188
+  },
+  "initial_safe_training_limits": {
+    "cpu_threads": 24,
+    "ram_gib": 50,
+    "vram_mib": 7000
+  },
+  "integrity": {
+    "controllers_digest": "d44325bee42539fea480b07d68dda982bc81b810f09b8b24002644246cd23d2d",
+    "enforcer_digest": "2e2d1d6fc4a57ba53b75f84d60654f6b102fb8fc8b5ebcec94cf8d79669b3b3b",
+    "same_uid_backend_authority": "development_diagnostic_only",
+    "schema": "pok-resource-contract-v4"
+  },
+  "online_anytime_milestones_sec": [
+    0.25,
+    2.0,
+    8.0,
+    20.0,
+    40.0
+  ],
+  "raw_evidence_contract": {
+    "bridge_exposes": [
+      "supervisor_contract_and_readiness_digests",
+      "launch_and_leg_receipt_digests",
+      "attempt_scope_sequence_previous_entry",
+      "receipt_consumption_key_and_root_ledger_entry",
+      "capture_session_and_ordered_socket_identities",
+      "raw_wire_wire_semantics_and_raw_replay",
+      "complete_decision_and_fault_traces",
+      "cleanup_and_termination"
+    ],
+    "execution_schema": "pok-execution-raw-record-v1",
+    "pair_link_schema": "pok-execution-resource-raw-link-v1",
+    "resource_schema": "pok-resource-raw-record-v1",
+    "signed_leg_receipt_binds_both_ordered_digests": true,
+    "typed_cross_link_required": true
+  },
+  "restart_durability_contract": {
+    "in_process_sets_are_formal_authority": false,
+    "matrix_must_consume_authorized_attempt_journal_capability": true,
+    "receipt_key_replay_must_be_rejected_by_downstream_durable_ledger": true,
+    "signed_readiness_requires_durable_no_clobber_fsync_ledgers": true
+  },
+  "runtime": {
+    "cuda": "13.2",
+    "nvidia_driver": "595.71.05",
+    "python": "3.14.4",
+    "torch": "2.12.0+cu132"
+  },
+  "startup_observation": "post-reboot audit found no formal supervisor installation; same-UID cgroup mechanics remain diagnostic-only and formal resource authority is unavailable"
+}

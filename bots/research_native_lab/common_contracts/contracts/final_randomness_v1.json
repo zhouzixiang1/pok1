@@ -1,0 +1,101 @@
+{
+  "beacon": {
+    "beacon_id": "default",
+    "chain_hash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
+    "endpoints": [
+      "https://api.drand.sh/v2/",
+      "https://api2.drand.sh/v2/",
+      "https://api3.drand.sh/v2/"
+    ],
+    "genesis_time": 1595431050,
+    "official_api_documentation": "https://docs.drand.love/developer/API-v2/drand-http-api/",
+    "period_sec": 30,
+    "public_key": "868f005eb8e6e4ca0a47c8a77ceaa5309a47978a7c71bc5cce96366b5d7a569937c529eeda66c7293784a9402801af31",
+    "scheme": "pedersen-bls-chained"
+  },
+  "candidate_freeze": {
+    "beacon_delay_sec": 3600,
+    "bundle_must_bind": [
+      "complete_formal_matrix_root",
+      "all_12_route_checkpoint_comparison_mode_artifacts",
+      "all_materialized_ablations_and_explicit_not_applicable_entries",
+      "every_planned_stratum_and_candidate_neutral_seed_cohort",
+      "common_contract_tree",
+      "opponent_universe",
+      "resource_profile",
+      "evaluation_harness"
+    ],
+    "external_time_proof": {
+      "accepted_state": "verified_bitcoin",
+      "bitcoin_network": "mainnet",
+      "diagnostic_authority": "caller-rpc-ots-diagnostic-only",
+      "diagnostic_limitation": "loopback RPC is caller-selected and cannot prove independent chainwork, sync state, or the real freeze time",
+      "fail_closed_states": [
+        "unstamped",
+        "pending_bitcoin",
+        "invalid",
+        "verifier_error"
+      ],
+      "minimum_confirmations": 6,
+      "record_schema": "candidate-freeze-record-v1",
+      "remote_calendars_during_verification": "disabled",
+      "timestamp_cache_during_verification": "disabled",
+      "formal_required_authority": "fixed root-owned synced-mainnet node plus independent signed chainwork/freeze witness",
+      "formal_required_future_target": "Bitcoin block H+12 fixed by the signed freeze receipt and unknown at freeze",
+      "trusted_epoch": "none_on_current_host",
+      "verifier": "opentimestamps-client==0.7.2",
+      "verifier_lock_sha256": "41e022e39c388d2415fe0ba2833e19d62442cf0180c48604dfafe3f40803bd43",
+      "verifier_mode": "verify_only_never_stamp_or_upgrade"
+    },
+    "diagnostic_round_formula": "ceil((caller_rpc_bitcoin_header_epoch + 3600 - genesis_time) / period_sec) + 1",
+    "formal_entropy_mix": "SHA256(future_bitcoin_block_H_plus_12_hash || verified_drand_randomness || independent_chainwork_and_witness_receipts)",
+    "future_bitcoin_block_offset": 12
+  },
+  "derivation": {
+    "deck_block_namespace": "formal/<candidate_neutral_seed_cohort_digest>/deck-root",
+    "deck_output": "full_32_byte_HMAC_digest_interpreted_as_unsigned_big_endian_uint256",
+    "deck_pool_consumption": "derive_exactly_8192_once_then_use_the_frozen_block_index_prefix_without_shorter_rederivation",
+    "deck_typed_helper": "FinalEvaluationPlan.derive_formal_deck_root_pool",
+    "diagnostic_function": "HMAC-SHA256(verified_drand_randomness, contract_version|complete_matrix_root_digest|namespace|index)",
+    "formal_function": "HMAC-SHA256(future_bitcoin_plus_drand_independent_authority_mix, contract_version|complete_matrix_root_digest|namespace|index)",
+    "golden_vector": {
+      "artifact_identity_digest": "0101010101010101010101010101010101010101010101010101010101010101",
+      "beacon_randomness": "5fa0a08f9705c5b1ddd7a0a6acd6343381645a895cfa23d635106c0e3056138c",
+      "candidate_bundle_digest": "abababababababababababababababababababababababababababababababab",
+      "contract_version": "national-research-contract-v1",
+      "deck_root_uint256_decimal": {
+        "0": "85517835529105422948768660326315688026918167284017802580968777011489792308174",
+        "1": "107153763910712565986047701229153677875526782706470098326041098597685202229005",
+        "8191": "115054376025251856676669529672448514290415111039932896680140041557869876389059"
+      },
+      "formal_seed_cohort_digest": "1010101010101010101010101010101010101010101010101010101010101010",
+      "policy_seed_uint63_decimal": {
+        "0": "1536056036897795165",
+        "1": "8387987325884677895",
+        "3": "5632072123844316059"
+      },
+      "purpose": "derivation_only_not_a_drand_BLS_fixture"
+    },
+    "opponent_selection": "HMAC-rank every frozen universe artifact hash and select the first four",
+    "policy_namespace": "formal/<candidate_neutral_seed_cohort_digest>/policy/<artifact_identity_digest>",
+    "policy_output": "first_8_HMAC_bytes_interpreted_as_unsigned_big_endian_then_bitwise_AND_0x7fffffffffffffff",
+    "policy_pool_consumption": "derive_the_exact_frozen_matrix_block_count_for_each_artifact_identity_with_maximum_8192",
+    "policy_typed_helper": "FinalEvaluationPlan.derive_formal_policy_seeds",
+    "required_root_count": 8192,
+    "seat_rule": "candidate-identity policy seed follows the artifact when connection mapping swaps"
+  },
+  "security_claim": "diagnostic derivation only; no current evidence proves entropy was unknown at the real freeze time",
+  "formal_status": "fail_closed_unavailable_without_fixed_independent_freeze_chainwork_and_future_block_authority",
+  "formal_strength_available": false,
+  "verification": {
+    "cross_fetch_minimum_independent_endpoints": 3,
+    "cross_fetch_all_endpoints": true,
+    "recompute_saved_raw_payload_sha256": true,
+    "record_round_signature_and_randomness": true,
+    "require_chain_info_public_key_round_signature_randomness_and_previous_signature": true,
+    "require_official_client_BLS_verification": true,
+    "require_previous_round_link": true,
+    "verifier": "drand-client@1.4.2",
+    "verifier_lock_sha256": "c9d98582aa74057b5af8790ed5a86e036790cdf4e1d5b3a6d1368f81d4e6093a"
+  }
+}

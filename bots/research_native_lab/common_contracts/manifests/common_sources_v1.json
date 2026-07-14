@@ -1,0 +1,125 @@
+{
+  "base_sha": "6ee160c93cee8d0afdad111c4c82bc6ddb6012ca",
+  "files": [
+    {
+      "authority": "repository_policy",
+      "path": "AGENTS.md",
+      "sha256": "7eb5474e180f3d8a346d12fcf6a92c8412f8e1c5174125b3ce8bd263d93fbeae"
+    },
+    {
+      "authority": "official_competition_document",
+      "path": "sever/国赛平台/通信协议.docx",
+      "sha256": "09b33d65a15db2a49ab0a7609cf1bd499d6e042cda7c03d2322fb919936c390f"
+    },
+    {
+      "authority": "official_competition_document",
+      "path": "sever/国赛平台/自对弈平台使用及通信协议补充说明.docx",
+      "sha256": "fd95e044f55b11f2fd01b2ee5a0e6fad7ad5efda58a2010fc6b991ff24cb2de5"
+    },
+    {
+      "authority": "official_competition_document",
+      "path": "sever/国赛平台/非法行为说明.docx",
+      "sha256": "5e07fe7de24b7cffab175a53e9289ad2c84057a998dddb19e9fb9f8fb0463963"
+    },
+    {
+      "authority": "official_competition_document",
+      "path": "sever/国赛平台/德州扑克规则.doc",
+      "sha256": "4aede64090b68b0670371b6ef7df64b99a3d141e0e83161fa469a892e09c30a4"
+    },
+    {
+      "authority": "official_competition_document",
+      "path": "sever/国赛平台/中国计算机博弈锦标赛棋（牌）谱标准说明书.pdf",
+      "sha256": "68ce22704cde5a1d5c6884f46c0722d21562272bbcb49dbdf7e28581813e246c"
+    },
+    {
+      "authority": "official_exe_controlled_oracle",
+      "path": "docs/official-raise-boundary-oracle-2026-07-11.md",
+      "sha256": "a83a1ec2680577d71ddb985ddba00c5bcda40817ef2fb92c0c41938dccef3756"
+    },
+    {
+      "authority": "official_exe_controlled_oracle",
+      "path": "docs/official-terminal-settlement-oracle-2026-07-11.md",
+      "sha256": "ad96bc4fbe7939597b7a86ff6f9193ed2e50891be9b6b9c074883f5750c23bd9"
+    },
+    {
+      "authority": "official_exe_machine_readable_oracle",
+      "path": "sever/tests/fixtures/official_raise_boundary_oracle_20260711.json",
+      "sha256": "18d9b5f487fdf780e45e8a3cf72a8ebf219052e81610cf91d1be4c0f9e5847af"
+    },
+    {
+      "authority": "official_exe_machine_readable_oracle",
+      "path": "sever/tests/fixtures/official_terminal_settlement_oracle_20260711.json",
+      "sha256": "09333de5be5d13fca889dcd0efd2b366b13620ca9012b0c1a14a7ed888740f42"
+    },
+    {
+      "authority": "local_differential_oracle",
+      "path": "sever/engine/validator.py",
+      "sha256": "fa52add7eec2e00f89e84245e044e9f25098bbdc76bef6793ad43dd3d8a5bfea"
+    },
+    {
+      "authority": "local_game_engine_reference",
+      "path": "sever/engine/game.py",
+      "sha256": "111031e2cc4c0fcccf2a74749440e845fe9b7b6cdb514db41437ae063face851"
+    },
+    {
+      "authority": "local_format_parser_only_not_stream_framing_truth",
+      "path": "sever/server/protocol.py",
+      "sha256": "6ee890a7b637b66bcb5621edd6241f8cb816c76eae7d00abd3672dde2484b589"
+    },
+    {
+      "authority": "local_evaluator_differential_reference",
+      "path": "sever/engine/evaluator.py",
+      "sha256": "8bb5f3d01a592578a5d3a35eb53807b61be8a2cf5307b1d9630fbd81e43f9877"
+    }
+  ],
+  "external_verifiers": [
+    {
+      "distribution": "drand-client@1.4.2",
+      "license": "(Apache-2.0 OR MIT)",
+      "module_sha256": "c5f6eff0d5692efd8f2e19953a49713d17554739016f9d0f3235380aab9ea904",
+      "npm_integrity": "sha512-jeNJmrVplfgIA/GVndxxJ5mo8y63BS2pEdNhk1siU4pQ+z/BnxsqRnxjH9ag1ip887s12SEgo0MTZPbQNz27NA==",
+      "repository": "https://github.com/drand/drand-client",
+      "source_commit": "ef8c9260294f8699b5e8c27a6b764f8f0d768bea",
+      "tarball_sha256": "81de34afba38520b461152bf032cfb5139bb6ced205bf9f50bc8216fdc394eef",
+      "tarball_url": "https://registry.npmjs.org/drand-client/-/drand-client-1.4.2.tgz",
+      "use": "offline_BLS_verification_of_saved_three_relay_payloads"
+    },
+    {
+      "distribution": "opentimestamps-client==0.7.2",
+      "license": "LGPL-3.0-or-later",
+      "pypi_sdist_sha256": "083a08f59c3123682d6742cc57d3e229ed7b3397807638836efe3a949517accb",
+      "pypi_wheel_sha256": "84e604d7f76534da4bab61ab62b211a6559aa988da51438408ae7947b0e8b7ba",
+      "repository": "https://github.com/opentimestamps/opentimestamps-client",
+      "source_commit": "6d711ab86e00dbb4c5160c2c2b703c551b438856",
+      "source_tag": "opentimestamps-client-v0.7.2",
+      "use": "diagnostic_only_verify_candidate_freeze_against_caller_selected_loopback_mainnet_Bitcoin_Core"
+    }
+  ],
+  "formal_verifier_files": [
+    {
+      "path": "bots/research_native_lab/common_contracts/tools/verify_drand_beacon.lock.json",
+      "sha256": "c9d98582aa74057b5af8790ed5a86e036790cdf4e1d5b3a6d1368f81d4e6093a"
+    },
+    {
+      "path": "bots/research_native_lab/common_contracts/tools/verify_drand_beacon.mjs",
+      "sha256": "4ef1cfbbd60299cf5d3e284a2a2743c6a9554bf161c33d6b3ce2f60858c370e1"
+    },
+    {
+      "path": "bots/research_native_lab/common_contracts/tools/verify_drand_beacon.py",
+      "sha256": "58e6402fce17f206ebb2922186ba4967cfac2eb00965c3d9f98f005974a006fd"
+    },
+    {
+      "path": "bots/research_native_lab/common_contracts/tools/verify_candidate_freeze.lock.json",
+      "sha256": "41e022e39c388d2415fe0ba2833e19d62442cf0180c48604dfafe3f40803bd43"
+    },
+    {
+      "path": "bots/research_native_lab/common_contracts/tools/verify_candidate_freeze.py",
+      "sha256": "b840a59798afd9ab4be7ed67f4d1973a2605e124753cbcd0c8edbbbcf4a56b09"
+    },
+    {
+      "path": "bots/research_native_lab/common_contracts/tools/verify_candidate_freeze.requirements.txt",
+      "sha256": "d1d64b8e1138a42d93812d8049a7da8052071080c654407eecf787e93d3095bc"
+    }
+  ],
+  "license_note": "Project-local rules and oracle evidence are hash-bound above. Diagnostic entropy/freeze verification executes only the exact external verifier distributions and local adapters recorded here; it grants no formal-strength authority. Formal use additionally requires the fixed independent freeze, chainwork, future-block, and signed-witness authority that is not installed on this host. No external strategy code is included. Route-specific algorithm papers and repositories remain in the A and B fidelity/license matrices."
+}
